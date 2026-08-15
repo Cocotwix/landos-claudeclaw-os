@@ -10,6 +10,7 @@ import { readSessionConfig } from './browser-session.js';
 import { automationBrowserConfig, openDisposableContextHandle } from './automation-browser.js';
 import { addressStateCode, type CompRegistryCandidate } from './comp-registry.js';
 import { isListingPhotoUrl } from './comp-visual.js';
+import { laneSearchVerified, type CompLaneRouteOutcome } from './comp-lane-accountability.js';
 
 declare const document: any;
 declare const window: any;
@@ -85,6 +86,42 @@ export interface RealtorCompsResult {
   note: string;
   routeTried: string;
   routesAttempted: string[];
+  /** What every route actually did — reached, blocked, cards read, verified. */
+  routes: CompLaneRouteOutcome[];
+  /** True only when a readable, market-verified Realtor.com page was reached. */
+  searchVerified: boolean;
+}
+
+/**
+ * Prove an opened Realtor.com page really is this subject's market.
+ *
+ * The state code alone is not proof: Realtor.com answers an unmatched search
+ * slug with a national or nearest-guess board, and a two-letter code appears in
+ * chrome on almost any page. A ZIP, city or county token has to appear in the
+ * URL, the page text, or the addresses the page itself published.
+ */
+export function verifyRealtorMarket(
+  input: RealtorFetchInput,
+  pageText: string,
+  listings: RawRealtorListing[],
+): { valid: boolean; reason: string } {
+  const state = (input.state ?? '').trim().toUpperCase();
+  const addresses = listings.map((row) => row.address ?? '').filter(Boolean);
+  if (state && addresses.length && !addresses.some((address) => addressStateCode(address) === state)) {
+    return { valid: false, reason: `the published addresses are not in ${state}` };
+  }
+  const norm = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const haystack = norm(`${pageText} ${addresses.join(' ')}`);
+  const zip = (input.zip ?? '').match(/\b\d{5}\b/)?.[0];
+  const city = norm(input.city ?? '');
+  const county = norm((input.county ?? '').replace(/\s+county$/i, ''));
+  if (zip && haystack.includes(zip)) return { valid: true, reason: `the page names the subject ZIP ${zip}` };
+  if (city && haystack.includes(city)) return { valid: true, reason: `the page names the subject city ${input.city}` };
+  if (county && haystack.includes(county)) return { valid: true, reason: `the page names ${input.county}` };
+  if (!zip && !city && !county && state && new RegExp(`\\b${state}\\b`).test(pageText)) {
+    return { valid: true, reason: `no ZIP, city or county was available for this subject, so the ${state} board is the most specific market that could be verified` };
+  }
+  return { valid: false, reason: 'the page names neither the subject ZIP, city, nor county' };
 }
 
 const slug = (value: string): string => value.trim().replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -290,18 +327,21 @@ const PAGE_GEOGRAPHY = (): string => `${String((window as any).location?.href ??
 export async function fetchRealtorLandComps(input: RealtorFetchInput, deps: RealtorFetchDeps = {}): Promise<RealtorCompsResult> {
   const routes = realtorSearchRoutes(input);
   const first = routes[0]?.url ?? '';
+  const outcomes: CompLaneRouteOutcome[] = [];
+  const done = (result: Omit<RealtorCompsResult, 'routes' | 'searchVerified'>): RealtorCompsResult =>
+    ({ ...result, routes: [...outcomes], searchVerified: laneSearchVerified(outcomes) });
   if (!deps.force && !deps.connect) {
-    try { if (!readSessionConfig().enabled) return { status: 'disabled', comps: [], note: 'Live browser mode off — Realtor.com not attempted.', routeTried: first, routesAttempted: [] }; }
+    try { if (!readSessionConfig().enabled) return done({ status: 'disabled', comps: [], note: 'Live browser mode off — Realtor.com not attempted.', routeTried: first, routesAttempted: [] }); }
     catch { /* continue to the owned browser */ }
   }
-  if (!routes.length) return { status: 'disabled', comps: [], note: 'No subject state and searchable address, parcel, ZIP, city, or county for Realtor.com.', routeTried: first, routesAttempted: [] };
+  if (!routes.length) return done({ status: 'disabled', comps: [], note: 'No subject state and searchable address, parcel, ZIP, city, or county for Realtor.com.', routeTried: first, routesAttempted: [] });
   const connect = deps.connect ?? defaultConnect;
   const attempted: string[] = [];
   let browser: RealtorBrowserLike | null = null;
   let last = first;
   try {
     browser = await connect(automationBrowserConfig().endpoint);
-    if (!browser) return { status: 'error', comps: [], note: 'The LandOS automation browser is not available for Realtor.com.', routeTried: first, routesAttempted: attempted };
+    if (!browser) return done({ status: 'error', comps: [], note: 'The LandOS automation browser is not available for Realtor.com.', routeTried: first, routesAttempted: attempted });
     const page = await browser.newPage();
     try { await page.setViewport?.({ width: 1400, height: 950 }); } catch { /* best effort */ }
     for (const route of routes) {
@@ -311,18 +351,41 @@ export async function fetchRealtorLandComps(input: RealtorFetchInput, deps: Real
       await sleep(deps.settleMs ?? 5_000);
       const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
       const raw = await page.evaluate<RawRealtorListing[]>(EXTRACT_REALTOR as unknown as () => RawRealtorListing[]);
-      if (blocked && !raw.length) return { status: 'blocked', comps: [], note: `Realtor.com blocked the ${route.label} route before property cards could be read.`, routeTried: route.url, routesAttempted: attempted };
+      if (blocked && !raw.length) {
+        outcomes.push({ label: route.label, url: route.url, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: `Realtor.com served a bot-verification or holding page instead of the ${route.label} results.` });
+        return done({ status: 'blocked', comps: [], note: `Realtor.com blocked the ${route.label} route before property cards could be read.`, routeTried: route.url, routesAttempted: attempted });
+      }
       const geography = await page.evaluate<string>(PAGE_GEOGRAPHY as unknown as () => string).catch(() => '');
       const state = (input.state ?? '').trim().toUpperCase();
-      const stateMatches = !state || raw.some((row) => addressStateCode(row.address) === state) || new RegExp(`\\b${state}\\b`).test(geography);
-      if (!stateMatches) continue;
+      // A page has to be PROVEN to be this subject's market before anything on
+      // it counts, and before its emptiness counts either. Realtor.com answers
+      // an unmatched slug with a nearest-guess or national board, which the old
+      // state-only check accepted as the subject's market.
+      const market = verifyRealtorMarket(input, geography, raw);
+      if (!market.valid) {
+        outcomes.push({ label: route.label, url: route.url, reached: true, blocked, cardsFound: raw.length, marketVerified: false, qualifying: 0, outcome: `Opened ${route.url} and read ${raw.length} card(s), but ${market.reason}, so nothing from it was used.` });
+        continue;
+      }
       const comps = normalizeRealtorListings(raw, input.subjectAcres ?? null, input.mode ?? 'active')
         .filter((comp) => !state || addressStateCode(comp.address) === state);
-      if (comps.length) return { status: 'retrieved', comps, note: `Realtor.com returned ${comps.length} verified ${input.mode === 'sold' ? 'sold' : 'active'} land result(s) for ${route.label}.`, routeTried: route.url, routesAttempted: attempted };
+      outcomes.push({
+        label: route.label, url: route.url, reached: true, blocked, cardsFound: raw.length, marketVerified: true, qualifying: comps.length,
+        outcome: comps.length
+          ? `Opened ${route.url}, verified it as this subject's market because ${market.reason}, read ${raw.length} card(s) and kept ${comps.length} qualifying ${input.mode === 'sold' ? 'sold' : 'active'} land result(s).`
+          : `Opened ${route.url} and verified it as this subject's market because ${market.reason}; it exposed ${raw.length} card(s) and none was a qualifying ${input.mode === 'sold' ? 'sold' : 'active'} land result.`,
+      });
+      if (comps.length) return done({ status: 'retrieved', comps, note: `Realtor.com returned ${comps.length} verified ${input.mode === 'sold' ? 'sold' : 'active'} land result(s) for ${route.label}.`, routeTried: route.url, routesAttempted: attempted });
     }
-    return { status: 'none', comps: [], note: `Realtor.com returned no qualifying ${input.mode === 'sold' ? 'sold' : 'active'} land results across ${routes.length} route(s).`, routeTried: last, routesAttempted: attempted };
+    const verified = laneSearchVerified(outcomes);
+    return done({
+      status: 'none', comps: [],
+      note: verified
+        ? `Realtor.com opened a page verified as this subject's market and it published no qualifying ${input.mode === 'sold' ? 'sold' : 'active'} land result across ${routes.length} route(s).`
+        : `Realtor.com never reached a page verified as this subject's market: all ${routes.length} route(s) were blocked, empty, or landed on another geography, so no conclusion about the market's inventory is supported.`,
+      routeTried: last, routesAttempted: attempted,
+    });
   } catch (error) {
-    return { status: 'error', comps: [], note: `Realtor.com capture error: ${(error as Error)?.message ?? 'unknown'}.`, routeTried: last, routesAttempted: attempted };
+    return done({ status: 'error', comps: [], note: `Realtor.com capture error: ${(error as Error)?.message ?? 'unknown'}.`, routeTried: last, routesAttempted: attempted });
   } finally {
     try { await browser?.close(); } catch { /* dispose only this context */ }
   }

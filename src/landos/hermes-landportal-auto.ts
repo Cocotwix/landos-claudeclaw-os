@@ -38,6 +38,17 @@ export const HERMES_LANDPORTAL_HARD_TIMEOUT_MS = 5 * 60_000;
 // visuals ceiling is twenty minutes. Subject and comps keep five.
 export const HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS = 20 * 60_000;
 export const HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS = 20 * 60_000;
+// Comps could not keep five either, for the same reason visuals could not: the
+// work unit is no longer a single sidebar read. `comp_drilldown_requirement`
+// tells it to open EVERY sidebar comparable through its detail or Show on Map
+// surface and retain address, city/state/zip, acres, coordinates, detail_url
+// and imagery per row — a multi-page pass whose cost scales with the comp
+// count. On 5170 Hwy 60 it was killed mid-work at exactly 300000 ms, so no
+// LandPortal comparable was ever imported and the valuation had nothing with a
+// reliable acreage to qualify. Fifteen minutes sits between the subject unit's
+// five and the visuals unit's twenty, matching where the work actually sits.
+export const HERMES_LANDPORTAL_COMPS_TARGET_RUNTIME_MS = 15 * 60_000;
+export const HERMES_LANDPORTAL_COMPS_HARD_TIMEOUT_MS = 15 * 60_000;
 export const HERMES_LANDPORTAL_SPECIALISTS = ['subject', 'comps', 'visuals'] as const;
 
 export type HermesLandPortalSpecialist = typeof HERMES_LANDPORTAL_SPECIALISTS[number];
@@ -201,11 +212,15 @@ export function hermesLandPortalPrompt(
     canonical_property_identifier: input.landPortalPropertyId,
     output_file: outputFile,
     visual_artifact_directory: path.dirname(outputFile),
+    // KEYS and VIEWS are different fields and were previously listed together,
+    // so `landportal_overview` (a key) came back in `requested_view` (a view)
+    // exactly as this line implied — and the importer refused the whole batch
+    // for containing it. Name the two explicitly.
     requested_visuals: specialist === 'visuals'
-      ? 'landportal_overview, parcel_context, default_3d, soil, buildability, street_view'
+      ? 'keys landportal_overview, default_3d, soil_overlay, buildability, street_view; requested_view is a view name, never a key (overview uses parcel_context).'
       : '',
     overview_requirement: specialist === 'visuals'
-      ? 'landportal_overview is an active parcel_context satellite frame showing the boundary, the nearest public road and the road relationship, and any apparent access route; never default 3D or county scale.'
+      ? 'landportal_overview: parcel_context frame, ENTIRE boundary inside with padding all sides; zoom out until no vertex touches an edge; report boundary_fully_in_frame true|false, clipped true when one leaves; show the nearest public road and any access route; never default 3D or county scale.'
       : undefined,
     access_investigation: specialist === 'visuals'
       ? 'Land Locked: Yes or absent frontage triggers a map and Street View pass: place the marker on the nearest public road, then keep access_evidence for parcel_flag, apparent_physical, reported_legal and verified_legal separate with source_kind, basis and weight. Only a recorded instrument verifies legal access.'
@@ -564,8 +579,16 @@ async function executeLane(input: HermesLandPortalLaneInput, deps: HermesLandPor
   let executions: SpecialistExecution[];
   try {
     executions = await Promise.all(HERMES_LANDPORTAL_SPECIALISTS.map((specialist) => {
-      const target = specialist === 'visuals' ? HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS : HERMES_LANDPORTAL_TARGET_RUNTIME_MS;
-      const hardCeiling = specialist === 'visuals' ? HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS : HERMES_LANDPORTAL_HARD_TIMEOUT_MS;
+      const target = specialist === 'visuals'
+        ? HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS
+        : specialist === 'comps'
+          ? HERMES_LANDPORTAL_COMPS_TARGET_RUNTIME_MS
+          : HERMES_LANDPORTAL_TARGET_RUNTIME_MS;
+      const hardCeiling = specialist === 'visuals'
+        ? HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS
+        : specialist === 'comps'
+          ? HERMES_LANDPORTAL_COMPS_HARD_TIMEOUT_MS
+          : HERMES_LANDPORTAL_HARD_TIMEOUT_MS;
       const configured = deps.specialistTimeoutMs?.[specialist] ?? deps.timeoutMs ?? target;
       const timeoutMs = Math.min(hardCeiling, Math.max(1, configured));
       return executeSpecialist({ lane: input, specialist, outputDirectory, timeoutMs, deps, reconcile, publish: publishWorkUnit });

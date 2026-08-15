@@ -18,6 +18,7 @@ import { readSessionConfig } from './browser-session.js';
 import { automationBrowserConfig, openDisposableContextHandle } from './automation-browser.js';
 import { parseZillowStructured, parseListingStatus, zillowListResults, type CompStatus } from './comp-extraction.js';
 import { addressStateCode } from './comp-registry.js';
+import { reconcileCompAddress } from './comp-location-reconciliation.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
 // so DOM globals are declared as `any` purely to satisfy the Node typechecker.
@@ -195,8 +196,10 @@ export function normalizeZillowListings(
     const status: CompStatus = parsed === 'unknown' && mode === 'active' ? 'active' : parsed;
     if (mode === 'sold' && status !== 'sold') continue;
     if (mode === 'active' && status === 'sold') continue;
+    const rawAddress = r.address.replace(/\s+/g, ' ').trim();
+    const address = reconcileCompAddress({ capturedAddress: rawAddress, sourceUrl: r.url ?? null })?.postalAddress ?? rawAddress;
     out.push({
-      address: r.address.replace(/\s+/g, ' ').trim(),
+      address,
       price,
       acres,
       pricePerAcre: acres ? Math.round(price / acres) : null,
@@ -454,8 +457,11 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
       const normalized: ZillowLandComp[] = manufactured
         ? normalizeZillowListings(structuredRaw.length ? structuredRaw : raw, null, mode, 'manufactured')
         : structured.length
-        ? structured
-          .map((s) => ({ address: s.address ?? '', price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre, status: s.status === 'unknown' && mode === 'active' ? ('active' as const) : s.status, url: s.url, source: 'Zillow' as const, lat: null, lng: null }))
+        ? structured.map((s) => {
+            const rawAddress = s.address ?? '';
+            const address = reconcileCompAddress({ capturedAddress: rawAddress, sourceUrl: s.url ?? null })?.postalAddress ?? rawAddress;
+            return { address, price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre, status: s.status === 'unknown' && mode === 'active' ? ('active' as const) : s.status, url: s.url, source: 'Zillow' as const, lat: null, lng: null };
+          })
           .filter((c) => c.address && (mode === 'sold' ? c.status === 'sold' : c.status !== 'sold'))
         : normalizeZillowListings(raw, input.subjectAcres ?? null, mode);
       const expectedState = state.toUpperCase();

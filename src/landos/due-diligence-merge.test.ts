@@ -18,7 +18,11 @@ import {
 } from './property-intelligence-snapshot.js';
 
 /** Minimal snapshot for one Deal Card, varying only its diligence items. */
-function snapshotWith(dueDiligence: SnapshotDueDiligenceItem[], sequence: number): PropertyIntelligenceSnapshot {
+function snapshotWith(
+  dueDiligence: SnapshotDueDiligenceItem[],
+  sequence: number,
+  identityOver: Partial<PropertyIntelligenceSnapshot['identity']> = {},
+): PropertyIntelligenceSnapshot {
   return joinPropertyIntelligence({
     dealCardId: 83,
     runId: `pi_dd_${sequence}`,
@@ -42,6 +46,7 @@ function snapshotWith(dueDiligence: SnapshotDueDiligenceItem[], sequence: number
       sourceConfidence: 'high',
       conflicts: [],
       explanation: 'Confirmed.',
+      ...identityOver,
     },
     facts: [],
     governmentRecords: [],
@@ -148,5 +153,44 @@ describe('due-diligence merge — unresolved tiles can still improve', () => {
     expect(merged.dueDiligence.map((entry) => entry.key)).toEqual(
       expect.arrayContaining(['wetlands', 'zoning']),
     );
+  });
+});
+
+// ── Establishing the subject for the first time is not a conflict ──────────
+// Deal 87 / 5170 Hwy 60. The first run never resolved the parcel and retained
+// an address-only read. The rerun resolved it and returned the assessor's own
+// spelling of the same street alongside a real APN — and the promotion guard,
+// with no retained APN to compare against, fell through to a raw string compare,
+// decided "5170 Hwy 60" and "5170 HIGHWAY 60" were different properties, and
+// discarded the only run that had ever identified the subject.
+describe('snapshot promotion — a first parcel identity is not a subject conflict', () => {
+  it('promotes a run that resolves a parcel over a retained address-only read', () => {
+    const retained = snapshotWith([zoningItem()], 1, {
+      state: 'provisional', apn: null, apnVariants: [], county: null,
+      normalizedAddress: '5170 Hwy 60', situs: '5170 Hwy 60',
+    });
+    const incoming = snapshotWith([zoningItem()], 2, {
+      state: 'provisional', apn: '023 003.02', apnVariants: ['023 003.02'],
+      county: 'Hamilton County', normalizedAddress: '5170 HIGHWAY 60', situs: '5170 HIGHWAY 60',
+    });
+
+    const reconciled = reconcilePropertyIntelligenceSnapshot(retained, incoming);
+    expect(reconciled.promotable).toBe(true);
+    expect(reconciled.reason).toBeNull();
+    expect(reconciled.snapshot.identity.apn).toBe('023 003.02');
+  });
+
+  it('still refuses to swap one established parcel for a different one', () => {
+    const retained = snapshotWith([zoningItem()], 1, {
+      apn: '13-116-015-01', apnVariants: ['13-116-015-01'],
+    });
+    const incoming = snapshotWith([zoningItem()], 2, {
+      apn: '023 003.02', apnVariants: ['023 003.02'],
+      normalizedAddress: '9490 Elk Lake Rd', situs: '9490 Elk Lake Rd',
+    });
+
+    const reconciled = reconcilePropertyIntelligenceSnapshot(retained, incoming);
+    expect(reconciled.promotable).toBe(false);
+    expect(reconciled.reason).toContain('conflicts with the retained canonical property');
   });
 });

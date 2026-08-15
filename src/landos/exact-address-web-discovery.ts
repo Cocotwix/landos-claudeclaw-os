@@ -811,7 +811,11 @@ export function extractListingEvidence(input: { url: string; sourceLabel?: strin
     (raw) => raw.trim(),
     (value) => isValidListingFieldValue('mls', value),
   );
-  const photoUrls = [...new Set(Array.from(body.matchAll(/https?:\/\/[^\s"'<>]+?\.(?:jpe?g|png|webp)(?:\?[^\s"'<>]*)?/gi), (match) => match[0]))];
+  // Preserve a useful comparison set, not the provider's entire gallery. The
+  // page order starts with the hero and provider-published gallery media; the
+  // operator carousel contract caps this at four and deduplicates URLs.
+  const photoUrls = [...new Set(Array.from(body.matchAll(/https?:\/\/[^\s"'<>]+?\.(?:jpe?g|png|webp)(?:\?[^\s"'<>]*)?/gi), (match) => match[0]))]
+    .slice(0, 4);
   const REMARK_WORDING = /\b(?:remark|property|parcel|acre|access|driveway|utility|well|septic)\b/i;
   const remarks = allSentences
     .filter((sentence) => REMARK_WORDING.test(sentence))

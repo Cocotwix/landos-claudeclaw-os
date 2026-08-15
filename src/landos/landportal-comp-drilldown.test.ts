@@ -7,6 +7,9 @@ import {
   planCompDrilldown,
   planLandPortalCompEnrichment,
   reconcileLandPortalCompEnrichment,
+  parseLandPortalSimilars,
+  reconcileSimilarToRetainedComp,
+  landPortalCompLocationUpdate,
   type LandPortalSidebarComp,
 } from './landportal-comp-drilldown.js';
 import { compDistanceMiles, resolveGeographicTier } from './acreage-router.js';
@@ -111,5 +114,95 @@ describe('multi-source LandPortal comp enrichment', () => {
       price: 625_000, status: 'unknown', description: 'Cabin residence with well and septic',
     }]);
     expect(rows[0]).toMatchObject({ lane: 'unknown', priceKind: 'unknown', compClass: 'residential' });
+  });
+});
+
+// ── Comparable sidebar payload ───────────────────────────────────────────────
+
+const similarRow = {
+  apn: '12-004-006-00', fips: '26055', propertyid: 68276727, mls_status: 'sold',
+  new_date: '2025-03-21', mls_price: 400000, mls_priceperacre: 10000, area_acres: 40,
+  situszip5: '49696', municipality: 'UNION TOWNSHIP',
+  situslatitude: 44.67387081966072, situslongitude: -85.4093255027183,
+  distance: 10.238725134617095,
+};
+const subjectPoint = { lat: 44.822439610896, lng: -85.404821349666 };
+const retainedRow = { apn: '12-004-006-00', price: 400000, acres: 40, saleOrListDate: '2025-03-21' };
+
+describe('parseLandPortalSimilars', () => {
+  it('reads the URL-encoded attribute, a JSON string, and a parsed array alike', () => {
+    const json = JSON.stringify([similarRow]);
+    for (const input of [encodeURIComponent(json), json, [similarRow]]) {
+      const [comp] = parseLandPortalSimilars(input);
+      expect(comp.detail).toMatchObject({ lat: 44.67387081966072, lng: -85.4093255027183, zip: '49696', apn: '12-004-006-00' });
+      expect(comp.statedDistanceMiles).toBeCloseTo(10.2387, 3);
+    }
+  });
+  it('states what it read, and never invents an address or a city from the municipality', () => {
+    const [comp] = parseLandPortalSimilars([similarRow]);
+    expect(comp.detail.address).toBeNull();
+    expect(comp.detail.city).toBeNull();
+    expect(comp.evidenceLine).toMatch(/situs coordinates 44\.673871, -85\.409326/);
+    expect(comp.evidenceLine).toMatch(/municipality UNION TOWNSHIP/);
+  });
+  it('drops a row with no parcel number rather than binding evidence to an unidentified parcel', () => {
+    expect(parseLandPortalSimilars([{ ...similarRow, apn: null }])).toEqual([]);
+  });
+  it('refuses a null-island coordinate as a location', () => {
+    const [comp] = parseLandPortalSimilars([{ ...similarRow, situslatitude: 0, situslongitude: 0 }]);
+    expect(comp.detail.lat).toBeNull();
+    expect(comp.detail.lng).toBeNull();
+  });
+  it('survives junk input without throwing', () => {
+    for (const input of ['', 'not json', '%%%', null, 42, {}]) expect(parseLandPortalSimilars(input)).toEqual([]);
+  });
+});
+
+describe('reconcileSimilarToRetainedComp', () => {
+  const [similar] = parseLandPortalSimilars([similarRow]);
+  it('binds on APN plus corroborating record evidence', () => {
+    const result = reconcileSimilarToRetainedComp(similar, retainedRow);
+    expect(result.matched).toBe(true);
+    expect(result.matchedOn).toEqual(['APN', 'acreage', 'price', 'sale date']);
+  });
+  it('refuses a different parcel outright', () => {
+    expect(reconcileSimilarToRetainedComp(similar, { ...retainedRow, apn: '03-104-001-00' }).matched).toBe(false);
+  });
+  it('refuses a matching APN whose retained transaction disagrees', () => {
+    const result = reconcileSimilarToRetainedComp(similar, { ...retainedRow, price: 900000 });
+    expect(result.matched).toBe(false);
+    expect(result.reason).toMatch(/price differs/);
+  });
+  it('stays unresolved when the APN matches but nothing corroborates it', () => {
+    const result = reconcileSimilarToRetainedComp(similar, { apn: '12-004-006-00' });
+    expect(result.matched).toBe(false);
+    expect(result.reason).toMatch(/no acreage, price, or sale date/);
+  });
+  it('refuses when either side has no parcel number', () => {
+    expect(reconcileSimilarToRetainedComp(similar, { ...retainedRow, apn: '' }).matched).toBe(false);
+  });
+});
+
+describe('landPortalCompLocationUpdate', () => {
+  const [similar] = parseLandPortalSimilars([similarRow]);
+  it('places the comp from LandPortal coordinates and measures distance from the retained subject point', () => {
+    const update = landPortalCompLocationUpdate(similar, reconcileSimilarToRetainedComp(similar, retainedRow), subjectPoint)!;
+    expect(update.located).toBe(true);
+    expect(update.distanceMiles).toBe(compDistanceMiles(subjectPoint, { lat: similarRow.situslatitude, lng: similarRow.situslongitude }));
+    expect(update.tierId).toBe(resolveGeographicTier(update.distanceMiles).id);
+    expect(update.provenance).toMatch(/Location from LandPortal/);
+    expect(update.provenance).toMatch(/nothing was geocoded/);
+  });
+  it('states the remaining evidence gap even when it is mapped', () => {
+    const update = landPortalCompLocationUpdate(similar, reconcileSimilarToRetainedComp(similar, retainedRow), subjectPoint)!;
+    expect(update.remainingGap).toMatch(/No street address/);
+  });
+  it('leaves an uncoordinated parcel unplaced instead of approximating it', () => {
+    const [noPoint] = parseLandPortalSimilars([{ ...similarRow, situslatitude: null, situslongitude: null }]);
+    const update = landPortalCompLocationUpdate(noPoint, reconcileSimilarToRetainedComp(noPoint, retainedRow), subjectPoint)!;
+    expect(update).toMatchObject({ located: false, lat: null, lng: null, distanceMiles: null, tierId: 'distance_unresolved' });
+  });
+  it('produces nothing at all for an unreconciled row', () => {
+    expect(landPortalCompLocationUpdate(similar, reconcileSimilarToRetainedComp(similar, { apn: '99-99-99' }), subjectPoint)).toBeNull();
   });
 });

@@ -29,6 +29,23 @@ describe('assessOverviewFraming', () => {
     expect(assessOverviewFraming({ ...good, obstructions: ['sidebar'] }).reason).toMatch(/sidebar/i);
   });
   it('rejects default 3D active view', () => expect(assessOverviewFraming({ ...good, active_view: 'default_3d' }).accepted).toBe(false));
+  // Full-boundary containment rule (2026-08-14, proven live on the elongated
+  // 40.5 ac Hwy 60 strip): a capture whose boundary leaves the frame is
+  // clipped, whatever the parcel shape. An older handback that never measured
+  // boundary_fully_in_frame keeps its boundary_visible-governed verdict.
+  it('rejects a partially out-of-frame boundary for any parcel shape', () => {
+    expect(assessOverviewFraming({ ...good, boundary_fully_in_frame: false }).reason).toMatch(/cut off by a frame edge/i);
+    expect(assessOverviewFraming({ ...good, boundary_fully_in_frame: true }).accepted).toBe(true);
+    expect(assessOverviewFraming({ ...good }).accepted).toBe(true);
+  });
+  it('demands full containment with padding for long, narrow, irregular, large and small parcels alike', () => {
+    for (const acres of [0.4, 1, 40.5, 150, 900]) {
+      const plan = planOverviewCapture({ subjectAcres: acres });
+      expect(plan.framingIntent).toMatch(/ENTIRE subject boundary/);
+      expect(plan.framingIntent).toMatch(/long, narrow, irregular/);
+      expect(plan.mustShow[0]).toMatch(/fully inside the frame with padding/);
+    }
+  });
 });
 
 describe('selectOverviewVisual', () => {

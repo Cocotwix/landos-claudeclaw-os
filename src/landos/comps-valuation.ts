@@ -44,14 +44,21 @@ import {
 } from './acreage-router.js';
 import { isListingPhotoUrl, resolveCompVisual, tallyCompVisuals, type CompVisual, type CompVisualCounts } from './comp-visual.js';
 import { parseListingDetail } from './comp-listing-store.js';
+import type { PersistedCompListingDetail } from './comp-listing-store.js';
 import {
   buildCompListingProjection, type CompListingProjection, type CompTransactionKind,
 } from './comp-listing-projection.js';
 import { landPortalSaleStatus } from './deal-intelligence-comps.js';
-import { inferSubjectPropertyType } from './comparable-intelligence.js';
 import { subjectParcelMatch, type SubjectParcelIdentity } from './comp-subject-identity.js';
+import { inferSubjectPropertyType } from './comparable-intelligence.js';
 import type { CompSaleVerification } from './comp-transaction-price.js';
 import { addressStateCode, normalizeCompAddress } from './comp-registry.js';
+import {
+  compAddressKey, reconcileCompAddress, reconcileRetainedCompLocation,
+  type RetainedCompLocation, type RetainedGeocodeHit,
+} from './comp-location-reconciliation.js';
+import { collectMarketLeads, type CompMarketLead } from './comp-market-leads.js';
+import { buildParcelFactSheet } from './landportal-facts.js';
 
 export type WorkspaceCompCategory =
   | 'accepted_closed_sale'
@@ -151,6 +158,10 @@ export interface WorkspaceComp {
   locationSource: string | null;
   locationMethod: 'provider_map_point' | 'address_geocode' | 'none';
   locationResolvedAtIso: string | null;
+  /** The postal address this record's own capture states, once reconciled. */
+  locationAddress: string | null;
+  /** Why this record is not on the map, in the operator's words. Null when it is. */
+  locationUnresolvedReason: string | null;
   statusLabel: string;
   priceKind: 'sale' | 'list' | 'unknown';
   price: number | null;
@@ -225,9 +236,6 @@ export interface CompsValuationSummary {
   statusReason: string;
   confidence: 'high' | 'moderate' | 'low' | 'unavailable';
   confidenceFactors: string[];
-  /** Proximity-first search band actually used, with disclosure. `withinInitial`
-   *  and `withinExpansion` are counted from resolved coordinates, so the
-   *  narrative can never claim an expansion the evidence contradicts. */
   radius: {
     initialMiles: number;
     usedMiles: number | null;
@@ -238,7 +246,6 @@ export interface CompsValuationSummary {
     unresolved: number;
     note: string;
   };
-  /** Distance range across the supporting sales with resolved locations. */
   distanceRange: { minMiles: number; maxMiles: number } | null;
 }
 export interface ImprovementValuationComp {
@@ -311,6 +318,23 @@ export interface SubjectImprovementRead {
   wholePropertyNote: string | null;
 }
 
+/**
+ * LandPortal's published estimate for the subject parcel.
+ *
+ * `priceLabel` and `perAcreLabel` are LandPortal's own strings, untouched. The
+ * numeric fields are parsed only so the view can show the gap against the
+ * LandOS land value; a figure LandOS could not parse keeps its label and a null
+ * number rather than being rounded into something LandPortal never said.
+ */
+export interface LandPortalEstimate {
+  priceLabel: string | null;
+  perAcreLabel: string | null;
+  price: number | null;
+  perAcre: number | null;
+  source: string;
+  note: string;
+}
+
 export interface CompsValuationView {
   dealCardId: number;
   propertyCardId: number | null;
@@ -338,6 +362,20 @@ export interface CompsValuationView {
   };
   improvementValuation: ImprovementValuation;
   landPortal: { sidebarCount: number; showOnMapCount: number; mergedUniqueCount: number };
+  /**
+   * LandPortal's OWN estimate for the subject, reproduced exactly as LandPortal
+   * publishes it. It is a provider opinion, not a LandOS conclusion: it never
+   * enters `summary`, `cleaned`, `quickFlip` or any acquisition level, and it is
+   * carried here so the operator can read it beside the LandOS land value and
+   * see the two disagree when they do.
+   */
+  lpEstimate: LandPortalEstimate | null;
+  /**
+   * Area and market statements read out of provider listing descriptions.
+   * Leads about the AREA, never facts about the subject — see
+   * `comp-market-leads.ts`.
+   */
+  marketLeads: CompMarketLead[];
   explanation: CompsValuationExplanation;
   /** Cleaned FMV reconciliation over the documented cleaned closed-sale set. */
   cleaned: CleanedValuation;
@@ -612,6 +650,8 @@ const GEOCODE_PROVIDER_TEXT: Record<string, string> = {
 interface LocationLookup {
   /** Read-only geocode-cache lookup by normalized full address. */
   get(address: string | null | undefined): { lat: number; lng: number; provider: string; createdAt: number | null } | null;
+  /** True when a location lookup for this address already ran and found none. */
+  attempted(address: string | null | undefined): boolean;
 }
 
 interface ResolvedLocation {
@@ -621,40 +661,92 @@ interface ResolvedLocation {
   source: string | null;
   method: 'provider_map_point' | 'address_geocode' | 'none';
   resolvedAtIso: string | null;
+  /** The postal address this record's own capture states, once reconciled. */
+  postalAddress: string | null;
+  /** Why it stays unplaced, in the operator's words. Null when placed. */
+  unresolvedReason: string | null;
 }
 
-const UNRESOLVED_LOCATION: ResolvedLocation = { lat: null, lng: null, resolved: false, source: null, method: 'none', resolvedAtIso: null };
+const UNRESOLVED_LOCATION: ResolvedLocation = {
+  lat: null, lng: null, resolved: false, source: null, method: 'none', resolvedAtIso: null,
+  postalAddress: null,
+  unresolvedReason: 'No address, parcel number, or coordinate was retained for this record, so there is nothing legitimate to place it with.',
+};
+
+const geocodeSourceText = (provider: string): string =>
+  GEOCODE_PROVIDER_TEXT[provider] ?? `${provider} address geocode`;
+
+/**
+ * Retained-geocode reader for the reconciliation module. It is keyed by the
+ * RECONCILED postal address, which is the whole point: a provider listing card
+ * captured as "482 sqftHouse for sale12344 SW Torch Lake Dr, …" was never going
+ * to match a geocode of a real address, so every such record used to be declared
+ * unplaceable while its address sat in the capture.
+ */
+function retainedGeocodeReader(lookup: LocationLookup): (address: string) => RetainedGeocodeHit | null {
+  return (address) => {
+    const hit = lookup.get(address);
+    if (!hit) return null;
+    return {
+      lat: hit.lat,
+      lng: hit.lng,
+      source: geocodeSourceText(hit.provider),
+      resolvedAtIso: hit.createdAt ? new Date(hit.createdAt * 1000).toISOString() : null,
+    };
+  };
+}
+
+function toResolvedLocation(
+  location: RetainedCompLocation,
+  opts: { geocodeMatchedRetainedPoint?: boolean; fallbackResolvedAtIso?: string | null } = {},
+): ResolvedLocation {
+  if (location.status !== 'mapped') {
+    return { ...UNRESOLVED_LOCATION, postalAddress: location.postalAddress, unresolvedReason: location.unresolvedReason };
+  }
+  return {
+    lat: location.lat,
+    lng: location.lng,
+    resolved: true,
+    source: location.source,
+    method: location.basis === 'reconciled_address_geocode' || opts.geocodeMatchedRetainedPoint
+      ? 'address_geocode'
+      : 'provider_map_point',
+    resolvedAtIso: location.resolvedAtIso ?? opts.fallbackResolvedAtIso ?? null,
+    postalAddress: location.postalAddress,
+    unresolvedReason: null,
+  };
+}
 
 /** Resolve a persisted comp's location: provider/persisted coordinates first, then the retained geocode cache. Never guesses. */
 function locationForPersisted(row: CompRow, lookup: LocationLookup): ResolvedLocation {
-  const cached = lookup.get(row.address_desc);
-  if (typeof row.lat === 'number' && typeof row.lng === 'number') {
-    const fromGeocode = cached && Math.abs(cached.lat - row.lat) < 1e-6 && Math.abs(cached.lng - row.lng) < 1e-6;
-    return {
-      lat: row.lat, lng: row.lng, resolved: true,
-      source: fromGeocode
-        ? (GEOCODE_PROVIDER_TEXT[cached!.provider] ?? `${cached!.provider} address geocode`)
-        : `${row.source_label} map point`,
-      method: fromGeocode ? 'address_geocode' : 'provider_map_point',
-      resolvedAtIso: fromGeocode && cached!.createdAt
-        ? new Date(cached!.createdAt * 1000).toISOString()
-        : (row.retrieved_at || null),
-    };
-  }
-  if (cached) {
-    return {
-      lat: cached.lat, lng: cached.lng, resolved: true,
-      source: GEOCODE_PROVIDER_TEXT[cached.provider] ?? `${cached.provider} address geocode`,
-      method: 'address_geocode',
-      resolvedAtIso: cached.createdAt ? new Date(cached.createdAt * 1000).toISOString() : null,
-    };
-  }
-  return UNRESOLVED_LOCATION;
+  const reconciled = reconcileCompAddress({ capturedAddress: row.address_desc, sourceUrl: row.source_url });
+  const cached = reconciled ? lookup.get(reconciled.postalAddress) : null;
+  const geocodeMatchedRetainedPoint = !!cached && typeof row.lat === 'number' && typeof row.lng === 'number'
+    && Math.abs(cached.lat - row.lat) < 1e-6 && Math.abs(cached.lng - row.lng) < 1e-6;
+  const location = reconcileRetainedCompLocation({
+    capturedAddress: row.address_desc || null,
+    sourceUrl: row.source_url || null,
+    lat: row.lat,
+    lng: row.lng,
+    retainedCoordinateSource: geocodeMatchedRetainedPoint
+      ? geocodeSourceText(cached!.provider)
+      : `${row.source_label} map point`,
+    apn: row.apn || null,
+    state: row.state || null,
+    providerLabel: row.source_label,
+  }, { byAddress: retainedGeocodeReader(lookup), addressAlreadyAttempted: (a) => lookup.attempted(a) });
+  return toResolvedLocation(location, {
+    geocodeMatchedRetainedPoint,
+    fallbackResolvedAtIso: geocodeMatchedRetainedPoint && cached!.createdAt
+      ? new Date(cached!.createdAt * 1000).toISOString()
+      : (row.retrieved_at || null),
+  });
 }
 
 interface ClassifyContext {
   subjectAcres: number | null;
   subjectCounty: string | null;
+  subjectIdentity: SubjectParcelIdentity;
   subjectPoint: { lat: number; lng: number } | null;
   retainedInspection: LandPortalComparableRecord[];
   locations: LocationLookup;
@@ -713,7 +805,6 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
     buildingSqft,
   });
   const improved = improvedDetection.improved;
-  subjectIdentity: SubjectParcelIdentity;
   const retainedDateIso = row.sale_or_list_date || null;
   const landPortalStatus = landPortalSaleStatus({
     source: row.source_label,
@@ -767,7 +858,7 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
   } else if (improved && (priceKind === 'sale' || priceKind === 'list')) {
     category = 'improved_context';
     reason = priceKind === 'sale'
-      ? `Completed sale of an improved property (${improvedDetection.evidence ?? 'structure signal'}). The sale price includes structure value, so it cannot support vacant-land valuation without a separately established land component.`
+      ? `Completed sale of an improved property (${improvedDetection.evidence ?? 'structure signal'}). The full sold price is retained as sold $/sqft evidence; no land component is estimated or removed.`
       : `Active listing of an improved property (${improvedDetection.evidence ?? 'structure signal'}): retained as improved-property market context. Its asking price includes structure value and never enters the vacant-land sold-price median.`;
   } else if (priceKind === 'sale' && price != null && acres != null && UNVERIFIED_CONTEXT_CLASSIFICATION.test(row.classification)) {
     // A verified closed sale carrying an OPEN, unproven concern (suspected
@@ -906,6 +997,8 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
     locationSource: location.source,
     locationMethod: location.method,
     locationResolvedAtIso: location.resolvedAtIso,
+    locationAddress: location.postalAddress,
+    locationUnresolvedReason: location.unresolvedReason,
     saleVerification,
     statusLabel: category === 'accepted_closed_sale' || category === 'candidate_closed_sale'
       ? (saleVerification === 'source_stated' ? 'Source-stated sale — unverified' : 'Closed sale')
@@ -947,12 +1040,64 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
     listing,
   };
 }
-
 interface EvidenceCompValue {
   address?: unknown; apn?: unknown; county?: unknown; state?: unknown; price?: unknown; acres?: unknown; pricePerAcre?: unknown; url?: unknown;
   status?: unknown; saleDate?: unknown; listingDate?: unknown; daysOnMarket?: unknown; thumbnailUrl?: unknown; photoUrls?: unknown;
-  /** Structure signals when the source published them; absent on most rows. */
   propertyType?: unknown; description?: unknown; buildingSqft?: unknown; homeSizeSqft?: unknown; yearBuilt?: unknown;
+  streetAddress?: unknown; currentPrice?: unknown; originalListPrice?: unknown; listingHistory?: unknown;
+  listingStatus?: unknown; features?: unknown; utilities?: unknown; beds?: unknown; baths?: unknown;
+  notes?: unknown; caveat?: unknown; discrepancies?: unknown;
+}
+
+function detailFromResearchEvidence(value: EvidenceCompValue, sourceUrl: string | null): PersistedCompListingDetail | null {
+  const address = (typeof value.streetAddress === 'string' ? value.streetAddress : typeof value.address === 'string' ? value.address : null)?.trim() || null;
+  const photos = Array.isArray(value.photoUrls)
+    ? [...new Set(value.photoUrls.filter((url): url is string => typeof url === 'string' && /^https?:\/\//i.test(url)))].slice(0, 4)
+    : [];
+  const history = Array.isArray(value.listingHistory)
+    ? value.listingHistory.filter((row): row is { date: string | null; event: string; price: number | null } =>
+      !!row && typeof row === 'object' && typeof row.event === 'string')
+      .map((row) => ({ dateIso: row.date ?? '', kind: /sold/i.test(row.event) ? 'sold' as const : /cut|price/i.test(row.event) ? 'price_change' as const : 'listed' as const, price: row.price ?? null, label: row.event, source: 'Zillow provider page' }))
+      .filter((row) => !!row.dateIso)
+    : [];
+  const providerFacts = address || typeof value.acres === 'number' || typeof value.propertyType === 'string'
+    ? {
+      address,
+      acreage: typeof value.acres === 'number' ? value.acres : null,
+      improvementType: typeof value.propertyType === 'string' ? value.propertyType : null,
+      buildingSqft: typeof value.buildingSqft === 'number' ? value.buildingSqft : typeof value.homeSizeSqft === 'number' ? value.homeSizeSqft : null,
+      beds: typeof value.beds === 'number' ? value.beds : null,
+      baths: typeof value.baths === 'number' ? value.baths : null,
+      yearBuilt: typeof value.yearBuilt === 'number' ? value.yearBuilt : null,
+      utilities: Array.isArray(value.utilities) ? value.utilities.filter((x): x is string => typeof x === 'string') : [],
+      accessClues: [],
+      features: Array.isArray(value.features) ? value.features.filter((x): x is string => typeof x === 'string') : [],
+    }
+    : undefined;
+  if (!sourceUrl || (!address && !photos.length && !history.length && !providerFacts)) return null;
+  return {
+    compId: 0,
+    provider: 'Zillow',
+    sourceUrl,
+    capturedAtIso: new Date().toISOString(),
+    image: photos[0] ? {
+      url: photos[0], label: 'Zillow listing photo', provenance: 'listing_photo', tier: 'hero', context: 'hero',
+      isOriginalListingImage: true, sourceProperty: address, reconciledOn: ['canonical Zillow exact-address revisit'],
+    } : null,
+    photos: photos.map((url, index) => ({
+      url, sequence: index + 1, label: 'Zillow listing photo', provenance: 'listing_photo', context: index === 0 ? 'hero' as const : 'gallery' as const, isOriginalListingImage: true,
+    })),
+    photoCount: photos.length,
+    events: history,
+    unusableRows: [],
+    refusedImages: [],
+    sourceDescription: typeof value.description === 'string' ? value.description : null,
+    status: typeof value.listingStatus === 'string' ? value.listingStatus : null,
+    limitation: null,
+    reconciliation: { matched: true, matchedOn: ['canonical Zillow exact-address revisit'], mismatches: [], note: 'Reconciled to the same Zillow provider URL and postal address.' },
+    propertyFacts: providerFacts,
+    sourcePages: [{ provider: 'Zillow', url: sourceUrl }],
+  };
 }
 
 /** Provider comp evidence retained in the research record but not persisted in landos_comp. */
@@ -978,35 +1123,42 @@ function classifyEvidenceComp(
   // status alone used to decide the lane and every marketplace house listing
   // landed in active vacant-land competition. The row's own text is the only
   // structure signal available here, and it is enough.
+  const rawAddress = typeof value.address === 'string' ? value.address : null;
+  const address = rawAddress
+    ? (reconcileCompAddress({ capturedAddress: rawAddress, sourceUrl })?.postalAddress ?? rawAddress.replace(/\s+/g, ' ').trim())
+    : null;
   const evidenceImproved = detectImprovedProperty({
     propertyClass: typeof value.propertyType === 'string' ? value.propertyType : null,
-    addressDesc: typeof value.address === 'string' ? value.address : null,
+    addressDesc: rawAddress,
     descriptionText: typeof value.description === 'string' ? value.description : null,
     buildingSqft: evidenceBuildingSqft,
   });
   const category: WorkspaceCompCategory = evidenceImproved.improved
     ? 'improved_context'
     : isActive ? 'active_competition' : isSold ? 'context_only' : 'asking_reference';
+  const caveatParts = [value.notes, value.caveat, value.discrepancies]
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => item.trim());
+  const caveatText = caveatParts.length ? ` Provider caveat: ${caveatParts.join(' | ')}` : '';
   const reason = evidenceImproved.improved
-    ? `Improved property retained from ${source} as improved-market context (${evidenceImproved.evidence}). Its ${isActive ? 'asking' : 'stated'} price includes structure value, so it is never vacant-land competition and never enters the vacant-land sold-price median.`
+    ? isSold
+      ? `Sold/closed improved-property evidence retained from ${source} (${evidenceImproved.evidence}); sold price is used directly for sold $/sqft and no land component is estimated.${caveatText}`
+      : `Active improved-property context retained from ${source} (${evidenceImproved.evidence}); asking price never enters sold-improved or vacant-land medians.${caveatText}`
     : isActive
-      ? `Active listing retained from ${source}: current competition context${price != null ? ` at an asking price of ${money(price)}` : ''}. An asking price does not establish fair market value.${acres == null ? ' The source did not publish acreage.' : ''}`
+      ? `Active listing retained from ${source}: current competition context${price != null ? ` at an asking price of ${money(price)}` : ''}. An asking price does not establish fair market value.${acres == null ? ' The source did not publish acreage.' : ''}${caveatText}`
       : isSold
-        ? `Sold record retained from ${source} research evidence only; it has not been promoted into the canonical comp registry, so it cannot support valuation.`
-        : `Priced reference retained from ${source} without a stated transaction status.`;
-  const address = typeof value.address === 'string' && value.address ? value.address : null;
+        ? `Sold record retained from ${source} research evidence only; it has not been promoted into the sold-improved or canonical vacant-land valuation set.${caveatText}`
+        : `Priced reference retained from ${source} without a stated transaction status.${caveatText}`;
   const evidenceApn = typeof value.apn === 'string' && value.apn.trim() ? value.apn.trim() : null;
   const evidenceCounty = typeof value.county === 'string' && value.county.trim() ? value.county.trim() : null;
   const evidenceState = typeof value.state === 'string' && value.state.trim() ? value.state.trim() : addressStateCode(address);
-  const cached = ctx.locations.get(address);
-  const location: ResolvedLocation = cached
-    ? {
-        lat: cached.lat, lng: cached.lng, resolved: true,
-        source: GEOCODE_PROVIDER_TEXT[cached.provider] ?? `${cached.provider} address geocode`,
-        method: 'address_geocode',
-        resolvedAtIso: cached.createdAt ? new Date(cached.createdAt * 1000).toISOString() : null,
-      }
-    : UNRESOLVED_LOCATION;
+  const location: ResolvedLocation = toResolvedLocation(reconcileRetainedCompLocation({
+    capturedAddress: address,
+    sourceUrl,
+    apn: evidenceApn,
+    state: evidenceState,
+    providerLabel: source,
+  }, { byAddress: retainedGeocodeReader(ctx.locations), addressAlreadyAttempted: (a) => ctx.locations.attempted(a) }));
   const distance = distanceFromSubject(ctx, location);
   const missing: string[] = [];
   if (acres == null) missing.push('acreage');
@@ -1016,10 +1168,11 @@ function classifyEvidenceComp(
     : typeof value.listingDate === 'string' && value.listingDate ? value.listingDate : null;
   const thumbnailUrl = typeof value.thumbnailUrl === 'string' && value.thumbnailUrl ? value.thumbnailUrl : null;
   const photoUrls = Array.isArray(value.photoUrls)
-    ? [...new Set(value.photoUrls.filter((url): url is string => typeof url === 'string' && /^https?:\/\//i.test(url)))]
+    ? [...new Set(value.photoUrls.filter((url): url is string => typeof url === 'string' && /^https?:\/\//i.test(url)))].slice(0, 4)
     : [];
+  const primaryProviderPhoto = thumbnailUrl ?? photoUrls[0] ?? null;
   const visual = resolveCompVisual({
-    thumbnailUrl,
+    thumbnailUrl: primaryProviderPhoto,
     photoUrls,
     sourceLabel: source,
     lat: location.lat, lng: location.lng,
@@ -1027,11 +1180,11 @@ function classifyEvidenceComp(
     addressOrApn: address,
   });
   const transactionKind: CompTransactionKind = isSold ? 'closed' : isActive ? 'active' : 'context';
-  // Research-evidence records have no landos_comp row, so there is no persisted
-  // provider capture for them. The projection still renders — it simply states
-  // that the provider page was never revisited rather than going blank.
+  // Canonical exact-address evidence is the provider-page revisit for this
+  // exact URL. Project it into the same listing-detail shape as persisted comps
+  // instead of claiming the provider page was never revisited.
   const listing = buildCompListingProjection({
-    detail: null,
+    detail: detailFromResearchEvidence(value, sourceUrl),
     transactionKind,
     address,
     apn: evidenceApn,
@@ -1087,6 +1240,8 @@ function classifyEvidenceComp(
     locationSource: location.source,
     locationMethod: location.method,
     locationResolvedAtIso: location.resolvedAtIso,
+    locationAddress: location.postalAddress,
+    locationUnresolvedReason: location.unresolvedReason,
     statusLabel: isActive ? 'Active listing' : isSold ? 'Sold (evidence only)' : 'Reference',
     priceKind: isSold ? 'sale' : 'list',
     price,
@@ -1097,7 +1252,7 @@ function classifyEvidenceComp(
     soldBy: null,
     buildingSqft: evidenceBuildingSqft,
     propertyClass: evidenceImproved.improved ? 'improved' : 'unknown',
-    thumbnailUrl,
+    thumbnailUrl: primaryProviderPhoto,
     photoUrls: listing.photos.items.map((photo) => photo.url),
     visual,
     acresDeltaFromSubject: acres != null && ctx.subjectAcres != null
@@ -1777,6 +1932,39 @@ function sameWorkspaceProperty(a: WorkspaceComp, b: WorkspaceComp): boolean {
   return !!a.sourceUrl && !!b.sourceUrl && a.sourceUrl.replace(/\/+$/, '').toLowerCase() === b.sourceUrl.replace(/\/+$/, '').toLowerCase();
 }
 
+/**
+ * Read LandPortal's published subject estimate off the retained parcel facts.
+ *
+ * LandPortal publishes these as formatted strings ("$265,375", "$6,553/ac").
+ * Both are carried through untouched; the parsed numbers exist only so the view
+ * can state the gap against the LandOS land value. A string LandOS cannot parse
+ * keeps its label with a null number rather than being coerced into a figure
+ * LandPortal never printed.
+ */
+function readLandPortalEstimate(
+  inspection: Parameters<typeof inferSubjectPropertyType>[0],
+): LandPortalEstimate | null {
+  const facts = inspection?.parcelFacts;
+  if (!facts) return null;
+  const valuation = buildParcelFactSheet(facts).valuation;
+  const priceLabel = valuation.lpEstimatePrice?.trim() || null;
+  const perAcreLabel = valuation.lpEstimatePpa?.trim() || null;
+  if (!priceLabel && !perAcreLabel) return null;
+  const num = (value: string | null): number | null => {
+    if (!value) return null;
+    const parsed = Number(value.replace(/[^0-9.]/g, ''));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  return {
+    priceLabel,
+    perAcreLabel,
+    price: num(priceLabel),
+    perAcre: num(perAcreLabel),
+    source: 'LandPortal parcel panel',
+    note: 'LandPortal’s own automated estimate, shown exactly as LandPortal publishes it. It is provider context and is never an input to the LandOS land value, the cleaned FMV, or any acquisition level.',
+  };
+}
+
 /** One physical property once, with every provider and photograph attached. */
 function dedupeWorkspaceComps(input: WorkspaceComp[]): { comps: WorkspaceComp[]; duplicatesMerged: number } {
   const kept: WorkspaceComp[] = [];
@@ -1810,13 +1998,89 @@ function dedupeWorkspaceComps(input: WorkspaceComp[]): { comps: WorkspaceComp[];
       },
       evidence: {
         ...winner.listing.evidence,
+        apn: winner.listing.evidence.apn ?? loser.listing?.evidence.apn ?? null,
         sourcePages: [...winner.listing.evidence.sourcePages, ...(loser.listing?.evidence.sourcePages ?? [])]
           .filter((page, pageIndex, all) => all.findIndex((candidate) => candidate.url === page.url) === pageIndex),
       },
+      // The write-up is often the ONLY place the area is described, and it is
+      // routinely the loser's provider that carries it. Keeping the winner's
+      // empty description here is what threw away the sewer/road/restriction
+      // material this merge exists to preserve.
+      description: winner.listing.description.source
+        ? winner.listing.description
+        : { ...winner.listing.description, source: loser.listing?.description.source ?? null },
+      // Per-field, because providers publish disjoint subsets: Redfin the
+      // beds/baths, Zillow the year built, Realtor the utilities.
+      characteristics: (() => {
+        const w = winner.listing!.characteristics;
+        const l = loser.listing?.characteristics;
+        if (!l) return w;
+        const union = (a: string[], b: string[]): string[] => [...new Set([...a, ...b])];
+        return {
+          ...w,
+          address: w.address ?? l.address,
+          acreage: w.acreage ?? l.acreage,
+          improvementType: w.improvementType ?? l.improvementType,
+          buildingSqft: w.buildingSqft ?? l.buildingSqft,
+          beds: w.beds ?? l.beds,
+          baths: w.baths ?? l.baths,
+          yearBuilt: w.yearBuilt ?? l.yearBuilt,
+          utilities: union(w.utilities, l.utilities),
+          accessClues: union(w.accessClues, l.accessClues),
+          features: union(w.features, l.features),
+          provenance: w.provenance === 'listing_reported' || l.provenance === 'listing_reported'
+            ? 'listing_reported' as const
+            : w.provenance,
+        };
+      })(),
+      // One provider's history frequently starts where another's stops. Rows
+      // are keyed on date + kind so a shared event is not listed twice.
+      timeline: (() => {
+        const rows = [...winner.listing!.timeline, ...(loser.listing?.timeline ?? [])];
+        const seen = new Set<string>();
+        return rows.filter((entry) => {
+          const key = `${entry.dateIso ?? ''}|${entry.kind}|${entry.price ?? ''}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      })(),
+      // Market time is a computed narrative over one provider's history; the
+      // halves are never spliced. Take the loser's whole record only when the
+      // winner genuinely has no dated history to speak from.
+      marketTime: winner.listing.timeline.length || !loser.listing?.timeline.length
+        ? winner.listing.marketTime
+        : loser.listing.marketTime,
     } : loser.listing;
+    // ── DEDUPE ENRICHES; IT NEVER DISCARDS ────────────────────────────────
+    // These two rows are ONE property seen through two providers. The loser's
+    // observations are not redundant copies — Realtor may carry the write-up,
+    // Zillow the photos, Redfin the beds/baths, LandPortal the APN — so every
+    // field the winner does not have is taken from the loser rather than
+    // dropped with the row. A stated value only ever fills a blank; it never
+    // overwrites something the winner already established, because the winner
+    // outranked the loser for a reason.
+    const fill = <K extends keyof WorkspaceComp>(key: K): WorkspaceComp[K] =>
+      (winner[key] ?? loser[key]) as WorkspaceComp[K];
+    // ── THE PRICED PAIR IS ATOMIC ─────────────────────────────────────────
+    // Price, acreage and the rate between them are ONE observation and are
+    // taken from ONE source or not at all. Filling them field by field is how a
+    // record ends up carrying this provider's price over that provider's
+    // acreage — a dollars-per-acre figure neither source ever stated, which is
+    // the same defect `buildLandPortalCompPersistence` refuses upstream. Two
+    // providers legitimately disagree on area (MLS acreage vs assessor
+    // acreage), so this is a live hazard on a real merge, not a theoretical
+    // one. The winner keeps its pair whenever it stated either half.
+    const priced = winner.price != null || winner.acres != null ? winner : loser;
     const improved = winner.propertyClass === 'improved' || loser.propertyClass === 'improved'
       || winner.category === 'improved_context' || loser.category === 'improved_context';
     const thumbnailUrl = photos[0] ?? winner.thumbnailUrl ?? loser.thumbnailUrl;
+    // Two observations of ONE property: the merged record keeps whichever side
+    // actually resolved a location. Taking the winner's blindly threw away a
+    // real retained point whenever the higher-ranked source had none, which is
+    // the same "decided it cannot be placed while the evidence was in hand"
+    // failure this path exists to prevent.
+    const located = winner.locationResolved ? winner : loser.locationResolved ? loser : winner;
     const visual = resolveCompVisual({
       thumbnailUrl,
       photoUrls: photos,
@@ -1825,9 +2089,9 @@ function dedupeWorkspaceComps(input: WorkspaceComp[]): { comps: WorkspaceComp[];
         ? winner.visual.url
         : loser.visual.provenance === 'parcel_aerial' || loser.visual.provenance === 'satellite_fallback' ? loser.visual.url : null,
       hasParcelGeometry: winner.visual.provenance === 'parcel_aerial' || loser.visual.provenance === 'parcel_aerial',
-      lat: winner.lat ?? loser.lat,
-      lng: winner.lng ?? loser.lng,
-      locationResolved: winner.locationResolved || loser.locationResolved,
+      lat: located.lat,
+      lng: located.lng,
+      locationResolved: located.locationResolved,
       addressOrApn: winner.address ?? loser.address ?? winner.apn ?? loser.apn,
     });
     return {
@@ -1839,8 +2103,49 @@ function dedupeWorkspaceComps(input: WorkspaceComp[]): { comps: WorkspaceComp[];
       photoUrls: photos,
       listing,
       visual,
+      lat: located.lat,
+      lng: located.lng,
+      locationResolved: located.locationResolved,
+      locationSource: located.locationSource,
+      locationMethod: located.locationMethod,
+      locationResolvedAtIso: located.locationResolvedAtIso,
+      // The located side owns the WHOLE location story. Taking its point while
+      // keeping the winner's reconciliation text would publish a placed comp
+      // that still carries an "unresolved" explanation.
+      locationAddress: located.locationAddress ?? winner.locationAddress ?? loser.locationAddress,
+      locationUnresolvedReason: located.locationUnresolvedReason,
       duplicatesMerged: (winner.duplicatesMerged ?? 0) + (loser.duplicatesMerged ?? 0) + 1,
       mergeStatus: `${origins.length} source observation(s) reconciled to one physical property; ${(winner.duplicatesMerged ?? 0) + (loser.duplicatesMerged ?? 0) + 1} duplicate row(s) merged.`,
+      // Identity and structural facts: whichever provider actually published
+      // one. `sameWorkspaceProperty` has already established these two rows are
+      // the same parcel, so a value from either describes this parcel.
+      address: fill('address'),
+      apn: fill('apn'),
+      county: fill('county'),
+      state: fill('state'),
+      soldBy: fill('soldBy'),
+      buildingSqft: fill('buildingSqft'),
+      daysOnMarket: fill('daysOnMarket'),
+      distanceMiles: fill('distanceMiles'),
+      // The priced pair and the acreage comparison derived from it travel
+      // together, from the one source that stated them.
+      price: priced.price,
+      acres: priced.acres,
+      pricePerAcre: priced.pricePerAcre,
+      acresDeltaFromSubject: priced.acresDeltaFromSubject,
+      // Sale date and the two recency figures computed from it are likewise
+      // one observation: a date from one provider with another's month count
+      // would describe an age nothing measured.
+      ...(winner.dateIso
+        ? {}
+        : { dateIso: loser.dateIso, recencyMonths: loser.recencyMonths, monthsOld: loser.monthsOld }),
+      // LandPortal surface provenance survives a cross-provider merge: a comp
+      // corroborated by both LandPortal surfaces is still corroborated after
+      // Zillow evidence joins it.
+      fromLandPortalSidebar: winner.fromLandPortalSidebar || loser.fromLandPortalSidebar,
+      fromLandPortalShowOnMap: winner.fromLandPortalShowOnMap || loser.fromLandPortalShowOnMap,
+      // Only the fields NEITHER source supplied are still missing.
+      missingFields: winner.missingFields.filter((field) => loser.missingFields.includes(field)),
       ...(improved ? {
         category: 'improved_context' as const,
         categoryLabel: WORKSPACE_CATEGORY_LABELS.improved_context,
@@ -1882,13 +2187,21 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
 
   const db = getLandosDb();
   const cacheGet = db.prepare('SELECT lat, lng, provider, created_at FROM landos_geocode_cache WHERE address_key = ?');
+  const cacheRow = (address: string | null | undefined) => {
+    const key = compAddressKey(address);
+    if (!key) return undefined;
+    return cacheGet.get(key) as { lat: number | null; lng: number | null; provider: string; created_at: number | null } | undefined;
+  };
   const locations: LocationLookup = {
     get(address) {
-      const key = (address ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-      if (!key) return null;
-      const hit = cacheGet.get(key) as { lat: number | null; lng: number | null; provider: string; created_at: number | null } | undefined;
+      const hit = cacheRow(address);
       if (!hit || typeof hit.lat !== 'number' || typeof hit.lng !== 'number') return null;
       return { lat: hit.lat, lng: hit.lng, provider: hit.provider, createdAt: hit.created_at ?? null };
+    },
+    // A cached row with no point is a recorded miss, not an absent lookup.
+    attempted(address) {
+      const hit = cacheRow(address);
+      return !!hit && (typeof hit.lat !== 'number' || typeof hit.lng !== 'number');
     },
   };
 
@@ -1927,6 +2240,12 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const ctx: ClassifyContext = {
     subjectAcres,
     subjectCounty: subject.county,
+    subjectIdentity: {
+      apn: subject.apn,
+      county: subject.county,
+      state: subject.state,
+      landPortalPropertyId: subjectCard ? String(subjectCard.lp_property_id ?? '') || null : null,
+    },
     subjectPoint,
     retainedInspection,
     locations,
@@ -2067,12 +2386,6 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   }
 
   // One value everywhere: once an adopted cleaned FMV exists, the central FMV
-    subjectIdentity: {
-      apn: subject.apn,
-      county: subject.county,
-      state: subject.state,
-      landPortalPropertyId: subjectCard ? String(subjectCard.lp_property_id ?? '') || null : null,
-    },
   // and the 40/50/60 acquisition levels derive from IT (the median stays
   // visible in the ppaBand and medianNote, but never governs alone).
   if (cleaned.adoptedFmv != null && summary.fmv != null && summary.acquisitionLevels != null) {
@@ -2118,6 +2431,21 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const showOnMapCount = persisted.filter((c) => c.fromLandPortalShowOnMap).length;
   const mergedUniqueCount = persisted.filter((c) => c.fromLandPortalSidebar || c.fromLandPortalShowOnMap).length;
 
+  // LandPortal's own subject estimate, reproduced verbatim. Read from the same
+  // retained parcel facts every other LandPortal read uses, so it needs no
+  // capture of its own and states nothing the provider did not publish.
+  const lpEstimate = readLandPortalEstimate(inspection);
+
+  // Area leads live on the DEDUPLICATED set, so a description republished by
+  // three providers for one property contributes its signal once.
+  const marketLeads = collectMarketLeads(comps.map((comp) => ({
+    compKey: comp.key,
+    compLabel: comp.address ?? (comp.apn ? `APN ${comp.apn}` : comp.source),
+    provider: comp.source,
+    sourceUrl: comp.sourceUrl,
+    description: comp.listing?.description.source?.text ?? null,
+  })));
+
   const used = accepted.map((c) => ({
     key: c.key,
     line: `${c.address ?? c.apn ?? 'Comparable'}: ${c.price != null ? money(c.price) : '—'} / ${c.acres ?? '—'} ac = ${c.pricePerAcre != null ? `${money(c.pricePerAcre)}/ac` : '—'}${c.dateIso ? `, sold ${c.dateIso}` : ''}${c.distanceMiles != null ? `, ${c.distanceMiles} mi from the subject` : ''}.`,
@@ -2158,6 +2486,8 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     duplicatesMerged: comps.reduce((sum, comp) => sum + (comp.duplicatesMerged ?? 0), 0),
     mapCounts,
     landPortal: { sidebarCount, showOnMapCount, mergedUniqueCount },
+    lpEstimate,
+    marketLeads,
     cleaned,
     improvementValuation,
     quickFlip,
@@ -2225,7 +2555,7 @@ export function setCompValuationSelection(opts: {
       subjectIdentity,
       subjectPoint: null,
       retainedInspection: inspection ? currentComparables(inspection) : [],
-      locations: { get: () => null },
+      locations: { get: () => null, attempted: () => false },
       nowMs: Date.now(),
     });
     if (!view.eligibleForValuation) {
@@ -2312,10 +2642,19 @@ export async function resolveCompsValuationLocations(
   let evidenceAttempted = 0;
   if (propertyCardId != null) {
     const record = new PropertyResearchStore().loadForProperty(propertyCardId);
-    const addresses = (record?.evidence ?? [])
+    // Geocode the RECONCILED postal address, not the raw capture. A listing card
+    // captured as "482 sqftHouse for sale12344 SW Torch Lake Dr, …" can never be
+    // geocoded as written, so every such record used to be reported unresolved
+    // while its address sat inside the capture the whole time.
+    const addresses = [...new Set((record?.evidence ?? [])
       .filter((item) => item.kind === 'comp')
-      .map((item) => (item.value as { address?: unknown } | null)?.address)
-      .filter((a): a is string => typeof a === 'string' && a.trim().length > 0);
+      .map((item) => {
+        const value = (item.value ?? {}) as { address?: unknown; url?: unknown };
+        const captured = typeof value.address === 'string' ? value.address : null;
+        const sourceUrl = typeof value.url === 'string' ? value.url : item.sourceUrl ?? null;
+        return reconcileCompAddress({ capturedAddress: captured, sourceUrl })?.postalAddress ?? null;
+      })
+      .filter((a): a is string => typeof a === 'string' && a.trim().length > 0))];
     if (addresses.length) {
       const result = await geocodeAddressesToCache(addresses, { fetchImpl: deps.fetchImpl });
       evidenceResolved = result.resolved;

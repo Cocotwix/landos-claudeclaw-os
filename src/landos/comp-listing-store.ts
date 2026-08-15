@@ -109,13 +109,24 @@ export function saveCompListingDetail(detail: PersistedCompListingDetail): Listi
     : gated;
 
   const shouldSetThumb = !!safe.image?.url && safe.image.isOriginalListingImage;
+  const facts = safe.propertyFacts;
+  const addressUpdate = safe.reconciliation.matched && facts?.address ? facts.address : null;
+  const acreageUpdate = safe.reconciliation.matched && typeof facts?.acreage === 'number' ? facts.acreage : null;
   const stmt = shouldSetThumb
-    ? db.prepare('UPDATE landos_comp SET listing_detail_json = ?, thumbnail_url = ?, updated_at = ? WHERE id = ?')
-    : db.prepare('UPDATE landos_comp SET listing_detail_json = ?, updated_at = ? WHERE id = ?');
+    ? db.prepare(`UPDATE landos_comp
+        SET listing_detail_json = ?, thumbnail_url = ?,
+            address_desc = COALESCE(?, address_desc),
+            acres = COALESCE(?, acres),
+            updated_at = ? WHERE id = ?`)
+    : db.prepare(`UPDATE landos_comp
+        SET listing_detail_json = ?,
+            address_desc = COALESCE(?, address_desc),
+            acres = COALESCE(?, acres),
+            updated_at = ? WHERE id = ?`);
 
   const nowSec = Math.floor(Date.now() / 1000);
-  if (shouldSetThumb) stmt.run(JSON.stringify(safe), safe.image!.url, nowSec, detail.compId);
-  else stmt.run(JSON.stringify(safe), nowSec, detail.compId);
+  if (shouldSetThumb) stmt.run(JSON.stringify(safe), safe.image!.url, addressUpdate, acreageUpdate, nowSec, detail.compId);
+  else stmt.run(JSON.stringify(safe), addressUpdate, acreageUpdate, nowSec, detail.compId);
 
   return {
     compId: detail.compId,

@@ -109,7 +109,31 @@ export function evaluatePublicIntelligenceGate(subject: PublicIntelligenceSubjec
       explanation: subject.resolutionExplanation || 'Parcel evidence conflicts. Resolve identity before property intelligence runs.',
     };
   }
-  if (requested.length > 0 && !resolved) {
+  // ── THE DISCOVERY PATH IS A PARCEL SOURCE ────────────────────────────────
+  // `resolvedApn` is populated only by an official county parcel service. The
+  // authenticated LandPortal parcel panel is a parcel source too, which is the
+  // entire purpose of `discoveryUsable` and of the `parcel_discovery_established`
+  // branch below — screening runs on exact parcel-level discovery evidence
+  // without upgrading the subject to official confirmation.
+  //
+  // The check beneath this one used to fire first and unconditionally, so a
+  // subject whose APN was established by LandPortal alone was rejected as
+  // "not confirmed by a parcel source" before the branch built to accept it
+  // could ever be reached. The official route was therefore the only reachable
+  // one, in contradiction of invariant 2, which accepts an APN plus county,
+  // state or FIPS, and a LandPortal id plus FIPS, on equal footing.
+  //
+  // 5170 Hwy 60, Birchwood TN is the measured case. Hamilton County has no
+  // routed official parcel service, so `resolvedApn` stayed empty while
+  // LandPortal had verified APN 023 003.02 in county FIPS 47065. Wetlands,
+  // FEMA flood, soils/septic and slope were all refused on a parcel that was
+  // in fact established. The block only began firing once the subject card
+  // carried its APN at all; before that `requested` was empty and the discovery
+  // branch was reachable, which is why this stayed latent.
+  const discoveryEstablished = subject.discoveryUsable === true
+    && subject.resolutionStatus !== 'unresolved';
+
+  if (requested.length > 0 && !resolved && !discoveryEstablished) {
     return {
       allowed: false,
       blocking: true,
@@ -117,7 +141,13 @@ export function evaluatePublicIntelligenceGate(subject: PublicIntelligenceSubjec
       explanation: `The requested APN ${requestedRaw[0]} has not been confirmed by a parcel source. Property intelligence remains in Resolution.`,
     };
   }
-  if (requested.length > 0 && !requested.includes(resolved)) {
+  // A hard conflict needs TWO parcel identifiers to disagree. With only the
+  // requested one in hand there is nothing to contradict it, so this must not
+  // fire on an empty `resolved` — which is now reachable via the discovery
+  // path above. Whenever an official service DID resolve an APN, the
+  // comparison is unchanged and a mismatch still stops everything downstream
+  // (invariant 2).
+  if (requested.length > 0 && resolved && !requested.includes(resolved)) {
     return {
       allowed: false,
       blocking: true,

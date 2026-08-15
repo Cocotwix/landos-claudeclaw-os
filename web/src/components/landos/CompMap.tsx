@@ -39,13 +39,20 @@ export interface CompMapMarkerView {
   lat: number | null;
   lng: number | null;
   distanceMiles: number | null;
+  locationStatus: 'mapped' | 'unresolved';
+  locationEvidence: string | null;
+  locationUnresolvedReason: string | null;
 }
 
 export interface CompMapViewData {
   subject: { address: string | null; apn: string | null; acres: number | null; lat: number | null; lng: number | null; polygon?: Array<{ lat: number; lng: number }> | null };
   markers: CompMapMarkerView[];
   selection: { rationale: string; selectedCount: number; consideredCount: number };
-  counts: { sold: number; active: number; context: number; rejected: number; duplicatesMerged: number; plottable: number; tableOnly: number };
+  counts: {
+    sold: number; active: number; context: number; rejected: number; duplicatesMerged: number;
+    plottable: number; tableOnly: number;
+    retained: number; mapped: number; unresolved: number;
+  };
   refreshDateIso: string;
   attribution: string;
   summaryLine: string;
@@ -192,7 +199,13 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
   }, [expanded, data]);
 
   const plottable = useMemo(() => (data?.markers ?? []).filter((m) => m.lat != null && m.lng != null), [data]);
-  const tableOnlyMarkers = useMemo(() => (data?.markers ?? []).filter((m) => (m.status === 'sold' || m.status === 'active') && (m.lat == null || m.lng == null)), [data]);
+  // EVERY retained record that reconciliation could not place, not just the
+  // sold/active lanes. A context record with nowhere to go used to vanish from
+  // the surface entirely — no pin, no row in this list, no explanation.
+  const unresolvedMarkers = useMemo(
+    () => (data?.markers ?? []).filter((m) => m.status !== 'rejected' && m.locationStatus === 'unresolved'),
+    [data],
+  );
 
   const visible = useMemo(() => plottable.filter((m) => {
     if (m.selected) return filters.selected || filters.sold;
@@ -330,11 +343,16 @@ export function CompMap({ dealCardId }: { dealCardId: number }) {
         <span>Numbered circles group nearby comparables.</span>
       </div>
       {enrichmentMessage && <div class="mt-1 text-[11px] text-slate-400" role="status">{enrichmentMessage}</div>}
-      {tableOnlyMarkers.length > 0 && !enriching && (
+      {unresolvedMarkers.length > 0 && !enriching && (
         <details class="mt-2 rounded-md border border-slate-700 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-300">
-          <summary class="cursor-pointer font-medium">{tableOnlyMarkers.length} source listing{tableOnlyMarkers.length === 1 ? '' : 's'} do not publish a reliable map point</summary>
-          <div class="mt-1 text-slate-400">They remain usable in the comp table and valuation where qualified. LandOS will not turn a road name or a bad geocoder match into a fake parcel pin.</div>
-          <ul class="mt-1 list-disc pl-5 text-slate-400">{tableOnlyMarkers.map((marker) => <li key={`${marker.key}-${marker.address}`}>{marker.address ?? 'Address unavailable'} ({marker.status})</li>)}</ul>
+          <summary class="cursor-pointer font-medium">{unresolvedMarkers.length} retained comparable record{unresolvedMarkers.length === 1 ? '' : 's'} could not be placed on the map</summary>
+          <div class="mt-1 text-slate-400">Each one states why below. Records that do not publish a reliable map point remain usable in the comp table and valuation where qualified. LandOS will not turn a road name or a bad geocoder match into a fake parcel pin.</div>
+          <ul class="mt-1 list-disc pl-5 text-slate-400">{unresolvedMarkers.map((marker) => (
+            <li key={`${marker.key}-${marker.address}`}>
+              <span class="text-slate-300">{marker.address ?? (marker.apn ? `APN ${marker.apn}` : 'Address unavailable')} ({marker.status})</span>
+              {marker.locationUnresolvedReason && <> — {marker.locationUnresolvedReason}</>}
+            </li>
+          ))}</ul>
           <button type="button" class="mt-2 rounded border border-slate-600 px-2 py-1 text-[11px] text-slate-200" onClick={retryLocations}>Retry source locations</button>
         </details>
       )}

@@ -1955,6 +1955,39 @@ export function mergeLandPortalSurfaces(
       confidence: existing.confidence === 'high' || row.confidence === 'high' ? 'high' : existing.confidence,
       sourceUrl: existing.sourceUrl || row.sourceUrl,
       rawText: existing.rawText === row.rawText ? existing.rawText : `${existing.rawText} || ${row.rawText}`,
+      // ── The detail fields the map surface is READ FOR ─────────────────────
+      // Show on Map is the surface that publishes coordinates, locality, the
+      // comp's own LandPortal identity and its detail page; the sidebar
+      // publishes almost none of it. Merging only the thirteen fields above
+      // meant every one of these was thrown away whenever a sidebar row
+      // matched first — the map surface was opened, read, and then discarded
+      // for exactly the rows it corroborated. A stated value fills a blank;
+      // it never overwrites one the sidebar already established.
+      landPortalPropertyId: existing.landPortalPropertyId ?? row.landPortalPropertyId,
+      fips: existing.fips ?? row.fips,
+      mlsPropertyId: existing.mlsPropertyId ?? row.mlsPropertyId,
+      city: existing.city ?? row.city,
+      county: existing.county ?? row.county,
+      state: existing.state ?? row.state,
+      lat: existing.lat ?? row.lat,
+      lng: existing.lng ?? row.lng,
+      detailUrl: existing.detailUrl ?? row.detailUrl,
+      parcelAcres: existing.parcelAcres ?? row.parcelAcres,
+      buildingSqft: existing.buildingSqft ?? row.buildingSqft,
+      improvementValue: existing.improvementValue ?? row.improvementValue,
+      useDescription: existing.useDescription ?? row.useDescription,
+      landMarketValue: existing.landMarketValue ?? row.landMarketValue,
+      totalMarketValue: existing.totalMarketValue ?? row.totalMarketValue,
+      // An acreage conflict observed on EITHER surface is a conflict.
+      acreageConflict: existing.acreageConflict || row.acreageConflict,
+      // Pricing basis travels with its own note, so the two are taken together
+      // or not at all — a basis explained by the other surface's note would
+      // describe a decision that was never made.
+      ...(existing.pricingBasis
+        ? {}
+        : { pricingBasis: row.pricingBasis, pricingBasisNote: row.pricingBasisNote }),
+      statusSource: existing.status !== 'unknown' ? existing.statusSource : row.statusSource,
+      capturedAtIso: existing.capturedAtIso ?? row.capturedAtIso,
       surface: 'both',
     };
   }

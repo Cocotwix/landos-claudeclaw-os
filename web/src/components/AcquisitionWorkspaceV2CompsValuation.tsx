@@ -419,6 +419,19 @@ export interface CompsValuationViewData {
     byCategory: Record<string, { retained: number; mapped: number; unresolved: number }>;
   };
   landPortal: { sidebarCount: number; showOnMapCount: number; mergedUniqueCount: number };
+  /** LandPortal's own estimate. Provider context, never a LandOS conclusion. */
+  lpEstimate?: {
+    priceLabel: string | null; perAcreLabel: string | null;
+    price: number | null; perAcre: number | null;
+    source: string; note: string;
+  } | null;
+  /** Area signals read out of comparable write-ups. Never subject facts. */
+  marketLeads?: Array<{
+    topic: string; topicLabel: string; excerpt: string;
+    provider: string; sourceUrl: string | null;
+    compKey: string; compLabel: string;
+    status: 'unverified_area_lead'; note: string;
+  }>;
   improvementValuation: CvImprovementValuation;
   cleaned: CvCleaned;
   quickFlip: CvQuickFlip | null;
@@ -479,7 +492,22 @@ const RADIUS_TEXT: Record<string, string> = {
 // filtered records, so the two can never show different evidence.
 type FilterKey =
   | 'decision' | 'direct' | 'supporting' | 'supplemental' | 'boundary'
-  | 'historical' | 'active' | 'improved' | 'context' | 'excluded' | 'all';
+  | 'historical' | 'active' | 'improved' | 'context' | 'excluded'
+  | 'landportal' | 'other_providers' | 'all';
+
+/**
+ * Provider provenance, after cross-provider deduplication.
+ *
+ * A property LandPortal published and Zillow later enriched is ONE record and
+ * belongs in the LandPortal group: the LandPortal observation is what put it in
+ * the set, and the Zillow material is enrichment hanging off it. Splitting on
+ * "has any Zillow origin" would list the same parcel in both groups and
+ * reintroduce exactly the double-count the dedupe removed.
+ */
+const isLandPortalComp = (c: CvComp) =>
+  c.fromLandPortalSidebar || c.fromLandPortalShowOnMap
+  || [c.source, ...c.origins].some((name) => /landportal/i.test(name ?? ''));
+const isOtherProviderComp = (c: CvComp) => !isLandPortalComp(c);
 
 const isExcluded = (c: CvComp) => c.operatorExcluded;
 const isActive = (c: CvComp) => c.category === 'active_competition' || c.category === 'asking_reference';
@@ -499,6 +527,9 @@ const FILTERS: Array<{ key: FilterKey; label: string; match: (c: CvComp) => bool
   { key: 'improved', label: 'Improved context', match: isImproved, identity: COMP_IDENTITIES.improved },
   { key: 'context', label: 'Other context', match: isOtherContext, identity: COMP_IDENTITIES.context },
   { key: 'excluded', label: 'Excluded', match: isExcluded, identity: COMP_IDENTITIES.excluded },
+  // Provenance groups: one property appears in exactly one of the two.
+  { key: 'landportal', label: 'LandPortal comps', match: isLandPortalComp },
+  { key: 'other_providers', label: 'Other provider comps', match: isOtherProviderComp },
   { key: 'all', label: 'All', match: () => true },
 ];
 
@@ -629,6 +660,8 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
   const mapCounts = view.mapCounts;
   const win = view.valuationWindow;
   const visuals = view.visualCounts;
+  const lpEstimate = view.lpEstimate ?? null;
+  const marketLeads = view.marketLeads ?? [];
   const isStaleCompConclusion = (line: string | null) => summary.acceptedCount > 0 && line != null
     && /no usable comp|another (?:comparable )?sale[^.]*required/i.test(line);
   const reconciledWarning = isStaleCompConclusion(cleaned.insufficiencyWarning) ? null : cleaned.insufficiencyWarning;
@@ -780,6 +813,45 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
           )}
         </div>
       </section>
+
+      {/* ── LP Estimate ────────────────────────────────────────────────────
+          LandPortal's own number, reproduced verbatim and kept visibly apart
+          from the LandOS land value directly above it. The two are different
+          claims by different parties; showing them in one figure would make an
+          automated provider estimate look like LandOS's conclusion. */}
+      {lpEstimate && (lpEstimate.priceLabel || lpEstimate.perAcreLabel) && (
+        <section data-domain="valuation" class="awv2-panel" aria-label="LandPortal estimate" id="lp-estimate">
+          <div class="awv2-panel-title">
+            LP Estimate <span class="awv2-src-tag">Provider-supplied · not a LandOS valuation</span>
+          </div>
+          <div class="awv2-cv-methodgrid">
+            <div class="awv2-cv-m">
+              <span class="k">LandPortal estimate</span>
+              <b>{lpEstimate.priceLabel ?? '—'}</b>
+            </div>
+            <div class="awv2-cv-m">
+              <span class="k">LandPortal $/acre</span>
+              <b>{lpEstimate.perAcreLabel ?? '—'}</b>
+            </div>
+            <div class="awv2-cv-m">
+              <span class="k">LandOS land value</span>
+              <b>{usdOrDash(cleaned.adoptedFmv)}</b>
+            </div>
+            {lpEstimate.price != null && cleaned.adoptedFmv != null && (
+              <div class="awv2-cv-m">
+                <span class="k">Difference</span>
+                <b>
+                  {cleaned.adoptedFmv > lpEstimate.price ? '+' : ''}
+                  {usd(cleaned.adoptedFmv - lpEstimate.price)}
+                  {' '}({Math.round(((cleaned.adoptedFmv - lpEstimate.price) / lpEstimate.price) * 100)}%)
+                </b>
+              </div>
+            )}
+          </div>
+          <p class="awv2-pi-note">{lpEstimate.note} Source: {lpEstimate.source}.</p>
+        </section>
+      )}
+
       <section data-domain="valuation" class="awv2-panel" aria-label="House valuation">
         <div class="awv2-panel-title">House Valuation <span class="awv2-src-tag">$/sqft evidence for the residence</span></div>
         <div class="awv2-cv-methodgrid">
@@ -1033,6 +1105,15 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
             </button>
           ))}
         </div>
+        {/* Where the deduplicated set came from. LandPortal's two surfaces are
+            one provider read twice, so they are reported as the merge they are
+            rather than as two independent comp counts. */}
+        <p class="awv2-cv-visualnote">
+          Provenance: {comps.filter(isLandPortalComp).length} LandPortal comp{comps.filter(isLandPortalComp).length === 1 ? '' : 's'}
+          {' '}(sidebar {view.landPortal.sidebarCount} + Show on Map {view.landPortal.showOnMapCount} → {view.landPortal.mergedUniqueCount} unique) ·
+          {' '}{comps.filter(isOtherProviderComp).length} other provider comp{comps.filter(isOtherProviderComp).length === 1 ? '' : 's'} (Zillow / Redfin / Realtor).
+          {' '}One physical property is one record; where two providers described the same parcel their photos, remarks, details, history and coordinates were merged onto it, not dropped.
+        </p>
         <p class="awv2-cv-visualnote">
           Visuals: {visuals.listingPhoto} genuine listing photo{visuals.listingPhoto === 1 ? '' : 's'} ·
           {' '}{visuals.providerThumbnail} provider thumbnail{visuals.providerThumbnail === 1 ? '' : 's'} ·
@@ -1219,6 +1300,38 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
           )}
         </details>
       </section>
+
+      {/* ── Area & market leads ────────────────────────────────────────────
+          What the comparable write-ups said about the AREA. Every line is the
+          provider's own sentence, attributed to the listing it came from, and
+          none of it is asserted about the subject: an operator reading "sewer
+          expansion coming" here knows to go and check, which is exactly the
+          value, and knows LandOS has not concluded it. */}
+      {marketLeads.length > 0 && (
+        <section data-domain="market" class="awv2-panel" aria-label="Area and market leads" id="market-leads">
+          <div class="awv2-panel-title">
+            Area &amp; market leads <span class="awv2-src-tag">From comp listing write-ups · leads, not subject facts</span>
+          </div>
+          <p class="awv2-pi-note">
+            {marketLeads.length} area signal{marketLeads.length === 1 ? '' : 's'} stated in nearby listings. These describe the
+            surrounding market, not this parcel. Nothing here is treated as established for the subject unless a source
+            independently confirms it.
+          </p>
+          <ul class="awv2-cv-keyevidence">
+            {marketLeads.map((lead) => (
+              <li key={`${lead.topic}-${lead.compKey}-${lead.excerpt.slice(0, 24)}`}>
+                <b>{lead.topicLabel}:</b> “{lead.excerpt}”
+                <span class="awv2-src-tag">
+                  {' '}— {lead.provider} listing for {lead.compLabel}
+                  {lead.sourceUrl && (
+                    <> · <a href={lead.sourceUrl} target="_blank" rel="noreferrer noopener">source</a></>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* ── 6. Valuation explanation: the decisive evidence, not every record ── */}
       <section data-domain="valuation" class="awv2-panel" aria-label="Valuation explanation">

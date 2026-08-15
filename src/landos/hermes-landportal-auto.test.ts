@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   HERMES_LANDPORTAL_CDP_SKILL,
   HERMES_LANDPORTAL_CONTEXT_SKILL,
+  HERMES_LANDPORTAL_COMPS_HARD_TIMEOUT_MS,
+  HERMES_LANDPORTAL_COMPS_TARGET_RUNTIME_MS,
   HERMES_LANDPORTAL_HARD_TIMEOUT_MS,
   HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS,
   HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS,
@@ -167,7 +169,10 @@ describe('controlled Hermes LandPortal specialists', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(new Set(started)).toEqual(new Set(HERMES_LANDPORTAL_SPECIALISTS));
-    expect(timeouts).toEqual([HERMES_LANDPORTAL_HARD_TIMEOUT_MS, HERMES_LANDPORTAL_HARD_TIMEOUT_MS, HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS]);
+    // Each specialist is capped at its OWN ceiling. Comps no longer shares the
+    // subject's five minutes: its per-comparable drilldown was killed mid-work
+    // at exactly that limit on 5170 Hwy 60, importing no LandPortal comps.
+    expect(timeouts).toEqual([HERMES_LANDPORTAL_HARD_TIMEOUT_MS, HERMES_LANDPORTAL_COMPS_HARD_TIMEOUT_MS, HERMES_LANDPORTAL_VISUALS_HARD_TIMEOUT_MS]);
     expect(getHermesLandPortalLaneProgress(91)?.workUnits.every((unit) => unit.status === 'running')).toBe(true);
     release();
     const result = await run;
@@ -183,7 +188,7 @@ describe('controlled Hermes LandPortal specialists', () => {
         fs.writeFileSync(invocation.outputFile, JSON.stringify({ subject_verification_status: 'no_match' }));
       },
     });
-    expect(received).toEqual([HERMES_LANDPORTAL_TARGET_RUNTIME_MS, HERMES_LANDPORTAL_TARGET_RUNTIME_MS, HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS]);
+    expect(received).toEqual([HERMES_LANDPORTAL_TARGET_RUNTIME_MS, HERMES_LANDPORTAL_COMPS_TARGET_RUNTIME_MS, HERMES_LANDPORTAL_VISUALS_TARGET_RUNTIME_MS]);
   });
 
   it('persists completed siblings while one specialist is delayed and then interrupted', async () => {

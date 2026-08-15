@@ -19,6 +19,7 @@ import { spawn as nodeSpawn } from 'child_process';
 import { readSessionConfig } from './browser-session.js';
 import { automationBrowserConfig, openDisposableContextHandle } from './automation-browser.js';
 import { parseListingStatus, type CompStatus } from './comp-extraction.js';
+import { laneSearchVerified, type CompLaneRouteOutcome } from './comp-lane-accountability.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
 // so DOM globals are declared as `any` purely to satisfy the Node typechecker.
@@ -48,6 +49,15 @@ export interface RedfinCompsResult {
   routeTried: string;
   /** The Redfin filter state used (property-type=land, sold vs active). */
   filtersUsed: string;
+  /**
+   * What every route actually did. Without this, a lane whose four routes all
+   * failed to resolve a Redfin place is indistinguishable from a lane that read
+   * the right land-search page and found it empty — and the second claim was
+   * being made on the first lane's evidence.
+   */
+  routes: CompLaneRouteOutcome[];
+  /** True only when a readable, market-verified Redfin land page was reached. */
+  searchVerified: boolean;
 }
 
 export interface RedfinFetchInput {
@@ -210,9 +220,22 @@ const FOCUS_AND_SET_SEARCH = (query: string): boolean => {
   return true;
 };
 
-// Collect suggestion anchor hrefs from the search dropdown (the correct city URL
-// is exposed here even though the autocomplete API is blocked).
-const READ_SUGGESTION_HREFS = (): string => Array.from((document as any).querySelectorAll('a[href*="/city/"], [class*="item-row" i] a, [role="option"] a, [class*="Autocomplete" i] a')).map((a: any) => a.href || '').join(' ');
+// Collect suggestion anchor hrefs from the search dropdown ONLY.
+//
+// This used to read `a[href*="/city/"]` across the whole document. Redfin's home
+// page renders static "popular cities" widgets (RegionSearchMapLinksSection,
+// EigencitiesWidget) full of /city/ links, so every query for a Grand Traverse
+// County subject resolved to /city/5665/MI/Detroit — the first Michigan link on
+// the page — and the lane then read 40 Detroit cards, rejected them all on
+// geography, and reported "no results". Scoping to the search widget means only
+// what the autocomplete actually offered for the typed query can be resolved.
+const READ_SUGGESTION_HREFS = (): string => {
+  const box = (document as any).querySelector('.bp-SearchBox, .SearchBoxForm, [class*="SearchBox" i], [role="listbox"]');
+  if (!box) return '';
+  return Array.from(box.querySelectorAll('a[href*="/city/"], a[href*="/county/"], a[href*="/zipcode/"], [class*="item-row" i] a, [role="option"] a'))
+    .map((a: any) => a.href || a.getAttribute?.('href') || '')
+    .join(' ');
+};
 
 // In-page (runs INSIDE disposable Chrome). Broad selectors + text parsing.
 const EXTRACT_REDFIN = (): RawRedfinListing[] => {
@@ -257,7 +280,7 @@ const READ_PAGE_GEOGRAPHY = (): { url: string; text: string } => ({
   text: `${(document as any).title ?? ''} ${((document as any).body?.innerText ?? '').slice(0, 5000)}`,
 });
 
-export interface RedfinSearchQuery { kind: 'coordinates' | 'road' | 'locality' | 'parcel'; label: string; query: string }
+export interface RedfinSearchQuery { kind: 'coordinates' | 'road' | 'locality' | 'zip' | 'county' | 'parcel'; label: string; query: string }
 
 export function redfinSearchQueries(input: RedfinFetchInput): RedfinSearchQuery[] {
   const state = (input.state ?? '').trim().toUpperCase();
@@ -282,6 +305,13 @@ export function redfinSearchQueries(input: RedfinFetchInput): RedfinSearchQuery[
     const place = `${county} County, ${state}`;
     queries.push({ kind: 'locality', label: place, query: place });
   }
+  // The bare ZIP and the bare county name are the two queries Redfin's
+  // autocomplete reliably answers with a real market page (/zipcode/49690,
+  // /county/1375/MI/Grand-Traverse-County). A township-level subject city like
+  // Williamsburg, MI returns only out-of-state neighbourhoods, so without these
+  // the lane had no route to its own market at all.
+  if (zip) queries.push({ kind: 'zip', label: `ZIP ${zip}`, query: zip });
+  if (county && state) queries.push({ kind: 'county', label: `${county} County, ${state}`, query: `${county} County, ${state}` });
   if (input.apn?.trim() && state) {
     const place = [input.apn.trim(), input.owner?.trim(), county ? `${county} County` : '', state].filter(Boolean).join(', ');
     queries.push({ kind: 'parcel', label: `parcel ${input.apn.trim()}`, query: place });
@@ -291,18 +321,29 @@ export function redfinSearchQueries(input: RedfinFetchInput): RedfinSearchQuery[
 
 function normGeo(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
 
-function selectRedfinResolvedPath(paths: string[], input: RedfinFetchInput, query: RedfinSearchQuery): string | null {
+/**
+ * Pick the one suggested place path that IS this subject's market.
+ *
+ * The state is never sufficient on its own. Scoring `/(?:city|county)/\d+/MI/`
+ * at +6 meant any Michigan link cleared the bar, and Redfin's own home page
+ * always offers one — which is how every route for a Williamsburg subject
+ * resolved to Detroit. A path now has to name the subject's ZIP, county, or
+ * city, and still be in the subject's state, or it is not a route at all.
+ */
+function selectRedfinResolvedPath(paths: string[], input: RedfinFetchInput, _query: RedfinSearchQuery): string | null {
   const state = (input.state ?? '').trim().toUpperCase();
   const zip = (input.zip ?? '').match(/\b\d{5}\b/)?.[0];
-  const place = normGeo(query.kind === 'locality' ? input.city ?? input.county ?? '' : query.kind === 'road' ? input.city ?? '' : '');
+  const city = normGeo(input.city ?? '');
+  const county = normGeo((input.county ?? '').replace(/\s+county$/i, ''));
   const scored = paths.map((path) => {
     const normalized = normGeo(path);
-    let score = 0;
-    if (zip && path.includes(`/zipcode/${zip}`)) score += 10;
-    if (state && new RegExp(`/(?:city|county)/\\d+/${state}/`, 'i').test(path)) score += 6;
-    if (place && normalized.includes(place.replace(/\s+county$/, ''))) score += 4;
-    if (query.kind === 'coordinates' && state && path.includes(`/${state}/`)) score += 2;
-    return { path, score };
+    // A path that declares a state must declare the subject's state.
+    const declared = /\/(?:city|county)\/\d+\/([A-Za-z]{2})\//.exec(path)?.[1]?.toUpperCase() ?? null;
+    if (state && declared && declared !== state) return { path, score: 0 };
+    if (zip && path.includes(`/zipcode/${zip}`)) return { path, score: 10 };
+    if (county && /\/county\/\d+\//.test(path) && normalized.includes(county)) return { path, score: 8 };
+    if (city && /\/city\/\d+\//.test(path) && normalized.includes(city)) return { path, score: 6 };
+    return { path, score: 0 };
   }).sort((a, b) => b.score - a.score);
   return scored[0]?.score ? scored[0].path : null;
 }
@@ -338,10 +379,13 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
   const queries = redfinSearchQueries(input);
   const sold = input.mode === 'sold';
   const filtersUsed = sold ? 'property-type=land, include=sold' : 'property-type=land (active)';
+  const routes: CompLaneRouteOutcome[] = [];
+  const done = (result: Omit<RedfinCompsResult, 'routes' | 'searchVerified'>): RedfinCompsResult =>
+    ({ ...result, routes: [...routes], searchVerified: laneSearchVerified(routes) });
   if (!deps.force && !deps.connect) {
-    try { if (!readSessionConfig().enabled) return { status: 'disabled', comps: [], note: 'Live browser mode off — Redfin not attempted.', routeTried: '', filtersUsed }; } catch { /* fall through */ }
+    try { if (!readSessionConfig().enabled) return done({ status: 'disabled', comps: [], note: 'Live browser mode off — Redfin not attempted.', routeTried: '', filtersUsed }); } catch { /* fall through */ }
   }
-  if (!state || queries.length === 0) return { status: 'disabled', comps: [], note: 'No coordinates, ZIP, city, or county with state for a Redfin land search.', routeTried: '', filtersUsed };
+  if (!state || queries.length === 0) return done({ status: 'disabled', comps: [], note: 'No coordinates, ZIP, city, or county with state for a Redfin land search.', routeTried: '', filtersUsed });
 
   // Redfin runs in a DISPOSABLE INCOGNITO CONTEXT of the ONE owned automation
   // browser. Its former throwaway-profile Chrome had no remembered window
@@ -357,7 +401,7 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
   let browser: RedfinBrowserLike | null = null;
   try {
     browser = await connect(automationBrowserConfig().endpoint);
-    if (!browser) return { status: 'error', comps: [], note: 'The LandOS automation browser is not available for Redfin.', routeTried, filtersUsed };
+    if (!browser) return done({ status: 'error', comps: [], note: 'The LandOS automation browser is not available for Redfin.', routeTried, filtersUsed });
 
     const page = await browser.newPage();
     try { await page.setViewport?.({ width: 1400, height: 950 }); } catch { /* best-effort */ }
@@ -367,13 +411,25 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
       await page.goto(REDFIN_HOME, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
       await sleep(Math.min(settleMs, 4000));
       const homeBlocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
-      if (homeBlocked) return { status: 'blocked', comps: [], note: 'Redfin served a Request blocked / anti-bot page before location resolution.', routeTried: REDFIN_HOME, filtersUsed };
+      if (homeBlocked) {
+        routes.push({ label: query.label, url: REDFIN_HOME, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: 'Redfin served an anti-bot page on its own home page, before any location could be resolved.' });
+        return done({ status: 'blocked', comps: [], note: 'Redfin served a Request blocked / anti-bot page before location resolution.', routeTried: REDFIN_HOME, filtersUsed });
+      }
       const focused = await page.evaluate<boolean>(FOCUS_AND_SET_SEARCH as unknown as () => boolean, query.query);
       if (focused && page.keyboard) { try { await page.keyboard.press('Space'); await page.keyboard.press('Backspace'); } catch { /* nudge the debounced dropdown */ } }
       await sleep(suggestionSettleMs);
       const hrefs = await page.evaluate<string>(READ_SUGGESTION_HREFS as unknown as () => string);
       const resolvedPath = selectRedfinResolvedPath(parseRedfinPlacePaths(hrefs), input, query);
-      if (!resolvedPath) { failedGeographies.push(`${query.label}: no matching Redfin place path`); continue; }
+      if (!resolvedPath) {
+        failedGeographies.push(`${query.label}: no matching Redfin place path`);
+        routes.push({
+          label: query.label, url: REDFIN_HOME, reached: !!focused, blocked: false, cardsFound: 0, marketVerified: false, qualifying: 0,
+          outcome: focused
+            ? `Redfin's search box accepted "${query.query}" but its suggestion list offered no city, county, or ZIP path for it, so no land-search page was ever opened.`
+            : `Redfin's search box could not be found on the page, so "${query.query}" was never submitted and no land-search page was opened.`,
+        });
+        continue;
+      }
       const landUrl = redfinLandFilterUrl(resolvedPath, { sold, dateWindowMonths: input.dateWindowMonths });
       routeTried = landUrl;
       await page.goto(landUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
@@ -381,21 +437,42 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
       for (let i = 0; i < 4; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
       const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
       const rawList = await page.evaluate<RawRedfinListing[]>(EXTRACT_REDFIN as unknown as () => RawRedfinListing[]);
-      if (blocked && (!rawList || rawList.length === 0)) return { status: 'blocked', comps: [], note: `Redfin served a Request blocked / anti-bot page on the ${query.label} land-search route.`, routeTried: landUrl, filtersUsed };
+      const cardsFound = rawList?.length ?? 0;
+      if (blocked && cardsFound === 0) {
+        routes.push({ label: query.label, url: landUrl, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: `Redfin served an anti-bot page instead of the ${filtersUsed} results for ${query.label}.` });
+        return done({ status: 'blocked', comps: [], note: `Redfin served a Request blocked / anti-bot page on the ${query.label} land-search route.`, routeTried: landUrl, filtersUsed });
+      }
       const pageGeo = (await page.evaluate<{ url: string; text: string }>(READ_PAGE_GEOGRAPHY as unknown as () => { url: string; text: string }).catch(() => null)) ?? { url: landUrl, text: '' };
       const verifiedGeo = verifyRedfinResolvedGeography(input, query, resolvedPath, pageGeo, rawList ?? []);
-      if (!verifiedGeo.valid) { failedGeographies.push(`${query.label}: ${verifiedGeo.reason}`); continue; }
+      if (!verifiedGeo.valid) {
+        failedGeographies.push(`${query.label}: ${verifiedGeo.reason}`);
+        routes.push({ label: query.label, url: landUrl, reached: true, blocked, cardsFound, marketVerified: false, qualifying: 0, outcome: `Opened ${landUrl} and read ${cardsFound} card(s), but ${verifiedGeo.reason}, so nothing from it was used.` });
+        continue;
+      }
       const comps = normalizeRedfinListings(rawList ?? [], input.subjectAcres ?? null, sold ? 'sold' : 'active');
+      routes.push({
+        label: query.label, url: landUrl, reached: true, blocked, cardsFound, marketVerified: true, qualifying: comps.length,
+        outcome: comps.length
+          ? `Opened ${landUrl}, verified it as this subject's market, read ${cardsFound} card(s) and kept ${comps.length} in-band ${sold ? 'sold' : 'active'} land comp(s).`
+          : `Opened ${landUrl} and verified it as this subject's market; it exposed ${cardsFound} card(s) and none was an in-band ${sold ? 'sold' : 'active'} land comparable.`,
+      });
       if (!comps.length) continue;
-      return {
+      return done({
         status: 'retrieved', comps,
         note: `Redfin verified ${query.label} and returned ${comps.length} in-band ${sold ? 'sold' : 'active'} land comp(s)${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}.`,
         routeTried: landUrl, filtersUsed,
-      };
+      });
     }
-    return { status: 'none', comps: [], note: `Redfin returned no verified in-band land comps across ${queries.length} coordinate/ZIP/city/county route(s)${failedGeographies.length ? `; ${failedGeographies.length} wrong or unresolved route(s) were automatically rejected` : ''}.`, routeTried, filtersUsed };
+    const verified = laneSearchVerified(routes);
+    return done({
+      status: 'none', comps: [],
+      note: verified
+        ? `Redfin opened a verified land-search page for this subject's market across ${queries.length} route(s) and it published no in-band ${sold ? 'sold' : 'active'} land comp.`
+        : `Redfin never reached a verified land-search page for this subject: all ${queries.length} coordinate/ZIP/city/county route(s) failed to resolve or landed on the wrong geography, so no conclusion about the market's inventory is supported.`,
+      routeTried, filtersUsed,
+    });
   } catch (e) {
-    return { status: 'error', comps: [], note: `Redfin capture error: ${(e as Error)?.message ?? 'unknown'}.`, routeTried, filtersUsed };
+    return done({ status: 'error', comps: [], note: `Redfin capture error: ${(e as Error)?.message ?? 'unknown'}.`, routeTried, filtersUsed });
   } finally {
     // Disposes the incognito context and every page it handed out — on success,
     // error, timeout and early return alike. Never closes the owned browser.

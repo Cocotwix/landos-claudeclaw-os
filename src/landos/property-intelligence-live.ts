@@ -75,7 +75,7 @@ import {
   listingAccessEvidenceItems,
   type ExtractedListingEvidence,
 } from './exact-address-web-discovery.js';
-import type { CompLaneInput } from './comp-lane-accountability.js';
+import type { CompLaneInput, CompLaneRouteOutcome } from './comp-lane-accountability.js';
 import { saveSubjectListingDetail, type SubjectListingWriteResult } from './subject-listing-store.js';
 
 // ── Injected dependencies ───────────────────────────────────────────────────
@@ -119,6 +119,14 @@ export interface LandMarketplaceResult {
     qualifyingResults: number;
     exclusionReasons: Array<{ reason: string; count: number }>;
   };
+  /**
+   * What each search route actually did. Retained so an empty lane can be told
+   * apart from a lane that never reached a page verified as this subject's
+   * market — the two look identical without it, and only one of them supports
+   * saying the market published nothing.
+   */
+  laneRoutes?: CompLaneRouteOutcome[];
+  searchVerified?: boolean | null;
 }
 
 export interface ExactAddressWebResult {
@@ -1664,7 +1672,16 @@ function marketplaceProviderAdapter(input: {
         dealCardId: property.dealCardId,
         providerId: input.providerId,
         field: `comparables.${input.laneId}.attempt_status`,
-        value: { status: execution.status, note: execution.note ?? null, candidates: rows.length, searchProof: execution.searchProof ?? null },
+        value: {
+          status: execution.status,
+          note: execution.note ?? null,
+          candidates: rows.length,
+          searchProof: execution.searchProof ?? null,
+          // Retained so the lane's later accountability line can say whether an
+          // empty result was a fact about the market or about the retrieval.
+          searchVerified: execution.searchVerified ?? null,
+          laneRoutes: execution.laneRoutes ?? null,
+        },
         subjectClassification: 'context_only',
         strength: 'provider_observed',
         sourceUrl: null,

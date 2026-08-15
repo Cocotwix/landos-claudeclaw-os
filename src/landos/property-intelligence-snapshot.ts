@@ -1158,6 +1158,29 @@ function compactAddress(value: string | null | undefined): string {
 
 function sameSnapshotSubject(a: SnapshotIdentity, b: SnapshotIdentity): boolean {
   if (a.apn && b.apn) return apnEquivalent(a.apn, b.apn);
+
+  // The retained read never established a parcel, and the incoming one has.
+  //
+  // Two subjects CONFLICT when both name a parcel and they name different ones.
+  // When only the incoming side carries a parcel identifier there is no accepted
+  // canonical property for it to contradict: this is the subject being
+  // established for the first time, which is the single most valuable thing a
+  // rerun can do and must never be discarded as a conflict.
+  //
+  // Falling through to the address compare below got this exactly backwards.
+  // Deal 87 is the measured case: the retained address-only read said
+  // "5170 Hwy 60", and the run that finally resolved the parcel returned the
+  // assessor's own "5170 HIGHWAY 60" alongside APN 023 003.02 in Hamilton
+  // County. The compare saw two different strings, called a strictly better
+  // identity a different property, and threw the whole run away — so the
+  // workspace kept showing the blocked snapshot while the property record
+  // underneath it was fully resolved.
+  //
+  // This does not weaken parcel-identity safety. Whenever the retained side DOES
+  // carry an APN the comparison above still governs, so an accepted parcel can
+  // never be swapped for another one here.
+  if (!a.apn && b.apn) return true;
+
   const addressA = compactAddress(a.normalizedAddress ?? a.situs);
   const addressB = compactAddress(b.normalizedAddress ?? b.situs);
   return !!addressA && !!addressB && addressA === addressB;

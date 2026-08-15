@@ -11,10 +11,20 @@
 //
 // Coordinates are ENRICHMENT: provider-supplied or a bounded cached geocode.
 // A comp without coordinates stays in the table (never fabricated onto the map).
+//
+// Placement runs through comp-location-reconciliation: a retained record is
+// joined to the location evidence LandOS already holds by canonical key, parcel
+// APN, then reconciled postal address BEFORE it is declared unplaceable, and a
+// record that genuinely has no location carries the reason the operator sees.
 
 import type { CompRegistry, UniqueComp } from './comp-registry.js';
 import { selectBestComps, type BestCompsSelection, type CompCandidate, type SelectedComp } from './deal-card-reconciliation.js';
 import { classifyNonSelected, labeledPricePerAcre, distanceMilesFromSubject, type LabeledPpa, type NonSelectedCandidate } from './comp-orchestrator.js';
+import {
+  reconcileRetainedCompLocation,
+  type RetainedCompLocation,
+  type RetainedLocationIndex,
+} from './comp-location-reconciliation.js';
 
 export interface CompMapSubject {
   address: string | null;
@@ -55,6 +65,12 @@ export interface CompMapMarker {
   lat: number | null;
   lng: number | null;
   distanceMiles: number | null;
+  /** Whether this retained record is on the map, decided by reconciliation. */
+  locationStatus: 'mapped' | 'unresolved';
+  /** The captured evidence that located it. Null when unresolved. */
+  locationEvidence: string | null;
+  /** Why it is not on the map, in the operator's words. Null when mapped. */
+  locationUnresolvedReason: string | null;
 }
 
 export interface CompMapView {
@@ -69,6 +85,12 @@ export interface CompMapView {
     duplicatesMerged: number;
     plottable: number;
     tableOnly: number;
+    /** Every retained comparable record: sold + active + context. */
+    retained: number;
+    /** Retained records reconciliation placed on the map. */
+    mapped: number;
+    /** Retained records that legitimately have nowhere to be placed. */
+    unresolved: number;
   };
   refreshDateIso: string;
   attribution: string;
@@ -77,15 +99,30 @@ export interface CompMapView {
   summaryLine: string;
 }
 
-export interface CoordsLookup {
-  /** Resolve coordinates for a comp address; null when unknown. Never fabricates. */
-  get(address: string | null | undefined): { lat: number; lng: number } | null;
-}
-
 const dash = (s: string | null | undefined): string | null => (s && s.trim() ? s.trim() : null);
 
-function uniqueToCandidate(c: UniqueComp, sold: boolean, subject: CompMapSubject, coords: CoordsLookup): CompCandidate {
-  const point = coords.get(c.address);
+/**
+ * Reconcile one registry record's identity and location evidence. Every marker
+ * and every candidate reads THIS, so the map, the counts, and the table can
+ * never disagree about whether a record was placeable.
+ */
+function locationFor(c: UniqueComp, locations: RetainedLocationIndex): RetainedCompLocation {
+  return reconcileRetainedCompLocation({
+    capturedAddress: c.address,
+    sourceUrl: c.primary.sourceUrls[0] ?? null,
+    lat: c.lat,
+    lng: c.lng,
+    retainedCoordinateSource: c.coordinateProvider ? `${c.coordinateProvider} map point` : null,
+    key: c.key,
+    apn: c.apn,
+    state: c.state,
+    providerLabel: c.providers[0] ?? null,
+  }, { byIdentity: locations });
+}
+
+function uniqueToCandidate(c: UniqueComp, sold: boolean, subject: CompMapSubject, locations: RetainedLocationIndex): CompCandidate {
+  const location = locationFor(c, locations);
+  const point = location.status === 'mapped' ? { lat: location.lat as number, lng: location.lng as number } : null;
   return {
     price: c.primary.price,
     pricePerAcre: c.primary.pricePerAcre,
@@ -103,12 +140,13 @@ function markerFromUnique(
   c: UniqueComp,
   sold: boolean,
   subject: CompMapSubject,
-  coords: CoordsLookup,
+  locations: RetainedLocationIndex,
   selectedByAddress: Map<string, SelectedComp>,
   nonSelectedByKey: Map<string, NonSelectedCandidate>,
   forceContext = false,
 ): CompMapMarker {
-  const point = coords.get(c.address);
+  const location = locationFor(c, locations);
+  const point = location.status === 'mapped' ? { lat: location.lat as number, lng: location.lng as number } : null;
   const addrKey = (c.address ?? '').trim().toLowerCase();
   const sel = addrKey ? selectedByAddress.get(addrKey) : undefined;
   const non = nonSelectedByKey.get(c.key);
@@ -141,6 +179,9 @@ function markerFromUnique(
     lat: point?.lat ?? null,
     lng: point?.lng ?? null,
     distanceMiles: point ? distanceMilesFromSubject(subject, point) : c.distanceMiles,
+    locationStatus: location.status,
+    locationEvidence: location.evidence,
+    locationUnresolvedReason: location.unresolvedReason,
   };
 }
 
@@ -152,14 +193,15 @@ function markerFromUnique(
 export function buildCompMapView(input: {
   subject: CompMapSubject;
   registry: CompRegistry;
-  coords: CoordsLookup;
+  /** Every point LandOS already retains, joinable by registry key, APN, or address. */
+  locations: RetainedLocationIndex;
   now?: () => Date;
 }): CompMapView {
-  const { subject, registry, coords } = input;
+  const { subject, registry, locations } = input;
   const nowIso = (input.now ?? (() => new Date()))().toISOString();
 
   // Top-five transparent selection over the validated SOLD uniques only.
-  const soldCandidates = registry.validatedSold.map((c) => uniqueToCandidate(c, true, subject, coords));
+  const soldCandidates = registry.validatedSold.map((c) => uniqueToCandidate(c, true, subject, locations));
   const selection: BestCompsSelection = selectBestComps(subject.acres, soldCandidates, 5);
   const selectedByAddress = new Map<string, SelectedComp>();
   for (const s of selection.comps) {
@@ -177,11 +219,11 @@ export function buildCompMapView(input: {
   for (const n of nonSelected) if (n.key) nonSelectedByKey.set(n.key, n);
 
   const markers: CompMapMarker[] = [
-    ...registry.validatedSold.map((c) => markerFromUnique(c, true, subject, coords, selectedByAddress, nonSelectedByKey)),
-    ...registry.validatedActive.map((c) => markerFromUnique(c, false, subject, coords, selectedByAddress, nonSelectedByKey)),
+    ...registry.validatedSold.map((c) => markerFromUnique(c, true, subject, locations, selectedByAddress, nonSelectedByKey)),
+    ...registry.validatedActive.map((c) => markerFromUnique(c, false, subject, locations, selectedByAddress, nonSelectedByKey)),
     ...registry.uniqueComps
       .filter((c) => !registry.validatedSold.some((sold) => sold.key === c.key) && !registry.validatedActive.some((active) => active.key === c.key))
-      .map((c) => markerFromUnique(c, c.primary.kind === 'sold', subject, coords, selectedByAddress, nonSelectedByKey, true)),
+      .map((c) => markerFromUnique(c, c.primary.kind === 'sold', subject, locations, selectedByAddress, nonSelectedByKey, true)),
     // Rejected candidates stay visible (never plotted as usable evidence).
     ...registry.rejected.map((r): CompMapMarker => ({
       key: null, address: dash(r.address), apn: null, status: 'rejected', selected: false,
@@ -189,6 +231,9 @@ export function buildCompMapView(input: {
       price: r.price, ppa: null, dateIso: null, listingDate: null, daysOnMarket: null, providers: [r.provider], providerLinks: [],
       thumbnailUrl: null,
       sourceConfidence: null, comparability: null, lat: null, lng: null, distanceMiles: null,
+      locationStatus: 'unresolved',
+      locationEvidence: null,
+      locationUnresolvedReason: 'Rejected candidates are audited, not retained as comparable evidence, so they are never placed on the map.',
     })),
   ];
 
@@ -197,6 +242,13 @@ export function buildCompMapView(input: {
   const sold = registry.counts.validatedSold;
   const active = registry.counts.validatedActive;
   const context = markers.filter((m) => m.status === 'context').length;
+
+  // Retained = every comparable record LandOS kept, whatever lane it is in.
+  // Rejected candidates are audit rows, not retained comps, so they are counted
+  // separately and never dilute the mapped/unresolved reconciliation.
+  const retainedMarkers = markers.filter((m) => m.status !== 'rejected');
+  const mapped = retainedMarkers.filter((m) => m.locationStatus === 'mapped').length;
+  const unresolvedCount = retainedMarkers.length - mapped;
 
   return {
     subject,
@@ -208,10 +260,15 @@ export function buildCompMapView(input: {
       duplicatesMerged: registry.counts.duplicatesMerged,
       plottable,
       tableOnly: mapEligible.length - plottable,
+      retained: retainedMarkers.length,
+      mapped,
+      unresolved: unresolvedCount,
     },
     refreshDateIso: nowIso,
     attribution: '© OpenStreetMap contributors',
     mapKind: 'landos_final_deduplicated_registry',
-    summaryLine: `${sold} accepted sold land comp${sold === 1 ? '' : 's'} and ${active} active land listing${active === 1 ? '' : 's'}; ${plottable} shown on the map.`,
+    summaryLine: `${sold} accepted sold land comp${sold === 1 ? '' : 's'} and ${active} active land listing${active === 1 ? '' : 's'}; `
+      + `${retainedMarkers.length} retained comparable record${retainedMarkers.length === 1 ? '' : 's'}, ${mapped} shown on the map and `
+      + `${unresolvedCount} explicitly unresolved.`,
   };
 }

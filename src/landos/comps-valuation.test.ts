@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestLandosDb, getLandosDb } from './db.js';
 import { createDealCard, linkPropertyToDeal } from './deal-card.js';
-import { upsertPropertyCard } from './property-card.js';
+import { upsertPropertyCard, savePropertyInspection } from './property-card.js';
 import { addComp, getComp } from './comps.js';
 import {
   buildCompsValuationView,
@@ -338,6 +338,39 @@ describe('workspace classification', () => {
     expect(view.landPortal.mergedUniqueCount).toBe(1);
   });
 
+  // ── LP Estimate: LandPortal's opinion, never LandOS's conclusion ──────────
+  it('reports the LP Estimate exactly as LandPortal published it, outside the LandOS valuation', () => {
+    const ids = seedSubject();
+    seedClosedSale(ids);
+    savePropertyInspection(ids.cardId, {
+      parcelUrl: 'https://landportal.com/?property=abc',
+      comparablesUrl: null,
+      parcelFacts: { 'Estimate price': '$265,375', 'Estimate PPA': '$6,553' },
+      assets: [], overlays: [], visualObservations: [], comparables: [],
+    } as Parameters<typeof savePropertyInspection>[1]);
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    expect(view.lpEstimate?.priceLabel).toBe('$265,375');
+    expect(view.lpEstimate?.perAcreLabel).toBe('$6,553');
+    expect(view.lpEstimate?.price).toBe(265_375);
+    expect(view.lpEstimate?.source).toBe('LandPortal parcel panel');
+    expect(view.lpEstimate?.note).toMatch(/never an input to the LandOS land value/i);
+    // The provider figure must not appear anywhere in the LandOS conclusion.
+    expect(view.cleaned.adoptedFmv).not.toBe(265_375);
+    expect(view.summary.fmv).not.toBe(265_375);
+  });
+
+  it('reports no LP Estimate rather than a zero when LandPortal published none', () => {
+    const ids = seedSubject();
+    seedClosedSale(ids);
+    savePropertyInspection(ids.cardId, {
+      parcelUrl: 'https://landportal.com/?property=abc',
+      comparablesUrl: null,
+      parcelFacts: { Acres: '11.46' },
+      assets: [], overlays: [], visualObservations: [], comparables: [],
+    } as Parameters<typeof savePropertyInspection>[1]);
+    expect(buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!.lpEstimate).toBeNull();
+  });
+
   it('surfaces research-evidence actives (e.g. Redfin) without double-counting persisted rows', () => {
     const ids = seedSubject();
     seedClosedSale(ids);
@@ -392,6 +425,143 @@ describe('workspace classification', () => {
     expect(active.locationResolved).toBe(false);
     expect(active.lat).toBeNull();
     expect(active.distanceMiles).toBeNull();
+  });
+
+  // ── Dedupe must ENRICH, never discard ────────────────────────────────────
+  // Two providers describing one parcel each hold material the other does not.
+  // Collapsing them to one record is right; collapsing them to one record's
+  // FIELDS throws away exactly the evidence the second provider was run for.
+  it('carries the other provider’s facts, write-up and photos onto the canonical comp', () => {
+    const ids = seedSubject();
+    // LandPortal knows the parcel and the price; it publishes no write-up,
+    // no photographs and no locality.
+    seedClosedSale(ids, { addressDesc: '', county: '', notes: '' });
+    new PropertyResearchStore().loadForProperty(ids.cardId);
+    getLandosDb().prepare(
+      `INSERT INTO landos_property_research_record (property_card_id, deal_card_id, canonical_key, record_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(ids.cardId, ids.dealCardId, `property-card:${ids.cardId}`, JSON.stringify({
+      contractVersion: 'canonical-property-research-v1',
+      propertyCardId: ids.cardId, dealCardId: ids.dealCardId,
+      canonicalKey: `property-card:${ids.cardId}`, identity: {}, facts: {},
+      evidence: [{
+        id: 'zillow:comp:enrich',
+        providerId: 'zillow', field: 'comparables.zillow.0', kind: 'comp',
+        value: {
+          // Same APN as the seeded LandPortal row: one physical property.
+          apn: '052289 77.00-2-27.113', status: 'sold', price: 129000, acres: 16.88,
+          address: '1200 Clinton Rd, Weedsport, NY 13166',
+          county: 'Cayuga', state: 'NY',
+          description: 'Rolling acreage on a county-maintained gravel road. County sewer expansion is planned for this corridor.',
+          photoUrls: ['https://photos.zillowstatic.com/fp/a.jpg', 'https://photos.zillowstatic.com/fp/b.jpg'],
+          url: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983',
+        },
+        sourceUrl: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983',
+        strength: 'provider_observed', subjectClassification: 'context_only',
+        retrievedAt: '2026-08-03T22:47:18.904Z',
+      }],
+      lanes: {}, rejectedEvidence: [], createdAt: '2026-08-03', updatedAt: '2026-08-03',
+    }), '2026-08-03', '2026-08-03');
+
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    // Still one property.
+    expect(view.counts.total).toBe(1);
+    const comp = view.comps[0];
+    expect(comp.duplicatesMerged).toBeGreaterThanOrEqual(1);
+    expect(comp.mergeStatus).toContain('reconciled to one physical property');
+    // Both providers are named on the surviving record.
+    expect(comp.source).toMatch(/LandPortal/);
+    expect(comp.source).toMatch(/Zillow/i);
+    // Facts the LandPortal row did not carry came across rather than vanishing.
+    expect(comp.address).toBe('1200 Clinton Rd, Weedsport, NY 13166');
+    expect(comp.county).toBe('Cayuga');
+    expect(comp.listing?.description.source?.text).toContain('sewer expansion');
+    expect((comp.photoUrls ?? []).length).toBeGreaterThan(0);
+    // LandPortal surface provenance survives the cross-provider merge.
+    expect(comp.fromLandPortalSidebar).toBe(true);
+    expect(comp.fromLandPortalShowOnMap).toBe(true);
+  });
+
+  // Two providers legitimately disagree on area (MLS acreage vs assessor
+  // acreage). Enriching field by field would put one provider's price over the
+  // other's acreage and publish a rate neither source ever stated.
+  it('never splices one provider’s price over another provider’s acreage', () => {
+    const ids = seedSubject();
+    // LandPortal states the whole pair: $129,000 over 16.88 ac.
+    seedClosedSale(ids, { addressDesc: '' });
+    new PropertyResearchStore().loadForProperty(ids.cardId);
+    getLandosDb().prepare(
+      `INSERT INTO landos_property_research_record (property_card_id, deal_card_id, canonical_key, record_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(ids.cardId, ids.dealCardId, `property-card:${ids.cardId}`, JSON.stringify({
+      contractVersion: 'canonical-property-research-v1',
+      propertyCardId: ids.cardId, dealCardId: ids.dealCardId,
+      canonicalKey: `property-card:${ids.cardId}`, identity: {}, facts: {},
+      evidence: [{
+        id: 'zillow:comp:otheracreage',
+        providerId: 'zillow', field: 'comparables.zillow.0', kind: 'comp',
+        value: {
+          // Same parcel, materially different stated area and its own rate.
+          apn: '052289 77.00-2-27.113', status: 'sold',
+          price: 200_000, acres: 5.05, pricePerAcre: 39_604,
+          address: '1200 Clinton Rd, Weedsport, NY 13166',
+          url: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983',
+        },
+        sourceUrl: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983',
+        strength: 'provider_observed', subjectClassification: 'context_only',
+        retrievedAt: '2026-08-03T22:47:18.904Z',
+      }],
+      lanes: {}, rejectedEvidence: [], createdAt: '2026-08-03', updatedAt: '2026-08-03',
+    }), '2026-08-03', '2026-08-03');
+
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    expect(view.counts.total).toBe(1);
+    const comp = view.comps[0];
+    // Whichever pair survived, the three figures agree with each other.
+    expect(comp.price).not.toBeNull();
+    expect(comp.acres).not.toBeNull();
+    expect(Math.round(comp.price! / comp.acres!)).toBe(Math.round(comp.pricePerAcre!));
+    // And it is one source's pair, never a splice of both.
+    const pairs = [[129000, 16.88], [200000, 5.05]];
+    expect(pairs.some(([p, a]) => comp.price === p && comp.acres === a)).toBe(true);
+    // The enrichment that IS safe still happened.
+    expect(comp.address).toBe('1200 Clinton Rd, Weedsport, NY 13166');
+  });
+
+  it('reads area leads off the merged comp write-up without asserting them of the subject', () => {
+    const ids = seedSubject();
+    seedClosedSale(ids, { addressDesc: '' });
+    new PropertyResearchStore().loadForProperty(ids.cardId);
+    getLandosDb().prepare(
+      `INSERT INTO landos_property_research_record (property_card_id, deal_card_id, canonical_key, record_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(ids.cardId, ids.dealCardId, `property-card:${ids.cardId}`, JSON.stringify({
+      contractVersion: 'canonical-property-research-v1',
+      propertyCardId: ids.cardId, dealCardId: ids.dealCardId,
+      canonicalKey: `property-card:${ids.cardId}`, identity: {}, facts: {},
+      evidence: [{
+        id: 'realtor:comp:leads',
+        providerId: 'realtor', field: 'comparables.realtor.0', kind: 'comp',
+        value: {
+          address: '9 Ridge Rd, Weedsport, NY 13166', status: 'sold', price: 88000, acres: 9.6,
+          description: 'County sewer expansion is scheduled to reach this road next year. The parcel is deed restricted with no mobile homes.',
+          url: 'https://www.realtor.com/realestateandhomes-detail/9-Ridge-Rd',
+        },
+        sourceUrl: 'https://www.realtor.com/realestateandhomes-detail/9-Ridge-Rd',
+        strength: 'provider_observed', subjectClassification: 'context_only',
+        retrievedAt: '2026-08-03T22:47:18.904Z',
+      }],
+      lanes: {}, rejectedEvidence: [], createdAt: '2026-08-03', updatedAt: '2026-08-03',
+    }), '2026-08-03', '2026-08-03');
+
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    const sewer = view.marketLeads.find((lead) => lead.topic === 'utilities_expansion')!;
+    expect(sewer.excerpt).toContain('sewer expansion');
+    expect(sewer.provider).toMatch(/realtor/i);
+    expect(sewer.compLabel).toContain('9 Ridge Rd');
+    // The whole point: an area lead is never promoted to a subject fact.
+    for (const lead of view.marketLeads) expect(lead.status).toBe('unverified_area_lead');
+    expect(view.marketLeads.some((lead) => lead.topic === 'restrictions')).toBe(true);
   });
 });
 
@@ -580,6 +750,151 @@ describe('proximity-first distance and radius disclosure', () => {
     expect(comp.locationResolved).toBe(true);
     expect(comp.locationMethod).toBe('address_geocode');
     expect(comp.locationSource).toContain('US Census');
+    expect(comp.distanceMiles).toBe(haversineMiles(SUBJECT_POINT, CLINTON_POINT));
+  });
+});
+
+// Retained-comp location reconciliation on the operator surface. LandOS must
+// reconcile a retained comp's identity and location evidence BEFORE it reports
+// that the record cannot be placed — and must still leave a record with no
+// legitimate location explicitly unresolved.
+describe('retained-comp location reconciliation', () => {
+  const ZILLOW_CAPTURE = '200 sqftHouse for sale11892 Cabin Ln, Rapid City, MI 49676';
+  const ZILLOW_URL = 'https://www.zillow.com/homedetails/11892-Cabin-Ln-Rapid-City-MI-49676/106223486_zpid/';
+  const CABIN_POINT = { lat: 44.8412, lng: -85.3121 };
+
+  function seedZillowEvidence(ids: { dealCardId: number; cardId: number }) {
+    new PropertyResearchStore().loadForProperty(ids.cardId); // ensure tables
+    getLandosDb().prepare(
+      `INSERT INTO landos_property_research_record (property_card_id, deal_card_id, canonical_key, record_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(ids.cardId, ids.dealCardId, `property-card:${ids.cardId}`, JSON.stringify({
+      contractVersion: 'canonical-property-research-v1',
+      propertyCardId: ids.cardId,
+      dealCardId: ids.dealCardId,
+      canonicalKey: `property-card:${ids.cardId}`,
+      identity: {}, facts: {},
+      evidence: [{
+        id: `zillow:${ZILLOW_URL}`,
+        providerId: 'zillow', field: 'comparables.zillow.0', kind: 'comp',
+        // The real capture shape: the address is glued to the listing card text.
+        value: { address: ZILLOW_CAPTURE, price: 1495000, acres: null, url: ZILLOW_URL, status: 'active' },
+        sourceUrl: ZILLOW_URL,
+        strength: 'provider_observed', subjectClassification: 'context_only', retrievedAt: '2026-08-11T21:13:44.575Z',
+      }],
+      lanes: {}, rejectedEvidence: [], createdAt: '2026-08-11', updatedAt: '2026-08-11',
+    }), '2026-08-11', '2026-08-11');
+  }
+
+  it('places a listing whose captured text carries provider chrome, using its reconciled address', () => {
+    const ids = seedSubject({ withCoords: true });
+    seedZillowEvidence(ids);
+    // The retained geocode is keyed by the REAL address, which is exactly why
+    // the raw-capture lookup could never reach it.
+    getLandosDb().prepare(
+      `INSERT INTO landos_geocode_cache (address_key, lat, lng, provider, created_at) VALUES (?, ?, ?, 'us_census', strftime('%s','now'))`,
+    ).run('11892 cabin ln, rapid city, mi 49676', CABIN_POINT.lat, CABIN_POINT.lng);
+
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    const comp = view.comps.find((row) => row.sourceUrl === ZILLOW_URL)!;
+    expect(comp.locationResolved).toBe(true);
+    expect(comp.lat).toBe(CABIN_POINT.lat);
+    expect(comp.locationAddress).toBe('11892 Cabin Ln, Rapid City, MI 49676');
+    expect(comp.locationUnresolvedReason).toBeNull();
+    expect(comp.distanceMiles).not.toBeNull();
+    // The canonical operator address strips listing-card UI chrome while the
+    // improved-property classification still uses the same evidence.
+    expect(comp.address).toBe('11892 Cabin Ln, Rapid City, MI 49676');
+    expect(comp.address).not.toMatch(/sqft|house for sale/i);
+    expect(comp.category).toBe('improved_context');
+    expect(view.mapCounts.retained).toBe(view.mapCounts.mapped + view.mapCounts.unresolved);
+    expect(view.mapCounts.mapped).toBe(1);
+  });
+
+  it('leaves the same listing unresolved, with a reason, when no retained location exists for it', () => {
+    const ids = seedSubject({ withCoords: true });
+    seedZillowEvidence(ids);
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    const comp = view.comps.find((row) => row.sourceUrl === ZILLOW_URL)!;
+    expect(comp.locationResolved).toBe(false);
+    expect(comp.lat).toBeNull();
+    expect(comp.lng).toBeNull();
+    expect(comp.distanceMiles).toBeNull();
+    expect(comp.locationAddress).toBe('11892 Cabin Ln, Rapid City, MI 49676');
+    expect(comp.locationUnresolvedReason).toContain('11892 Cabin Ln');
+    expect(view.mapCounts.unresolved).toBe(1);
+  });
+
+  it('tells the operator the location check already ran and missed, once a miss is on record', () => {
+    const ids = seedSubject({ withCoords: true });
+    seedZillowEvidence(ids);
+    // A recorded miss: the cache row exists with no point.
+    getLandosDb().prepare(
+      `INSERT INTO landos_geocode_cache (address_key, lat, lng, provider, created_at) VALUES (?, NULL, NULL, 'listing_and_geocode_v2', strftime('%s','now'))`,
+    ).run('11892 cabin ln, rapid city, mi 49676');
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    const comp = view.comps.find((row) => row.sourceUrl === ZILLOW_URL)!;
+    expect(comp.locationResolved).toBe(false);
+    expect(comp.locationUnresolvedReason).toMatch(/already ran/i);
+    expect(comp.locationUnresolvedReason).not.toMatch(/Run the location check/i);
+  });
+
+  it('leaves an APN-only comp unresolved and explains that a parcel number is not a location', () => {
+    const ids = seedSubject({ withCoords: true });
+    // The 9490 Elk Lake Rd shape: LandPortal retained the parcel and the price,
+    // and no address or coordinate at all.
+    seedClosedSale(ids, {
+      addressDesc: '', apn: '08-002-001-00', county: 'Grand Traverse', state: 'MI',
+      sourceUrl: 'https://landportal.com/?property=Zmlwcz0yNjA1NQ',
+      price: 1100000, acres: 85.32, saleOrListDate: '2026-02-12', notes: '',
+      sourceAttributions: [{ provider: 'Hermes / LandPortal', url: null }],
+    });
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    const comp = view.comps.find((row) => row.apn === '08-002-001-00')!;
+    expect(comp.locationResolved).toBe(false);
+    expect(comp.lat).toBeNull();
+    expect(comp.locationAddress).toBeNull();
+    expect(comp.locationUnresolvedReason).toContain('08-002-001-00');
+    expect(comp.locationUnresolvedReason).toMatch(/identity, not a location/i);
+    expect(view.mapCounts.retained).toBe(view.mapCounts.mapped + view.mapCounts.unresolved);
+    expect(view.mapCounts.mapped).toBe(0);
+  });
+
+  it('never resolves a chrome capture that the record’s own source URL does not corroborate', () => {
+    const ids = seedSubject({ withCoords: true });
+    seedClosedSale(ids, {
+      addressDesc: ZILLOW_CAPTURE,
+      // A URL for a DIFFERENT property can never corroborate this address.
+      sourceUrl: 'https://www.zillow.com/homedetails/5312-Samels-Rd-Williamsburg-MI-49690/91699149_zpid/',
+      apn: '', county: 'Grand Traverse', state: 'MI', notes: '',
+      sourceAttributions: [{ provider: 'Zillow', url: null }],
+    });
+    getLandosDb().prepare(
+      `INSERT INTO landos_geocode_cache (address_key, lat, lng, provider, created_at) VALUES (?, ?, ?, 'us_census', strftime('%s','now'))`,
+    ).run('11892 cabin ln, rapid city, mi 49676', CABIN_POINT.lat, CABIN_POINT.lng);
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    const comp = view.comps.find((row) => row.address === ZILLOW_CAPTURE)!;
+    expect(comp.locationResolved).toBe(false);
+    expect(comp.lat).toBeNull();
+    expect(comp.locationAddress).toBeNull();
+    expect(comp.locationUnresolvedReason).toContain('not a postal address');
+  });
+
+  it('keeps the retained point when duplicate observations merge and only one side resolved', () => {
+    const ids = seedSubject({ withCoords: true });
+    // Same parcel from two sources: the ranked winner has no point, the other does.
+    seedClosedSale(ids);
+    seedClosedSale(ids, {
+      sourceLabel: 'Zillow',
+      sourceUrl: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983',
+      lat: CLINTON_POINT.lat, lng: CLINTON_POINT.lng,
+      notes: '', sourceAttributions: [{ provider: 'Zillow', url: null }],
+    });
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    expect(view.duplicatesMerged).toBeGreaterThanOrEqual(1);
+    const comp = view.comps.find((row) => row.apn === '052289 77.00-2-27.113')!;
+    expect(comp.locationResolved).toBe(true);
+    expect(comp.lat).toBe(CLINTON_POINT.lat);
     expect(comp.distanceMiles).toBe(haversineMiles(SUBJECT_POINT, CLINTON_POINT));
   });
 });

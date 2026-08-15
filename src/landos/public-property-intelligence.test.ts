@@ -97,6 +97,48 @@ describe('parcel identity gate', () => {
       resolutionStatus: 'provisional',
     }).reasonCode).toBe('parcel_not_confirmed');
   });
+
+  // ── The LandPortal discovery path is a parcel source ────────────────────
+  // 5170 Hwy 60, Birchwood TN. Hamilton County has no routed official parcel
+  // service, so `resolvedApn` stays empty while the authenticated LandPortal
+  // panel has verified the APN in county FIPS 47065. Screening must run on that
+  // evidence — it is exactly what `discoveryUsable` and the
+  // `parcel_discovery_established` branch exist for, and what invariant 2
+  // accepts. The unconditional not-resolved block above used to reject the
+  // subject before that branch could be reached.
+  it('runs screening on a parcel established by LandPortal when no official service resolved it', () => {
+    const gate = evaluatePublicIntelligenceGate({
+      ...PUBLIC_INTELLIGENCE_FIXTURE_SUBJECT,
+      requestedApn: '023 003.02',
+      resolvedApn: undefined,
+      resolutionStatus: 'provisional',
+      discoveryUsable: true,
+    });
+    expect(gate.allowed).toBe(true);
+    expect(gate.reasonCode).toBe('parcel_discovery_established');
+  });
+
+  it('still blocks a requested APN that no parcel source established at all', () => {
+    expect(evaluatePublicIntelligenceGate({
+      ...PUBLIC_INTELLIGENCE_FIXTURE_SUBJECT,
+      requestedApn: '023 003.02',
+      resolvedApn: undefined,
+      resolutionStatus: 'provisional',
+      discoveryUsable: false,
+    }).reasonCode).toBe('requested_apn_not_resolved');
+  });
+
+  it('still hard-stops when an official service resolved a different APN', () => {
+    // Discovery evidence never softens invariant 2: two identifiers that
+    // disagree stop everything downstream, discoveryUsable or not.
+    expect(evaluatePublicIntelligenceGate({
+      ...PUBLIC_INTELLIGENCE_FIXTURE_SUBJECT,
+      requestedApn: '023 003.02',
+      resolvedApn: 'EX-999-111',
+      resolutionStatus: 'provisional',
+      discoveryUsable: true,
+    }).reasonCode).toBe('apn_hard_conflict');
+  });
 });
 
 describe('public property intelligence fixture contract', () => {

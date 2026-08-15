@@ -2840,6 +2840,12 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         await sleep(1400);
         let closeParcelPath: string | null = null;
         if (!opts.captureLabels || opts.captureLabels.includes('close_parcel_aerial')) {
+          // Full-boundary rule: a bare "Fit" fills the frame edge-to-edge, and
+          // for a long/narrow/irregular parcel the isolated map viewport then
+          // CLIPS the boundary (proven live on the 40.5 ac Hwy 60 strip). One
+          // step out from Fit keeps the close read while guaranteeing the
+          // entire boundary sits inside the frame with padding on every side.
+          await zoomOutParcelMap(1);
           const closeFile = path.join(dir, `landportal-close-${Date.now()}.png`);
           if (await captureMapViewport(closeFile, 'parcel_context')) closeParcelPath = closeFile;
         }

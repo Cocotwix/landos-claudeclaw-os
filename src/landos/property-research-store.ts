@@ -4,6 +4,7 @@
 // the canonical JSON is a monotonic projection: failures, blanks, context-only
 // observations, and weaker evidence can never erase a stronger retained fact.
 
+import type Database from 'better-sqlite3';
 import { getLandosDb } from './db.js';
 import {
   type CanonicalPropertyInput,
@@ -19,6 +20,7 @@ import {
   saveSubjectListingDetail,
   type SubjectListingDiscoveryResult,
 } from './subject-listing-store.js';
+import { upsertNormalizedComp } from './comps.js';
 
 const STRENGTH: Readonly<Record<PropertyEvidenceStrength, number>> = {
   context_only: 0,
@@ -304,6 +306,61 @@ function parseRecord(value: unknown): CanonicalPropertyResearchRecord | null {
 export function resetPropertyResearchStoreCache(): void {
   ensuredDb = null;
 }
+function persistSoldImprovedEvidence(
+  db: Database.Database,
+  result: PropertyProviderResult,
+  retained: NormalizedPropertyEvidence[],
+): void {
+  const retainedIds = new Set(retained.map((item) => item.id));
+  const deal = db.prepare('SELECT entity FROM landos_deal_card WHERE id = ?').get(result.input.dealCardId) as { entity?: string } | undefined;
+  const entity = (deal?.entity || 'TY_LAND_BIZ') as Parameters<typeof upsertNormalizedComp>[0]['entity'];
+  for (const item of result.evidence) {
+    if (item.kind !== 'comp' || !retainedIds.has(item.id)) continue;
+    const value = item.value && typeof item.value === 'object' ? item.value as Record<string, unknown> : {};
+    const status = String(value.status ?? '').toLowerCase();
+    const price = typeof value.price === 'number' && value.price > 0 ? value.price : null;
+    const sqft = typeof value.buildingSqft === 'number' && value.buildingSqft > 0
+      ? value.buildingSqft
+      : typeof value.homeSizeSqft === 'number' && value.homeSizeSqft > 0 ? value.homeSizeSqft : null;
+    const typeText = [value.propertyType, value.description].filter((v): v is string => typeof v === 'string').join(' ');
+    const improved = sqft != null || /\b(?:single[- ]family|house|home|residence|dwelling|condo|townhouse|bed(?:room)?s?|bath(?:room)?s?)\b/i.test(typeText);
+    if (status !== 'sold' || price == null || sqft == null || !improved) continue;
+    const address = typeof value.address === 'string' ? value.address.trim() : '';
+    if (!address) continue;
+    const sourceUrl = typeof value.url === 'string' && value.url ? value.url : item.sourceUrl;
+    const acres = typeof value.acres === 'number' && value.acres > 0 ? value.acres : undefined;
+    const notes = [
+      `building ${Math.round(sqft).toLocaleString('en-US')} sqft`,
+      typeof value.notes === 'string' ? value.notes : null,
+      typeof value.caveat === 'string' ? value.caveat : null,
+      typeof value.discrepancies === 'string' ? value.discrepancies : null,
+    ].filter((v): v is string => !!v).join('. ');
+    upsertNormalizedComp({
+      entity,
+      dealCardId: result.input.dealCardId,
+      cardId: result.input.propertyCardId,
+      sourceLabel: result.providerId as Parameters<typeof upsertNormalizedComp>[0]['sourceLabel'],
+      canonicalSource: result.providerId,
+      sourceUrl: sourceUrl ?? undefined,
+      addressDesc: address,
+      state: typeof value.state === 'string' ? value.state : result.input.state ?? undefined,
+      city: typeof value.city === 'string' ? value.city : result.input.city ?? undefined,
+      zip: typeof value.zip === 'string' ? value.zip : result.input.zip ?? undefined,
+      price,
+      priceKind: 'sale',
+      saleOrListDate: typeof value.saleDate === 'string' ? value.saleDate : undefined,
+      acres,
+      notes,
+      addedBy: `provider/${result.providerId}`,
+      status: 'verified_sale',
+      propertyClass: 'improved',
+      classification: typeof value.propertyType === 'string' ? value.propertyType : 'improved',
+      sourceAttributions: [{ provider: result.providerId, url: sourceUrl ?? null }],
+      canonicalKey: `sold-improved:${address.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`,
+    });
+  }
+}
+
 
 export class PropertyResearchStore {
   loadForProperty(propertyCardId: number): CanonicalPropertyResearchRecord | null {
@@ -374,6 +431,7 @@ export class PropertyResearchStore {
         JSON.stringify(persistence),
       );
       if (!merged.accepted) return;
+      persistSoldImprovedEvidence(db, result, merged.record.evidence);
       db.prepare(`
         INSERT INTO landos_property_research_record (
           property_card_id, deal_card_id, canonical_key, record_json, created_at, updated_at

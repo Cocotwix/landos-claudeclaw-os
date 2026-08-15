@@ -22,6 +22,282 @@ export function planCompDrilldown(comps: LandPortalSidebarComp[], subject: { fip
 }
 
 export interface LandPortalCompDetail { address?: string | null; city?: string | null; state?: string | null; zip?: string | null; apn?: string | null; acres?: number | null; price?: number | null; saleDate?: string | null; pricePerAcre?: number | null; lat?: number | null; lng?: number | null; imageUrl?: string | null; imageSourceLabel?: string | null; detailUrl?: string | null }
+
+// ── The comparable sidebar's own payload ─────────────────────────────────────
+//
+// LandPortal's LP Estimate sidebar does not merely render five price/acre/APN
+// rows: its "Show on Map" control carries the whole comparable set as a
+// URL-encoded JSON payload in `data-similars`, and that payload states each
+// comparable's situs coordinates, situs ZIP, municipality, MLS status and
+// LandPortal's own distance to the subject.
+//
+// LandOS previously read only the visible row text, so five comparables were
+// retained carrying an APN and nothing that could place them. This is the
+// same approved surface — the subject page's comparable sidebar — read
+// completely instead of partially. Nothing here searches, navigates, or
+// derives a location: every field below is stated by LandPortal.
+//
+// A comparable's own property page is a separate, richer surface that would add
+// the street address. It is NOT reachable by opening the comparable in a new tab
+// or by navigating away: LandPortal holds its authenticated app session per tab,
+// so both drop straight to the logged-out teaser. That constraint is why the
+// address is absent here rather than invented.
+
+/** One comparable exactly as LandPortal's sidebar payload states it. */
+export interface LandPortalSimilarRow {
+  apn?: string | null;
+  fips?: string | null;
+  propertyid?: number | string | null;
+  mls_propertyid?: number | string | null;
+  mls_status?: string | null;
+  mls_dom?: number | null;
+  new_date?: string | null;
+  mls_price?: number | null;
+  mls_priceperacre?: number | null;
+  price_acres?: number | null;
+  area_acres?: number | null;
+  vacant?: boolean | null;
+  propertyclassid?: string | null;
+  landusecode?: string | null;
+  situszip5?: string | null;
+  municipality?: string | null;
+  situslatitude?: number | null;
+  situslongitude?: number | null;
+  /** LandPortal's own subject-to-comparable distance, in miles. */
+  distance?: number | null;
+}
+
+export interface LandPortalSimilarComp {
+  row: LandPortalSimilarRow;
+  sidebar: LandPortalSidebarComp;
+  detail: LandPortalCompDetail;
+  /** LandPortal's own stated distance. Never LandOS's computed one. */
+  statedDistanceMiles: number | null;
+  /** Operator-readable trace of what this payload actually stated. */
+  evidenceLine: string;
+}
+
+const finiteNumber = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value
+    : typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
+
+const trimmed = (value: unknown): string | null => {
+  const text = typeof value === 'string' ? value.trim() : typeof value === 'number' ? String(value) : '';
+  return text ? text : null;
+};
+
+/** Latitude/longitude LandPortal published for this parcel, or null. Zero is
+ *  refused: a null island coordinate is a missing value, not a location. */
+function situsPoint(row: LandPortalSimilarRow): { lat: number; lng: number } | null {
+  const lat = finiteNumber(row.situslatitude);
+  const lng = finiteNumber(row.situslongitude);
+  if (lat == null || lng == null) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180 || (lat === 0 && lng === 0)) return null;
+  return { lat, lng };
+}
+
+/**
+ * Read the comparable sidebar payload. Accepts the raw `data-similars`
+ * attribute (URL-encoded JSON), a decoded JSON string, or the parsed array.
+ * A row without an APN is dropped: LandOS cannot bind location evidence to a
+ * parcel it cannot identify (PERMANENT_MEMORY invariant 2).
+ */
+export function parseLandPortalSimilars(input: unknown): LandPortalSimilarComp[] {
+  let rows: unknown = input;
+  if (typeof rows === 'string') {
+    const text = rows.trim();
+    if (!text) return [];
+    let decoded = text;
+    if (!/^\s*\[/.test(text)) {
+      try { decoded = decodeURIComponent(text); } catch { return []; }
+    }
+    try { rows = JSON.parse(decoded); } catch { return []; }
+  }
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((entry): LandPortalSimilarComp[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const row = entry as LandPortalSimilarRow;
+    const apn = trimmed(row.apn);
+    if (!apn) return [];
+    const point = situsPoint(row);
+    const acres = finiteNumber(row.area_acres);
+    const price = finiteNumber(row.mls_price);
+    const pricePerAcre = finiteNumber(row.mls_priceperacre) ?? finiteNumber(row.price_acres);
+    const saleDate = trimmed(row.new_date);
+    const zip = trimmed(row.situszip5);
+    const municipality = trimmed(row.municipality);
+    const statedDistance = finiteNumber(row.distance);
+    const stated = [
+      point ? `situs coordinates ${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}` : null,
+      zip ? `situs ZIP ${zip}` : null,
+      municipality ? `municipality ${municipality}` : null,
+      statedDistance != null ? `LandPortal-stated distance ${statedDistance.toFixed(2)} miles` : null,
+      trimmed(row.mls_status) ? `MLS status ${trimmed(row.mls_status)}` : null,
+    ].filter(Boolean);
+    return [{
+      row,
+      sidebar: {
+        propertyId: trimmed(row.propertyid),
+        apn,
+        price,
+        acres,
+        saleDate,
+        pricePerAcre,
+      },
+      detail: {
+        // LandPortal's comparable payload carries no street address. The
+        // municipality is a township name, not a postal city, so it is reported
+        // in provenance and never written into an address field.
+        address: null,
+        city: null,
+        state: null,
+        zip,
+        apn,
+        acres,
+        price,
+        saleDate,
+        pricePerAcre,
+        lat: point?.lat ?? null,
+        lng: point?.lng ?? null,
+      },
+      statedDistanceMiles: statedDistance,
+      evidenceLine: stated.length
+        ? `LandPortal's comparable sidebar payload states ${stated.join(', ')} for APN ${apn}.`
+        : `LandPortal's comparable sidebar payload identified APN ${apn} but stated no usable location field.`,
+    }];
+  });
+}
+
+export interface RetainedCompIdentity {
+  apn?: string | null;
+  price?: number | null;
+  acres?: number | null;
+  saleOrListDate?: string | null;
+  state?: string | null;
+}
+
+export interface SimilarReconciliation {
+  matched: boolean;
+  matchedOn: string[];
+  conflicts: string[];
+  reason: string;
+}
+
+/**
+ * Bind one sidebar payload row to one retained comparable.
+ *
+ * The APN is a hard gate, not a signal: LandPortal states each comparable's
+ * parcel number, and location evidence attaches only to the parcel that number
+ * identifies. Beyond that, at least one independent record fact — acreage,
+ * price, or sale date — must agree, so a parcel whose retained row describes a
+ * different transaction never silently absorbs another sale's coordinates.
+ */
+export function reconcileSimilarToRetainedComp(
+  similar: LandPortalSimilarComp,
+  retained: RetainedCompIdentity,
+): SimilarReconciliation {
+  const similarApn = compactApn(similar.row.apn);
+  const retainedApn = compactApn(retained.apn);
+  if (!similarApn || !retainedApn) {
+    return { matched: false, matchedOn: [], conflicts: [], reason: 'Reconciliation refused: one side carries no parcel number, and a comparable location is never attached without parcel identity.' };
+  }
+  if (similarApn !== retainedApn) {
+    return { matched: false, matchedOn: [], conflicts: ['APN differs'], reason: `Reconciliation refused: LandPortal APN ${similar.row.apn} is not the retained comparable's APN ${retained.apn}.` };
+  }
+  const matchedOn = ['APN'];
+  const conflicts: string[] = [];
+  const similarAcres = finiteNumber(similar.row.area_acres);
+  if (similarAcres != null && retained.acres != null) {
+    // LandPortal states calculated acreage to many decimals while the retained
+    // row often carries the rounded MLS figure; 1% absorbs that, not a
+    // genuinely different parcel size.
+    if (Math.abs(similarAcres - retained.acres) / Math.max(retained.acres, 0.01) <= 0.01) matchedOn.push('acreage');
+    else conflicts.push(`acreage differs (${similarAcres} vs ${retained.acres})`);
+  }
+  const similarPrice = finiteNumber(similar.row.mls_price);
+  if (similarPrice != null && retained.price != null) {
+    if (Math.abs(similarPrice - retained.price) / Math.max(retained.price, 1) <= 0.01) matchedOn.push('price');
+    else conflicts.push(`price differs (${similarPrice} vs ${retained.price})`);
+  }
+  const similarDate = trimmed(similar.row.new_date)?.slice(0, 10) ?? null;
+  const retainedDate = trimmed(retained.saleOrListDate)?.slice(0, 10) ?? null;
+  if (similarDate && retainedDate) {
+    if (similarDate === retainedDate) matchedOn.push('sale date');
+    else conflicts.push(`sale date differs (${similarDate} vs ${retainedDate})`);
+  }
+  const corroborating = matchedOn.filter((item) => item !== 'APN');
+  if (conflicts.length) {
+    return { matched: false, matchedOn, conflicts, reason: `Reconciliation refused despite the matching APN: ${conflicts.join('; ')}.` };
+  }
+  if (!corroborating.length) {
+    return { matched: false, matchedOn, conflicts, reason: 'Reconciliation unresolved: the APN matched but no acreage, price, or sale date was available on both sides to corroborate it.' };
+  }
+  return {
+    matched: true,
+    matchedOn,
+    conflicts,
+    reason: `Reconciled to the retained comparable on ${matchedOn.join(', ')}.`,
+  };
+}
+
+/**
+ * The persistence patch for one reconciled comparable: the location LandPortal
+ * stated, plus the distance LandOS computes from its own retained subject point.
+ * LandPortal's stated distance is recorded as corroboration, never substituted
+ * for the deterministic computation every other comparable is measured by.
+ */
+export interface LandPortalCompLocationUpdate {
+  apn: string;
+  lat: number | null;
+  lng: number | null;
+  zip: string | null;
+  distanceMiles: number | null;
+  statedDistanceMiles: number | null;
+  tierId: GeographicTierId;
+  weightMultiplier: number;
+  located: boolean;
+  provenance: string;
+  /** Exactly what is still missing when this comparable stays unplaced. */
+  remainingGap: string | null;
+}
+
+export function landPortalCompLocationUpdate(
+  similar: LandPortalSimilarComp,
+  reconciliation: SimilarReconciliation,
+  subject: { lat?: number | null; lng?: number | null },
+): LandPortalCompLocationUpdate | null {
+  if (!reconciliation.matched) return null;
+  const apn = (similar.row.apn ?? '').trim();
+  const point = situsPoint(similar.row);
+  const distanceMiles = point ? compDistanceMiles(subject, point) : null;
+  const tier = resolveGeographicTier(distanceMiles);
+  const municipality = trimmed(similar.row.municipality);
+  const agreement = point && similar.statedDistanceMiles != null && distanceMiles != null
+    ? ` LandPortal states ${similar.statedDistanceMiles.toFixed(2)} miles from its own subject centroid; LandOS measures ${distanceMiles.toFixed(1)} miles from the retained subject point.`
+    : '';
+  return {
+    apn,
+    lat: point?.lat ?? null,
+    lng: point?.lng ?? null,
+    zip: trimmed(similar.row.situszip5),
+    distanceMiles,
+    statedDistanceMiles: similar.statedDistanceMiles,
+    tierId: tier.id,
+    weightMultiplier: tier.weightMultiplier,
+    located: !!point,
+    provenance: [
+      `Location from LandPortal: ${similar.evidenceLine}`,
+      `${reconciliation.reason}`,
+      municipality ? `LandPortal municipality: ${municipality}.` : '',
+      point
+        ? `Placed from LandPortal's published situs coordinates; nothing was geocoded, approximated, or carried in from another property.${agreement}`
+        : 'LandPortal published no usable coordinate for this parcel, so it stays unplaced.',
+    ].filter(Boolean).join(' '),
+    remainingGap: point
+      ? 'No street address. LandPortal publishes the situs address only on the comparable\'s own authenticated property page, which its per-tab session makes unreachable from an automated navigation.'
+      : 'No coordinate and no street address were published for this parcel in the comparable sidebar payload.',
+  };
+}
 export interface CompLocationResolution { resolved: boolean; basis: 'coordinates' | 'address' | 'unresolved'; distanceMiles: number | null; tierId: GeographicTierId; weightMultiplier: number; statement: string }
 export interface EnrichedLandPortalComp { compKey: string; apn: string | null; address: string | null; city: string | null; state: string | null; zip: string | null; acres: number | null; price: number | null; pricePerAcre: number | null; saleDate: string | null; lat: number | null; lng: number | null; imageUrl: string | null; imageSourceLabel: string | null; detailUrl: string | null; drilledDown: boolean; provenance: string[]; locationResolution: CompLocationResolution }
 
@@ -256,7 +532,14 @@ export function buildLandPortalCompPersistence(comp: EnrichedLandPortalComp): { 
     price_kind: status.statusBasis === 'closed_sale' ? 'sale' : 'unknown',
     sale_or_list_date: comp.saleDate,
     acres: comp.acres,
-    price_per_acre: comp.pricePerAcre,
+    // Dollars per acre is DERIVED from the pair actually retained, never copied
+    // from a provider figure. A provider PPA is computed over the acreage that
+    // provider used, so carrying it across a corrected acreage publishes a
+    // rate neither the price nor the area supports: 044 068.01 held $550,000
+    // over 20.55 ac beside a $39,604/ac rate belonging to $200,000 over 5.05.
+    price_per_acre: comp.price != null && comp.acres != null && comp.acres > 0
+      ? comp.price / comp.acres
+      : comp.pricePerAcre,
     lat: comp.lat,
     lng: comp.lng,
     distance_miles: comp.locationResolution.distanceMiles,

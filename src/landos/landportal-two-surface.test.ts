@@ -77,6 +77,61 @@ describe('mergeLandPortalSurfaces', () => {
     expect(merged[0].saleDate).toBe('2025-04-02');
   });
 
+  // The map surface is opened and read precisely BECAUSE it publishes the
+  // detail the sidebar does not: coordinates, locality, the comp's own
+  // LandPortal identity and its detail page. Merging only price/status/address
+  // discarded every one of those for exactly the rows both surfaces agreed on.
+  it('keeps the detail fields only the Show on Map surface publishes', () => {
+    const merged = mergeLandPortalSurfaces(
+      [row({ apn: '115 02100', price: 153_500, acres: 13.1, surface: 'sidebar' })],
+      [row({
+        apn: '115 02100', address: '120 Old Ridge Rd, Kingston, TN 37763', status: 'sold',
+        lat: 35.8721, lng: -84.5088, city: 'Kingston', county: 'Roane', state: 'TN',
+        landPortalPropertyId: '172954755', fips: '47145', mlsPropertyId: 'MLS-88',
+        detailUrl: 'https://landportal.com/p/9', parcelAcres: 13.1, buildingSqft: 0,
+        improvementValue: 0, useDescription: 'Vacant residential land',
+        landMarketValue: 150_000, totalMarketValue: 150_000, surface: 'map',
+      })],
+    );
+    expect(merged).toHaveLength(1);
+    const only = merged[0];
+    expect(only.surface).toBe('both');
+    expect(only.lat).toBe(35.8721);
+    expect(only.lng).toBe(-84.5088);
+    expect(only.city).toBe('Kingston');
+    expect(only.county).toBe('Roane');
+    expect(only.state).toBe('TN');
+    expect(only.landPortalPropertyId).toBe('172954755');
+    expect(only.fips).toBe('47145');
+    expect(only.mlsPropertyId).toBe('MLS-88');
+    expect(only.detailUrl).toBe('https://landportal.com/p/9');
+    expect(only.useDescription).toBe('Vacant residential land');
+    expect(only.landMarketValue).toBe(150_000);
+    // The sidebar's own priced pair still governs; enrichment never overwrites.
+    expect(only.price).toBe(153_500);
+    expect(only.acres).toBe(13.1);
+  });
+
+  it('never lets the map surface overwrite a value the sidebar already established', () => {
+    const merged = mergeLandPortalSurfaces(
+      [row({ apn: '115 02100', price: 153_500, acres: 13.1, county: 'Roane', state: 'TN', lat: 35.1, lng: -84.1 })],
+      [row({ apn: '115 02100', county: 'Knox', state: 'KY', lat: 99, lng: 99 })],
+    );
+    expect(merged[0].county).toBe('Roane');
+    expect(merged[0].state).toBe('TN');
+    expect(merged[0].lat).toBe(35.1);
+    expect(merged[0].lng).toBe(-84.1);
+  });
+
+  it('treats an acreage conflict seen on either surface as a conflict', () => {
+    const merged = mergeLandPortalSurfaces(
+      [row({ apn: '115 02100', price: 1, acres: 17.75 })],
+      [row({ apn: '115 02100', acreageConflict: true, parcelAcres: 574 })],
+    );
+    expect(merged[0].acreageConflict).toBe(true);
+    expect(merged[0].parcelAcres).toBe(574);
+  });
+
   it('matches across surfaces even when APN spacing differs', () => {
     const merged = mergeLandPortalSurfaces(
       [row({ apn: '115 02100', price: 153_500, acres: 13.1 })],

@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { _initTestLandosDb } from './db.js';
 import { createDealCard } from './deal-card.js';
-import { upsertPropertyCard, savePropertyInspection, loadPropertyInspection } from './property-card.js';
+import { upsertPropertyCard, savePropertyInspection, loadPropertyInspection, getPropertyCardRow } from './property-card.js';
 import { linkPropertyToDeal } from './deal-card.js';
 import { collectComparables, collectParcelIdentity } from './property-intelligence-live.js';
 import { applyCompSourcePolicy } from './comp-source-policy.js';
@@ -183,7 +183,7 @@ describe('LandPortal primary comparable lane', () => {
     expect(outcome.data?.identity.explanation).toContain('Confirmed');
   });
 
-  it('hands back retained identity when an authenticated LandPortal capture exceeds its wait window', async () => {
+  it('hands back retained identity without blocking on an authenticated LandPortal capture that never lands', async () => {
     const { dealCardId } = seedCard();
     const outcome = await collectParcelIdentity(context(dealCardId), {
       landPortalCaptureWaitMs: 5,
@@ -192,7 +192,131 @@ describe('LandPortal primary comparable lane', () => {
       runPublicIntelligence: async () => ({ ok: true }),
     });
     expect(outcome.status).toBe('completed');
-    expect(outcome.data?.identity.explanation).toContain('LandPortal subject capture exceeded');
+    // The subject here is ALREADY confirmed, so Universal Property Resolution
+    // releases on the retained canonical record immediately and the capture is
+    // still in flight when the handback is written. That is reported as what it
+    // is — released early — rather than as an overrun the capture has not yet
+    // committed: at the moment this line is written the window has not expired.
+    expect(outcome.data?.identity.explanation).toContain('without waiting for the LandPortal subject capture');
+    expect(outcome.data?.identity.explanation).toContain('continues independently');
+    expect(outcome.data?.identity.explanation).not.toContain('LandPortal subject capture exceeded');
+  });
+
+  // ── The cold-lead identity race (cards 75, 76 and 77) ────────────────────
+  // The handoff window was 90s while a COLD parcel lookup — one searching from a
+  // bare street address with no APN, county or ZIP — routinely costs more. Card
+  // 77 (5170 Hwy 60) resolved its parcel at 220s: complete, correct, and 130s
+  // after the run had already recorded the subject as unresolved and gated off
+  // every screening lane. Three consecutive single-run leads died this way.
+  //
+  // These two tests pin the boundary from both sides so the window can never be
+  // quietly returned to a value below what the work actually costs.
+  it('does not abandon a cold LandPortal capture that runs longer than the old 90-second ceiling', async () => {
+    vi.useFakeTimers();
+    try {
+      const { dealCardId } = seedCard();
+      const pending = collectParcelIdentity(context(dealCardId), {
+        // No landPortalCaptureWaitMs: this asserts the SHIPPED default.
+        captureLandPortalInspection: () => new Promise((resolve) => {
+          setTimeout(() => resolve({ ok: true, note: 'captured', comparableCount: 0 }), 220_000);
+        }),
+        runPublicIntelligence: async () => ({ ok: true }),
+      });
+      await vi.advanceTimersByTimeAsync(220_001);
+      const outcome = await pending;
+      expect(outcome.status).toBe('completed');
+      expect(outcome.data?.identity.explanation).not.toContain('LandPortal subject capture exceeded');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The other side of the boundary. Shrinking the window back down must not
+  // reintroduce blocking: once the subject is established the handback is
+  // written from the retained record, and the configured window no longer gates
+  // it either way. A regression that made the run wait on the window again
+  // would fail here on the 220-second capture, not merely change the wording.
+  it('does not let a small configured window gate the handback once the subject is established', async () => {
+    vi.useFakeTimers();
+    try {
+      const { dealCardId } = seedCard();
+      const pending = collectParcelIdentity(context(dealCardId), {
+        landPortalCaptureWaitMs: 90_000,
+        captureLandPortalInspection: () => new Promise((resolve) => {
+          setTimeout(() => resolve({ ok: true, note: 'captured', comparableCount: 0 }), 220_000);
+        }),
+        runPublicIntelligence: async () => ({ ok: true }),
+      });
+      await vi.advanceTimersByTimeAsync(220_001);
+      const outcome = await pending;
+      expect(outcome.status).toBe('completed');
+      expect(outcome.data?.identity.explanation).toContain('without waiting for the LandPortal subject capture');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The straggler's evidence must not be stranded. When a capture DOES overrun,
+  // whatever parcel identity it eventually lands is reconciled onto the property
+  // card every research lane reads from — the step whose absence left card 77
+  // with a fully retrieved APN, FIPS, county and acreage that no lane could see.
+  it('promotes the identity of a capture that lands after the handoff window closed', async () => {
+    // Reconciliation cross-checks jurisdiction against the federal address file.
+    // That is correct in production and wrong in a test, so the lookup is failed
+    // fast here: the promotion under test comes from the provider's own
+    // canonical parcel key, which is exactly the offline path this must prove.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (() => Promise.reject(new Error('network disabled in test'))) as typeof fetch;
+    try {
+    const { dealCardId, cardId } = seedCard();
+    // A cold lead: no jurisdiction and no parcel identifier on the card.
+    upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', cardId, activeInputAddress: '5170 Hwy 60',
+      apn: '', county: '', state: 'TN', agentId: 'test',
+    } as Parameters<typeof upsertPropertyCard>[0]);
+
+    // The canonical LandPortal parcel key, exactly as the live capture returns
+    // it: base64 of `fips=…&apn=…&propertyid=…`.
+    const token = Buffer.from('fips=47065&apn=023+003.02&propertyid=172954755').toString('base64');
+    let releaseCapture: () => void = () => {};
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+
+    const outcome = await collectParcelIdentity(context(dealCardId), {
+      landPortalCaptureWaitMs: 5,
+      publicRefreshWaitMs: 5,
+      captureLandPortalInspection: async () => {
+        await captureGate;
+        savePropertyInspection(cardId, {
+          parcelUrl: `https://landportal.com/?property=${token}`,
+          parcelUrlRecord: {
+            url: `https://landportal.com/?property=${token}`,
+            source: 'test', capturedAt: new Date().toISOString(),
+            propertyCardId: cardId, dealCardId, verifiedSubject: true,
+            apn: '023 003.02', fips: '47065', propertyId: '172954755',
+          },
+          comparablesUrl: null,
+          parcelFacts: { 'Parcel ID': '023 003.02', 'Owner Name': 'CAMERON NATHANIEL JOSEPH', Acres: '40.500' },
+          assets: [], overlays: [], visualObservations: [], comparables: [],
+        } as Parameters<typeof savePropertyInspection>[1]);
+        return { ok: true, note: 'captured late', comparableCount: 0 };
+      },
+      runPublicIntelligence: async () => ({ ok: true }),
+    });
+    // The run handed back on the retained identity, as it must, and said so.
+    expect(outcome.data?.identity.explanation).toContain('without waiting for the LandPortal subject capture');
+
+    // Now the straggler lands. Its identity is reconciled onto the card without
+    // any further operator action or rerun.
+    releaseCapture();
+    await vi.waitFor(() => {
+      const card = getPropertyCardRow(cardId)!;
+      expect(String(card.apn)).toMatch(/023\s*003\.02/);
+      expect(String(card.fips)).toBe('47065');
+    }, { timeout: 5000 });
+    expect(loadPropertyInspection(cardId)?.parcelUrlRecord?.verifiedSubject).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   it('preserves historical disabled-provider rows in SQLite but never emits them in the current handback', async () => {

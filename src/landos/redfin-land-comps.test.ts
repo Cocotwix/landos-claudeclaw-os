@@ -138,7 +138,7 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
 
   it('retries from a wrong coordinate resolution to a verified subject-locality path', async () => {
     const input = { lat: 26.61, lng: -81.64, zip: '33971', city: 'Lehigh Acres', county: 'Lee', state: 'FL', subjectAcres: 0.25 };
-    expect(redfinSearchQueries(input).map((query) => query.kind)).toEqual(['coordinates', 'locality']);
+    expect(redfinSearchQueries(input).map((query) => query.kind)).toEqual(['coordinates', 'locality', 'zip', 'county']);
     let query = '';
     let current = '';
     const connect = async () => ({
@@ -164,5 +164,73 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
     expect(result.status).toBe('retrieved');
     expect(result.routeTried).toContain('/zipcode/33971/');
     expect(result.note).toMatch(/automatically correcting 1 wrong-geography route/i);
+  });
+});
+
+describe('place-path resolution refuses a same-state page that is not the subject market', () => {
+  const subject = { city: 'Williamsburg', county: 'Grand Traverse', state: 'MI', zip: '49690', subjectAcres: 60 };
+
+  it('offers a bare ZIP and a bare county route, which are the ones Redfin can answer', () => {
+    const kinds = redfinSearchQueries(subject).map((query) => query.kind);
+    expect(kinds).toContain('zip');
+    expect(kinds).toContain('county');
+    expect(redfinSearchQueries(subject).find((query) => query.kind === 'zip')?.query).toBe('49690');
+  });
+
+  it('never resolves a Grand Traverse subject onto Redfin\'s Detroit home-page link', async () => {
+    // Exactly the hrefs Redfin's home page carries in its popular-cities widget.
+    const homepageWidget = 'https://www.redfin.com/city/5665/MI/Detroit/newest-listings https://www.redfin.com/city/4664/OH/Columbus/newest-listings';
+    const connect = async () => ({
+      async newPage() {
+        return {
+          async setViewport() {},
+          async goto() {},
+          async evaluate(fn: unknown) {
+            const src = String(fn);
+            if (src.includes('scrollBy')) return undefined as never;
+            if (src.includes('search-box-input')) return true as never;
+            if (src.includes('press and hold')) return false as never;
+            if (src.includes('HomeCardContainer')) return [] as never;
+            if (src.includes('/city/')) return homepageWidget as never;
+            return undefined as never;
+          },
+        };
+      },
+      async close() {},
+    });
+    const result = await fetchRedfinLandComps(subject, { force: true, connect: connect as never, timeoutMs: 10, settleMs: 1, suggestionSettleMs: 1, scrollSettleMs: 1 });
+    expect(result.status).toBe('none');
+    expect(result.searchVerified).toBe(false);
+    expect(result.routes.every((route) => !route.url.includes('Detroit'))).toBe(true);
+    expect(result.note).toMatch(/never reached a verified land-search page/);
+  });
+
+  it('resolves the subject ZIP page the autocomplete does offer, and reports the search verified', async () => {
+    const dropdown = 'https://www.redfin.com/zipcode/49690 https://www.redfin.com/city/5665/MI/Detroit/newest-listings';
+    let current = '';
+    const connect = async () => ({
+      async newPage() {
+        return {
+          async setViewport() {},
+          async goto(url: string) { current = url; },
+          async evaluate(fn: unknown) {
+            const src = String(fn);
+            if (src.includes('scrollBy')) return undefined as never;
+            if (src.includes('search-box-input')) return true as never;
+            if (src.includes('press and hold')) return false as never;
+            if (src.includes('HomeCardContainer')) return [] as never;
+            if (src.includes('/city/')) return dropdown as never;
+            if (src.includes('document.title')) return { url: current, text: 'Williamsburg MI 49690 land for sale' } as never;
+            return undefined as never;
+          },
+        };
+      },
+      async close() {},
+    });
+    const result = await fetchRedfinLandComps(subject, { force: true, connect: connect as never, timeoutMs: 10, settleMs: 1, suggestionSettleMs: 1, scrollSettleMs: 1 });
+    expect(result.status).toBe('none');
+    expect(result.searchVerified).toBe(true);
+    expect(result.routes.some((route) => route.url.includes('/zipcode/49690/filter/property-type=land'))).toBe(true);
+    expect(result.note).toMatch(/published no in-band/);
   });
 });

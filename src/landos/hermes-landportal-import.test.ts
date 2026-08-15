@@ -236,6 +236,80 @@ describe('Hermes LandPortal import', () => {
     expect(loadPropertyInspection(target.card.id)?.assets).toHaveLength(1);
   });
 
+  // ── The visuals contract, and the batch it used to destroy ──────────────
+  // LandOS's own capture assignment names `landportal_overview` among the
+  // requested visuals and defines it as "an active parcel_context satellite
+  // frame". Hermes duly returned it in `requested_view`, and the importer threw
+  // on it — aborting the ENTIRE handback. On 5170 Hwy 60 that discarded the
+  // wetlands, flood, soil, contour, 3D, buildability and Street View captures
+  // along with it, which is why the workspace read "No 3D captures", "No
+  // contour capture" and "no Street View panorama is retained".
+  it('accepts landportal_overview as the parcel_context view it is defined to be', () => {
+    const target = subjectCard();
+    const file = fixture({
+      ...payload(),
+      completed_categories: ['subject', 'comps', 'visuals'],
+      visual_artifacts: [{
+        key: 'landportal_overview',
+        label: 'Exact parcel context',
+        kind: 'screenshot' as unknown as 'parcel_boundary',
+        purpose: 'Verify the exact subject boundary and immediate context.',
+        source_path: 'overview.png',
+        timestamp: '2026-08-02T14:00:20.000Z',
+        requested_view: 'landportal_overview' as unknown as 'parcel_context',
+        active_view: 'landportal_overview' as unknown as 'parcel_context',
+        boundary_required: true,
+        boundary_visible: true,
+        tiles_loaded: true,
+        camera_scale: 'parcel',
+        clipped: false,
+        obstructions: [],
+      }],
+    });
+    fs.writeFileSync(path.join(path.dirname(file), 'overview.png'), Buffer.alloc(9 * 1024, 3));
+
+    const imported = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+    expect(imported.importedVisualCount).toBe(1);
+    expect(imported.rejectedVisualCount).toBe(0);
+  });
+
+  it('drops only the unparseable artifact and still retains its siblings', () => {
+    const target = subjectCard();
+    const good = {
+      key: 'landportal_overview',
+      label: 'Exact parcel context',
+      kind: 'screenshot' as unknown as 'parcel_boundary',
+      purpose: 'Verify the exact subject boundary and immediate context.',
+      source_path: 'good.png',
+      timestamp: '2026-08-02T14:00:20.000Z',
+      requested_view: 'parcel_context',
+      active_view: 'parcel_context',
+      boundary_required: true,
+      boundary_visible: true,
+      tiles_loaded: true,
+      camera_scale: 'parcel',
+      clipped: false,
+      obstructions: [],
+    };
+    const file = fixture({
+      ...payload(),
+      completed_categories: ['subject', 'comps', 'visuals'],
+      // The unusable one comes FIRST, exactly as it did live: the rejection
+      // landed on visual_artifacts[0] and took everything after it down.
+      visual_artifacts: [
+        { ...good, key: 'broken', source_path: 'broken.png', requested_view: 'not_a_real_view' },
+        good,
+      ] as unknown as [],
+    });
+    fs.writeFileSync(path.join(path.dirname(file), 'good.png'), Buffer.alloc(9 * 1024, 4));
+
+    const imported = importHermesLandPortalFile(file, { propertyCardId: target.card.id });
+    expect(imported.importedVisualCount).toBe(1);
+    expect(imported.rejectedVisualCount).toBe(1);
+    // The surviving sibling is retained rather than lost with the bad one.
+    expect(loadPropertyInspection(target.card.id)?.assets).toHaveLength(1);
+  });
+
   it('does not retain a county-scale artifact under the Overview key', () => {
     const target = subjectCard();
     const file = fixture({

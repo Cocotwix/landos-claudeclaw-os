@@ -48,9 +48,9 @@ export function planOverviewCapture(input: { subjectAcres: number | null; roadNa
     view: 'parcel_context',
     zoomOutSteps: contextZoomOutSteps(input.subjectAcres),
     purpose: OVERVIEW_CAPTURE_KEY,
-    framingIntent: `Frame the complete subject parcel against ${road}, clearly showing their road relationship and any apparent access route connecting the road toward the parcel.`,
+    framingIntent: `Frame the complete subject parcel against ${road}, clearly showing their road relationship and any apparent access route connecting the road toward the parcel. The ENTIRE subject boundary must sit fully inside the frame with visible padding on every side; a long, narrow, irregular, very large, or very small parcel still has to fit completely — zoom out further whenever any boundary vertex approaches an edge. A capture with any part of the subject boundary cut off by a frame edge is clipped and unacceptable.`,
     mustShow: [
-      'Complete subject parcel boundary',
+      'Complete subject parcel boundary, fully inside the frame with padding on every side (never touching or crossing an edge)',
       `Nearest public road (${road})`,
       'Any apparent driveway or physical access route',
       'Immediately surrounding parcels for context',
@@ -72,6 +72,10 @@ export function assessOverviewFraming(artifact: {
   active_view?: string | null;
   requested_view?: string | null;
   boundary_visible?: boolean | null;
+  /** True only when EVERY boundary vertex is inside the frame with padding.
+   *  A capture reporting false is clipped and never accepted. Absent means an
+   *  older handback that never measured it; boundary_visible then governs. */
+  boundary_fully_in_frame?: boolean | null;
   tiles_loaded?: boolean | null;
   camera_scale?: string | null;
   clipped?: boolean | null;
@@ -80,6 +84,7 @@ export function assessOverviewFraming(artifact: {
   if (artifact.active_view !== 'parcel_context') return { accepted: false, reason: 'Overview rejected because the active view is not the required parcel-context map.' };
   if (artifact.camera_scale === 'county' || artifact.camera_scale === 'national') return { accepted: false, reason: `Overview rejected because ${artifact.camera_scale}-scale framing makes the parcel-road relationship unreadable.` };
   if (artifact.boundary_visible !== true) return { accepted: false, reason: 'Overview rejected because the complete subject parcel boundary is not visibly retained.' };
+  if (artifact.boundary_fully_in_frame === false) return { accepted: false, reason: 'Overview rejected because part of the subject boundary is cut off by a frame edge; the entire boundary must sit inside the frame with padding.' };
   if (artifact.tiles_loaded !== true) return { accepted: false, reason: 'Overview rejected because the satellite or map tiles were not fully loaded.' };
   if (artifact.clipped === true) return { accepted: false, reason: 'Overview rejected because the useful parcel-context map is clipped.' };
   const obstructions = (artifact.obstructions ?? []).filter(Boolean);

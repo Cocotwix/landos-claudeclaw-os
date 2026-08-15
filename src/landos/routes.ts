@@ -266,6 +266,10 @@ import { persistParcelIdentityFromResolution, confirmParcelForDeal, readParcelId
 import { resolveParcelParallel, type ParallelResolution } from './parallel-resolution.js';
 import { officialResolutionLane, landPortalResolutionLane } from './parallel-resolution-lanes.js';
 import { buildCompMapView } from './comp-map.js';
+import {
+  buildRetainedLocationIndex, compAddressKey, reconcileCompAddress,
+  type RetainedLocationRecord,
+} from './comp-location-reconciliation.js';
 import { buildResolutionSnapshot, writeResolutionSnapshot, readResolutionSnapshot } from './resolution-snapshot.js';
 import { getDealCardDd } from './deal-card-dd.js';
 import { getDealCardMarket } from './deal-card-market.js';
@@ -394,6 +398,7 @@ import { googleVisualStatus, googleVisualConfiguredResolved } from './providers/
 import { isLeadType } from './db.js';
 import { addComp, enrichCompCoordinates, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import { buildCompsValuationView, setCompValuationSelection, resolveCompsValuationLocations, type CompSelectionAction } from './comps-valuation.js';
+import { enrichRetainedCompListings } from './comp-listing-enrichment.js';
 import { buildOfficialParcelGisView } from './official-parcel-gis-view.js';
 import { runOfficialParcelGis } from './official-parcel-gis-run.js';
 import { buildLandUseView } from './land-use-view.js';
@@ -401,7 +406,7 @@ import { runLandUseResearch } from './land-use-run.js';
 import { buildPlatformCapabilityReport } from './gis-platform-registry.js';
 import { listPlatformProofs } from './gis-platform-knowledge.js';
 import { applyCompSourcePolicy } from './comp-source-policy.js';
-import { buildCompLaneAccountability, type CompLaneInput } from './comp-lane-accountability.js';
+import { buildCompLaneAccountability, type CompLaneInput, type CompLaneRouteOutcome } from './comp-lane-accountability.js';
 import {
   buildExactAddressQueries,
   classifyDiscoveryResult,
@@ -4980,30 +4985,56 @@ export function registerLandosRoutes(app: Hono): void {
       (report?.marketComps as unknown as ReportCompLanes) ?? null,
     );
 
-    // Coordinates: canonical registry/provider coordinates → persisted comp rows
-    // → previously retained geocode cache. Active enrichment belongs in a
-    // mutation/run workflow, never this owner-facing GET projection.
+    // Location evidence: canonical registry/provider coordinates → persisted comp
+    // rows → previously retained geocode cache, indexed under EVERY identity a
+    // record can be recognized by (registry key, parcel APN, reconciled address).
+    // Keying this join on the raw address alone silently unplaced every comp
+    // whose identity is an APN and every capture carrying provider listing
+    // chrome. Active enrichment belongs in a mutation/run workflow, never this
+    // owner-facing GET projection.
     const db = getLandosDb();
-    const norm = (a: string | null | undefined) => (a ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-    const coordsByAddress = new Map<string, { lat: number; lng: number }>();
-    for (const comp of [...registry.validatedSold, ...registry.validatedActive]) {
-      const key = norm(comp.address);
-      if (key && typeof comp.lat === 'number' && typeof comp.lng === 'number') {
-        coordsByAddress.set(key, { lat: comp.lat, lng: comp.lng });
-      }
+    const retainedUniques = [...registry.uniqueComps, ...registry.validatedSold, ...registry.validatedActive];
+    const locationRecords: RetainedLocationRecord[] = [];
+    for (const comp of retainedUniques) {
+      locationRecords.push({
+        key: comp.key,
+        apn: comp.apn,
+        state: comp.state,
+        address: comp.address,
+        sourceUrl: comp.primary.sourceUrls[0] ?? null,
+        lat: comp.lat,
+        lng: comp.lng,
+        source: comp.coordinateProvider ? `${comp.coordinateProvider} map point` : `${comp.providers[0] ?? 'Source'} map point`,
+      });
     }
     for (const r of listComps({ dealCardId: id })) {
-      if (!coordsByAddress.has(norm(r.address_desc)) && typeof r.lat === 'number' && typeof r.lng === 'number' && norm(r.address_desc)) {
-        coordsByAddress.set(norm(r.address_desc), { lat: r.lat, lng: r.lng });
-      }
+      locationRecords.push({
+        key: r.canonical_key || null,
+        apn: r.apn || null,
+        state: r.state || null,
+        address: r.address_desc || null,
+        sourceUrl: r.source_url || null,
+        lat: typeof r.lat === 'number' ? r.lat : null,
+        lng: typeof r.lng === 'number' ? r.lng : null,
+        source: `${r.source_label} map point`,
+      });
     }
-    const cacheGet = db.prepare('SELECT lat, lng FROM landos_geocode_cache WHERE address_key = ?');
-    for (const c of [...registry.validatedSold, ...registry.validatedActive]) {
-      const key = norm(c.address);
-      if (!key || coordsByAddress.has(key)) continue;
-      const cached = cacheGet.get(key) as { lat: number | null; lng: number | null } | undefined;
+    const cacheGet = db.prepare('SELECT lat, lng, provider FROM landos_geocode_cache WHERE address_key = ?');
+    for (const comp of retainedUniques) {
+      const postal = reconcileCompAddress({ capturedAddress: comp.address, sourceUrl: comp.primary.sourceUrls[0] ?? null });
+      const key = compAddressKey(postal?.postalAddress);
+      if (!key) continue;
+      const cached = cacheGet.get(key) as { lat: number | null; lng: number | null; provider: string } | undefined;
       if (typeof cached?.lat === 'number' && typeof cached?.lng === 'number') {
-        coordsByAddress.set(key, { lat: cached.lat, lng: cached.lng });
+        locationRecords.push({
+          key: comp.key,
+          apn: comp.apn,
+          state: comp.state,
+          address: postal?.postalAddress ?? comp.address,
+          lat: cached.lat,
+          lng: cached.lng,
+          source: `retained ${cached.provider} address geocode`,
+        });
       }
     }
     const retainedGeometry = new PublicIntelligenceStore().load(id)?.orchestration?.subjectGeometry;
@@ -5021,7 +5052,7 @@ export function registerLandosRoutes(app: Hono): void {
         polygon: subjectPolygon && subjectPolygon.length >= 3 ? subjectPolygon : null,
       },
       registry,
-      coords: { get: (address) => coordsByAddress.get(norm(address)) ?? null },
+      locations: buildRetainedLocationIndex(locationRecords),
     });
     return c.json({ compMap: view });
   });
@@ -7211,6 +7242,8 @@ export function registerLandosRoutes(app: Hono): void {
               : 'none';
       return {
         status: resultStatus,
+        laneRoutes: [...soldResult.routes, ...activeResult.routes],
+        searchVerified: soldResult.searchVerified || activeResult.searchVerified,
         note: `Sold board: ${soldResult.note} Active board: ${activeResult.note}`,
         sold: soldResult.comps.filter((comp) => comp.status === 'sold').map((comp) => ({
           address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
@@ -7272,6 +7305,8 @@ export function registerLandosRoutes(app: Hono): void {
       });
       return {
         status: resultStatus,
+        laneRoutes: [...soldResult.routes, ...activeResult.routes],
+        searchVerified: soldResult.searchVerified || activeResult.searchVerified,
         note: `Sold board: ${soldResult.note} Active board: ${activeResult.note}`,
         sold: soldResult.comps.filter((comp) => comp.status === 'sold').map(project),
         active: activeResult.comps.filter((comp) => comp.status === 'active').map(project),
@@ -8882,7 +8917,10 @@ export function registerLandosRoutes(app: Hono): void {
         const inputFor = (lane: 'zillow' | 'redfin' | 'realtor'): CompLaneInput => {
           const raw = researchRecord?.lanes?.[lane];
           const statusEvidence = researchRecord?.evidence?.find((entry) => entry.providerId === lane && entry.field === `comparables.${lane}.attempt_status`);
-          const stated = statusEvidence?.value as { status?: string; note?: string | null; candidates?: number } | undefined;
+          const stated = statusEvidence?.value as {
+            status?: string; note?: string | null; candidates?: number;
+            searchVerified?: boolean | null; laneRoutes?: CompLaneRouteOutcome[] | null;
+          } | undefined;
           const candidateEvidence = researchRecord?.evidence?.filter((entry) => entry.providerId === lane && entry.kind === 'comp') ?? [];
           const candidates = raw
             ? typeof stated?.candidates === 'number' && Number.isFinite(stated.candidates) ? stated.candidates : candidateEvidence.length
@@ -8899,6 +8937,11 @@ export function registerLandosRoutes(app: Hono): void {
             retained: raw && candidates != null ? Math.min(candidates, retainedFor(new RegExp(lane, 'i'))) : null,
             filteredReasons: candidates != null && candidates > 0 && retainedFor(new RegExp(lane, 'i')) === 0
               ? ['Returned candidates did not survive the vacant-land comparable policy.'] : [],
+            // Route evidence is only claimed when the lane actually recorded it.
+            // A run that predates the instrumentation stays silent about
+            // verification rather than asserting either answer.
+            searchVerified: typeof stated?.searchVerified === 'boolean' ? stated.searchVerified : null,
+            routes: Array.isArray(stated?.laneRoutes) ? stated.laneRoutes : [],
           };
         };
         const landPortalAttempted = (linkInspection?.sources ?? []).some((source) => source.provider === 'LandPortal' && !!source.attemptedAt)
@@ -9129,6 +9172,15 @@ export function registerLandosRoutes(app: Hono): void {
       streetView: propertyIntelligence.streetView,
       marketContext: marketContextFor(deal),
     });
+  });
+  // Read-only provider-page revisit followed by identity-gated local enrichment.
+  // This never runs a marketplace search and never changes comp classification or valuation selection.
+  app.post('/api/landos/deal-cards/:id/comps-valuation/enrich-listings', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const results = await enrichRetainedCompListings(id);
+    return c.json({ results, compsValuation: buildCompsValuationView(id) });
   });
 
   // Operator valuation-comp selection: include / exclude (with reason) /
