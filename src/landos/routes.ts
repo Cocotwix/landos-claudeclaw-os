@@ -146,7 +146,8 @@ import { getCountySources } from './county-source-map.js';
 import { officialDomainScore, searchEngineUrl, sourceContradictsRequestedState, unwrapSearchResults } from './netr-routing.js';
 // Exact-address discovery reads engines and listing pages through the dedicated
 // LandOS browser; the engines and the listing hosts both refuse a bare fetch.
-import { extractLinks, htmlToText as htmlBodyToText } from './gis-transport.js';
+import { defaultGovFetchText, extractLinks, htmlToText as htmlBodyToText } from './gis-transport.js';
+import { createHermesFreeSearch } from './hermes-free-search.js';
 import { createBackgroundBrowserFetchText } from './gov-browser-transport.js';
 import { withOwnedPages } from './browser-owned-pages.js';
 import { CountyCapabilityRegistry } from './county-capability-registry.js';
@@ -7360,6 +7361,26 @@ export function registerLandosRoutes(app: Hono): void {
         : [];
       return { facts, summary: matrix ? 'Market Matrix assembled for the subject market.' : 'No Market Matrix is available for this market yet.' };
     },
+    // The Universal Resolver's indexed-web identity lane.
+    //
+    // SEARCH runs on the governed free, keyless capability LandOS already
+    // selected (`freeSearch.selected = duckduckgo-search`, pinned ddgs in the
+    // Hermes venv) — no browser, no CDP, no API key, no paid credit. PAGES are
+    // opened with the same government text transport `official-source-discovery`
+    // uses. It answers one question, which exact parcel this lead refers to,
+    // and it establishes nothing on its own: the resolver's identity gate does.
+    indexedWebIdentity: {
+      search: createHermesFreeSearch(),
+      fetchText: defaultGovFetchText,
+      maxQueries: 3,
+      maxPages: 3,
+      timeoutMs: 20_000,
+    },
+    // Jurisdiction enrichment on the U.S. Census Bureau's own geography
+    // services: keyless, free, no browser. Every official parcel source is
+    // selected by county, so a lead that names only a town cannot reach one
+    // until this lane settles.
+    jurisdictionEnrichment: { timeoutMs: 15_000 },
   });
 
   // ── The Deal Intelligence parent mission (Phase 5) ─────────────────────────

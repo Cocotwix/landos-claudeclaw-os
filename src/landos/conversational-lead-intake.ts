@@ -1,6 +1,7 @@
 import { buildSmartIntake, type DealIntelItem, type SmartIntake } from './smart-intake.js';
 import { extractSellerIdentity, formatAddressLabel, sanitizeLocalityCandidate } from './lead-identity.js';
 import { extractSafePhone } from './contact-phone.js';
+import { extractParcelNotations, type ParcelNotation } from './parcel-notation.js';
 
 export interface ConversationalLeadIntake {
   rawInput: string;
@@ -17,6 +18,19 @@ export interface ConversationalLeadIntake {
   state: string | null;
   zip: string | null;
   acreage: number | null;
+  /**
+   * Jurisdiction-specific parcel notation exactly as the operator typed it
+   * ("Map 042 Parcel 123", "Tax Map 42 Lot 123", "PIN 1234-56-7890").
+   *
+   * This is IDENTITY EVIDENCE, not an APN. The APN normalizer requires a
+   * separator-joined numeric token and therefore reads nothing at all out of
+   * "Map 042 Parcel 123", which is how a lead that names its parcel precisely
+   * used to reach research as an unidentified property. It is preserved raw and
+   * never written to the card's `apn`: which identifier scheme a county uses is
+   * something the resolver establishes from evidence, not something intake
+   * guesses.
+   */
+  parcelNotations: ParcelNotation[];
   propertyLabel: string;
   dealIntelligence: DealIntelItem[];
   smartIntake: SmartIntake;
@@ -82,7 +96,17 @@ export function parseConversationalLeadIntake(rawInput: string): ConversationalL
   const city = sanitizeLocalityCandidate(oneLine(fields.city), { allowStateName: !!oneLine(fields.state) });
   const county = sanitizeLocalityCandidate(oneLine(fields.county));
   const locality = [city, fields.state].filter(Boolean).join(', ');
-  const propertyLabel = address || (apn ? `Parcel ${apn}` : locality || 'Unresolved property');
+  // A parcel notation names the property when no street address exists. Keeping
+  // it as the label means the lead is stored by what the operator actually
+  // supplied instead of an "Unresolved property" placeholder that erases the
+  // one identifier the lead did carry.
+  const parcelNotations = extractParcelNotations(rawInput);
+  const notationLabel = parcelNotations.find((notation) => notation.identityBearing)?.raw ?? null;
+  const propertyLabel = address
+    || (apn ? `Parcel ${apn}` : null)
+    || notationLabel
+    || locality
+    || 'Unresolved property';
 
   return {
     rawInput,
@@ -98,6 +122,7 @@ export function parseConversationalLeadIntake(rawInput: string): ConversationalL
     state: oneLine(fields.state),
     zip: extractZip(rawInput),
     acreage: extractAcreage(rawInput),
+    parcelNotations,
     propertyLabel,
     dealIntelligence: smartIntake.dealIntelligence,
     smartIntake,
