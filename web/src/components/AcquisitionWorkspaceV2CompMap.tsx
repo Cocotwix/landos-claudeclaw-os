@@ -44,7 +44,11 @@ import {
   type BoundaryFetchResult, type BoundaryLayerId,
 } from '../lib/boundaries';
 import { CompVisualThumb } from './CompVisualThumb';
-import { identityFor, MarkerGlyph, CompKindBadge, COMP_IDENTITIES, type CompRecordIdentity } from './CompRecordIdentity';
+import {
+  identityFor, MarkerGlyph, CompKindBadge, CompProvenanceBadges, COMP_IDENTITIES,
+  type CompRecordIdentity,
+} from './CompRecordIdentity';
+import { compProviders } from '@/lib/comp-provenance';
 import type { CvComp, CvSubject } from './AcquisitionWorkspaceV2CompsValuation';
 
 const usd = (n: number | null) => (typeof n === 'number' && Number.isFinite(n) ? `$${Math.round(n).toLocaleString('en-US')}` : '—');
@@ -298,7 +302,11 @@ function MapSurface({
       <span><i>$ / acre</i>{usd(ppaOf(c))}</span>
       <span><i>{c.transactionKind === 'active' ? 'Listed' : 'Sold'}</i>{c.transactionKind === 'active' ? (c.listing?.marketTime.originalListingDateIso ?? c.dateIso ?? '—') : (c.listing?.soldDateIso ?? c.dateIso ?? '—')}</span>
       <span><i>Market time</i>{marketTimeText(c)}</span>
-      <span><i>Source</i>{c.source}</span>
+      {/* The providers, not the merge history. `c.source` is every reconciled
+          observation joined with " + "; printing it verbatim put a 5,347-
+          character paragraph in this preview and stretched it to 4,652px, off
+          the map canvas. */}
+      <span><i>Source</i>{compProviders(c).join(' · ')}</span>
     </span>
   );
 
@@ -314,7 +322,7 @@ function MapSurface({
       <span><i>$ / acre</i>{usd(ppaOf(c))}</span>
       <span><i>{c.transactionKind === 'active' ? 'Listing date' : 'Sale date'}</i>{(c.transactionKind === 'active' ? c.listing?.marketTime.originalListingDateIso : c.listing?.soldDateIso) ?? c.dateIso ?? '—'}{c.monthsOld != null ? ` (${c.monthsOld} mo ago)` : ''}</span>
       <span><i>{c.transactionKind === 'active' ? 'Cumulative active days' : 'Cumulative DOM'}</i>{marketTimeText(c)}</span>
-      <span><i>Source</i>{c.source}</span>
+      <span><i>Source</i>{compProviders(c).join(' · ')}</span>
     </div>
   );
 
@@ -618,6 +626,10 @@ function MapSurface({
             </div>
           </div>
           {factRow(selected)}
+          {/* The reconciliation behind this one marker: every provider that
+              described the parcel, which LandPortal surfaces carried it, and
+              how many provider rows were merged into it. */}
+          <CompProvenanceBadges c={selected} className="awv2-cvd-sourcebadges" />
           {selected.listing?.price.confidence === 'estimated_proxy' && (
             <p class="awv2-cv-proxy" role="note">{selected.listing.price.amountLabel}: this is an estimate, not a verified sale price.</p>
           )}

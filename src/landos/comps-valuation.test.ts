@@ -482,6 +482,61 @@ describe('workspace classification', () => {
     expect(comp.fromLandPortalShowOnMap).toBe(true);
   });
 
+  // A merge of a merge must stay as wide as the observations behind it. `source`
+  // is `origins.join(' + ')`, so folding a merged record's own source back in as
+  // an origin re-admits the whole prior list as one new "provider": three
+  // observations produced a 5,347-character source label that the comp map's
+  // hover preview rendered verbatim, and an inflated reconciled-observation
+  // count in the merge status.
+  it('keeps origins atomic when a merged record is merged again', () => {
+    const ids = seedSubject();
+    seedClosedSale(ids, { addressDesc: '', county: '', notes: '' });
+    new PropertyResearchStore().loadForProperty(ids.cardId);
+    const compValue = {
+      apn: '052289 77.00-2-27.113', status: 'sold', price: 129000, acres: 16.88,
+      address: '1200 Clinton Rd, Weedsport, NY 13166', county: 'Cayuga', state: 'NY',
+    };
+    getLandosDb().prepare(
+      `INSERT INTO landos_property_research_record (property_card_id, deal_card_id, canonical_key, record_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(ids.cardId, ids.dealCardId, `property-card:${ids.cardId}`, JSON.stringify({
+      contractVersion: 'canonical-property-research-v1',
+      propertyCardId: ids.cardId, dealCardId: ids.dealCardId,
+      canonicalKey: `property-card:${ids.cardId}`, identity: {}, facts: {},
+      evidence: [
+        {
+          id: 'zillow:comp:atoms', providerId: 'zillow', field: 'comparables.zillow.0', kind: 'comp',
+          value: { ...compValue, url: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983' },
+          sourceUrl: 'https://www.zillow.com/homedetails/Clinton-Rd/73216983',
+          strength: 'provider_observed', subjectClassification: 'context_only',
+          retrievedAt: '2026-08-03T22:47:18.904Z',
+        },
+        {
+          id: 'redfin:comp:atoms', providerId: 'redfin', field: 'comparables.redfin.0', kind: 'comp',
+          value: { ...compValue, url: 'https://www.redfin.com/NY/Weedsport/1200-Clinton-Rd/home/9931' },
+          sourceUrl: 'https://www.redfin.com/NY/Weedsport/1200-Clinton-Rd/home/9931',
+          strength: 'provider_observed', subjectClassification: 'context_only',
+          retrievedAt: '2026-08-03T22:49:02.101Z',
+        },
+      ],
+      lanes: {}, rejectedEvidence: [], createdAt: '2026-08-03', updatedAt: '2026-08-03',
+    }), '2026-08-03', '2026-08-03');
+
+    const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
+    expect(view.counts.total).toBe(1);
+    const comp = view.comps[0];
+    // Every origin is a single observation label, never a joined one.
+    expect(comp.origins.every((origin) => !origin.includes(' + '))).toBe(true);
+    // The label names the providers once each and stays readable on a map card.
+    expect(comp.source).toMatch(/LandPortal/);
+    expect(comp.source).toMatch(/Zillow/i);
+    expect(comp.source).toMatch(/Redfin/i);
+    expect(comp.source.length).toBeLessThan(200);
+    expect(comp.origins.length).toBe(new Set(comp.origins).size);
+    // The merge status counts observations, not the merge history.
+    expect(comp.mergeStatus).toContain(`${comp.origins.length} source observation(s)`);
+  });
+
   // Two providers legitimately disagree on area (MLS acreage vs assessor
   // acreage). Enriching field by field would put one provider's price over the
   // other's acreage and publish a rate neither source ever stated.

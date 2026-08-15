@@ -25,8 +25,12 @@ import { useMemo, useState } from 'preact/hooks';
 import { apiPost, dashboardToken, ApiError } from '@/lib/api';
 import { CombinedCompMap } from './AcquisitionWorkspaceV2CompMap';
 import { CompVisualThumb, type CvVisual } from './CompVisualThumb';
-import { compDistanceLabel, identityFor, CompKindBadge, MarkerGlyph, COMP_IDENTITIES, type CompRecordIdentity } from './CompRecordIdentity';
+import {
+  compDistanceLabel, identityFor, CompKindBadge, CompProvenanceBadges, MarkerGlyph, COMP_IDENTITIES,
+  type CompRecordIdentity,
+} from './CompRecordIdentity';
 import { CompFullDetails } from './AcquisitionWorkspaceV2CompDetails';
+import { providerSummary } from '@/lib/comp-provenance';
 
 // ── View types (mirror src/landos/comps-valuation.ts) ──────────────────
 
@@ -163,6 +167,8 @@ export interface CvComp {
   origins: string[];
   fromLandPortalSidebar: boolean;
   fromLandPortalShowOnMap: boolean;
+  /** Provider rows collapsed behind this one physical property. */
+  duplicatesMerged?: number;
   mergeStatus: string | null;
   address: string | null;
   apn: string | null;
@@ -412,6 +418,10 @@ export interface CompsValuationViewData {
   summary: CvSummary;
   comps: CvComp[];
   counts: Record<string, number>;
+  /** One physical property once — the authoritative cross-surface comp count. */
+  canonicalCompCount?: number;
+  /** Provider rows collapsed behind those canonical physical properties. */
+  duplicatesMerged?: number;
   mapCounts: {
     retained: number;
     mapped: number;
@@ -463,18 +473,17 @@ export interface CompsValuationViewData {
 
 const usd = (n: number) => '$' + Math.round(n).toLocaleString('en-US');
 const usdOrDash = (n: number | null) => (n == null ? '—' : usd(n));
+/** Signed money with the sign before the symbol: "+$4,200", "−$68,039". */
+const signedUsd = (n: number) => (n < 0 ? '−' : '+') + usd(Math.abs(n));
+/** Signed percentage. A real gap under half a point reads "−<1%", never "−0%". */
+const signedPct = (ratio: number) => {
+  const sign = ratio < 0 ? '−' : '+';
+  const pct = Math.abs(ratio) * 100;
+  return Math.round(pct) === 0 && pct > 0 ? `${sign}<1%` : `${sign}${Math.round(pct)}%`;
+};
 const tok = (u: string) => `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
 const nameOf = (c: CvComp) => c.address ?? (c.apn ? `APN ${c.apn}` : 'Unnamed parcel');
 const cardDomId = (key: string) => `cv-card-${key.replace(/[^a-z0-9]+/gi, '-')}`;
-const providerLabel = (value: string) => {
-  const key = value.toLowerCase().replace(/[^a-z]/g, '');
-  if (key.includes('landportal')) return 'LandPortal';
-  if (key.includes('zillow')) return 'Zillow';
-  if (key.includes('redfin')) return 'Redfin';
-  if (key.includes('realtor')) return 'Realtor.com';
-  return value;
-};
-const sourceBadges = (c: CvComp) => Array.from(new Set([c.source, ...c.origins].filter(Boolean).map(providerLabel)));
 const propertyTypeLabel = (c: CvComp) => c.propertyClass === 'improved'
   ? 'Improved property'
   : c.propertyClass === 'land'
@@ -662,6 +671,13 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
   const visuals = view.visualCounts;
   const lpEstimate = view.lpEstimate ?? null;
   const marketLeads = view.marketLeads ?? [];
+  // Deduplication provenance, from the server's canonical figures.
+  const canonicalCompCount = view.canonicalCompCount ?? comps.length;
+  const duplicatesMerged = view.duplicatesMerged
+    ?? comps.reduce((sum, c) => sum + (c.duplicatesMerged ?? 0), 0);
+  const landPortalCompCount = comps.filter(isLandPortalComp).length;
+  const otherProviderCompCount = comps.filter(isOtherProviderComp).length;
+  const landPortalSurfacesRead = view.landPortal.sidebarCount > 0 || view.landPortal.showOnMapCount > 0;
   const isStaleCompConclusion = (line: string | null) => summary.acceptedCount > 0 && line != null
     && /no usable comp|another (?:comparable )?sale[^.]*required/i.test(line);
   const reconciledWarning = isStaleCompConclusion(cleaned.insufficiencyWarning) ? null : cleaned.insufficiencyWarning;
@@ -839,11 +855,17 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
             </div>
             {lpEstimate.price != null && cleaned.adoptedFmv != null && (
               <div class="awv2-cv-m">
-                <span class="k">Difference</span>
+                <span class="k">LandOS vs LandPortal</span>
+                {/* Signed money reads "−$68,039", never "$-68,039": the sign
+                    belongs in front of the amount, and the direction of the gap
+                    is the whole point of the tile. */}
                 <b>
-                  {cleaned.adoptedFmv > lpEstimate.price ? '+' : ''}
-                  {usd(cleaned.adoptedFmv - lpEstimate.price)}
-                  {' '}({Math.round(((cleaned.adoptedFmv - lpEstimate.price) / lpEstimate.price) * 100)}%)
+                  {signedUsd(cleaned.adoptedFmv - lpEstimate.price)}
+                  {' '}({signedPct((cleaned.adoptedFmv - lpEstimate.price) / lpEstimate.price)})
+                  {' '}
+                  <span class="awv2-src-tag">
+                    {cleaned.adoptedFmv >= lpEstimate.price ? 'LandOS above LandPortal' : 'LandOS below LandPortal'}
+                  </span>
                 </b>
               </div>
             )}
@@ -875,7 +897,7 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
           <div class="awv2-cv-improvement-comps">
             {improvementValuation.qualifyingComps.map((c) => (
               <div class="awv2-cv-method" key={c.key}>
-                <div class="mt">{c.address ?? 'Improved comp'} <span class="awv2-src-tag">{providerLabel(c.source)}</span>{c.sourceUrl && <a href={c.sourceUrl} target="_blank" rel="noreferrer">Source</a>}</div>
+                <div class="mt">{c.address ?? 'Improved comp'} <span class="awv2-src-tag">{providerSummary(c.source)}</span>{c.sourceUrl && <a href={c.sourceUrl} target="_blank" rel="noreferrer">Source</a>}</div>
                 <div class="mrow"><span>Sold price</span><b>{usd(c.soldPrice)}</b></div>
                 <div class="mrow"><span>Building sqft</span><b>{c.buildingSqft.toLocaleString('en-US')}</b></div>
                 <div class="mrow"><span>Acreage</span><b>{c.acres != null ? `${c.acres} acres` : '—'}</b></div>
@@ -1107,11 +1129,23 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
         </div>
         {/* Where the deduplicated set came from. LandPortal's two surfaces are
             one provider read twice, so they are reported as the merge they are
-            rather than as two independent comp counts. */}
+            rather than as two independent comp counts. The unique-property and
+            merged-row totals are the SERVER's canonical figures: counting the
+            rendered cards would silently drop the provider rows that were
+            reconciled away, which is exactly the number that proves nothing was
+            double-counted. */}
         <p class="awv2-cv-visualnote">
-          Provenance: {comps.filter(isLandPortalComp).length} LandPortal comp{comps.filter(isLandPortalComp).length === 1 ? '' : 's'}
-          {' '}(sidebar {view.landPortal.sidebarCount} + Show on Map {view.landPortal.showOnMapCount} → {view.landPortal.mergedUniqueCount} unique) ·
-          {' '}{comps.filter(isOtherProviderComp).length} other provider comp{comps.filter(isOtherProviderComp).length === 1 ? '' : 's'} (Zillow / Redfin / Realtor).
+          Provenance: {canonicalCompCount} unique propert{canonicalCompCount === 1 ? 'y' : 'ies'}
+          {duplicatesMerged > 0 && <> · {duplicatesMerged} duplicate provider row{duplicatesMerged === 1 ? '' : 's'} reconciled away</>} ·
+          {' '}{landPortalCompCount} LandPortal comp{landPortalCompCount === 1 ? '' : 's'}
+          {/* Only claim a two-surface merge when both surfaces actually
+              reported. On a subject whose LandPortal comps arrived through the
+              retained import, "sidebar 0 + Show on Map 0 → 0 unique" printed
+              next to 8 LandPortal comps read as a contradiction. */}
+          {landPortalSurfacesRead && (
+            <> (sidebar {view.landPortal.sidebarCount} + Show on Map {view.landPortal.showOnMapCount} → {view.landPortal.mergedUniqueCount} unique)</>
+          )}
+          {' · '}{otherProviderCompCount} other provider comp{otherProviderCompCount === 1 ? '' : 's'} (Zillow / Redfin / Realtor).
           {' '}One physical property is one record; where two providers described the same parcel their photos, remarks, details, history and coordinates were merged onto it, not dropped.
         </p>
         <p class="awv2-cv-visualnote">
@@ -1159,10 +1193,11 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
                       )}
                       {isExcluded(c) && <span class="role excluded">Excluded</span>}
                     </div>
-                    <div class="awv2-cv-sourcebadges" aria-label="Reconciled source provenance">
-                      {sourceBadges(c).map((name) => <span class="source-badge" key={name}>{name}</span>)}
-                      {sourceBadges(c).length > 1 && <span class="merged">One property · {sourceBadges(c).length} sources</span>}
-                    </div>
+                    {/* Reconciled provenance: who described this parcel, which
+                        LandPortal surfaces carried it, and how many provider
+                        rows sit behind the single record. `mergeStatus` is the
+                        server's own sentence for that merge. */}
+                    <CompProvenanceBadges c={c} />
                     {isImproved(c) && (
                       <p class="awv2-cv-improved-context"><b>Improved-property context only.</b> Never included in the vacant-land pricing calculation.</p>
                     )}

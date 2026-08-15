@@ -26,6 +26,10 @@ const D_SRC = read('web/src/components/AcquisitionWorkspaceV2CompDetails.tsx');
 const THUMB_SRC = read('web/src/components/CompVisualThumb.tsx');
 const GALLERY_SRC = read('web/src/components/AcquisitionWorkspaceV2CompPhotoGallery.tsx');
 const CSS_SRC = `${read('web/src/styles/workspace-v2.css')}\n${read('web/src/styles/workspace-v2-comps.css')}`;
+// Reconciled source provenance is defined once and used by the card, the map
+// popup and full details, so all three name the same providers for one record.
+const IDENTITY_SRC = read('web/src/components/CompRecordIdentity.tsx');
+const PROVENANCE_SRC = read('web/src/lib/comp-provenance.ts');
 
 describe('Comps & Valuation is a live V2 section', () => {
   it('has a real section slug so the URL round-trips and refresh restores it', () => {
@@ -265,8 +269,19 @@ describe('every comparable carries a visual with stated provenance', () => {
   });
 
   it('shows one reconciled card with every contributing provider badge', () => {
-    expect(CV_SRC).toMatch(/sourceBadges\(c\)\.map/);
-    expect(CV_SRC).toMatch(/One property/);
+    expect(CV_SRC).toMatch(/<CompProvenanceBadges c=\{c\} \/>/);
+    expect(IDENTITY_SRC).toMatch(/providers\.map\(\(name\) => <span class="source-badge"/);
+    expect(IDENTITY_SRC).toMatch(/One property/);
+    // Which LandPortal surfaces carried the record, and how many provider rows
+    // were reconciled away, are both stated rather than left to be inferred.
+    expect(IDENTITY_SRC).toMatch(/landPortalSurfaceLabel/);
+    expect(IDENTITY_SRC).toMatch(/duplicate row\{merged === 1 \? '' : 's'\} merged/);
+    expect(PROVENANCE_SRC).toMatch(/LandPortal sidebar \+ Show on Map/);
+    // Providers come from the observation ATOMS, never from the joined label:
+    // a 5,347-character `source` once rendered verbatim in the map preview.
+    expect(PROVENANCE_SRC).toMatch(/\.split\(' \+ '\)/);
+    expect(MAP_SRC).not.toMatch(/<i>Source<\/i>\{c\.source\}/);
+    expect(MAP_SRC).toMatch(/compProviders\(c\)\.join/);
     expect(CV_SRC).toMatch(/canonical accepted comps/);
     expect(CV_SRC).toMatch(/Improved-property context only/);
     expect(CV_SRC).toMatch(/Never included in the vacant-land pricing calculation/);

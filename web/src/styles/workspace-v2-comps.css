@@ -428,6 +428,14 @@
   font-family: var(--awv2-mono); font-size: 11px; color: #86efac;
   border: 1px solid rgba(21, 128, 61, 0.5); border-radius: 999px; padding: 3px 8px;
 }
+/* Which LandPortal surface(s) carried the record. Deliberately quieter than a
+   provider badge: it qualifies the LandPortal badge rather than adding a
+   second provider next to it. */
+.awv2-cv-sourcebadges .surface,
+.awv2-cvd-sourcebadges .surface {
+  font-family: var(--awv2-mono); font-size: 11px; color: var(--awv2-bone-dim, #b9b09c);
+  border: 1px solid var(--awv2-line-strong); border-radius: 999px; padding: 3px 8px;
+}
 .awv2-cv-improved-context {
   margin: 0 0 12px; padding: 8px 10px; font-size: 13px; line-height: 1.55;
   color: #e7d9bc; background: rgba(138, 133, 119, 0.1);

@@ -13,6 +13,8 @@
 // Colour alone is never the signal: every kind also has its own SHAPE, so the
 // distinction survives a colour-blind operator and a small screen.
 
+import { compProviders, landPortalSurfaceLabel, type CompProvenanceRecord } from '@/lib/comp-provenance';
+
 export type CompRecordKind =
   | 'subject'
   | 'closed'      // closed sale carrying valuation weight
@@ -108,6 +110,12 @@ export function identityFor(c: CompIdentityInput): CompRecordIdentity {
   return COMP_IDENTITIES.context;
 }
 
+/** What the provenance badges need from a comp record. */
+export interface CompProvenanceInput extends CompProvenanceRecord {
+  duplicatesMerged?: number;
+  mergeStatus: string | null;
+}
+
 /** One honest operator label for comp proximity; null never becomes a zero. */
 export function compDistanceLabel(distanceMiles: number | null | undefined): string {
   return typeof distanceMiles === 'number' && Number.isFinite(distanceMiles)
@@ -134,6 +142,43 @@ export function MarkerGlyph({ identity, size, selected, hovered }: {
       }}
       aria-hidden="true"
     />
+  );
+}
+
+/**
+ * Reconciled source provenance for one physical property.
+ *
+ * A deduplicated comp is one record standing for every observation that
+ * described the parcel, and the operator has to be able to see that at a
+ * glance: which providers, which LandPortal surfaces, and how many provider
+ * rows were reconciled away. Without the merged-row count, a set that collapsed
+ * 22 rows into 33 properties looks identical to one that never deduplicated at
+ * all — and the LandPortal sidebar and Show on Map corroborating each other
+ * looks identical to a single sidebar read.
+ */
+export function CompProvenanceBadges({ c, className = 'awv2-cv-sourcebadges' }: {
+  c: CompProvenanceInput;
+  className?: string;
+}) {
+  const providers = compProviders(c);
+  const surfaces = landPortalSurfaceLabel(c);
+  const merged = c.duplicatesMerged ?? 0;
+  return (
+    <div class={className} aria-label="Reconciled source provenance" title={c.mergeStatus ?? undefined}>
+      {providers.map((name) => <span class="source-badge" key={name}>{name}</span>)}
+      {surfaces && <span class="surface">{surfaces}</span>}
+      {/* "1 source" is noise next to the badge that already names it, and
+          "1 source · 9 duplicate rows merged" reads as a contradiction. The
+          source count appears only when more than one provider described the
+          parcel; the merged-row count appears whenever rows were reconciled. */}
+      {(providers.length > 1 || merged > 0) && (
+        <span class="merged">
+          One property
+          {providers.length > 1 && <> · {providers.length} sources reconciled</>}
+          {merged > 0 && <> · {merged} duplicate row{merged === 1 ? '' : 's'} merged</>}
+        </span>
+      )}
+    </div>
   );
 }
 

@@ -20,6 +20,9 @@ const D_SRC = read('web/src/components/AcquisitionWorkspaceV2CompDetails.tsx');
 const CV_SRC = read('web/src/components/AcquisitionWorkspaceV2CompsValuation.tsx');
 const GALLERY_SRC = read('web/src/components/AcquisitionWorkspaceV2CompPhotoGallery.tsx');
 const CSS_SRC = read('web/src/styles/workspace-v2-comps.css');
+// Source provenance badges live with the shared comp identity, so every surface
+// showing a record names the same providers for it.
+const IDENTITY_SRC = read('web/src/components/CompRecordIdentity.tsx');
 
 describe('the Full details control is preserved and drives the new block', () => {
   it('still toggles per record and now renders CompFullDetails', () => {
@@ -166,9 +169,15 @@ describe('comp photographs are browsable underwriting evidence', () => {
   });
 
   it('shows merged providers as provenance on the canonical property record', () => {
-    expect(D_SRC).toMatch(/Reconciled source provenance/);
-    expect(D_SRC).toMatch(/One property/);
-    expect(D_SRC).toMatch(/c\.origins/);
+    // The badges are the shared component, so the card, the map popup and this
+    // panel can never name different providers for the same record.
+    expect(D_SRC).toMatch(/<CompProvenanceBadges c=\{c\} className="awv2-cvd-sourcebadges" \/>/);
+    expect(IDENTITY_SRC).toMatch(/Reconciled source provenance/);
+    expect(IDENTITY_SRC).toMatch(/One property/);
+    expect(IDENTITY_SRC).toMatch(/compProviders\(c\)/);
+    // Full details states what the merge actually did, in the server's words.
+    expect(D_SRC).toMatch(/c\.mergeStatus/);
+    expect(D_SRC).toMatch(/nothing was merged into this record/);
   });
 });
 

@@ -1976,7 +1976,20 @@ function dedupeWorkspaceComps(input: WorkspaceComp[]): { comps: WorkspaceComp[];
   const merge = (a: WorkspaceComp, b: WorkspaceComp): WorkspaceComp => {
     const winner = rank(b) > rank(a) ? b : a;
     const loser = winner === b ? a : b;
-    const origins = [...new Set([...winner.origins, ...loser.origins, winner.source, loser.source].filter(Boolean))];
+    // Origins are ATOMS: one entry per source observation, never a joined
+    // label. `source` is `origins.join(' + ')`, so folding a previously merged
+    // record's own `source` back in as an origin re-admits the whole prior list
+    // as a single new "provider". Across successive merges that compounds —
+    // three merges produced a 9,000-character source string that the map
+    // preview rendered verbatim — and it inflates the reconciled-observation
+    // count the operator reads. Splitting on the join separator keeps a merge
+    // of a merge exactly as wide as the distinct observations behind it.
+    const origins = [...new Set(
+      [...winner.origins, ...loser.origins, winner.source, loser.source]
+        .flatMap((label) => String(label ?? '').split(' + '))
+        .map((label) => label.trim())
+        .filter(Boolean),
+    )];
     const photos = [...new Set([
       ...(winner.photoUrls ?? []), ...(loser.photoUrls ?? []),
       ...(winner.listing?.photos.items ?? []).map((photo) => photo.url),

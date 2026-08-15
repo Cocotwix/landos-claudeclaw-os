@@ -32,6 +32,8 @@
 import { ExternalLink } from 'lucide-preact';
 import { AcquisitionWorkspaceV2CompPhotoGallery } from './AcquisitionWorkspaceV2CompPhotoGallery';
 import { CompPhotoCarousel } from './CompPhotoCarousel';
+import { CompProvenanceBadges } from './CompRecordIdentity';
+import { compProviders, providerSummary } from '@/lib/comp-provenance';
 import type { CvComp, CvTimelineRow } from './AcquisitionWorkspaceV2CompsValuation';
 
 const usd = (n: number | null | undefined) =>
@@ -161,24 +163,20 @@ function LandosNotes({ c, active }: { c: CvComp; active: boolean }) {
 
 /** The one piece of provenance the operator genuinely uses: where to re-check. */
 function Source({ c }: { c: CvComp }) {
-  const provider = c.listing?.evidence.provider ?? c.source;
-  const displayProvider = (value: string) => {
-    const key = value.toLowerCase().replace(/[^a-z]/g, '');
-    if (key.includes('landportal')) return 'LandPortal';
-    if (key.includes('zillow')) return 'Zillow';
-    if (key.includes('redfin')) return 'Redfin';
-    if (key.includes('realtor')) return 'Realtor.com';
-    return value;
-  };
-  const providers = Array.from(new Set([c.source, ...c.origins].filter(Boolean).map(displayProvider)));
+  const providers = compProviders(c);
+  const provider = providerSummary(c.listing?.evidence.provider ?? c.source);
   return (
     <Section title="SOURCE">
       <div class="awv2-cvd-source">
         <Figure label="Source" value={provider} />
-        <div class="awv2-cvd-sourcebadges" aria-label="Reconciled source provenance">
-          {providers.map((name) => <span class="source-badge" key={name}>{name}</span>)}
-          {providers.length > 1 && <span class="merged">One property · {providers.length} sources reconciled</span>}
-        </div>
+        <CompProvenanceBadges c={c} className="awv2-cvd-sourcebadges" />
+        {/* What the merge actually did, in the server's own words. Without it a
+            record standing for ten provider observations looks exactly like one
+            standing for a single listing. */}
+        {c.mergeStatus && <p class="awv2-cvd-attr">{c.mergeStatus}</p>}
+        {providers.length === 1 && !c.mergeStatus && (
+          <p class="awv2-cvd-note">One source observation; nothing was merged into this record.</p>
+        )}
         {c.sourceUrl ? (
           <a class="awv2-cvd-sourcelink" href={c.sourceUrl} target="_blank" rel="noopener noreferrer">
             <ExternalLink size={14} /> Open original listing
