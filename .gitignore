@@ -165,6 +165,20 @@ agents/*/.claude/claudex/
 /vi14*.json
 # Browser-QA screenshot dumps of real deal cards.
 /docs/landos/qa-*/
+# Generated LandOS QA screenshots may contain private operating records.
+/.landos/qa/**/*.png
+# Completed local sprint evidence for the 2026-08-14 lead-card redesign.
+/.landos/sprints/lead-card-redesign-plan.json
+/.landos/sprints/lead-card-redesign-prompt.md
+/.landos/sprints/sprint-2026-08-14-lead-card-redesign/
+# One-off local proof and inspection scripts from that sprint.
+/.sprint-shot.mjs
+/*.tmp.ts
+/scratch-*.cjs
+/scripts/landos/subject-listing-capture.mjs
+# Generated build-runner traces; the durable runner design lives in docs.
+/docs/landos/LANDOS_RUNNER_TRACE_*.md
+/docs/landos/runner-trace-*/
 # One-off card/property-specific probe and repair scripts. Canonical LandOS
 # tooling lives in scripts/runtime/, scripts/sprint/, scripts/memory/.
 /scripts/qa-inspect-*.mjs
