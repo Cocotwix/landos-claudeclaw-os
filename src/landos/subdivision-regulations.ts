@@ -61,6 +61,7 @@ export const SUBDIVISION_RULE_KEYS = [
   'administrative_split_threshold',
   'max_lots_before_major_review',
   'minimum_lot_size',
+  'minimum_lot_size_deferred_to',
   'minimum_frontage',
   'minimum_lot_width',
   'access_requirement',
@@ -148,6 +149,7 @@ const RULE_LABELS: Record<SubdivisionRuleKey, string> = {
   administrative_split_threshold: 'Administrative split threshold',
   max_lots_before_major_review: 'Maximum lots before major review',
   minimum_lot_size: 'Minimum lot size',
+  minimum_lot_size_deferred_to: 'Minimum lot size (set by the zoning ordinance)',
   minimum_frontage: 'Minimum frontage',
   minimum_lot_width: 'Minimum lot width',
   access_requirement: 'Access requirement',
@@ -189,6 +191,71 @@ interface ExtractionRule {
   preferred?: RegExp;
 }
 
+// ── What a lot-area standard actually looks like ────────────────────────────
+//
+// A live run on Fairview reported the theoretical lot count as UNKNOWN because
+// no minimum lot size was extracted from ten official documents. Reading them
+// showed two separate causes, and both are the same root: the extractor knew
+// exactly ONE way to say "minimum lot size", and regulations say it several.
+//
+//   1. A regulation that states the number in any other register was invisible.
+//      "No lot shall be less than one (1) acre in area" and "each lot shall
+//      have an area of not less than fifteen thousand (15,000) square feet"
+//      are the rule, written the way ordinances routinely write it.
+//
+//   2. A regulation that DELEGATES the number was invisible too, which is what
+//      Fairview does: Article IV § 4-110.2 says "Lot area shall comply with the
+//      minimum standards of the Zoning Ordinance" and states no figure anywhere
+//      in the adopted set. LandOS reported that as nothing established, when the
+//      regulations in fact answer where the number lives.
+//
+// So the vocabulary is widened, and a delegation is retained as its own rule
+// rather than being mistaken for a number or thrown away as silence.
+
+/** Units a LOT AREA is stated in. Deliberately not "feet" — that is frontage. */
+const AREA_UNIT = '(?:acres?|square\\s*(?:feet|foot)|sq\\.?\\s*ft\\.?|sf\\b)';
+
+/**
+ * A stated minimum lot area, in the registers ordinances actually use.
+ *
+ * Every alternative either names lot area outright or requires an AREA unit
+ * ahead of it, so "no lot shall … fifty (50) feet of frontage" cannot enter
+ * here. Whatever matches still goes through `matchNumericRuleValue`, so a
+ * passage that names the rule and states no measurement — a definitions entry,
+ * or the delegation below — is never returned as this jurisdiction's minimum.
+ */
+const MINIMUM_LOT_SIZE = new RegExp(
+  '(?:'
+  // "minimum lot size|area shall be one (1) acre"
+  + '\\bminimum\\s+lot\\s+(?:size|area)\\b'
+  // "no lot shall be less than one (1) acre in area"
+  + `|\\bno\\s+lots?\\s+shall\\b(?=[^.\\n]{0,140}${AREA_UNIT})`
+  // "each lot shall have an area of not less than 15,000 square feet"
+  + `|\\b(?:each|every|all)\\s+lots?\\s+shall\\b(?=[^.\\n]{0,140}\\bareas?\\b[^.\\n]{0,90}${AREA_UNIT})`
+  // "lot area shall be not less than one (1) acre"
+  + '|\\blots?\\s+areas?\\s+shall\\b'
+  // "the minimum area of any lot shall be two (2) acres"
+  + '|\\bminimum\\s+areas?\\s+(?:of|for)\\s+(?:a\\s+|an\\s+|any\\s+|each\\s+|every\\s+|all\\s+)?lots?\\b'
+  + ')[^.\\n]{0,220}',
+  'i',
+);
+
+/**
+ * A lot-area standard the subdivision regulations DELEGATE to the zoning
+ * instrument rather than state themselves.
+ *
+ * Held as its own rule key, never as `minimum_lot_size`, because it carries no
+ * number and must never be read as one. What it does carry is the answer to the
+ * operator's actual question — which document sets the minimum, and under whose
+ * authority — so an unresolved lot count can name its cause and its next step
+ * instead of reporting bare silence.
+ *
+ * It resolves nothing about this parcel's zoning: it says where the standard
+ * lives, not which district applies here.
+ */
+const LOT_AREA_DEFERRED_TO_ZONING =
+  /\blots?\s+(?:areas?|sizes?|dimensions?)\b[^.\n]{0,120}?\b(?:compl(?:y|ies)\s+with|conform(?:s|ing)?\s+(?:to|with)|governed\s+by|regulated\s+by|established\s+(?:by|in)|set\s+forth\s+in|specified\s+in|required\s+by|in\s+accordance\s+with|as\s+(?:provided|required|prescribed)\s+(?:by|in))\b[^.\n]{0,140}?\bzoning\s+(?:ordinance|resolution|code|regulations)\b[^.\n]{0,140}/i;
+
 /**
  * One pattern per rule, each anchored on the regulation's own vocabulary.
  *
@@ -210,7 +277,8 @@ const EXTRACTION_RULES: ExtractionRule[] = [
   },
   { key: 'administrative_split_threshold', pattern: /\b(?:administrative(?:ly)?|staff)\s+(?:approv\w+|review\w*|plat)\b[^.\n]{0,260}/i },
   { key: 'max_lots_before_major_review', pattern: /\b(?:not\s+more\s+than|no\s+more\s+than|fewer\s+than|up\s+to|maximum\s+of)\s+(?:\w+|\d{1,3})\s+lots?\b[^.\n]{0,200}/i },
-  { key: 'minimum_lot_size', pattern: /\bminimum\s+lot\s+(?:size|area)\b[^.\n]{0,220}/i },
+  { key: 'minimum_lot_size', pattern: MINIMUM_LOT_SIZE },
+  { key: 'minimum_lot_size_deferred_to', pattern: LOT_AREA_DEFERRED_TO_ZONING },
   { key: 'minimum_frontage', pattern: /\bminimum\s+(?:lot\s+)?(?:road\s+|street\s+)?frontage\b[^.\n]{0,220}/i },
   { key: 'minimum_lot_width', pattern: /\bminimum\s+lot\s+width\b[^.\n]{0,220}/i },
   { key: 'access_requirement', pattern: /\b(?:every|each)\s+lot\s+shall\s+(?:have|abut|front)\b[^.\n]{0,240}/i },

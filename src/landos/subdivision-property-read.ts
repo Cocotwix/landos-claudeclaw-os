@@ -155,15 +155,35 @@ export function buildPropertySubdivisionRead(input: PropertySubdivisionReadInput
   const limitations: string[] = [];
 
   const minLotRule = rules?.rules.find((rule) => rule.key === 'minimum_lot_size') ?? null;
+  // The regulations may set no lot area of their own and instead require the
+  // zoning ordinance's. That is an ANSWER — it names the instrument that holds
+  // the number — and it is never itself a number, so it is read separately and
+  // never reaches `readMinimumLotAcres`.
+  const deferralRule = rules?.rules.find((rule) => rule.key === 'minimum_lot_size_deferred_to') ?? null;
   const frontageRule = rules?.rules.find((rule) => rule.key === 'minimum_frontage') ?? null;
   const zoningMinLot = input.zoning?.standards.minimumLotSize ?? null;
-
+  const deferralAuthority = deferralRule?.authorityName ?? rules?.authorityName ?? null;
+  // The DOCUMENT, not the section. A regulation that prints its section number
+  // bare — "4-110.2 Lot Dimensions" — is cited by the shared section logic to
+  // the last keyword-prefixed number before it, which is a cross-reference to a
+  // different section. Naming the document is right either way; naming a section
+  // the operator would then fail to find in it is not.
+  const deferralCitation = deferralRule?.sourceLabel ?? null;
   // The zoning district's own minimum governs the lot; the subdivision
   // regulations' minimum applies where zoning states none. Both are cited.
   const minimum = readMinimumLotAcres(zoningMinLot ?? minLotRule?.value ?? null);
   const minimumSourceLabel = zoningMinLot
     ? (input.zoning?.standards.sources[0]?.label ?? 'the zoning standards')
     : minLotRule?.sourceLabel ?? null;
+
+  /**
+   * No lot area was established anywhere, and the regulations name the ordinance
+   * that holds it. A stated minimum always wins: a delegation only ever explains
+   * an absence, and never competes with a number.
+   */
+  const minimumIsDeferred = minimum.acres == null && deferralRule != null;
+  /** The delegation, rather than a missing acreage, is what the count is waiting on. */
+  const deferralIsTheCalculation = minimumIsDeferred && input.acres != null && input.acres > 0;
 
   // ── Theoretical lot count ────────────────────────────────────────────────
   const theoretical: TheoreticalLotCount = (() => {
@@ -184,7 +204,15 @@ export function buildPropertySubdivisionRead(input: PropertySubdivisionReadInput
       return {
         value: null,
         status: 'unknown' as const,
-        calculation: 'Not calculated: no minimum lot size was established from the zoning standards or the subdivision regulations.',
+        // A delegation is a better answer than silence: it says the regulations
+        // were read, that they state no figure of their own, and which
+        // instrument does. It stays UNKNOWN either way — nothing here supplies
+        // a number, and none is assumed.
+        calculation: deferralRule
+          ? `Not calculated: the subdivision regulations state no lot area of their own and require it to meet the zoning ordinance's standards`
+            + `${deferralCitation ? ` (${deferralCitation})` : ''}, and no minimum lot area has been established from that ordinance for this parcel.`
+            + ` The regulations state: "${deferralRule.value.slice(0, 180)}".`
+          : 'Not calculated: no minimum lot size was established from the zoning standards or the subdivision regulations.',
         approvedYield: false as const,
         inputs: { acres: input.acres, minimumLotAcres: null, minimumLotSizeStatedAs: null },
         caveats,
@@ -211,8 +239,22 @@ export function buildPropertySubdivisionRead(input: PropertySubdivisionReadInput
         ? (input.zoning?.standards.sources.slice(0, 1).map((row) => ({ label: row.label, url: row.url, section: row.section })) ?? [])
         : sourceOf(minLotRule),
     });
-  } else {
+  } else if (!deferralIsTheCalculation) {
     diligence.push(theoretical.calculation.replace('Not calculated: ', 'Establish: '));
+  }
+  if (minimumIsDeferred) {
+    // Named, citable, and actionable — the regulations already said where to
+    // go. It stops at the ordinance: which district governs this parcel is a
+    // separate question this rule does not answer and must not appear to.
+    diligence.push(
+      `Obtain the minimum lot area from ${deferralAuthority ? `${deferralAuthority}'s` : 'the controlling authority\'s'} zoning ordinance:`
+      + ` the subdivision regulations set no lot area of their own and require it to meet that ordinance's standards`
+      + `${deferralCitation ? ` (${deferralCitation})` : ''}.`
+      + `${input.zoning?.established ? '' : ' The parcel\'s current zoning district is not established, so establish the district first — the ordinance states a different minimum for each one.'}`,
+    );
+    limitations.push(
+      'The retrieved subdivision regulations state no minimum lot area of their own; they require lot area to meet the zoning ordinance\'s standards, so no theoretical lot count can be computed until that ordinance\'s minimum for this parcel\'s district is established.',
+    );
   }
 
   // ── Frontage ─────────────────────────────────────────────────────────────

@@ -798,6 +798,65 @@ describe('subdivision regulations', () => {
     expect(rules.find((rule) => rule.key === 'minimum_lot_size')?.value).toMatch(/one \(1\) acre/);
   });
 
+  // ── The lot-area standard, however the regulation phrases it ──────────────
+  //
+  // A live run on Fairview reported the theoretical lot count as UNKNOWN across
+  // ten official documents. Reading them showed the extractor knew one way to
+  // say "minimum lot size", and regulations say it several — and that Fairview
+  // says it in none of them, because it delegates the number to the zoning
+  // ordinance instead.
+
+  const extract = (text: string) => extractSubdivisionRules({
+    text,
+    sourceLabel: 'Subdivision Regulations',
+    sourceUrl: 'https://www.fairview-tn.org/adopted.pdf',
+    sourceTier: 'official_government_source',
+    authorityName: 'Fairview',
+    retrievedAt: '2026-08-15T00:00:00.000Z',
+  });
+  const valueOf = (text: string, key: string) => extract(text).find((rule) => rule.key === key)?.value ?? null;
+
+  it('reads a stated minimum lot area in the registers ordinances actually use', () => {
+    expect(valueOf('Section 4-110 No lot shall be less than one (1) acre in area.', 'minimum_lot_size'))
+      .toMatch(/one \(1\) acre/);
+    expect(valueOf('Section 4-110 Each lot shall have an area of not less than fifteen thousand (15,000) square feet.', 'minimum_lot_size'))
+      .toMatch(/15,000\) square feet/);
+    expect(valueOf('Section 4-110 Lot area shall be not less than two (2) acres where public sewer is unavailable.', 'minimum_lot_size'))
+      .toMatch(/two \(2\) acres/);
+    expect(valueOf('Section 4-110 The minimum area of any lot shall be twenty thousand (20,000) square feet.', 'minimum_lot_size'))
+      .toMatch(/20,000\) square feet/);
+  });
+
+  it('does not read a frontage or roadway measurement as a lot area', () => {
+    expect(valueOf('Section 4-110 No lot shall be created which does not abut a public road with at least fifty (50) feet of frontage.', 'minimum_lot_size'))
+      .toBeNull();
+    expect(valueOf('Section 4-110 Each lot shall have a width of not less than one hundred (100) feet at the building line.', 'minimum_lot_size'))
+      .toBeNull();
+  });
+
+  it('retains a lot area the regulations delegate to the zoning ordinance, and never as a number', () => {
+    // Fairview Article IV, verbatim. The adopted set states no lot-area figure
+    // anywhere; this sentence is the whole of what it says about lot area.
+    const text = 'Section 4-102.2 Critical Lots shall be designated on the face of the plat. '
+      + '4-110.2 Lot Dimensions Lot area shall comply with the minimum standards of the Zoning Ordinance.';
+    const rules = extract(text);
+    expect(rules.find((rule) => rule.key === 'minimum_lot_size')).toBeUndefined();
+    const deferred = rules.find((rule) => rule.key === 'minimum_lot_size_deferred_to');
+    expect(deferred?.value).toMatch(/shall comply with the minimum standards of the Zoning Ordinance/i);
+    expect(deferred?.label).toMatch(/zoning ordinance/i);
+    // It names where the number lives. It establishes no number, and no district.
+    expect(readMinimumLotAcres(deferred!.value).acres).toBeNull();
+  });
+
+  it('reads the delegation in the other registers, including a zoning resolution', () => {
+    expect(valueOf('Lot sizes shall be governed by the Fairview Zoning Ordinance.', 'minimum_lot_size_deferred_to'))
+      .toMatch(/governed by/i);
+    expect(valueOf('Minimum lot area shall be as set forth in the County Zoning Resolution.', 'minimum_lot_size_deferred_to'))
+      .toMatch(/Zoning Resolution/i);
+    // A lot-area sentence that delegates nowhere is not a delegation.
+    expect(valueOf('Lot area shall be shown on the face of the final plat.', 'minimum_lot_size_deferred_to')).toBeNull();
+  });
+
   it('cites a section printed with the spacing a PDF text layer produces', () => {
     const rules = extractSubdivisionRules({
       text: 'SECTION 1 - 112 VARIANCES. Minimum lot frontage shall be two hundred (200) feet on a public road.',
@@ -883,6 +942,69 @@ describe('property-specific subdivision read', () => {
     expect(diligence).toMatch(/subsurface sewage disposal/i);
     expect(diligence).toMatch(/legal and physical access/i);
     expect(diligence).toMatch(/Confirm the CURRENT zoning district/);
+  });
+
+  // ── A delegated lot area is a reason, not a silence ───────────────────────
+
+  async function readWithRegulationText(text: string, acres: number | null = 75.86) {
+    const regulations = await retrieveSubdivisionRegulations(
+      { dealCardId: 1, municipality: 'Fairview', county: 'Williamson', state: 'TN' },
+      { name: 'Williamson County', level: 'county', determination: 'confirmed', basis: 'official source', sources: [], competingClaims: [] },
+      {
+        suppliedDocuments: [{
+          label: 'Subdivision Regulations Article IV',
+          // Deliberately NOT a series-numbered filename: this fixture is about
+          // the lot-area rule, and a `…Article4.pdf` URL would send the series
+          // walk out to the network for the rest of the set.
+          url: 'https://www.williamsoncounty-tn.gov/subdivision-lot-standards.pdf',
+          text,
+          tier: 'official_government_source',
+        }],
+        now: () => '2026-08-15T00:00:00.000Z',
+      },
+    );
+    return fairviewRead({ acres, regulations });
+  }
+
+  const DELEGATES_LOT_AREA =
+    'Section 2.14 A minor subdivision means a division of land into not more than three lots fronting an existing public road. '
+    + '4-110.2 Lot Dimensions Lot area shall comply with the minimum standards of the Zoning Ordinance.';
+
+  it('reports a delegated lot area as the reason the count is unknown, and where the number lives', async () => {
+    const read = await readWithRegulationText(DELEGATES_LOT_AREA);
+    // Still UNKNOWN. A delegation supplies no number and none is assumed.
+    expect(read.theoreticalLotCount.value).toBeNull();
+    expect(read.theoreticalLotCount.status).toBe('unknown');
+    expect(read.theoreticalLotCount.inputs.minimumLotAcres).toBeNull();
+    expect(read.theoreticalLotCount.approvedYield).toBe(false);
+    // But it now says WHY, quotes the regulation, and cites the document.
+    expect(read.theoreticalLotCount.calculation).toMatch(/state no lot area of their own/);
+    expect(read.theoreticalLotCount.calculation).toMatch(/Subdivision Regulations Article IV/);
+    expect(read.theoreticalLotCount.calculation).toMatch(/shall comply with the minimum standards of the Zoning Ordinance/i);
+    const diligence = read.nextAuthoritativeDiligence.join(' ');
+    expect(diligence).toMatch(/Obtain the minimum lot area/);
+    expect(diligence).toMatch(/Williamson County/);
+    // Zoning stays a separate, unresolved question the delegation does not answer.
+    expect(diligence).toMatch(/zoning district is not established, so establish the district first/);
+    expect(read.limitations.join(' ')).toMatch(/state no minimum lot area of their own/);
+  });
+
+  it('keeps the acreage gap on the list when the tract acreage is also unknown', async () => {
+    const read = await readWithRegulationText(DELEGATES_LOT_AREA, null);
+    const diligence = read.nextAuthoritativeDiligence.join(' ');
+    expect(diligence).toMatch(/subject acreage is not established/);
+    expect(diligence).toMatch(/Obtain the minimum lot area/);
+  });
+
+  it('a stated minimum always outranks a delegation', async () => {
+    const read = await readWithRegulationText(
+      `${DELEGATES_LOT_AREA} Section 4-111 Minimum lot size shall be one (1) acre.`,
+    );
+    expect(read.theoreticalLotCount.status).toBe('theoretical');
+    expect(read.theoreticalLotCount.value).toBe(75);
+    expect(read.theoreticalLotCount.inputs.minimumLotSizeStatedAs).toMatch(/1\) acre/);
+    expect(read.nextAuthoritativeDiligence.join(' ')).not.toMatch(/Obtain the minimum lot area/);
+    expect(read.limitations.join(' ')).not.toMatch(/state no minimum lot area of their own/);
   });
 
   it('indicates major review when the tract exceeds the stated minor ceiling', async () => {
