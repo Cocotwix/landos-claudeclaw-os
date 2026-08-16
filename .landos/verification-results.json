@@ -1,42 +1,40 @@
 {
   "schema": 1,
-  "recordedAt": "2026-08-15T13:10:00.0000000Z",
-  "headUnderReview": "a53b25b",
-  "commitState": "Sprint committed on sprint/property-backstory-zoning-subdivision in the clean worktree claudeclaw-os-landintel: 21 new modules and suites, 3 modified source files. Not merged to main. The primary worktree was never touched.",
+  "recordedAt": "2026-08-16T05:55:00.0000000Z",
+  "headUnderReview": "b79d224",
+  "commitState": "Committed and pushed to main at b79d224: five source files modified, two new files added. The three pre-existing browser-pairing files were left unstaged and untouched, as were the five untracked paths.",
   "tests": {
-    "status": "PASS on the focused and adjacent suites",
-    "timestamp": "2026-08-15T13:08:45.0000000Z",
-    "summary": "Land-use suites 103/103 (14 ordinance-text, 39 source-racing, 50 backstory/zoning/subdivision). Adjacent suites 76/76 (Universal Property Resolution, Fairview sparse-input, LandPortal re-aim, document intelligence, mission). The last full-suite run, at 07:58 before the source-racing closeout, was 409 files / 5752 pass against a stash-measured baseline of 408 / 5702 on the same HEAD: zero new failures. No full run since, by instruction"
+    "status": "PASS on the focused suites",
+    "timestamp": "2026-08-16T05:51:26.0000000Z",
+    "summary": "272 focused across seven suites: subdivision-regulation-retention 12 (new), property-backstory-zoning-subdivision 50, land-use-source-racing 39, ordinance-text 14, land-use 114, landos 22 (schema), jurisdiction-and-pdf-identity 21. No full-suite run, by instruction"
   },
   "typecheck": {
-    "status": "FAIL only on the pre-existing retained-comp break",
-    "timestamp": "2026-08-15T13:08:45.0000000Z",
-    "summary": "With the committed comps-valuation.ts splice bypassed locally, tsc reports zero errors in any new or modified file; the 4 remaining errors are the known comps-valuation.ts and comps.ts breakage on main"
+    "status": "PASS",
+    "timestamp": "2026-08-16T05:45:00.0000000Z",
+    "summary": "tsc --noEmit reports zero errors"
   },
   "build": {
-    "status": "WEB PASS, SERVER FAIL on the same pre-existing break",
-    "timestamp": "2026-08-15T07:57:00.0000000Z",
-    "summary": "vite build clean in 10.6s. The tsc server half stops on the same comps-valuation.ts splice, unchanged by this sprint. Not re-run after the source-racing closeout, which touched no web asset"
+    "status": "PASS on both halves",
+    "timestamp": "2026-08-16T05:44:00.0000000Z",
+    "summary": "vite build and tsc both clean; dist rebuilt and the managed runtime restarted onto it"
   },
   "runtime": {
-    "status": "NOT EXERCISED; no server, no browser, no CDP, no port 3141 traffic",
-    "timestamp": "2026-08-15T13:10:00.0000000Z",
-    "pid": 0,
-    "url": "not started"
+    "status": "RUNNING and healthy on port 3141, HTTP 200, rebuilt and restarted",
+    "timestamp": "2026-08-16T05:47:00.0000000Z",
+    "pid": 35976,
+    "url": "http://localhost:3141"
   },
   "operatorAcceptance": {
     "status": "PASS",
-    "workflow": "LIVE Fairview acceptance, sparse two-line lead through the full post-resolution chain, keyless and browserless: LANDOS_LIVE_SEARCH=1 vitest run src/landos/fairview-post-resolution.live.test.ts",
-    "url": "no server; the production code paths were exercised directly",
+    "workflow": "Five consecutive live retrievals for Fairview / Deal Card 89 — four through the production subdivision capability with real keyless search and government fetch, the fifth through the operator's own Re-run research button — then the Deal Card read in the browser.",
+    "url": "http://localhost:3141/dept/acquisitions/v2?deal=89&section=property-market",
     "evidence": {
-      "resolution": "Map 042 Parcel 123 / Fairview, Tennessee resolved to Williamson County TN, APN 042 123.00, LANDSOUTH LLC, 75.86 ac, winner indexed_web, released while the LandPortal lane was still running.",
-      "sourceRacing": "Authority released at 11ms via retained_evidence with the network lanes never started; subdivision released at 9.3s via indexed_web_search; current zoning not released, with every method attempted and its refusal recorded.",
-      "backstory": "Subject-specific events from the City of Fairview planning packet, reused from retained intelligence with no re-fetch; 119-lot Kingwood master development plan.",
-      "authority": "Zoning and subdivision authority both CONFIRMED as Fairview from the city's own published documents.",
-      "currentZoning": "UNRESOLVED and reported as such. Historical and requested statements retained as dated references, explicitly refused as the current district.",
-      "subdivision": "Fairview's adopted regulations retrieved from the city domain; rules complete with sections; statedMaxMinorLots 3; property read concludes major subdivision from 3 vs 119 lots.",
-      "passageSelection": "A contents line and a cross-reference that had been released as controlling rules are now refused; minimum_lot_size returns UNKNOWN rather than a wrong value.",
-      "note": "No screenshots: no UI was built or changed in this backend sprint. Evidence is the recorded live-run logs and the durable SQLite reads after clearing all in-process caches."
+      "reproducibility": "Every run returned the same 26 rules from the same 10 official documents, statedMaxMinorLots 2, likely path major subdivision. Before the change, four live runs on the same parcel returned Articles 1+4, then Article 2, then Article 1 alone, then nothing.",
+      "seriesCompletion": "One discovered article seeds the walk of the government's own URL pattern; the run that reached Article 1 by search retrieved parts 3-7 by pattern and recorded that it did so.",
+      "retention": "The set is retained against the government in landos_regulation_document; run two onward released via the retained_regulations lane in 4s instead of a search round trip.",
+      "threshold": "Article II's minor-subdivision definition carries the boundary at 2 lots, so the 119-lot Kingwood history reads as major subdivision on the card rather than depending on Article IV's illustrative 'up to three lots'.",
+      "operatorSurface": "Deal Card 89 Property & Market shows Subdivision path major subdivision, the 2-vs-119 statement, 26 sectioned rules and all 10 source documents. Page text read rather than screenshotted: capture would activate the operator's Chrome.",
+      "note": "No paid API, no credential, no LandPortal action. Current zoning remains UNRESOLVED and untouched by this work."
     }
   }
 }
