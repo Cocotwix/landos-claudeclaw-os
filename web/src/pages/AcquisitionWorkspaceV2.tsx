@@ -38,7 +38,7 @@ import {
   OverviewSection, type OverviewSnapshotView,
 } from '../components/AcquisitionWorkspaceV2Overview';
 import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
-import type { LandUseView } from '../components/AcquisitionWorkspaceV2LandUse';
+import type { LandUseView, RetainedLandUseIntelligenceView } from '../components/AcquisitionWorkspaceV2LandUse';
 import '../styles/workspace-v2.css';
 // Loaded AFTER the base sheet: the comps identity + readability corrections
 // deliberately override base values on equal specificity.
@@ -101,6 +101,7 @@ interface IntelResp {
     compsValuation?: CompsValuationViewData | null;
     officialParcelGis?: OfficialParcelGisView | null;
     landUse?: LandUseView | null;
+    landUseIntelligence?: RetainedLandUseIntelligenceView | null;
     exactAddressListings?: ExactAddressListingsView | null;
   };
   marketContext?: MarketContextView;
@@ -203,6 +204,7 @@ export function AcquisitionWorkspaceV2() {
   const [soilsSeptic, setSoilsSeptic] = useState<SoilsSepticView | null>(null);
   const [officialParcelGis, setOfficialParcelGis] = useState<OfficialParcelGisView | null>(null);
   const [landUse, setLandUse] = useState<LandUseView | null>(null);
+  const [landUseIntelligence, setLandUseIntelligence] = useState<RetainedLandUseIntelligenceView | null>(null);
   const [exactAddressListings, setExactAddressListings] = useState<ExactAddressListingsView | null>(null);
   const [researchStatus, setResearchStatus] = useState<ResearchStatusView | null>(null);
   const [compsValuation, setCompsValuation] = useState<CompsValuationViewData | null>(null);
@@ -236,6 +238,7 @@ export function AcquisitionWorkspaceV2() {
         setSoilsSeptic(i?.propertyIntelligence?.soilsSeptic ?? null);
         setOfficialParcelGis(i?.propertyIntelligence?.officialParcelGis ?? null);
         setLandUse(i?.propertyIntelligence?.landUse ?? null);
+        setLandUseIntelligence(i?.propertyIntelligence?.landUseIntelligence ?? null);
         setExactAddressListings(i?.propertyIntelligence?.exactAddressListings ?? null);
         setResearchStatus(i?.propertyIntelligence?.researchStatus ?? null);
         setCompsValuation(i?.propertyIntelligence?.compsValuation ?? null);
@@ -444,7 +447,7 @@ export function AcquisitionWorkspaceV2() {
             {propertyMarketView === 'comps-valuation' ? (
               <CompsValuationSection dealId={dealId} initial={compsValuation} onViewChange={setCompsValuation} />
             ) : (
-              <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} />
+              <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} />
             )}
           </main>
         ) : section === 'Deal Activity' ? (

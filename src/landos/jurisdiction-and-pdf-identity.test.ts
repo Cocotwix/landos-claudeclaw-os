@@ -279,6 +279,45 @@ describe('official PDF identity extraction', () => {
     expect(hostCorroboratesLocality(PACKET_URL, 'Franklin', 'TN')).toBe(false);
   });
 
+  // A live run declared "no planning or development history" for this parcel
+  // while LandOS held 74 subject-specific findings mined out of this exact
+  // packet: the city publishes on fairview-tn.org, the county/state-scoped
+  // officiality verdict called that "not a government source", and the gate
+  // refused the download.
+  it('opens the city\'s own planning packet off a non-.gov municipal domain', () => {
+    const verdict = pdfIdentityEligible({
+      url: PACKET_URL,
+      title: 'City of Fairview Planning Commission',
+      snippet: null,
+      officiality: 'unverified',
+      notations: [notation()],
+      locality: 'Fairview',
+      state: 'TN',
+    });
+    expect(verdict.eligible).toBe(true);
+    expect(verdict.hostCorroboratesLocality).toBe(true);
+  });
+
+  it('still refuses a business that named itself after the town', () => {
+    expect(hostCorroboratesLocality('https://fairview-tn-realty.org/x.pdf', 'Fairview', 'TN')).toBe(false);
+    const verdict = pdfIdentityEligible({
+      url: 'https://fairview-tn-realty.org/listings/kingwood.pdf',
+      title: 'Kingwood Subdivision — Map 042 Parcel 123',
+      officiality: 'unverified',
+      notations: [notation()],
+      locality: 'Fairview',
+      state: 'TN',
+    });
+    expect(verdict.eligible).toBe(false);
+    expect(verdict.reason).toContain('Not a government source');
+  });
+
+  it('accepts a municipality that spells its civic words out, and rejects a host that only hosts it', () => {
+    expect(hostCorroboratesLocality('https://cityoffairviewtn.org/z.pdf', 'Fairview', 'TN')).toBe(true);
+    expect(hostCorroboratesLocality('https://planning.fairview-tn.org/z.pdf', 'Fairview', 'TN')).toBe(true);
+    expect(hostCorroboratesLocality('https://fairviewtn.civicsitehost.org/z.pdf', 'Fairview', 'TN')).toBe(false);
+  });
+
   it('extracts parcel, owner, acreage and project from the anchored window', () => {
     const readings = readPdfParcelIdentity({ text: extractPdfText(makePdf(PACKET_TEXT)), notations: [notation()] });
     const best = bestPdfParcelIdentity(readings)!;

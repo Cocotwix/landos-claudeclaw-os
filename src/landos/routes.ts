@@ -408,7 +408,8 @@ import { buildCompsValuationView, setCompValuationSelection, resolveCompsValuati
 import { enrichRetainedCompListings } from './comp-listing-enrichment.js';
 import { buildOfficialParcelGisView } from './official-parcel-gis-view.js';
 import { runOfficialParcelGis } from './official-parcel-gis-run.js';
-import { buildLandUseView } from './land-use-view.js';
+import { buildLandUseView, buildRetainedLandUseIntelligenceView } from './land-use-view.js';
+import { landPortalSetLabel } from './landportal-api.js';
 import { runLandUseResearch } from './land-use-run.js';
 import { buildPlatformCapabilityReport } from './gis-platform-registry.js';
 import { listPlatformProofs } from './gis-platform-knowledge.js';
@@ -8324,8 +8325,12 @@ export function registerLandosRoutes(app: Hono): void {
       // Retained LandPortal sidebar fields, projected with their exact labels
       // and displayed values. LandPortal is the discovery-stage source; a
       // stronger official record keeps its own fact and is never overwritten.
-      const sidebarFactDefs: Array<{ key: string; labels: string[]; factLabel: string }> = [
-        { key: 'lp_sidebar_water_feature_type', labels: ['Water Feature Type', 'Water Feature type(s)', 'Water Feature type'], factLabel: 'Water Feature Type' },
+      // `normalize` exists because "verbatim" is only honest for a value the
+      // panel actually displayed. The internal API answers the set-valued
+      // fields with their Postgres literal, and a run that took that path
+      // published "Water Feature Type {16}" to the operator on Deal 89.
+      const sidebarFactDefs: Array<{ key: string; labels: string[]; factLabel: string; normalize?: (value: string) => string }> = [
+        { key: 'lp_sidebar_water_feature_type', labels: ['Water Feature Type', 'Water Feature type(s)', 'Water Feature type'], factLabel: 'Water Feature Type', normalize: landPortalSetLabel },
         { key: 'lp_sidebar_zoning_code', labels: ['Zoning Code'], factLabel: 'Zoning Code' },
         { key: 'lp_sidebar_fema_flood_zone_description', labels: ['FEMA Flood Zone Description'], factLabel: 'FEMA Flood Zone Description' },
         { key: 'lp_sidebar_last_sale_price', labels: ['Last Sale Price'], factLabel: 'Last Sale Price' },
@@ -8334,10 +8339,11 @@ export function registerLandosRoutes(app: Hono): void {
         { key: 'lp_sidebar_page_number', labels: ['Page Number'], factLabel: 'Page Number' },
         { key: 'lp_sidebar_assessed_value', labels: ['Assessed Value'], factLabel: 'Assessed Value' },
       ];
-      const sidebarFacts = sidebarFactDefs.flatMap(({ key, labels, factLabel }) => {
-        const value = labels
+      const sidebarFacts = sidebarFactDefs.flatMap(({ key, labels, factLabel, normalize }) => {
+        const displayed = labels
           .map((label) => str(retainedInspection?.parcelFacts?.[label]))
           .find((candidate) => candidate && candidate !== '-');
+        const value = displayed && normalize ? normalize(displayed) : displayed;
         if (!value) return [];
         return [{
           key,
@@ -9159,6 +9165,10 @@ export function registerLandosRoutes(app: Hono): void {
       // built on top of the parcel evidence. Read-time projection over the
       // retained determination; SELECT-only.
       landUse: buildLandUseView(dealCardId),
+      // The source-racing lanes promote their own snapshots and never write a
+      // land_use_determination row, so this is the only way their confirmed
+      // authority, backstory and subdivision rules reach the panel.
+      landUseIntelligence: buildRetainedLandUseIntelligenceView(dealCardId),
     };
   };
 
@@ -9187,6 +9197,7 @@ export function registerLandosRoutes(app: Hono): void {
       compsValuation: propertyIntelligence.compsValuation,
       officialParcelGis: propertyIntelligence.officialParcelGis,
       landUse: propertyIntelligence.landUse,
+      landUseIntelligence: propertyIntelligence.landUseIntelligence,
     });
   });
 
@@ -9267,6 +9278,7 @@ export function registerLandosRoutes(app: Hono): void {
     const propertyIntelligence = propertyIntelligenceView(id);
     return c.json({
       landUse: propertyIntelligence.landUse,
+      landUseIntelligence: propertyIntelligence.landUseIntelligence,
       canonicalState: propertyIntelligence.canonicalState,
       subjectListing: propertyIntelligence.subjectListing,
       landPortalFacts: propertyIntelligence.landPortalFacts,
@@ -9326,6 +9338,7 @@ export function registerLandosRoutes(app: Hono): void {
       });
       return c.json({
         landUse: buildLandUseView(id),
+        landUseIntelligence: buildRetainedLandUseIntelligenceView(id),
         lanes: run.lanes.map((lane) => ({ lane: lane.lane, status: lane.status, durationMs: lane.durationMs })),
       });
     } catch (err) {

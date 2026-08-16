@@ -12,7 +12,7 @@ import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide
 import { dashboardToken } from '@/lib/api';
 import { AcquisitionWorkspaceV2CompPhotoGallery, type CvCompPhoto } from './AcquisitionWorkspaceV2CompPhotoGallery';
 import { OfficialParcelGisPanel, type OfficialParcelGisView } from './AcquisitionWorkspaceV2OfficialParcelGis';
-import { LandUsePanel, type LandUseView } from './AcquisitionWorkspaceV2LandUse';
+import { LandUsePanel, type LandUseView, type RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
 import type { CvSummary } from './AcquisitionWorkspaceV2CompsValuation';
 import '../styles/workspace-v2-property-intelligence.css';
 
@@ -478,7 +478,7 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, exactAddressListings, researchStatus: researchStatusProp, valuationSummary }: {
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary }: {
   snap: PiSnapshot;
   market: MarketContextView | null;
   soils: SoilDetail[] | null;
@@ -491,6 +491,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   dealId?: number;
   officialParcelGis?: OfficialParcelGisView | null;
   landUse?: LandUseView | null;
+  landUseIntelligence?: RetainedLandUseIntelligenceView | null;
   exactAddressListings?: ExactAddressListingsView | null;
   researchStatus?: ResearchStatusView | null;
   valuationSummary?: CvSummary | null;
@@ -963,7 +964,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           be divided by right. Every downstream valuation scenario depends on
           this being right, so it sits where the operator reads it in order. */}
       {dealId != null && (
-        <div id="zoning-land-use"><LandUsePanel dealId={dealId} initial={landUse ?? null} /></div>
+        <div id="zoning-land-use"><LandUsePanel dealId={dealId} initial={landUse ?? null} retained={landUseIntelligence ?? null} /></div>
       )}
 
       <section data-domain="risk" class="awv2-panel" id="utilities-septic">

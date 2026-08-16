@@ -37,6 +37,13 @@ import {
   type UseLegalStatus,
 } from './land-use-types.js';
 import { getLandUseDetermination } from './land-use-store.js';
+import {
+  readControllingAuthority,
+  readCurrentZoning,
+  readPropertySubdivisionRead,
+  readSubdivisionRegulations,
+} from './land-use-intelligence-store.js';
+import { readPropertyBackstory } from './property-backstory-store.js';
 
 /* ────────────────────────────── view shapes ──────────────────────────── */
 
@@ -662,4 +669,192 @@ export function buildLandUseView(dealCardId: number): LandUseView {
   const record = getLandUseDetermination(dealCardId);
   if (!record) return emptyLandUseView();
   return toLandUseView(record.determination);
+}
+
+/* ── Retained land-use intelligence ────────────────────────────────────────
+ *
+ * The source-racing lanes (authority, current zoning, backstory, subdivision)
+ * persist their own promoted snapshots and never write a
+ * `land_use_determination` row. So a Deal Card could hold a CONFIRMED
+ * controlling authority and a populated backstory while this panel still told
+ * the operator to "run land-use research" — measured live on Deal 89.
+ *
+ * This projects those already-promoted snapshots onto the same panel. It reads
+ * only what the lanes stored, adds no research path of its own, and keeps the
+ * unresolved-is-named rule: current zoning stays unresolved here whenever the
+ * determination says so, and a historical district is labelled as history.
+ */
+
+export interface RetainedAuthorityView {
+  role: string;
+  name: string | null;
+  level: string | null;
+  determination: string;
+  determinationLabel: string;
+  basis: string | null;
+}
+
+export interface RetainedLandUseIntelligenceView {
+  present: boolean;
+  determinedAt: string | null;
+  authority: {
+    determined: boolean;
+    municipality: string | null;
+    incorporationStatus: string | null;
+    roles: RetainedAuthorityView[];
+    sources: Array<{ label: string; url: string | null; quote: string | null }>;
+  } | null;
+  currentZoning: {
+    established: boolean;
+    statement: string;
+    districtCode: string | null;
+    confidence: string;
+    authorityName: string | null;
+    /** Historical/requested districts. NEVER the current district. */
+    references: Array<{ kindLabel: string; value: string | null; asOf: string | null; quote: string; sourceUrl: string | null }>;
+    limitations: string[];
+  } | null;
+  backstory: {
+    narrative: string;
+    highlights: string[];
+    openQuestions: string[];
+    documents: Array<{ label: string; url: string | null }>;
+  } | null;
+  subdivision: {
+    authorityName: string | null;
+    authorityDetermination: string;
+    likelyPathLabel: string | null;
+    likelyPathWhy: string | null;
+    reviewBody: string | null;
+    lotCountStatement: string | null;
+    rules: Array<{ label: string; value: string; section: string | null; sourceUrl: string | null; confidence: string }>;
+    documents: Array<{ label: string; url: string | null }>;
+  } | null;
+}
+
+const AUTHORITY_DETERMINATION_LABEL: Readonly<Record<string, string>> = {
+  confirmed: 'Confirmed',
+  likely: 'Likely',
+  ambiguous: 'Ambiguous',
+  unresolved: 'Unresolved',
+};
+
+const ZONING_REFERENCE_LABEL: Readonly<Record<string, string>> = {
+  stated_as_current_at_the_time: 'Stated as current at the time',
+  requested: 'Requested',
+  rezoning_mentioned: 'Rezoning mentioned',
+};
+
+/** Trim a verbatim ordinance/minutes passage to something a panel can show. */
+function passage(value: string | null | undefined, max = 320): string {
+  const text = String(value ?? '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+export function emptyRetainedLandUseIntelligenceView(): RetainedLandUseIntelligenceView {
+  return { present: false, determinedAt: null, authority: null, currentZoning: null, backstory: null, subdivision: null };
+}
+
+export function buildRetainedLandUseIntelligenceView(dealCardId: number): RetainedLandUseIntelligenceView {
+  const authority = readControllingAuthority(dealCardId);
+  const zoning = readCurrentZoning(dealCardId);
+  const backstory = readPropertyBackstory(dealCardId);
+  const regulations = readSubdivisionRegulations(dealCardId);
+  const subdivisionRead = readPropertySubdivisionRead(dealCardId);
+  if (!authority && !zoning && !backstory && !regulations) return emptyRetainedLandUseIntelligenceView();
+
+  const roles: RetainedAuthorityView[] = [];
+  const pushRole = (role: string, value: { name: string | null; level: string | null; determination: string; basis: string | null } | null | undefined): void => {
+    if (!value) return;
+    roles.push({
+      role,
+      name: value.name ?? null,
+      level: value.level ?? null,
+      determination: value.determination,
+      determinationLabel: AUTHORITY_DETERMINATION_LABEL[value.determination] ?? value.determination,
+      basis: passage(value.basis, 400) || null,
+    });
+  };
+  pushRole('Zoning', authority?.zoningAuthority);
+  pushRole('Subdivision', authority?.subdivisionAuthority);
+
+  const authoritySources = (authority?.zoningAuthority?.sources ?? [])
+    .concat(authority?.subdivisionAuthority?.sources ?? [])
+    .reduce<Array<{ label: string; url: string | null; quote: string | null }>>((out, source) => {
+      if (out.some((row) => row.url === (source.url ?? null))) return out;
+      out.push({ label: source.label, url: source.url ?? null, quote: passage(source.quote, 200) || null });
+      return out;
+    }, []);
+
+  // A historical statement is shown BECAUSE current zoning is unresolved, and it
+  // is labelled so it can never be read as the district in force today.
+  const references = (backstory?.zoningReferences ?? []).map((row) => ({
+    kindLabel: ZONING_REFERENCE_LABEL[row.kind] ?? row.kind.replace(/_/g, ' '),
+    value: row.value,
+    asOf: row.asOf,
+    quote: passage(row.quote, 200),
+    sourceUrl: row.sourceUrl,
+  }));
+
+  const zoningStatement = zoning
+    ? (zoning.established && zoning.districtCode
+      ? `District ${zoning.districtCode} established from a current, parcel-specific official source.`
+      : 'Current zoning is unresolved. No current, parcel-specific official source established the district for this parcel.')
+    : 'Current zoning has not been determined for this Deal Card.';
+
+  const lotCount = subdivisionRead?.theoreticalLotCount ?? null;
+
+  return {
+    present: true,
+    determinedAt: backstory?.generatedAt ?? zoning?.verifiedAt ?? null,
+    authority: authority
+      ? {
+          determined: roles.some((role) => role.determination === 'confirmed' || role.determination === 'likely'),
+          municipality: authority.municipality ?? null,
+          incorporationStatus: authority.incorporationStatus ?? null,
+          roles,
+          sources: authoritySources.slice(0, 6),
+        }
+      : null,
+    currentZoning: zoning
+      ? {
+          established: zoning.established,
+          statement: zoningStatement,
+          districtCode: zoning.districtCode ?? null,
+          confidence: zoning.confidence,
+          authorityName: zoning.authorityName ?? null,
+          references,
+          limitations: (zoning.limitations ?? []).slice(0, 6),
+        }
+      : null,
+    backstory: backstory
+      ? {
+          narrative: backstory.summary.narrative,
+          highlights: backstory.summary.highlights,
+          openQuestions: backstory.summary.openQuestions,
+          documents: backstory.documentsReused.map((row) => ({ label: row.sourceTitle || row.sourceUrl, url: row.sourceUrl }))
+            .concat(backstory.documentsRetrieved.map((row) => ({ label: row.sourceTitle || row.sourceUrl, url: row.sourceUrl }))),
+        }
+      : null,
+    subdivision: regulations || subdivisionRead
+      ? {
+          authorityName: regulations?.authorityName ?? null,
+          authorityDetermination: regulations?.authorityDetermination ?? 'unresolved',
+          likelyPathLabel: subdivisionRead?.likelyPath?.kind
+            ? subdivisionRead.likelyPath.kind.replace(/_/g, ' ')
+            : null,
+          likelyPathWhy: subdivisionRead?.likelyPath?.why ?? null,
+          reviewBody: subdivisionRead?.requiredReviewBody ?? null,
+          lotCountStatement: lotCount ? (lotCount.value != null ? `${lotCount.value} lots` : lotCount.calculation) : null,
+          rules: (regulations?.rules ?? []).map((rule) => ({
+            label: rule.label,
+            value: passage(rule.value),
+            section: rule.section ?? null,
+            sourceUrl: rule.sourceUrl ?? null,
+            confidence: rule.confidence,
+          })),
+          documents: (regulations?.documents ?? []).map((row) => ({ label: row.label, url: row.url ?? null })),
+        }
+      : null,
+  };
 }

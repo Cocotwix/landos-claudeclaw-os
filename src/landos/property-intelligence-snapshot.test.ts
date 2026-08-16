@@ -115,6 +115,24 @@ describe('normalizeApn / apnEquivalent', () => {
     expect(apnEquivalent('', '')).toBe(false);
   });
 
+  // Deal 89, live: the async LandPortal capture upgraded the card to LandPortal's
+  // rendering, the rerun resolved that form, and the promotion guard compared it
+  // against the county form retained by the first run. One parcel, two official
+  // spellings, and the entire rerun was discarded as a different property.
+  it('reads an empty sub-parcel segment as the same parcel', () => {
+    expect(apnEquivalent('042 123.00', '042-123.00-000')).toBe(true);
+    expect(apnEquivalent('042-123.00-000', '042 123.00')).toBe(true);
+    expect(apnEquivalent('042 123.00 000', '042 123.00')).toBe(true);
+  });
+
+  it('still separates a real sub-parcel from the parent', () => {
+    expect(apnEquivalent('042 123.00', '042-123.00-001')).toBe(false);
+    expect(apnEquivalent('042-123.00-000', '042-123.00-001')).toBe(false);
+    expect(apnEquivalent('042 123.00', '042 124.00 000')).toBe(false);
+    // Too little identifier left to be worth matching on.
+    expect(apnEquivalent('42 00', '42')).toBe(false);
+  });
+
   it('reduces a spelling set to distinct identities', () => {
     expect(distinctApnIdentities(['073090 04200', '073-090-042.00', '73090 04200'])).toHaveLength(1);
     expect(distinctApnIdentities(['073090 04200', '073090 04201'])).toHaveLength(2);

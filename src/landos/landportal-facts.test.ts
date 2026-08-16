@@ -78,6 +78,23 @@ describe('buildParcelFactSheet', () => {
     expect(s.water.label).toBe('Yes, Canal');
   });
 
+  // Deal 89, live: the internal API answered `water_feature_types` with the
+  // SET's Postgres literal of code ids, and the operator panel published
+  // "Water Feature {16}".
+  it('never publishes a raw code set as the water feature type', () => {
+    const sheet = buildParcelFactSheet({ ...REAL_FIELDS, 'Water Feature type(s)': '{16}' });
+    expect(sheet.water.type).toBeNull();
+    expect(sheet.water.present).toBe(true);
+    expect(sheet.water.label).toBe('Yes');
+  });
+
+  it('still renders a labelled set, including a multi-value one', () => {
+    expect(buildParcelFactSheet({ ...REAL_FIELDS, 'Water Feature type(s)': 'Creek / Stream' }).water.label)
+      .toBe('Yes, Creek / Stream');
+    expect(buildParcelFactSheet({ ...REAL_FIELDS, 'Water Feature type(s)': '{Creek,Stream}' }).water.label)
+      .toBe('Yes, Creek / Stream');
+  });
+
   it('maps last sale, assessed, market value, tax', () => {
     expect(s.valuation.lastSalePrice).toBe(16000);
     expect(s.valuation.lastSalePriceLabel).toBe('$16,000');

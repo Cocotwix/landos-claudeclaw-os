@@ -259,6 +259,15 @@ export function looksLikePdf(url: string, title?: string | null): boolean {
   return path.endsWith('.pdf') || /\.pdf\b/i.test(url) || /\bpdf\b/i.test(String(title ?? ''));
 }
 
+/** Civic words a jurisdiction may spell out in its own domain label. */
+const CIVIC_LABEL_WORDS = /city|town(?:ship)?|village|borough|county|municipal|gov(?:ernment)?|of|the/g;
+
+/** The registrable label, so a subdomain or a host's TLD is never the evidence. */
+function registrableLabel(host: string): string {
+  const parts = host.split('.').filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : (parts[0] ?? '');
+}
+
 /**
  * Is this municipal/county domain the government of the locality LandOS has
  * independently established?
@@ -273,10 +282,21 @@ export function hostCorroboratesLocality(url: string, locality: string | null | 
   if (!host || place.length < 4) return false;
   const compact = host.replace(/[^a-z0-9]/g, '');
   if (!compact.includes(place)) return false;
+  // A government or state-scoped host is the jurisdiction on the TLD alone.
+  if (/\.gov$|\.us$/.test(host)) return true;
   const code = String(state ?? '').toLowerCase().replace(/[^a-z]/g, '');
-  // A government or state-scoped host. A commercial host that merely contains
-  // the town's name is not the town.
-  return /\.gov$|\.us$/.test(host) || (!!code && host.replace(/[^a-z]/g, '').includes(code));
+  if (!code) return false;
+  // Off a government TLD the label must READ as the jurisdiction and nothing
+  // else: "fairview-tn" is Fairview, TN, but "fairview-tn-realty" is a business
+  // that named itself after the town, and a keyless search returns both. So
+  // strip the place, the state code and the civic words a city may spell out,
+  // and require nothing to be left over.
+  const remainder = registrableLabel(host)
+    .replace(/[^a-z]/g, '')
+    .replace(place, '')
+    .replace(code, '')
+    .replace(CIVIC_LABEL_WORDS, '');
+  return remainder === '';
 }
 
 /** Only a relevant official government document is worth downloading. */
@@ -285,7 +305,14 @@ export function pdfIdentityEligible(input: PdfIdentityCandidateInput): PdfIdenti
   if (!looksLikePdf(input.url, input.title)) {
     return { eligible: false, hostCorroboratesLocality: corroborates, reason: 'Not a PDF.' };
   }
-  if (input.officiality === 'unverified') {
+  // `unverified` is the resolver's county/state-scoped verdict, and it has no
+  // notion of a municipality: a city that publishes on its own non-.gov domain
+  // scores as "not a government source" and its planning packets are never
+  // opened. A host already corroborated as this locality's own government
+  // domain IS the local government source of record, so it clears the gate on
+  // that evidence — the same basis `readPublisherJurisdictionActs` already
+  // uses to name the publisher. Nothing else about `unverified` is relaxed.
+  if (input.officiality === 'unverified' && !corroborates) {
     return { eligible: false, hostCorroboratesLocality: corroborates, reason: `Not a government source (${hostOf(input.url)}); a document from anywhere else can never establish parcel identity.` };
   }
   const haystack = `${input.title ?? ''} ${input.snippet ?? ''} ${input.url}`;

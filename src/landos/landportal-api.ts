@@ -84,6 +84,33 @@ const feet = (value: unknown, digits = 2): string => {
 };
 
 /**
+ * A set-valued LandPortal field, rendered the way the parcel panel renders it.
+ *
+ * The API returns these as a Postgres array literal, and it returns the SET's
+ * internal code ids as readily as its labels: `{Creek,Stream}` one call and
+ * `{16}` the next. A code id is not a value. Deal 89 published "Water Feature
+ * {16}" to the operator because the raw literal was passed straight through
+ * under a label that promises what the scrape showed ("Creek / Stream").
+ *
+ * So labels are unwrapped and joined in the panel's own style, and an all-numeric
+ * set is dropped rather than displayed. Dropping it costs nothing the operator
+ * could have used: `water_feature_is` still carries whether a feature exists,
+ * and the field's existing not-supplied state is the honest answer for a set
+ * LandOS cannot name.
+ */
+export const landPortalSetLabel = (value: unknown): string => {
+  const raw = text(value);
+  if (!raw) return '';
+  const parts = raw.replace(/^\{/, '').replace(/\}$/, '')
+    .split(',')
+    .map((part) => part.trim().replace(/^"(.*)"$/, '$1').trim())
+    .filter(Boolean);
+  if (!parts.length) return '';
+  if (parts.every((part) => /^\d+$/.test(part))) return '';
+  return parts.join(' / ');
+};
+
+/**
  * Map the API's `properties` onto the EXACT parcel-panel labels the scrape
  * produced. Every key here was read from a real retained inspection, so this is
  * a like-for-like substitution rather than a new vocabulary.
@@ -116,7 +143,7 @@ export function landPortalFactsFromApi(properties: Record<string, unknown>): Rec
 
   put('Land Locked', text(p.land_locked));
   put('Road Frontage', feet(p.road_frontage));
-  const waterTypes = text(p.water_feature_types);
+  const waterTypes = landPortalSetLabel(p.water_feature_types);
   put('Water Feature', text(p.water_feature_is));
   put('Water Feature type(s)', waterTypes);
   put('Water Feature Type', waterTypes);

@@ -519,12 +519,40 @@ export function jurisdictionLocalApnVariants(apn: string | null | undefined): st
   return jurisdictionPrefixBetween(original, local) ? [local] : [];
 }
 
+/** A core identifier must still be substantial before the sub-parcel rule applies. */
+const MIN_SUB_PARCEL_CORE_CHARS = 5;
+
+/**
+ * APN segments with trailing EMPTY sub-parcel segments dropped.
+ *
+ * A Tennessee assessor prints the county-local identifier as map + parcel and
+ * adds a sub-parcel segment only when the parcel actually has one. LandPortal
+ * always renders the segment and fills it with zeros when there is none, so
+ * Williamson County's "042 123.00" and LandPortal's "042-123.00-000" are ONE
+ * parcel in two official renderings. A live rerun of Deal 89 read them as two
+ * properties and threw the whole run away.
+ *
+ * Only an all-zero trailing segment is dropped, so this can never merge two real
+ * parcels: "042 123.00 001" names an actual sub-parcel and still differs from
+ * "042 123.00". A decimal point is INSIDE a segment ("123.00" is one parcel
+ * number), so it is never treated as a segment separator.
+ */
+function apnCoreSegments(value: string | null | undefined): string[] {
+  const segments = (value ?? '').toLowerCase().split(/[^a-z0-9.]+/).filter(Boolean);
+  const core = [...segments];
+  while (core.length > 1 && /^0+$/.test(core[core.length - 1]!.replace(/\./g, ''))) core.pop();
+  return core;
+}
+
 /** True when two APN spellings denote the same parcel identifier. */
 export function apnEquivalent(a: string | null | undefined, b: string | null | undefined): boolean {
   const left = normalizeApn(a);
   const right = normalizeApn(b);
   if (!left || !right) return false;
   if (left === right) return true;
+  const leftCore = normalizeApn(apnCoreSegments(a).join(' '));
+  const rightCore = normalizeApn(apnCoreSegments(b).join(' '));
+  if (leftCore && leftCore === rightCore && leftCore.length >= MIN_SUB_PARCEL_CORE_CHARS) return true;
   return jurisdictionPrefixBetween(a, b) != null;
 }
 

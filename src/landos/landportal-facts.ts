@@ -23,6 +23,8 @@
 //     genuinely did not, so a surface can tell "the source did not publish it"
 //     apart from "we failed to keep it".
 
+import { landPortalSetLabel } from './landportal-api.js';
+
 export type FactStatus = 'verified' | 'needs_verification';
 
 export interface FactRow {
@@ -232,7 +234,11 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
   // Water feature. A displayed type (e.g. sidebar "Water Feature Type: River")
   // is itself evidence a water feature is present.
   const waterYes = pick(fields, 'Water Feature');
-  const waterType = pick(fields, 'Water Feature type(s)', 'Water Feature type', 'Water Feature Type');
+  // Cards captured before the API projection was corrected hold the set's raw
+  // Postgres literal ("{16}") rather than its labels. Reading it through the
+  // same rule keeps an opaque code id off the operator's panel without waiting
+  // for a re-capture; presence still comes from "Water Feature".
+  const waterType = landPortalSetLabel(pick(fields, 'Water Feature type(s)', 'Water Feature type', 'Water Feature Type')) || null;
   const waterPresent = (waterYes != null && /^yes$/i.test(waterYes)) || (waterType != null && !/^no(?:ne)?$/i.test(waterType));
   const waterLabel = waterPresent ? `Yes${waterType ? `, ${waterType}` : ''}` : waterYes ? 'No' : null;
 
