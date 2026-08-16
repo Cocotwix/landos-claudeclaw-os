@@ -34,6 +34,29 @@ describe('practical subject government attempts', () => {
       && fact.sourceUrl?.includes('/Image/DocumentImage1/1433732'))).toBe(true);
   });
 
+  it('projects tax, improvement and manufactured-home ownership fields with operator labels', () => {
+    const facts = governmentFactsFromPublicRecordOutcomes([{
+      id: 21,
+      retrieval_status: 'retrieved_yes',
+      authority: 'White County Tax Commissioner',
+      searched_at: '2026-08-15T12:00:00.000Z',
+      source_url: 'https://tax.whitecountyga.gov/property/021033002',
+      facts: {
+        taxAmount: '$912.08', taxYear: '2026', taxStanding: 'Current / no delinquency shown by the public tax record',
+        structureType: 'Mobile home', yearBuilt: '1998', buildingSqft: '1,680 sq ft',
+        manufacturedHomeAssessmentStatus: 'Separate tax/account record', manufacturedHomeAccount: 'MH-009184',
+        manufacturedHomeOwnershipMatch: 'Different owner — home: HOME OWNER LLC; land: LAND OWNER LLC',
+      },
+    }]);
+    expect(facts.map((fact) => fact.label)).toEqual(expect.arrayContaining([
+      'Current property-tax amount', 'Property-tax year', 'Property-tax standing',
+      'Improvement / structure type', 'Year built', 'Building square footage',
+      'Manufactured-home assessment status', 'Manufactured-home tax/account number',
+      'Manufactured-home owner compared with land owner',
+    ]));
+    expect(facts.every((fact) => fact.source === 'White County Tax Commissioner')).toBe(true);
+  });
+
   it('carries a real failed browser attempt into the county lane instead of reporting not attempted', async () => {
     const [adapter] = makePracticalSubjectAttemptAdapters([{
       source: 'Example County Assessor property search',

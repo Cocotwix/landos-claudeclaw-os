@@ -14,7 +14,8 @@ export const DD_FIELDS = [
   'address', 'apn', 'owner', 'county', 'state', 'acreage',
   'land_use', 'zoning', 'fema_flood', 'wetlands', 'road_frontage', 'utilities',
   'coordinates', 'tax_status', 'tax_values', 'recorded_deed', 'plat',
-  'mailing_address', 'ownership_verification', 'gis_parcel',
+  'mailing_address', 'ownership_verification', 'gis_parcel', 'improvements',
+  'manufactured_home_account',
 ] as const;
 export type DdField = (typeof DD_FIELDS)[number];
 
@@ -26,13 +27,15 @@ export const COUNTY_WORKFLOW_FOR: Record<DdField, string> = {
   fema_flood: 'gis', wetlands: 'gis', road_frontage: 'gis', utilities: 'assessor',
   coordinates: 'gis', tax_status: 'tax_office', tax_values: 'tax_office',
   recorded_deed: 'recorder', plat: 'recorder', mailing_address: 'assessor',
-  ownership_verification: 'recorder', gis_parcel: 'gis',
+  ownership_verification: 'recorder', gis_parcel: 'gis', improvements: 'assessor',
+  manufactured_home_account: 'tax_office',
 };
 
 /** Records that the county is the AUTHORITATIVE source for — these are requested
  *  from the county even if LandPortal showed a hint (verification of record). */
 const COUNTY_AUTHORITATIVE: ReadonlySet<DdField> = new Set([
   'recorded_deed', 'plat', 'tax_status', 'ownership_verification', 'gis_parcel',
+  'improvements', 'manufactured_home_account',
 ]);
 
 export interface MissingFieldAnalysis {
@@ -66,6 +69,8 @@ function hasField(p: NormalizedProperty, browserFields: Record<string, string>, 
     case 'road_frontage': return inBrowser('frontage', 'road front');
     case 'utilities': return inBrowser('utilit', 'water', 'sewer', 'septic', 'power');
     case 'tax_values': return inBrowser('tax', 'assess');
+    case 'improvements': return inBrowser('improvement', 'building type', 'year built', 'square feet', 'living area');
+    case 'manufactured_home_account': return inBrowser('manufactured home account', 'mobile home account', 'mobile home owner', 'title owner');
     default: return false; // county-authoritative records are never "had" from LandPortal alone
   }
 }

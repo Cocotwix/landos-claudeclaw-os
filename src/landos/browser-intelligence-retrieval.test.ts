@@ -445,6 +445,123 @@ describe('County Records Browser — NETR-routed semantic retrieval (end to end)
     expect(attempt?.steps?.map((step) => step.stage)).toEqual(['navigate', 'retrieve', 'extract', 'interpret']);
   });
 
+  it('reports delinquent taxes, improvement facts and a separately assessed home owned by someone else', async () => {
+    const assessorUrl = 'https://assessor.pickenscountysc.gov/property';
+    const taxUrl = 'https://tax.pickenscountysc.gov/property';
+    saveCountySources({
+      state: 'SC',
+      county: 'Pickens',
+      netrUrl: null,
+      sources: [
+        { type: 'assessor', url: assessorUrl, label: 'Pickens County assessor search', origin: 'search_fallback', confidence: 0.9 },
+        { type: 'tax', url: taxUrl, label: 'Pickens County tax search', origin: 'search_fallback', confidence: 0.9 },
+      ],
+      usedSearchFallback: true,
+      status: 'routed',
+      confidence: 'high',
+      notes: 'Tax and manufactured-home regression source.',
+    });
+    const assessorFields = {
+      'Parcel ID': '4165-00-51-3961',
+      'Owner Name': 'LAND OWNER LLC',
+      'Building Type': 'Double-wide manufactured home',
+      'Year Built': '1998',
+      'Living Area': '1,680 sq ft',
+    };
+    const taxFields = {
+      'Parcel ID': '4165-00-51-3961',
+      'Owner Name': 'LAND OWNER LLC',
+      'Property Tax Amount': '$1,842.33',
+      'Tax Year': '2026',
+      'Tax Payment Status': 'Delinquent',
+      'Delinquent Tax Amount': '$4,986.12',
+      'Unpaid Tax Years': '2024, 2025, 2026',
+      'Penalty & Interest': '$612.44 through 2026-08-15',
+      'Tax Sale Status': 'Eligible for 2027 tax sale; no sale scheduled',
+      'Manufactured Home Account': 'MH-009184',
+      'Manufactured Home Owner': 'HOME OWNER LLC',
+    };
+    let currentUrl = assessorUrl;
+    const fieldsForCurrent = () => currentUrl.startsWith(taxUrl) ? taxFields : assessorFields;
+    const driver: BrowserDriver = {
+      id: 'tax-improvement-record',
+      configured: () => true,
+      async open(url) { currentUrl = url; return { url, fields: fieldsForCurrent(), snippets: [] }; },
+      async search(q) { return { url: `search:${q}`, fields: {}, snippets: [] }; },
+      async readFields() { return { url: `${currentUrl}/416500513961`, fields: fieldsForCurrent(), snippets: [] }; },
+      async readLinks() { return []; },
+      async readForms() { return []; },
+      async screenshot(purpose) { return { path: '/tmp/tax-improvement.png', capturedAtIso: 't', purpose }; },
+    };
+    const county = makeCountyRecordsBrowser({ driver });
+    const ev = await county.runWorkflow({
+      searchKey: { state: 'SC', county: 'Pickens', apn: '4165-00-51-3961', owner: 'LAND OWNER LLC' },
+      neededFields: ['tax_status', 'tax_values', 'improvements', 'manufactured_home_account'],
+    }, { timeoutMs: 5_000 });
+
+    expect(ev.sourceAttempts?.map((attempt) => attempt.sourceType)).toEqual(['assessor', 'tax']);
+    expect(ev.sourceAttempts?.map((attempt) => [attempt.result, attempt.failureCode])).toEqual([
+      ['retrieved', undefined], ['retrieved', undefined],
+    ]);
+    const facts = Object.fromEntries(ev.facts.map((fact) => [fact.key, fact.value]));
+    expect(facts).toMatchObject({
+      taxAmount: '$1,842.33',
+      taxYear: '2026',
+      taxStanding: 'Delinquent',
+      delinquentAmount: '$4,986.12',
+      unpaidTaxYears: '2024, 2025, 2026',
+      taxPenaltyInterest: '$612.44 through 2026-08-15',
+      taxSaleStatus: 'Eligible for 2027 tax sale; no sale scheduled',
+      structureType: 'Double-wide manufactured home',
+      yearBuilt: '1998',
+      buildingSqft: '1,680 sq ft',
+      manufacturedHomeAccount: 'MH-009184',
+      manufacturedHomeAssessmentStatus: 'Separate tax/account record',
+      manufacturedHomeOwner: 'HOME OWNER LLC',
+      manufacturedHomeOwnershipMatch: 'Different owner — home: HOME OWNER LLC; land: LAND OWNER LLC',
+    });
+    expect(ev.sourceAttempts?.every((attempt) => attempt.result === 'retrieved')).toBe(true);
+  });
+
+  it('reports current taxes and matches an explicitly titled home owner to the land owner', async () => {
+    const taxUrl = 'https://tax.whitecountyga.gov/property';
+    saveCountySources({
+      state: 'GA', county: 'White', netrUrl: null,
+      sources: [{ type: 'tax', url: taxUrl, label: 'White County tax search', origin: 'search_fallback', confidence: 0.9 }],
+      usedSearchFallback: true, status: 'routed', confidence: 'high', notes: 'Current-tax regression source.',
+    });
+    const fields = {
+      'Parcel ID': '021-033-002',
+      'Owner Name': 'DOE, JANE',
+      'Property Tax Amount': '$912.08',
+      'Tax Year': '2026',
+      'Tax Payment Status': 'Paid — current',
+      'Building Type': 'Mobile home',
+      'Manufactured Home Assessment': 'Assessed with the land as real property',
+      'Manufactured Home Title Owner': 'JANE DOE',
+    };
+    const driver: BrowserDriver = {
+      id: 'current-tax-home-owner', configured: () => true,
+      async open(url) { return { url, fields, snippets: [] }; },
+      async search(q) { return { url: `search:${q}`, fields: {}, snippets: [] }; },
+      async readFields() { return { url: `${taxUrl}/021033002`, fields, snippets: [] }; },
+      async readLinks() { return []; }, async readForms() { return []; },
+      async screenshot(purpose) { return { path: '/tmp/current-tax.png', capturedAtIso: 't', purpose }; },
+    };
+    const ev = await makeCountyRecordsBrowser({ driver }).runWorkflow({
+      searchKey: { state: 'GA', county: 'White', apn: '021-033-002', owner: 'DOE, JANE' },
+      neededFields: ['tax_status', 'tax_values', 'improvements', 'manufactured_home_account'],
+    }, { timeoutMs: 5_000 });
+    const facts = Object.fromEntries(ev.facts.map((fact) => [fact.key, fact.value]));
+    expect(facts).toMatchObject({
+      taxAmount: '$912.08',
+      taxStanding: 'Current / no delinquency shown by the public tax record',
+      manufacturedHomeAssessmentStatus: 'Assessed with the land',
+      manufacturedHomeTitleOwner: 'JANE DOE',
+      manufacturedHomeOwnershipMatch: 'Same owner — JANE DOE',
+    });
+  });
+
   it('rejects a commercial redirect returned by an official department search form', async () => {
     const officialUrl = 'https://www.co.pickens.sc.us/departments/register_of_deeds/index.php';
     saveCountySources({

@@ -95,8 +95,23 @@ interface AdditionalGovernmentFactSpec {
 }
 
 const ADDITIONAL_GOVERNMENT_FACT_SPECS: AdditionalGovernmentFactSpec[] = [
-  { key: 'improvements', label: 'Improvements', rx: /^(improvements?|building\s*(description|type|value)|structures?)$/i, scope: 'parcel' },
+  { key: 'taxAmount', label: 'Current property-tax amount', rx: /^(current\s+)?(?:annual\s+)?(?:property\s+)?tax(?:es|\s+bill)?\s*(?:amount|total|due)?$/i, scope: 'parcel' },
+  { key: 'taxYear', label: 'Property-tax year', rx: /^(?:property\s+)?tax\s*year$/i, scope: 'parcel' },
+  { key: 'taxPaymentStatus', label: 'Property-tax payment status', rx: /^(?:property\s+)?tax\s*(?:payment\s*)?status$/i, scope: 'parcel' },
   { key: 'delinquencyStatus', label: 'Tax delinquency status', rx: /^(delinquen(cy|t)?(\s*status)?|tax\s*delinquen(cy|t)|past\s*due|amount\s*past\s*due)$/i, scope: 'parcel' },
+  { key: 'delinquentAmount', label: 'Delinquent tax amount owed', rx: /^(?:delinquent|past[- ]due|back)\s*(?:tax(?:es)?\s*)?(?:amount|balance|total|owed)|^(?:tax(?:es)?\s*)?amount\s+owed$/i, scope: 'parcel' },
+  { key: 'unpaidTaxYears', label: 'Unpaid property-tax years', rx: /^(?:unpaid|delinquent|past[- ]due)\s*(?:tax\s*)?years?$/i, scope: 'parcel' },
+  { key: 'delinquencyStartYear', label: 'Tax delinquency began', rx: /^(?:delinquen(?:cy|t)|unpaid|past[- ]due)\s*(?:since|start(?:ed)?|begin|from)(?:\s+year)?$/i, scope: 'parcel' },
+  { key: 'taxPenaltyInterest', label: 'Tax penalties and interest', rx: /^(?:tax\s*)?(?:penalt(?:y|ies)|interest|penalt(?:y|ies)\s*(?:and|&)\s*interest)$/i, scope: 'parcel' },
+  { key: 'taxSaleStatus', label: 'Tax-sale status', rx: /^(?:delinquent\s*)?tax[- ]sale\s*(?:status|date)?$/i, scope: 'parcel' },
+  { key: 'structureType', label: 'Improvement / structure type', rx: /^(?:primary\s*)?(?:improvement|building|structure)\s*(?:description|type|class|use)$/i, scope: 'parcel' },
+  { key: 'yearBuilt', label: 'Year built', rx: /^(?:actual\s+|effective\s+)?year\s*built$/i, scope: 'parcel' },
+  { key: 'buildingSqft', label: 'Building square footage', rx: /^(?:building|heated|living|finished|total)\s*(?:area|sq(?:uare)?\s*(?:feet|foot|ft)|sqft)$/i, scope: 'parcel' },
+  { key: 'improvements', label: 'Improvements', rx: /^(improvements?|structures?|building\s*value)$/i, scope: 'parcel' },
+  { key: 'manufacturedHomeAssessment', label: 'Manufactured-home assessment relationship', rx: /^(?:(?:mobile|manufactured)\s*home|trailer)\s*(?:assessment|assessed\s+with\s+land|real\s+property\s+status)$/i, scope: 'parcel' },
+  { key: 'manufacturedHomeAccount', label: 'Manufactured-home tax/account number', rx: /^(?:(?:mobile|manufactured)\s*home|trailer)\s*(?:tax\s*)?(?:account|parcel|record|decal|id)(?:\s*(?:number|no\.?|#))?$/i, scope: 'parcel' },
+  { key: 'manufacturedHomeOwner', label: 'Manufactured-home assessed owner', rx: /^(?:(?:mobile|manufactured)\s*home|trailer)\s*(?:assessed\s*)?owner(?:\s+name)?$/i, scope: 'parcel' },
+  { key: 'manufacturedHomeTitleOwner', label: 'Manufactured-home title owner', rx: /^(?:(?:mobile|manufactured)\s*home|trailer)\s*title(?:d)?\s*(?:owner|holder)(?:\s+name)?$/i, scope: 'parcel' },
   { key: 'currentDeed', label: 'Current deed', rx: /^(current\s*deed|deed\s*(type|description)|document\s*type)$/i, scope: 'parcel' },
   { key: 'grantor', label: 'Grantor', rx: /^(grantor|seller|from\s*party)$/i, scope: 'parcel' },
   { key: 'grantee', label: 'Grantee', rx: /^(grantee|buyer|to\s*party)$/i, scope: 'parcel' },
@@ -124,6 +139,73 @@ const ADDITIONAL_GOVERNMENT_FACT_SPECS: AdditionalGovernmentFactSpec[] = [
   { key: 'publicSewer', label: 'Public sewer information', rx: /^(public|municipal)\s*(sewer|wastewater)(\s*(availability|service|provider))?$/i, scope: 'jurisdiction' },
   { key: 'utilityProvider', label: 'Utility-provider context', rx: /^(utility|water|sewer)\s*(provider|authority|district)$/i, scope: 'jurisdiction' },
 ];
+
+function ownerSignature(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/)
+    .filter((part) => part && !['the', 'and', 'trustee', 'trustees'].includes(part))
+    .sort().join(' ');
+}
+
+function positiveMoney(value: string): boolean {
+  const amount = Number(value.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(amount) && amount > 0;
+}
+
+/** Add operator-facing conclusions only when the retained labeled county facts
+ * support them. Missing ownership/title evidence remains explicitly unresolved. */
+function finalizeTaxAndImprovementFacts(facts: BrowserFact[], subjectOwner?: string): void {
+  const extracted = (key: string) => facts.find((fact) => fact.key === key && fact.status === 'extracted');
+  const addDerived = (key: string, label: string, value: string, basis: BrowserFact): void => {
+    if (extracted(key)) return;
+    facts.push({ ...basis, key, label, value, extractionMethod: `derived from labeled official fields: ${basis.key}` });
+  };
+
+  const rawTaxStatus = extracted('taxPaymentStatus') ?? extracted('delinquencyStatus');
+  const delinquentAmount = extracted('delinquentAmount');
+  if (rawTaxStatus || delinquentAmount) {
+    const value = `${rawTaxStatus?.value ?? ''} ${delinquentAmount?.value ?? ''}`.trim();
+    const basis = rawTaxStatus ?? delinquentAmount!;
+    const explicitlyCurrent = /\b(?:current|paid|no\s+(?:delinquen|past[- ]due|unpaid)|not\s+delinquent)\b/i.test(value)
+      || (delinquentAmount != null && !positiveMoney(delinquentAmount.value));
+    const explicitlyDelinquent = /\b(?:delinquent|unpaid|past[- ]due|back\s+tax|tax\s+sale)\b/i.test(value)
+      || (delinquentAmount != null && positiveMoney(delinquentAmount.value));
+    if (explicitlyCurrent) addDerived('taxStanding', 'Property-tax standing', 'Current / no delinquency shown by the public tax record', basis);
+    else if (explicitlyDelinquent) addDerived('taxStanding', 'Property-tax standing', 'Delinquent', basis);
+  }
+
+  const structure = extracted('structureType') ?? extracted('improvements');
+  const mobileHomePresent = structure != null && /\b(?:mobile|manufactured|modular)\s*home\b|\btrailer\b/i.test(structure.value);
+  const assessment = extracted('manufacturedHomeAssessment');
+  const account = extracted('manufacturedHomeAccount');
+  const homeOwner = extracted('manufacturedHomeTitleOwner') ?? extracted('manufacturedHomeOwner');
+  if (!mobileHomePresent && !assessment && !account && !homeOwner) return;
+  const basis = assessment ?? account ?? homeOwner ?? structure!;
+  if (account && (!assessment || !/separate/i.test(assessment.value))) {
+    addDerived('manufacturedHomeAssessmentStatus', 'Manufactured-home assessment status', 'Separate tax/account record', account);
+  } else if (assessment) {
+    const status = /separate/i.test(assessment.value)
+      ? 'Separate tax/account record'
+      : /with\s+(?:the\s+)?land|real\s+property|same\s+(?:parcel|account)/i.test(assessment.value)
+        ? 'Assessed with the land'
+        : `Unresolved — public record states: ${assessment.value}`;
+    addDerived('manufacturedHomeAssessmentStatus', 'Manufactured-home assessment status', status, assessment);
+  } else {
+    addDerived('manufacturedHomeAssessmentStatus', 'Manufactured-home assessment status', 'Unresolved — no assessment relationship was stated in the retained public record', basis);
+  }
+
+  const landOwner = subjectOwner?.trim() || extracted('owner')?.value.trim() || '';
+  if (!homeOwner || !landOwner) {
+    addDerived('manufacturedHomeOwnershipMatch', 'Manufactured-home owner compared with land owner', 'Unresolved — both the home owner/title holder and land owner were not stated in retained public records', basis);
+    return;
+  }
+  const same = ownerSignature(homeOwner.value) === ownerSignature(landOwner);
+  addDerived(
+    'manufacturedHomeOwnershipMatch',
+    'Manufactured-home owner compared with land owner',
+    same ? `Same owner — ${homeOwner.value}` : `Different owner — home: ${homeOwner.value}; land: ${landOwner}`,
+    homeOwner,
+  );
+}
 
 function addVisibleFields(target: Record<string, string>, fields: Record<string, string> | undefined): void {
   for (const [rawLabel, rawValue] of Object.entries(fields ?? {})) {
@@ -1190,6 +1272,7 @@ async function runCountyWorkflow(
     ev.sourceUrls.push(`statewide:${state}`);
   }
 
+  finalizeTaxAndImprovementFacts(facts, key.owner);
   ev.facts = facts;
   ev.sourceAttempts = sourceAttempts;
   ev.patch = factsToPatch(facts);

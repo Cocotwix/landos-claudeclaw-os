@@ -139,7 +139,7 @@ export function buildPublicRecordsResearchPlan(input: {
   if (input.address) searchBy.push(`Situs address: ${input.address}`);
   if (searchBy.length === 0) searchBy.push('Provide APN, owner name, or the situs address to run an exact search.');
 
-  const extractAll = ['owner', 'APN / parcel #', 'acreage', 'legal description', 'situs address', 'tax status'];
+  const extractAll = ['owner', 'APN / parcel #', 'acreage', 'legal description', 'situs address', 'tax amount and payment status', 'improvement type', 'year built', 'building square footage', 'manufactured-home assessment/account and owner'];
 
   const targets: ResearchTarget[] = [];
 
@@ -182,7 +182,7 @@ export function buildPublicRecordsResearchPlan(input: {
     priority: 2, kind: 'tax', official: true,
     label: `${countyLabel} tax office — property tax records`,
     url: officialSearchUrl(`${geo} county tax office property tax records search`),
-    whatToExtract: ['owner-of-record', 'tax status / delinquency', 'assessed value'],
+    whatToExtract: ['current property-tax amount and year', 'payment status / delinquency', 'amount owed and unpaid years', 'penalties / interest and tax-sale status', 'separate manufactured-home account, tax status and assessed owner'],
     searchBy,
     note: 'Corroborates owner and surfaces delinquency (a motivation + risk signal).',
   });

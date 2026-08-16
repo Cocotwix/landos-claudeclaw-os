@@ -68,7 +68,9 @@ describe('Phase 8 acceptance — Browser Intelligence on the four properties', (
       expect(r.missingFieldAnalysis!.missing).not.toContain('owner');
       expect(r.missingFieldAnalysis!.missing).not.toContain('county');
       // County is queried for authoritative records (deed/plat/tax/ownership/GIS).
-      expect(r.missingFieldAnalysis!.countyVerifies).toEqual(expect.arrayContaining(['recorded_deed', 'tax_status', 'gis_parcel']));
+      expect(r.missingFieldAnalysis!.countyVerifies).toEqual(expect.arrayContaining([
+        'recorded_deed', 'tax_status', 'gis_parcel', 'improvements', 'manufactured_home_account',
+      ]));
       expect(r.browserEvidence[1].service).toBe('county_records');
       // No paid/billing action occurred anywhere.
       for (const ev of r.browserEvidence) expect(ev.blocked).toHaveLength(0);

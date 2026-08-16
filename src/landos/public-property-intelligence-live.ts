@@ -125,6 +125,22 @@ const PUBLIC_RECORD_FACT_LABELS: Record<string, string> = {
   consideration: 'Recorded consideration',
   legalDescription: 'Legal description',
   recordedPlat: 'Recorded plat',
+  taxAmount: 'Current property-tax amount',
+  taxYear: 'Property-tax year',
+  taxStanding: 'Property-tax standing',
+  delinquentAmount: 'Delinquent tax amount owed',
+  unpaidTaxYears: 'Unpaid property-tax years',
+  delinquencyStartYear: 'Tax delinquency began',
+  taxPenaltyInterest: 'Tax penalties and interest',
+  taxSaleStatus: 'Tax-sale status',
+  structureType: 'Improvement / structure type',
+  yearBuilt: 'Year built',
+  buildingSqft: 'Building square footage',
+  manufacturedHomeAssessmentStatus: 'Manufactured-home assessment status',
+  manufacturedHomeAccount: 'Manufactured-home tax/account number',
+  manufacturedHomeOwner: 'Manufactured-home assessed owner',
+  manufacturedHomeTitleOwner: 'Manufactured-home title owner',
+  manufacturedHomeOwnershipMatch: 'Manufactured-home owner compared with land owner',
 };
 
 function publicRecordFactValue(value: unknown): string | null {
@@ -1935,6 +1951,20 @@ function countyRecords(p: OfficialParcel, capability: CountyGisCapability | null
       push('Appraised value (land)', num(p.facts.landValue));
       push('Total appraised value', num(p.facts.appraisedValue));
       push('Taxable value', num(p.facts.taxableValue));
+      push('Current property-tax amount', num(p.facts.taxAmount));
+      push('Property-tax year', str(p.facts.taxYear));
+      push('Property-tax payment status', str(p.facts.taxPaymentStatus));
+      push('Delinquent tax amount owed', num(p.facts.delinquentAmount));
+      push('Unpaid property-tax years', str(p.facts.unpaidTaxYears));
+      push('Tax penalties and interest', str(p.facts.taxPenaltyInterest));
+      push('Tax-sale status', str(p.facts.taxSaleStatus));
+      push('Improvement / structure type', str(p.facts.structureType));
+      push('Year built', num(p.facts.yearBuilt));
+      push('Building square footage', num(p.facts.buildingSqft));
+      push('Manufactured-home assessment status', str(p.facts.manufacturedHomeAssessmentStatus));
+      push('Manufactured-home tax/account number', str(p.facts.manufacturedHomeAccount));
+      push('Manufactured-home assessed owner', str(p.facts.manufacturedHomeOwner));
+      push('Manufactured-home title owner', str(p.facts.manufacturedHomeTitleOwner));
       push('Last recorded sale date', str(p.facts.saleDate), 'recorded_instrument');
       push('Last recorded sale price', num(p.facts.salePrice), 'recorded_instrument');
       push('Sale qualification', str(p.facts.saleQualification), 'recorded_instrument');
