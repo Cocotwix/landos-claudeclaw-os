@@ -32,7 +32,7 @@ interface Row {
 }
 
 /** One stable key per government: "grandtraverse" for a county however spelled. */
-function jurisdictionKey(jurisdiction: string): string {
+export function jurisdictionKey(jurisdiction: string): string {
   return jurisdiction
     .toLowerCase()
     .replace(/\bcharter\b/g, ' ')

@@ -31,7 +31,7 @@ import {
 } from './controlling-land-use-authority.js';
 import { attachHistoricalZoning, determineCurrentZoning } from './current-zoning-determination.js';
 import { researchZoningStandards } from './zoning-standards-research.js';
-import { retrieveSubdivisionRegulations } from './subdivision-regulations.js';
+import { retrieveSubdivisionRegulations, type SubdivisionRegulations } from './subdivision-regulations.js';
 import { buildPropertySubdivisionRead } from './subdivision-property-read.js';
 import {
   persistControllingAuthority,
@@ -39,7 +39,14 @@ import {
   persistPropertySubdivisionRead,
   persistSubdivisionRegulations,
   persistZoningStandards,
+  readSubdivisionRegulations,
+  readSubdivisionRegulationsHistory,
 } from './land-use-intelligence-store.js';
+import {
+  readRegulationDocuments,
+  saveRegulationDocuments,
+  type RegulationJurisdiction,
+} from './regulation-document-store.js';
 import { logger } from '../logger.js';
 import type { DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
 import type { PropertyBackstory } from './property-backstory.js';
@@ -314,6 +321,113 @@ export function liveLandUseAuthorityAndZoningCapability(): NonNullable<DealIntel
   };
 }
 
+// ── The retained regulation set ─────────────────────────────────────────────
+//
+// A jurisdiction's adopted subdivision regulations do not change between two
+// runs on the same parcel, but a keyless web search's idea of them does. These
+// four helpers are the whole retention seam: identify the government, read what
+// it is known to publish, offer that to the retrieval, and record what was
+// actually read.
+
+type RetainedRegulationDocuments = SubdivisionRegulations['documents'];
+
+/** The government whose regulation set this is, or null when unresolved. */
+function subdivisionRegulationJurisdiction(
+  authority: ControllingLandUseAuthority['subdivisionAuthority'] | null,
+  state: string | null,
+): RegulationJurisdiction | null {
+  if (!authority?.name || !state) return null;
+  // An unresolved or ambiguous authority names no government, and a set filed
+  // against the wrong government would be served to the wrong parcels.
+  if (authority.determination === 'unresolved' || authority.determination === 'ambiguous') return null;
+  return { authorityName: authority.name, level: authority.level, state };
+}
+
+function retainedRegulationSet(jurisdiction: RegulationJurisdiction | null): RetainedRegulationDocuments {
+  if (!jurisdiction) return [];
+  try {
+    return readRegulationDocuments(jurisdiction).map((row) => ({
+      label: row.label,
+      url: row.url,
+      tier: 'official_government_source' as const,
+      adoptedOrAsOf: row.adoptedOrAsOf,
+      draftOrProposed: row.draftOrProposed,
+      retrievedAt: new Date(row.lastVerifiedAt * 1_000).toISOString(),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** The jurisdiction's set first, then anything this card alone knows about. */
+function mergeRetainedDocuments(
+  set: RetainedRegulationDocuments,
+  prior: RetainedRegulationDocuments,
+): RetainedRegulationDocuments {
+  const out: RetainedRegulationDocuments = [...set];
+  for (const document of prior) {
+    if (!document.url || out.some((row) => row.url === document.url)) continue;
+    out.push(document);
+  }
+  return out;
+}
+
+/**
+ * The last rule set this card actually held, current or not.
+ *
+ * A run that reached nothing writes a current snapshot with no document in it.
+ * Starting the next run from that snapshot would make one bad retrieval
+ * permanent, so the most recent set that carried documents is what is offered
+ * back to the retrieval.
+ */
+function readSubdivisionRegulationsSafely(dealCardId: number): SubdivisionRegulations | null {
+  try {
+    const current = readSubdivisionRegulations(dealCardId);
+    if (current?.documents.length) return current;
+    const prior = readSubdivisionRegulationsHistory(dealCardId)
+      .filter((row) => row.documents.length)
+      .pop();
+    return prior ?? current;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Record what this run actually opened and read as this government's own.
+ *
+ * Official documents only: a secondary source is a pointer, and re-serving one
+ * as the jurisdiction's adopted regulations is exactly the mistake retention
+ * would otherwise make permanent.
+ */
+function rememberRegulationSet(
+  jurisdiction: RegulationJurisdiction | null,
+  regulations: SubdivisionRegulations,
+): number {
+  if (!jurisdiction) return 0;
+  const ruleCounts = new Map<string, number>();
+  for (const rule of regulations.rules) {
+    if (!rule.sourceUrl) continue;
+    ruleCounts.set(rule.sourceUrl, (ruleCounts.get(rule.sourceUrl) ?? 0) + 1);
+  }
+  try {
+    return saveRegulationDocuments(
+      jurisdiction,
+      regulations.documents
+        .filter((document) => document.url && document.tier === 'official_government_source')
+        .map((document) => ({
+          url: document.url as string,
+          label: document.label,
+          adoptedOrAsOf: document.adoptedOrAsOf,
+          draftOrProposed: document.draftOrProposed,
+          ruleCount: ruleCounts.get(document.url as string) ?? 0,
+        })),
+    );
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * The subdivision capability.
  *
@@ -328,10 +442,23 @@ export function liveSubdivisionIntelligenceCapability(): NonNullable<DealIntelli
     const county = identity.county ?? resolved?.county ?? null;
     const state = identity.state ?? resolved?.state ?? null;
 
+    // The regulation SET belongs to the government, so it is remembered against
+    // the government. Once the controlling subdivision authority is
+    // established, the documents it publishes are fetched directly instead of
+    // being rediscovered by a search that returns a different slice each run.
+    const regulationJurisdiction = subdivisionRegulationJurisdiction(authority?.subdivisionAuthority ?? null, state);
+    const retainedSet = retainedRegulationSet(regulationJurisdiction);
+    const priorRegulations = readSubdivisionRegulationsSafely(dealCardId);
+
     const regulations = await retrieveSubdivisionRegulations(
       { dealCardId, municipality: city, county, state },
       authority?.subdivisionAuthority ?? null,
       {
+        // The jurisdiction's own set first, then whatever this card already
+        // knows about. A prior run's documents count as known even when the
+        // authority was not established at the time.
+        retainedDocuments: mergeRetainedDocuments(retainedSet, priorRegulations?.documents ?? []),
+        retainedRules: priorRegulations?.rules ?? [],
         // The government's own domain, established by the documents the
         // resolver already retrieved from it.
         preferredHosts: officialHostsFor(dealCardId),
@@ -369,10 +496,14 @@ export function liveSubdivisionIntelligenceCapability(): NonNullable<DealIntelli
 
     persistSubdivisionRegulations({ regulations });
     persistPropertySubdivisionRead({ read: propertyRead });
+    // Learned, so the next run on this jurisdiction opens the same set.
+    const learned = rememberRegulationSet(regulationJurisdiction, regulations);
     logger.info({
       dealCardId,
       ruleCount: regulations.rules.length,
       documents: regulations.documents.length,
+      retainedDocumentsOffered: retainedSet.length,
+      regulationDocumentsLearned: learned,
       likelyPath: propertyRead.likelyPath.kind,
       theoreticalLots: propertyRead.theoreticalLotCount.value,
     }, 'subdivision_intelligence_completed');

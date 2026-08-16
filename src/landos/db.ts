@@ -1498,6 +1498,32 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_official_site ON landos_official_site(state, jurisdiction_key);
 
+    -- The REGULATION DOCUMENT SET a government publishes, learned once and reused.
+    -- A jurisdiction's adopted subdivision regulations are usually a numbered
+    -- series of documents, and which parts a keyless web search happens to
+    -- surface varies run to run; without this table the same parcel answered a
+    -- different question every time it was researched. Written only for a
+    -- document that was actually opened and read as that jurisdiction's own
+    -- regulations, so the next run fetches the set directly instead of
+    -- rediscovering it. Public routing metadata only — no property data.
+    CREATE TABLE IF NOT EXISTS landos_regulation_document (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      state             TEXT NOT NULL DEFAULT '',
+      jurisdiction_key  TEXT NOT NULL DEFAULT '',
+      unit_type         TEXT NOT NULL DEFAULT '',
+      jurisdiction      TEXT NOT NULL DEFAULT '',
+      doc_kind          TEXT NOT NULL DEFAULT 'subdivision_regulations',
+      url               TEXT NOT NULL DEFAULT '',
+      label             TEXT NOT NULL DEFAULT '',
+      adopted_or_as_of  TEXT,
+      draft_or_proposed INTEGER NOT NULL DEFAULT 0,
+      rule_count        INTEGER NOT NULL DEFAULT 0,
+      last_verified_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(state, jurisdiction_key, unit_type, doc_kind, url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_regulation_document
+      ON landos_regulation_document(state, jurisdiction_key, unit_type, doc_kind);
+
     -- Browser-derived public-record facts, written INCREMENTALLY to a Deal Card as
     -- each is confidently found (with full provenance + status). Never overwrites
     -- verified Realie data. No secrets.

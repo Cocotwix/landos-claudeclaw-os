@@ -36,6 +36,7 @@ import {
   browserEscalationLane,
   buildLandUseQueries,
   directSourceLane,
+  fetchSourceDocument,
   indexedWebSearchLane,
   retainedEvidenceLane,
   type BrowserSourceReader,
@@ -466,6 +467,24 @@ export interface SubdivisionRetrievalDeps {
   preferredHosts?: readonly string[];
   /** Regulation documents the caller already located. */
   knownDocumentUrls?: readonly string[];
+  /**
+   * The regulation set this jurisdiction is already known to publish.
+   *
+   * Fetched FIRST and directly, because a document LandOS has already opened
+   * and confirmed as this government's own regulations does not need to be
+   * found again by a search engine that may or may not return it today. Each
+   * one is re-read, re-tiered and re-extracted like anything else; retention
+   * decides what is OPENED, never what is true.
+   */
+  retainedDocuments?: SubdivisionRegulations['documents'];
+  /**
+   * Rules extracted from this jurisdiction's regulations on a previous run.
+   *
+   * Used ONLY for a rule whose source document was not read again this run —
+   * a fresh read of a document always outranks a remembered one, so a rule the
+   * government has since removed cannot survive on the card.
+   */
+  retainedRules?: readonly SubdivisionRule[];
   /** Text already in hand, so nothing is fetched twice. */
   suppliedDocuments?: ReadonlyArray<{ label: string; url: string | null; text: string; tier?: AuthoritySourceTier }>;
   maxQueries?: number;
@@ -504,6 +523,65 @@ export function buildSubdivisionQueries(
 }
 
 const PDF_LIKE = /\.pdf(?:[?#]|$)/i;
+
+// ── The regulations are a SET, and a set has parts ──────────────────────────
+//
+// Almost every jurisdiction that publishes its subdivision regulations as PDFs
+// publishes them as a numbered series — Article I through Article IX, Chapter
+// 1 through Chapter 6 — one file per part, on one URL pattern. Fairview
+// publishes nine.
+//
+// A keyless web search sees that series as nine unrelated results and returns
+// whichever two or three it feels like on the day. Article 2 carries the
+// minor/major definitions that decide the entire review path; Article 4 carries
+// the lot and frontage standards. A run that got 1 and 4 answered a different
+// question from a run that got 2, and neither of them was wrong about what it
+// had read.
+//
+// So once ANY part has been read and confirmed as this government's own
+// regulations, the rest of the series is walked from the government's own URL
+// pattern. That is deterministic where the search is not, and every part still
+// goes through the same jurisdiction gate, the same officiality tiering and the
+// same "is this the regulations" test as anything else.
+
+/** The part number in a document URL, e.g. `…_Article4.pdf` → `Article` `4`. */
+const SERIES_PART = /(article|art|part|chapter|ch|section|sec|volume|vol)([\s_-]*)(\d{1,2})(?=[^/\d])/i;
+
+/** How far a series is walked. A regulation set is a document set, not a crawl. */
+const MAX_SERIES_PARTS = 12;
+
+/** Consecutive parts that must come back empty before the series is finished. */
+const SERIES_MISS_LIMIT = 2;
+
+/** The part number this URL states, or null when it is not part of a series. */
+export function regulationSeriesPart(url: string): number | null {
+  const tail = url.split('/').pop() ?? url;
+  if (!PDF_LIKE.test(tail)) return null;
+  const match = SERIES_PART.exec(tail);
+  if (!match) return null;
+  const part = Number(match[3]);
+  return Number.isFinite(part) && part > 0 && part <= 99 ? part : null;
+}
+
+/**
+ * The same URL, aimed at another part of its series.
+ *
+ * Only the part number moves. The host, the path and the naming stay exactly as
+ * the government published them, so this can never construct a URL on a
+ * different site or a different document family.
+ */
+export function regulationSeriesUrl(url: string, part: number): string | null {
+  const cut = url.lastIndexOf('/');
+  const base = cut >= 0 ? url.slice(0, cut + 1) : '';
+  const tail = cut >= 0 ? url.slice(cut + 1) : url;
+  const match = SERIES_PART.exec(tail);
+  if (!match || match.index == null) return null;
+  const width = match[3].length;
+  const numeral = width > 1 && match[3].startsWith('0')
+    ? String(part).padStart(width, '0')
+    : String(part);
+  return `${base}${tail.slice(0, match.index)}${match[1]}${match[2]}${numeral}${tail.slice(match.index + match[0].length)}`;
+}
 
 /**
  * The pre-fetch jurisdiction gate now lives in `land-use-source-authority.ts`
@@ -587,7 +665,20 @@ export async function retrieveSubdivisionRegulations(
   // document always wins a rule over a PROPOSED one — which cannot be decided
   // by fetch order, because a document only reveals that it is a draft once it
   // has been read.
-  const staged: Array<{ rules: SubdivisionRule[]; draft: boolean }> = [];
+  //
+  // `tier` and `part` are staged with them so the merge can be ORDERED rather
+  // than incidental. Two articles of one regulation set state overlapping
+  // rules, and which of them arrived first is a property of the network, not of
+  // the regulations; merging in arrival order made the same jurisdiction cite a
+  // different article for the same rule on every run.
+  const staged: Array<{
+    rules: SubdivisionRule[];
+    draft: boolean;
+    tier: AuthoritySourceTier;
+    /** Position in a numbered series; 0 for a document the caller supplied. */
+    part: number;
+    url: string | null;
+  }> = [];
 
   // A host the identity path already established as this parcel's government
   // publishes government documents. Re-deciding that per file made the town's
@@ -620,7 +711,13 @@ export async function retrieveSubdivisionRegulations(
           ],
         }
       : rule));
-    staged.push({ rules: extracted, draft: input.draftOrProposed });
+    staged.push({
+      rules: extracted,
+      draft: input.draftOrProposed,
+      tier: input.sourceTier,
+      part: input.sourceUrl ? regulationSeriesPart(input.sourceUrl) ?? 0 : 0,
+      url: input.sourceUrl,
+    });
     documents.push({
       label: input.sourceLabel,
       url: input.sourceUrl,
@@ -714,6 +811,25 @@ export async function retrieveSubdivisionRegulations(
   };
 
   const lanes: Array<LandUseLane<RegulationDocument, LaneJurisdiction>> = [];
+  // The set this government is ALREADY known to publish, fetched directly.
+  // Its own bound, above `maxDocuments`, because a regulation set is a set: a
+  // nine-article body of regulations capped at three documents is six articles
+  // of rules the operator never sees.
+  const retainedUrls = [...new Set((deps.retainedDocuments ?? [])
+    .map((document) => document.url ?? '')
+    .filter((url) => /^https?:\/\//i.test(url)))];
+  if (retainedUrls.length) {
+    lanes.push(directSourceLane<RegulationDocument>({
+      id: 'retained_regulations',
+      label: 'Retained official subdivision-regulation set for this jurisdiction',
+      urls: retainedUrls,
+      jurisdiction,
+      read,
+      transports,
+      maxSources: MAX_SERIES_PARTS,
+      onNote: (note) => limitations.push(note),
+    }));
+  }
   if (deps.knownDocumentUrls?.length) {
     lanes.push(directSourceLane<RegulationDocument>({
       id: 'known_regulations',
@@ -754,10 +870,19 @@ export async function retrieveSubdivisionRegulations(
       read,
       transports,
       maxSources: maxDocuments,
+      // Rank on what the document CALLS ITSELF, not on being a PDF.
+      //
+      // The old pattern also matched `planning`, `codes` and `.pdf`, which is
+      // every planning-commission packet a government publishes. On a live run
+      // it put four packets ahead of the town's own
+      // `…Subdivision_Regulations_Article2.pdf`, the cap opened the four
+      // packets, each was correctly refused as not being the regulations, and
+      // the run ended with no rules at all while the regulations sat two places
+      // down the same result list.
+      preferUrls: /subdivision[\s_-]*regulations?|subdivision[\s_-]*ordinance|land[\s_-]*development[\s_-]*(?:code|ordinance)|municipal[\s_-]*code/i,
       // A planning-department index page links to every article of the
       // regulations, and following those links is deterministic where a
       // keyless search is not.
-      preferUrls: /subdivision[\s_-]*regulation|subdivision[\s_-]*ordinance|planning|codes|\.pdf/i,
       followLinks: /subdivision|regulation|ordinance|article/i,
       onNote: (note) => limitations.push(note),
     }));
@@ -795,7 +920,11 @@ export async function retrieveSubdivisionRegulations(
         ? { sufficient: true, reason: `the adopted regulations carry ${candidate.value.rules.length} extractable rule(s)` }
         : { sufficient: false, reason: `only ${candidate.value.rules.length} rule(s) extracted and no minor/major boundary, so this document does not yet answer the question` };
     },
-    sameAnswer: (a, b) => a.url === b.url,
+    // Two ARTICLES of one regulation set are not two answers. Comparing them by
+    // URL reported "Article 8 disagrees with Article 2" as a conflict on the
+    // operator's card, which is not a disagreement at all — it is the set being
+    // read. Adopted and proposed genuinely differ, and that stays a conflict.
+    sameAnswer: (a, b) => a.draft === b.draft,
     onLaneSettled: (record) => deps.onLaneSettled?.(record),
   });
 
@@ -807,31 +936,132 @@ export async function retrieveSubdivisionRegulations(
   }
   limitations.push(...race.notes);
 
-  for (const row of retrieved) {
-    if (documents.some((document) => document.url === row.value.url)) continue;
-    staged.push({ rules: row.value.draft
-      ? row.value.rules.map((rule) => ({
-          ...rule,
-          confidence: 'likely' as const,
-          limitations: [
-            ...rule.limitations,
-            'Read from a document that calls itself PROPOSED or DRAFT. It has not been shown to be adopted, so it does not control this parcel.',
-          ],
-        }))
-      : row.value.rules, draft: row.value.draft });
-    documents.push({
-      label: row.value.label,
-      url: row.value.url,
-      tier: row.value.tier,
-      adoptedOrAsOf: row.value.adoptedOrAsOf,
-      draftOrProposed: row.value.draft,
-      retrievedAt: row.value.retrievedAt,
+  const take = (value: RegulationDocument): void => {
+    if (documents.some((document) => document.url === value.url)) return;
+    staged.push({
+      rules: value.draft
+        ? value.rules.map((rule) => ({
+            ...rule,
+            confidence: 'likely' as const,
+            limitations: [
+              ...rule.limitations,
+              'Read from a document that calls itself PROPOSED or DRAFT. It has not been shown to be adopted, so it does not control this parcel.',
+            ],
+          }))
+        : value.rules,
+      draft: value.draft,
+      tier: value.tier,
+      part: value.url ? regulationSeriesPart(value.url) ?? 0 : 0,
+      url: value.url,
     });
+    documents.push({
+      label: value.label,
+      url: value.url,
+      tier: value.tier,
+      adoptedOrAsOf: value.adoptedOrAsOf,
+      draftOrProposed: value.draft,
+      retrievedAt: value.retrievedAt,
+    });
+  };
+
+  for (const row of retrieved) take(row.value);
+
+  // ── Complete the series ───────────────────────────────────────────────────
+  //
+  // Whatever the search returned, the regulations are whatever the government
+  // published. Walking the remaining parts off its own URL pattern is what
+  // makes the answer the same tomorrow as it is today.
+  const seed = documents
+    .filter((document) => document.tier === 'official_government_source' && document.url && regulationSeriesPart(document.url))
+    .map((document) => document.url as string)
+    .sort()[0] ?? null;
+  if (seed) {
+    const added: number[] = [];
+    const probed = new Set<number>();
+    const held = new Set<number>(documents
+      .map((document) => (document.url ? regulationSeriesPart(document.url) : null))
+      .filter((part): part is number => part != null));
+    // Rounds, because a set discovered from its middle has parts on both sides
+    // of the seed: probe every gap and two past the highest part in hand, and
+    // repeat while that reveals more. The alternative — one pass — converged
+    // over several runs, which is the variability this exists to remove.
+    for (let round = 0; round < MAX_SERIES_PARTS && probed.size < MAX_SERIES_PARTS; round += 1) {
+      const ceiling = Math.min(MAX_SERIES_PARTS, Math.max(...held, 0) + SERIES_MISS_LIMIT);
+      const candidates: number[] = [];
+      for (let part = 1; part <= ceiling && probed.size + candidates.length < MAX_SERIES_PARTS; part += 1) {
+        if (held.has(part) || probed.has(part)) continue;
+        candidates.push(part);
+      }
+      if (!candidates.length) break;
+      const opened = await Promise.all(candidates.map(async (part) => {
+        probed.add(part);
+        const url = regulationSeriesUrl(seed, part);
+        if (!url || documents.some((document) => document.url === url)) return { part, found: [] };
+        const source = await fetchSourceDocument(url, jurisdiction, transports);
+        return { part, found: source ? read(source) : [] };
+      }));
+      let discovered = false;
+      for (const row of opened.sort((a, b) => a.part - b.part)) {
+        if (!row.found.length) continue;
+        discovered = true;
+        held.add(row.part);
+        added.push(row.part);
+        for (const evidence of row.found) take(evidence.value);
+      }
+      if (!discovered) break;
+    }
+    if (added.length) {
+      limitations.push(
+        `The adopted regulations are published as a numbered series; part(s) ${added.sort((a, b) => a - b).join(', ')} were retrieved by following the government's own document URL pattern rather than by search, so the same set is read on every run.`,
+      );
+    }
   }
 
-  // Merge: an ADOPTED document's rule always beats a PROPOSED one's.
-  for (const group of [...staged.filter((row) => !row.draft), ...staged.filter((row) => row.draft)]) {
+  // ── Merge, in a defined order ─────────────────────────────────────────────
+  //
+  // Adopted before proposed, official before secondary, and then the series in
+  // the order the government prints it — so a rule stated in two articles is
+  // always cited to the same one.
+  const ordered = [...staged].sort((a, b) => (Number(a.draft) - Number(b.draft))
+    || ((a.tier === 'official_government_source' ? 0 : 1) - (b.tier === 'official_government_source' ? 0 : 1))
+    || (a.part - b.part)
+    || (a.url ?? '').localeCompare(b.url ?? ''));
+  for (const group of ordered) {
     for (const rule of group.rules) if (!rules.some((existing) => existing.key === rule.key)) rules.push(rule);
+  }
+
+  // ── What a previous run established, where this run reached nothing ───────
+  //
+  // A run whose search returns nothing today must not empty a card that already
+  // carried the jurisdiction's rules. A retained rule is used only where the
+  // document it came from was NOT read again this run: a fresh read always
+  // outranks a remembered one, so a rule the government has since removed
+  // cannot survive on the card.
+  const readThisRun = new Set(documents.map((document) => document.url).filter(Boolean) as string[]);
+  const carried: SubdivisionRule[] = [];
+  for (const rule of deps.retainedRules ?? []) {
+    if (rules.some((existing) => existing.key === rule.key)) continue;
+    if (rule.sourceUrl && readThisRun.has(rule.sourceUrl)) continue;
+    carried.push({
+      ...rule,
+      limitations: [
+        ...rule.limitations,
+        'Carried forward from an earlier retrieval of this document. It was not re-read in this run, so it is the rule LandOS last read rather than one confirmed today.',
+      ],
+    });
+  }
+  if (carried.length) {
+    rules.push(...carried);
+    // The document a carried rule was read from belongs in the document list
+    // with the time it was ACTUALLY read, so the operator can see that the rule
+    // rests on a real document and on when LandOS last opened it.
+    for (const url of new Set(carried.map((rule) => rule.sourceUrl).filter(Boolean) as string[])) {
+      const retained = (deps.retainedDocuments ?? []).find((document) => document.url === url);
+      if (retained && !documents.some((document) => document.url === url)) documents.push({ ...retained });
+    }
+    limitations.push(
+      `${carried.length} rule(s) were carried forward from an earlier retrieval of this jurisdiction's regulations because their source document was not reached in this run. Each one says so.`,
+    );
   }
   const barren = staged.filter((group) => group.rules.length === 0).length;
   if (barren) {

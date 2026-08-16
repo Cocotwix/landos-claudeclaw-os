@@ -390,6 +390,18 @@ export function readCurrentZoningHistory(dealCardId: number): CurrentZoningDeter
   return readDerivedSnapshotHistory<CurrentZoningDetermination>(dealCardId, CURRENT_ZONING_SNAPSHOT_TYPE);
 }
 
+/**
+ * Every superseded subdivision rule set, oldest first.
+ *
+ * A run whose retrieval reached nothing writes a current snapshot carrying no
+ * document, which is honest about that run and useless as a starting point for
+ * the next one. The history is where the documents this jurisdiction is known
+ * to publish are still recorded.
+ */
+export function readSubdivisionRegulationsHistory(dealCardId: number): SubdivisionRegulations[] {
+  return readDerivedSnapshotHistory<SubdivisionRegulations>(dealCardId, SUBDIVISION_REGULATIONS_SNAPSHOT_TYPE);
+}
+
 /** Every retained subdivision rule row, with its section and source. */
 export function readSubdivisionRuleEvidence(dealCardId: number): ReturnType<typeof readDerivedEvidence> {
   return readDerivedEvidence(dealCardId, SUBDIVISION_REGULATION_DOMAIN, LAND_USE_INTELLIGENCE_COLLECTOR);
