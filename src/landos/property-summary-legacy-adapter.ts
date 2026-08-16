@@ -1,4 +1,4 @@
-import { dealCardsAwaitingCanonicalReconciliation, resolveCanonicalIdentity } from './canonical-identity.js';
+import { dealCardsAwaitingCanonicalReconciliation, nameCardFromCanonicalIdentity, resolveCanonicalIdentity } from './canonical-identity.js';
 import { getDealCard } from './deal-card.js';
 import { readParcelIdentity } from './parcel-identity.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
@@ -136,10 +136,15 @@ export function synchronizePropertySummaryForDeal(input: {
     allowAcceptedSupersession: input.allowAcceptedSupersession,
   };
 
-  return synchronizePropertySummarySlice({
+  const model = synchronizePropertySummarySlice({
     identity,
     publicRun: status === 'confirmed' ? (resolved?.run ?? null) : (latest?.run ?? null),
   });
+
+  // The seam that makes an accepted identity durable also makes it VISIBLE.
+  if (status === 'confirmed') nameCardFromCanonicalIdentity(input.dealCardId, input.actor);
+
+  return model;
 }
 
 /** Pure read adapter for routes and tests. It performs SELECTs only. */

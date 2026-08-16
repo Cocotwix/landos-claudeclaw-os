@@ -18,6 +18,7 @@
 
 import { useState } from 'preact/hooks';
 import { apiPost } from '@/lib/api';
+import { sectionCitationLabel } from '@/lib/format';
 
 /* ────────────────────────────── view types ───────────────────────────── */
 
@@ -188,7 +189,7 @@ function Rule({ k, v }: { k: string; v: ValueView }) {
               <span class="awv2-lu-cites">
                 {v.sources.map((s) => (
                   <a href={s.url} target="_blank" rel="noreferrer" title={s.excerpt || s.label}>
-                    {s.citation ? `§ ${s.citation}` : s.label}
+                    {s.citation ? sectionCitationLabel(s.citation) : s.label}
                   </a>
                 ))}
               </span>
@@ -235,7 +236,7 @@ function UseRow({ use }: { use: UseView }) {
       {use.sources.length > 0 && (
         <div class="awv2-opg-links">
           {use.sources.map((s) => (
-            <a href={s.url} target="_blank" rel="noreferrer">{s.citation ? `§ ${s.citation}` : s.label}</a>
+            <a href={s.url} target="_blank" rel="noreferrer">{s.citation ? sectionCitationLabel(s.citation) : s.label}</a>
           ))}
         </div>
       )}
@@ -471,7 +472,7 @@ function RetainedIntelligence({ r }: { r: RetainedLandUseIntelligenceView }) {
                   <span class={`awv2-lu-q ${rule.confidence === 'confirmed' ? 'verified' : 'provisional'}`}>{rule.confidence.replace(/_/g, ' ')}</span>
                   {rule.sourceUrl && (
                     <a class="awv2-lu-cite" href={rule.sourceUrl} target="_blank" rel="noreferrer">
-                      {rule.section ? `§ ${rule.section}` : 'Adopted regulations'}
+                      {rule.section ? sectionCitationLabel(rule.section) : 'Adopted regulations'}
                     </a>
                   )}
                 </li>
@@ -601,7 +602,7 @@ export function LandUsePanel({ dealId, initial, retained }: {
                   <b>{p.kindLabel}:</b> {p.summary}
                   <div class="awv2-pi-note" style="margin-top:3px">{p.materiality}</div>
                   <a class="awv2-lu-cite" href={p.source.url} target="_blank" rel="noreferrer">
-                    {p.source.citation ? `§ ${p.source.citation}` : p.source.label}
+                    {p.source.citation ? sectionCitationLabel(p.source.citation) : p.source.label}
                   </a>
                 </li>
               ))}
@@ -667,7 +668,7 @@ export function LandUsePanel({ dealId, initial, retained }: {
                   {s.originalTerm !== s.label.toLowerCase() && <span class="awv2-lu-term"> (ordinance term: {s.originalTerm})</span>}
                   {s.qualifier && <div class="awv2-pi-note" style="margin-top:2px">{s.qualifier}</div>}
                   <a class="awv2-lu-cite" href={s.source.url} target="_blank" rel="noreferrer">
-                    {s.source.citation ? `§ ${s.source.citation}` : s.source.label}
+                    {s.source.citation ? sectionCitationLabel(s.source.citation) : s.source.label}
                   </a>
                 </li>
               ))}
@@ -981,7 +982,7 @@ export function LandUsePanel({ dealId, initial, retained }: {
             <div class="awv2-opg-links">
               {v!.sources.map((s) => (
                 <a href={s.url} target="_blank" rel="noreferrer" title={s.excerpt || ''}>
-                  {s.citation ? `${s.label} § ${s.citation}` : s.label}
+                  {s.citation ? `${s.label} ${sectionCitationLabel(s.citation)}` : s.label}
                 </a>
               ))}
             </div>

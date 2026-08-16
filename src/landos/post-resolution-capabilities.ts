@@ -23,6 +23,7 @@ import { createHermesFreeSearch } from './hermes-free-search.js';
 import { defaultGovFetchText } from './gis-transport.js';
 import { resolveJurisdiction, type JurisdictionResolution } from './jurisdiction-resolution.js';
 import { readDocumentIntelligence } from './official-document-intelligence-store.js';
+import { documentUrlIdentity } from './document-url-identity.js';
 import { runPropertyBackstory } from './property-backstory-run.js';
 import { discoverZoningLayers } from './zoning-layer-discovery.js';
 import {
@@ -359,14 +360,23 @@ function retainedRegulationSet(jurisdiction: RegulationJurisdiction | null): Ret
   }
 }
 
-/** The jurisdiction's set first, then anything this card alone knows about. */
+/**
+ * The jurisdiction's set first, then anything this card alone knows about.
+ *
+ * Compared by document identity, not by URL text: a card that learned a
+ * document under one of a site's two addresses must not add a second copy of a
+ * document the jurisdiction's set already holds under the other.
+ */
 function mergeRetainedDocuments(
   set: RetainedRegulationDocuments,
   prior: RetainedRegulationDocuments,
 ): RetainedRegulationDocuments {
-  const out: RetainedRegulationDocuments = [...set];
-  for (const document of prior) {
-    if (!document.url || out.some((row) => row.url === document.url)) continue;
+  const out: RetainedRegulationDocuments = [];
+  const held = new Set<string>();
+  for (const document of [...set, ...prior]) {
+    const identity = documentUrlIdentity(document.url);
+    if (!identity || held.has(identity)) continue;
+    held.add(identity);
     out.push(document);
   }
   return out;

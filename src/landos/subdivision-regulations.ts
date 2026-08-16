@@ -22,6 +22,7 @@
 
 import { defaultGovFetchText, extractLinks, htmlToText, type GovFetchText } from './gis-transport.js';
 import { loadOfficialPdf } from './official-pdf-identity.js';
+import { documentUrlIdentity } from './document-url-identity.js';
 import { verifyOfficiality } from './official-source-discovery.js';
 import { governmentSourceTier, hostServesSubjectJurisdiction } from './land-use-source-authority.js';
 import {
@@ -857,9 +858,17 @@ export async function retrieveSubdivisionRegulations(
   // Its own bound, above `maxDocuments`, because a regulation set is a set: a
   // nine-article body of regulations capped at three documents is six articles
   // of rules the operator never sees.
-  const retainedUrls = [...new Set((deps.retainedDocuments ?? [])
-    .map((document) => document.url ?? '')
-    .filter((url) => /^https?:\/\//i.test(url)))];
+  // One address per document. The retained set can hold two spellings of the
+  // same file, and fetching both spends a request to learn what is already held.
+  const retainedUrls: string[] = [];
+  const retainedSeen = new Set<string>();
+  for (const document of deps.retainedDocuments ?? []) {
+    const url = document.url ?? '';
+    const identity = documentUrlIdentity(url);
+    if (!identity || retainedSeen.has(identity)) continue;
+    retainedSeen.add(identity);
+    retainedUrls.push(url);
+  }
   if (retainedUrls.length) {
     lanes.push(directSourceLane<RegulationDocument>({
       id: 'retained_regulations',
@@ -978,8 +987,18 @@ export async function retrieveSubdivisionRegulations(
   }
   limitations.push(...race.notes);
 
+  // "Already held" is asked of the DOCUMENT, not of the URL text. A site that
+  // serves one file at two addresses would otherwise stage it twice, list it
+  // twice on the operator's card, and be remembered twice.
+  const alreadyHeld = (url: string | null | undefined): boolean => {
+    const identity = documentUrlIdentity(url);
+    return identity
+      ? documents.some((document) => documentUrlIdentity(document.url) === identity)
+      : documents.some((document) => document.url === url);
+  };
+
   const take = (value: RegulationDocument): void => {
-    if (documents.some((document) => document.url === value.url)) return;
+    if (alreadyHeld(value.url)) return;
     staged.push({
       rules: value.draft
         ? value.rules.map((rule) => ({
@@ -1006,7 +1025,27 @@ export async function retrieveSubdivisionRegulations(
     });
   };
 
-  for (const row of retrieved) take(row.value);
+  // ── One address per document, chosen the same way every run ───────────────
+  //
+  // A search returns both spellings of a document a site serves twice, in
+  // whatever order it ranked them. Taking whichever arrived first would make
+  // the retained URL — and the link under the rule on the operator's card —
+  // depend on that ordering. The lower-sorting address wins instead, so the
+  // same run produces the same citation link tomorrow.
+  const preferred: RegulationDocument[] = [];
+  const heldAt = new Map<string, number>();
+  for (const row of retrieved) {
+    const identity = documentUrlIdentity(row.value.url);
+    if (!identity) { preferred.push(row.value); continue; }
+    const at = heldAt.get(identity);
+    if (at == null) {
+      heldAt.set(identity, preferred.length);
+      preferred.push(row.value);
+      continue;
+    }
+    if ((row.value.url ?? '') < (preferred[at].url ?? '')) preferred[at] = row.value;
+  }
+  for (const value of preferred) take(value);
 
   // ── Complete the series ───────────────────────────────────────────────────
   //
@@ -1038,7 +1077,7 @@ export async function retrieveSubdivisionRegulations(
       const opened = await Promise.all(candidates.map(async (part) => {
         probed.add(part);
         const url = regulationSeriesUrl(seed, part);
-        if (!url || documents.some((document) => document.url === url)) return { part, found: [] };
+        if (!url || alreadyHeld(url)) return { part, found: [] };
         const source = await fetchSourceDocument(url, jurisdiction, transports);
         return { part, found: source ? read(source) : [] };
       }));
@@ -1079,11 +1118,11 @@ export async function retrieveSubdivisionRegulations(
   // document it came from was NOT read again this run: a fresh read always
   // outranks a remembered one, so a rule the government has since removed
   // cannot survive on the card.
-  const readThisRun = new Set(documents.map((document) => document.url).filter(Boolean) as string[]);
+  const readThisRun = new Set(documents.map((document) => documentUrlIdentity(document.url)).filter(Boolean));
   const carried: SubdivisionRule[] = [];
   for (const rule of deps.retainedRules ?? []) {
     if (rules.some((existing) => existing.key === rule.key)) continue;
-    if (rule.sourceUrl && readThisRun.has(rule.sourceUrl)) continue;
+    if (rule.sourceUrl && readThisRun.has(documentUrlIdentity(rule.sourceUrl))) continue;
     carried.push({
       ...rule,
       limitations: [
@@ -1098,8 +1137,11 @@ export async function retrieveSubdivisionRegulations(
     // with the time it was ACTUALLY read, so the operator can see that the rule
     // rests on a real document and on when LandOS last opened it.
     for (const url of new Set(carried.map((rule) => rule.sourceUrl).filter(Boolean) as string[])) {
-      const retained = (deps.retainedDocuments ?? []).find((document) => document.url === url);
-      if (retained && !documents.some((document) => document.url === url)) documents.push({ ...retained });
+      const identity = documentUrlIdentity(url);
+      const retained = (deps.retainedDocuments ?? []).find((document) => (identity
+        ? documentUrlIdentity(document.url) === identity
+        : document.url === url));
+      if (retained && !alreadyHeld(url)) documents.push({ ...retained });
     }
     limitations.push(
       `${carried.length} rule(s) were carried forward from an earlier retrieval of this jurisdiction's regulations because their source document was not reached in this run. Each one says so.`,

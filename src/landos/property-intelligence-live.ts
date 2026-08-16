@@ -255,6 +255,17 @@ export interface LiveCollectorDeps {
  */
 const LANDPORTAL_CAPTURE_WAIT_MS = 300_000;
 
+/**
+ * How long the parcel-identity handback waits for the resolver to finish mining
+ * the documents it already downloaded.
+ *
+ * The work is local: parse text already in memory, insert findings. Fifteen
+ * seconds is generous for that and small against the 420-second required-child
+ * deadline this nests inside, so the downstream lanes start from a settled
+ * document store without the mission ever hanging on one unusual PDF.
+ */
+const DOCUMENT_ENRICHMENT_HANDOFF_MS = 15_000;
+
 const str = (value: unknown): string | null => {
   const text = typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
   return text.length ? text : null;
@@ -708,6 +719,34 @@ export async function collectParcelIdentity(
         (resolveSubjectPropertyCard(getDealCard(ctx.dealCardId)).card ?? {}) as Record<string, unknown>,
       );
     });
+  }
+
+  // ── THE DOCUMENTS THIS RUN ALREADY PAID FOR ───────────────────────────────
+  //
+  // The resolver mines the PDFs it downloaded on the far side of the answer, so
+  // identity is released fast. Nothing then waited for that mining, and this
+  // handback is what releases the backstory, land-use and subdivision lanes —
+  // every one of which opens by asking the document store what LandOS already
+  // knows. On a genuinely fresh card the two raced: whether a lane saw the
+  // government's own hosts, the retained passages and the project name depended
+  // on which finished first, so the same first run could produce two different
+  // cards. Mining is parsing and inserts over documents already in memory — no
+  // network — so waiting for it here costs a moment and makes the first run
+  // reproducible. The bound exists so one pathological document can never hold
+  // the mission: past it the lanes proceed exactly as they did before, and the
+  // mining still lands for the next read.
+  if (resolution.enrichment) {
+    const mined = await Promise.race([
+      resolution.enrichment.then(() => true).catch(() => false),
+      new Promise<false>((settle) => { setTimeout(() => settle(false), DOCUMENT_ENRICHMENT_HANDOFF_MS); }),
+    ]);
+    if (!mined) {
+      logger.info({
+        dealCardId: ctx.dealCardId,
+        runId: ctx.runId,
+        waitedMs: DOCUMENT_ENRICHMENT_HANDOFF_MS,
+      }, 'official_document_enrichment_handoff_overran');
+    }
   }
 
   const deal = getDealCard(ctx.dealCardId);

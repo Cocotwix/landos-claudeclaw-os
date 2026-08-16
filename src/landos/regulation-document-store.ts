@@ -22,6 +22,7 @@
 // Public routing metadata only. No property data, no seller data, no secrets.
 
 import { getLandosDb, landosAudit } from './db.js';
+import { documentUrlIdentity } from './document-url-identity.js';
 import { jurisdictionKey } from './official-site-store.js';
 import type { LandUseAuthorityLevel } from './controlling-land-use-authority.js';
 
@@ -72,11 +73,30 @@ function keyFor(jurisdiction: RegulationJurisdiction): { state: string; key: str
 }
 
 /**
- * The retained set, in a STABLE order.
+ * One row per document, best address first, when a site serves the same file at
+ * more than one URL.
+ *
+ * "Best" is the copy that actually did the work: the address that yielded the
+ * most rules when it was last read, then the most recently verified, then the
+ * lower URL. All three are properties of the stored rows, so the same address
+ * is chosen on every read.
+ */
+function preferredOf(a: Row, b: Row): Row {
+  if (a.rule_count !== b.rule_count) return a.rule_count > b.rule_count ? a : b;
+  if (a.last_verified_at !== b.last_verified_at) return a.last_verified_at > b.last_verified_at ? a : b;
+  return a.url <= b.url ? a : b;
+}
+
+/**
+ * The retained set, in a STABLE order, one entry per DOCUMENT.
  *
  * Ordered by URL rather than by insertion, because a set read back in a
  * different order is a set that merges its rules in a different order, which is
  * the same non-determinism this table exists to remove.
+ *
+ * Rows written before a site's second address was known to be the same document
+ * stay on disk untouched; they are collapsed here so the set the retrieval is
+ * offered is the set the government actually publishes.
  */
 export function readRegulationDocuments(
   jurisdiction: RegulationJurisdiction,
@@ -90,14 +110,23 @@ export function readRegulationDocuments(
     WHERE state = ? AND jurisdiction_key = ? AND unit_type = ? AND doc_kind = ?
     ORDER BY url
   `).all(target.state, target.key, target.bucket, kind) as Row[];
-  return rows.filter((row) => row.url).map((row) => ({
-    url: row.url,
-    label: row.label,
-    adoptedOrAsOf: row.adopted_or_as_of,
-    draftOrProposed: row.draft_or_proposed === 1,
-    ruleCount: row.rule_count,
-    lastVerifiedAt: row.last_verified_at,
-  }));
+  const byDocument = new Map<string, Row>();
+  for (const row of rows) {
+    if (!row.url) continue;
+    const identity = documentUrlIdentity(row.url) || row.url;
+    const held = byDocument.get(identity);
+    byDocument.set(identity, held ? preferredOf(held, row) : row);
+  }
+  return [...byDocument.values()]
+    .sort((a, b) => a.url.localeCompare(b.url))
+    .map((row) => ({
+      url: row.url,
+      label: row.label,
+      adoptedOrAsOf: row.adopted_or_as_of,
+      draftOrProposed: row.draft_or_proposed === 1,
+      ruleCount: row.rule_count,
+      lastVerifiedAt: row.last_verified_at,
+    }));
 }
 
 export interface SaveRegulationDocumentInput {
@@ -123,7 +152,23 @@ export function saveRegulationDocuments(
 ): number {
   const target = keyFor(jurisdiction);
   if (!target) return 0;
-  const rows = documents.filter((document) => /^https?:\/\//i.test(document.url ?? ''));
+  // One row per DOCUMENT, never one per spelling of its address: a run that
+  // reached the same file at two URLs learned one document, and writing both
+  // would put a duplicate back into the set the next run is offered.
+  const rows: SaveRegulationDocumentInput[] = [];
+  const written = new Map<string, number>();
+  for (const document of documents) {
+    if (!/^https?:\/\//i.test(document.url ?? '')) continue;
+    const identity = documentUrlIdentity(document.url) || document.url;
+    const at = written.get(identity);
+    if (at == null) {
+      written.set(identity, rows.length);
+      rows.push(document);
+      continue;
+    }
+    // The address that yielded rules is the one worth remembering.
+    if ((document.ruleCount ?? 0) > (rows[at].ruleCount ?? 0)) rows[at] = document;
+  }
   if (!rows.length) return 0;
 
   const db = getLandosDb();

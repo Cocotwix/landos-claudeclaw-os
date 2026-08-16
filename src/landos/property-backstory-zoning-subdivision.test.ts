@@ -259,6 +259,30 @@ describe('property backstory: retained intelligence first', () => {
     expect(skip?.note).toMatch(/never re-fetched/i);
   });
 
+  it('2b. never re-fetches it under the other address the same site serves it at', async () => {
+    // Fairview answers on both the WordPress asset root and its alias, so a
+    // search returns a URL LandOS has already mined, spelled differently.
+    const { dealCardId } = seedResolvedSubject();
+    await seedPacketIntelligence(dealCardId);
+    clearOfficialPdfCache();
+
+    const aliasUrl = PACKET_URL.replace('/content/', '/wp-content/');
+    const loads: string[] = [];
+    const search: IdentitySearchProvider = async () => [{ title: PACKET_TITLE, url: aliasUrl, snippet: '' }];
+    const backstory = await runPropertyBackstory(runSubject(dealCardId), {
+      search,
+      alwaysExpand: true,
+      persist: false,
+      loadPdf: async (url) => { loads.push(url); return null; },
+    });
+
+    expect(loads).toEqual([]);
+    expect(backstory.documentsRetrieved).toEqual([]);
+    // And it is still counted once, as the document LandOS already holds.
+    expect(backstory.documentsReused).toHaveLength(1);
+    expect(backstory.documentsReused[0].sourceUrl).toBe(PACKET_URL);
+  });
+
   it('3. every timeline event keeps its source provenance', async () => {
     const { dealCardId } = seedResolvedSubject();
     await seedPacketIntelligence(dealCardId);

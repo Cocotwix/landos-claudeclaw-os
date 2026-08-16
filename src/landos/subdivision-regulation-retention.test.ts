@@ -41,12 +41,19 @@ import {
 } from './regulation-document-store.js';
 import type { AuthorityAssignment } from './controlling-land-use-authority.js';
 import type { IdentitySearchProvider } from './hermes-free-search.js';
+import { documentUrlIdentity } from './document-url-identity.js';
 import type { OfficialPdfDocument } from './official-pdf-identity.js';
 
 // ── The document set, as Fairview actually publishes it ─────────────────────
 
 const HOST = 'https://www.fairview-tn.org/content/uploads/docs';
 const partUrl = (part: number): string => `${HOST}/Fairview_Subdivision_Regulations_Article${part}.pdf`;
+
+// The SAME files, at the other address the same server answers on. Fairview
+// publishes its regulations under the WordPress asset root and under the alias,
+// so a search returns both spellings of one document.
+const ALIAS_HOST = 'https://www.fairview-tn.org/wp-content/uploads/docs';
+const aliasPartUrl = (part: number): string => `${ALIAS_HOST}/Fairview_Subdivision_Regulations_Article${part}.pdf`;
 
 /** Article I. Fairview's own copy still carries the PROPOSED header. */
 const ARTICLE_1 = `PROPOSED SUBDIVISION REGULATIONS ARTICLE I - GENERAL PROVISIONS.
@@ -99,7 +106,7 @@ function pdfTransport(): { loadPdf: (url: string) => Promise<OfficialPdfDocument
     opened,
     loadPdf: async (url: string) => {
       opened.push(url);
-      const text = DOCUMENTS[url];
+      const text = DOCUMENTS[url] ?? DOCUMENTS[url.replace('/wp-content/', '/content/')];
       if (!text) return null;
       return {
         url,
@@ -302,5 +309,63 @@ describe('the retained regulation set', () => {
     saveRegulationDocuments(williamson, [{ url: 'https://www.williamsoncounty-tn.gov/regs.pdf', label: 'County regs' }]);
     expect(readRegulationDocuments(fairview).map((row) => row.url)).toEqual([partUrl(2)]);
     expect(readRegulationDocuments(williamson).map((row) => row.url)).toEqual(['https://www.williamsoncounty-tn.gov/regs.pdf']);
+  });
+});
+
+// ── One document, however the site spells its address ───────────────────────
+
+describe('a document a site serves at two addresses', () => {
+  it('is listed once, whichever spellings the search returned', async () => {
+    const transport = pdfTransport();
+    const regulations = await run({
+      ...transport,
+      // The search surfaces both spellings of the same articles.
+      search: searchReturning(aliasPartUrl(2), partUrl(2), partUrl(4), aliasPartUrl(4)),
+    });
+    const identities = regulations.documents.map((document) => documentUrlIdentity(document.url));
+    // The defect: thirteen documents where the government publishes ten.
+    expect(new Set(identities).size).toBe(identities.length);
+    expect(new Set(partsOf(regulations)).size).toBe(partsOf(regulations).length);
+    // Every rule still cites a document that is in the list the operator sees.
+    for (const rule of regulations.rules) {
+      if (!rule.sourceUrl) continue;
+      expect(identities).toContain(documentUrlIdentity(rule.sourceUrl));
+    }
+  });
+
+  it('keeps the same address on every run when both spellings are returned', async () => {
+    const first = await run({
+      ...pdfTransport(),
+      search: searchReturning(aliasPartUrl(2), partUrl(2)),
+    });
+    const second = await run({
+      ...pdfTransport(),
+      search: searchReturning(partUrl(2), aliasPartUrl(2)),
+    });
+    // The search's ordering must not decide the link under the rule.
+    expect(first.documents.map((document) => document.url))
+      .toEqual(second.documents.map((document) => document.url));
+    expect(first.documents.some((document) => document.url === partUrl(2))).toBe(true);
+  });
+
+  it('does not put a second copy of a held document into the retained set', () => {
+    const fairview = { authorityName: 'Fairview', level: 'municipal' as const, state: 'TN' };
+    saveRegulationDocuments(fairview, [
+      { url: partUrl(2), label: 'Article 2', ruleCount: 4 },
+      { url: aliasPartUrl(2), label: 'Article 2', ruleCount: 0 },
+    ]);
+    const retained = readRegulationDocuments(fairview);
+    expect(retained.map((row) => row.url)).toEqual([partUrl(2)]);
+    expect(retained[0].ruleCount).toBe(4);
+  });
+
+  it('collapses duplicates a previous run already wrote, keeping the address that carried the rules', () => {
+    const fairview = { authorityName: 'Fairview', level: 'municipal' as const, state: 'TN' };
+    // Written before the two addresses were known to be one document.
+    saveRegulationDocuments(fairview, [{ url: aliasPartUrl(2), label: 'Article 2', ruleCount: 0 }]);
+    saveRegulationDocuments(fairview, [{ url: partUrl(2), label: 'Article II', ruleCount: 7 }]);
+    const retained = readRegulationDocuments(fairview);
+    expect(retained.map((row) => row.url)).toEqual([partUrl(2)]);
+    expect(retained[0].ruleCount).toBe(7);
   });
 });

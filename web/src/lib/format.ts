@@ -43,6 +43,22 @@ export function formatCost(usd: number): string {
   return '$' + usd.toFixed(2);
 }
 
+// A section citation, ready to print.
+//
+// LandOS stores the citation VERBATIM — whatever the document prints above the
+// rule. Most publish a bare number ("4 - 110.2"), some print the word
+// ("Section 6 - 108"), a few print the sign itself. Every surface then added its
+// own "§ ", which read back as "§ Section 6 - 108": LandOS labelling the
+// document's own label. The marker is added only when the citation does not
+// already carry one, so what the operator sees is the reference as published.
+const SECTION_MARKER = /^\s*(?:§|sec\b|sec\.|sections?\b|art\b|art\.|articles?\b|chapters?\b|ch\.|titles?\b|parts?\b|rules?\b)/i;
+
+export function sectionCitationLabel(citation: string | null | undefined): string {
+  const text = (citation ?? '').trim();
+  if (!text) return '';
+  return SECTION_MARKER.test(text) ? text : `§ ${text}`;
+}
+
 // Try to JSON.parse, fall back to empty array. Memory rows return tags as
 // JSON-encoded strings (per the contract notes in the ecosystem TLDR).
 export function safeJsonArray<T = unknown>(s: string | null | undefined): T[] {

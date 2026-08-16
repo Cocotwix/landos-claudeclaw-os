@@ -37,6 +37,7 @@
 //     `createPropertyIdentityVersion` and is deliberately not bypassed here.
 
 import { logger } from '../logger.js';
+import { nameCardFromCanonicalIdentity } from './canonical-identity.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
 import { getPropertyCardRow, loadPropertyInspection, upsertPropertyCard } from './property-card.js';
 import { resolveCensusGeography, type CensusGeography } from './land-use-authority.js';
@@ -495,6 +496,12 @@ export async function reconcileSubjectIdentity(
       conflicts: conflicts.length,
       priorIdentityVersion: existing?.version ?? null,
     }, 'subject_identity_reconciled');
+    // An identity that has just been accepted NAMES the card. Intake's
+    // "Unresolved parcel, <town>" placeholder otherwise survived every run that
+    // confirmed the parcel, so the pipeline row and workspace header announced
+    // an unresolved parcel while the confirmed APN sat beside them. Idempotent,
+    // and it never rewrites a title that says something real.
+    try { nameCardFromCanonicalIdentity(dealCardId, actor); } catch { /* the label never blocks the identity */ }
   } catch (err) {
     logger.warn({ err, dealCardId, cardId }, 'subject_identity_persist_failed');
     result.persistWarnings = [

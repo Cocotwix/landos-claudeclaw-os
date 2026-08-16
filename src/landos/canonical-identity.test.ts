@@ -8,7 +8,10 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 
-import { resolveCanonicalIdentity, isCanonicalIdentityConfirmed, supersessionLabel, dealCardsAwaitingCanonicalReconciliation } from './canonical-identity.js';
+import { resolveCanonicalIdentity, isCanonicalIdentityConfirmed, supersessionLabel, dealCardsAwaitingCanonicalReconciliation, nameCardFromCanonicalIdentity } from './canonical-identity.js';
+import { createDealCard, getDealCard, linkPropertyToDeal, updateDealCard } from './deal-card.js';
+import { getOpportunityByDealCardId, updateOpportunityTitle } from './opportunity.js';
+import { upsertPropertyCard } from './property-card.js';
 import { _initTestLandosDb, getLandosDb } from './db.js';
 import { getDealCardReportSummary } from './deal-card-report.js';
 import { writeParcelIdentity } from './parcel-identity.js';
@@ -204,5 +207,139 @@ describe('reconciliation builds the versioned Property Summary at confirmation t
     expect(swept.inspected).toBe(1);
     expect(swept.reconciled).toBe(1);
     expect(dealCardsAwaitingCanonicalReconciliation()).toEqual([]);
+  });
+});
+
+// ── The name the operator reads ─────────────────────────────────────────────
+//
+// A lead pasted as "Map 042 Parcel 123 / Fairview, Tennessee" is stored as
+// "Unresolved parcel, Fairview, TN". Resolution confirmed the parcel and wrote
+// the APN to the property record, and the pipeline row still announced an
+// unresolved parcel — with the confirmed APN printed beside it on the same card.
+
+describe('an accepted identity names the card', () => {
+  beforeEach(() => _initTestLandosDb());
+
+  function lead(input: {
+    title: string;
+    address?: string;
+    apn?: string;
+    confirmed: boolean;
+  }): { dealCardId: number } {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: input.title, leadType: 'test' });
+    const { card } = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: input.address ?? 'Map 042 Parcel 123',
+      city: 'Fairview',
+      county: 'Williamson',
+      state: 'TN',
+      ...(input.apn ? { apn: input.apn } : {}),
+      verified: input.confirmed,
+      ...(input.confirmed ? { verificationSource: 'Official Fairview government record' } : {}),
+      agentId: 'test',
+    } as Parameters<typeof upsertPropertyCard>[0]);
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' } as Parameters<typeof linkPropertyToDeal>[0]);
+    writeParcelIdentity(deal.id, {
+      subjectCardId: card.id,
+      state: input.confirmed ? 'confirmed' : 'unresolved',
+      basis: input.confirmed ? 'Official Fairview government record.' : 'Not confirmed.',
+      confidence: input.confirmed ? 1 : 0,
+      evidenceRefs: [],
+    }, 'test');
+    const opportunity = getOpportunityByDealCardId(deal.id);
+    updateOpportunityTitle(opportunity.id, input.title, { actor: 'test-intake' });
+    return { dealCardId: deal.id };
+  }
+
+  it('replaces the intake placeholder on the Deal Card and the pipeline row', () => {
+    const { dealCardId } = lead({ title: 'Unresolved parcel, Fairview, TN', apn: '042-123.00-000', confirmed: true });
+    const outcome = nameCardFromCanonicalIdentity(dealCardId, 'test');
+
+    expect(outcome.renamed).toBe(true);
+    expect(outcome.title).toBe('Map 042 Parcel 123, Fairview, TN');
+    expect(getDealCard(dealCardId)!.title).toBe('Map 042 Parcel 123, Fairview, TN');
+    expect(getOpportunityByDealCardId(dealCardId).title).toBe('Map 042 Parcel 123, Fairview, TN');
+  });
+
+  it('never feeds a placeholder back in as if it were an address', () => {
+    // Some paths fall back to the Deal Card title for the identity's address,
+    // so the placeholder can arrive here dressed as one. Doubling it would
+    // print "Unresolved parcel, Fairview, TN, Fairview, TN".
+    const { dealCardId } = lead({
+      title: 'Unresolved parcel, Fairview, TN',
+      address: 'Unresolved parcel, Fairview, TN',
+      apn: '042-123.00-000',
+      confirmed: true,
+    });
+    const outcome = nameCardFromCanonicalIdentity(dealCardId, 'test');
+
+    expect(outcome.title).toBe('Parcel 042-123.00-000, Williamson County, TN');
+    expect(outcome.title).not.toMatch(/Unresolved/i);
+    expect(getDealCard(dealCardId)!.title).toBe('Parcel 042-123.00-000, Williamson County, TN');
+  });
+
+  it('never rewrites a title that says something real', () => {
+    const { dealCardId } = lead({ title: 'The Kingwood tract, seller says 76 acres', apn: '042-123.00-000', confirmed: true });
+    const outcome = nameCardFromCanonicalIdentity(dealCardId, 'test');
+
+    expect(outcome.renamed).toBe(false);
+    expect(getDealCard(dealCardId)!.title).toBe('The Kingwood tract, seller says 76 acres');
+    expect(getOpportunityByDealCardId(dealCardId).title).toBe('The Kingwood tract, seller says 76 acres');
+  });
+
+  it('leaves the honest placeholder alone while the parcel is unconfirmed', () => {
+    const { dealCardId } = lead({ title: 'Unresolved parcel, Fairview, TN', confirmed: false });
+    const outcome = nameCardFromCanonicalIdentity(dealCardId, 'test');
+
+    expect(outcome.renamed).toBe(false);
+    expect(getDealCard(dealCardId)!.title).toBe('Unresolved parcel, Fairview, TN');
+    expect(getOpportunityByDealCardId(dealCardId).title).toBe('Unresolved parcel, Fairview, TN');
+  });
+
+  it('names a RESEARCH-GRADE CANDIDATE too — a resolved parcel is not "unresolved"', () => {
+    // Fairview: an APN, an owner of record and 75.91 acres are on the card, but
+    // no official county parcel record has confirmed the identity, so it is
+    // honestly held at candidate. "Unresolved parcel, Fairview, TN" is simply
+    // untrue of it, and the operator reads that string on the pipeline row.
+    const { dealCardId } = lead({ title: 'Unresolved parcel, Fairview, TN', apn: '042-123.00-000', confirmed: false });
+    createPropertyIdentityVersion({
+      dealCardId, propertyCardId: null, status: 'candidate',
+      address: 'Map 042 Parcel 123', city: 'Fairview', county: 'Williamson', state: 'TN',
+      apn: '042-123.00-000',
+      basis: 'Subject reconciled to APN 042-123.00-000. No official county parcel record has confirmed this identity.',
+      confidence: 0.75, sourceRefs: [], changeReason: 'test', createdBy: 'test',
+    });
+    const outcome = nameCardFromCanonicalIdentity(dealCardId, 'test');
+
+    expect(outcome.renamed).toBe(true);
+    expect(outcome.title).toBe('Map 042 Parcel 123, Fairview, TN');
+    expect(getOpportunityByDealCardId(dealCardId).title).toBe('Map 042 Parcel 123, Fairview, TN');
+    // Naming the card does not confirm the parcel. Invariants 2-4 are untouched.
+    expect(resolveCanonicalIdentity(dealCardId).confirmed).toBe(false);
+    expect(resolveCanonicalIdentity(dealCardId).status).toBe('candidate');
+  });
+
+  it('names nothing while the identity is unresolved, rejected or archived', () => {
+    for (const status of ['unresolved', 'rejected', 'archived'] as const) {
+      _initTestLandosDb();
+      const { dealCardId } = lead({ title: 'Unresolved parcel, Fairview, TN', apn: '042-123.00-000', confirmed: false });
+      createPropertyIdentityVersion({
+        dealCardId, propertyCardId: null, status,
+        address: 'Map 042 Parcel 123', city: 'Fairview', county: 'Williamson', state: 'TN',
+        basis: `Identity is ${status}.`, confidence: 0, sourceRefs: [], changeReason: 'test', createdBy: 'test',
+      });
+      const outcome = nameCardFromCanonicalIdentity(dealCardId, 'test');
+      expect(outcome.renamed).toBe(false);
+      expect(getDealCard(dealCardId)!.title).toBe('Unresolved parcel, Fairview, TN');
+    }
+  });
+
+  it('is idempotent: running it again changes nothing', () => {
+    const { dealCardId } = lead({ title: 'Unresolved parcel, Fairview, TN', apn: '042-123.00-000', confirmed: true });
+    nameCardFromCanonicalIdentity(dealCardId, 'test');
+    const second = nameCardFromCanonicalIdentity(dealCardId, 'test');
+
+    expect(second.renamed).toBe(false);
+    expect(getDealCard(dealCardId)!.title).toBe('Map 042 Parcel 123, Fairview, TN');
   });
 });

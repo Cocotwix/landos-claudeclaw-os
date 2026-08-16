@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { createDealCard, linkPropertyToDeal } from './deal-card.js';
+import { createDealCard, getDealCard, linkPropertyToDeal, updateDealCard } from './deal-card.js';
+import { getOpportunityByDealCardId, updateOpportunityTitle } from './opportunity.js';
 import { _initTestLandosDb } from './db.js';
 import { writeParcelIdentity } from './parcel-identity.js';
 import { upsertPropertyCard } from './property-card.js';
@@ -151,5 +152,65 @@ describe('legacy-to-versioned Property Summary adapter', () => {
     expect(result.identity.status).toBe('confirmed');
     expect(result.identity.apn).toBe('001-002-003');
     expect(result.assessorGisJob?.status).toBe('succeeded');
+  });
+});
+
+// ── The name the operator reads ─────────────────────────────────────────────
+//
+// Intake names a card from whatever it could read. Resolution then confirms the
+// parcel, and until now nothing carried that back: the pipeline row, the
+// workspace header and the Deal Card kept announcing an unresolved parcel with
+// the confirmed APN sitting one panel below.
+
+describe('an accepted canonical identity names the card', () => {
+  // The naming itself lives in canonical-identity.ts; these prove the
+  // Property Summary seam reaches it.
+  function placeholderLead() {
+    const { deal, card } = createLead('confirmed');
+    updateDealCard(deal.id, { title: 'Unresolved parcel, Cleveland, GA' });
+    const opportunity = getOpportunityByDealCardId(deal.id);
+    updateOpportunityTitle(opportunity.id, 'Unresolved parcel, Cleveland, GA', { actor: 'test-intake' });
+    return { deal, card, opportunityId: opportunity.id };
+  }
+
+  it('replaces the intake placeholder on the Deal Card and the opportunity', () => {
+    const { deal, opportunityId } = placeholderLead();
+    synchronizePropertySummaryForDeal({
+      dealCardId: deal.id,
+      actor: 'legacy-test',
+      changeReason: 'Canonical identity accepted',
+    });
+    const expected = '388 Gilstrap Rd, Cleveland, GA 30528, Cleveland, GA';
+    expect(getDealCard(deal.id)!.title).toBe(expected);
+    expect(getOpportunityByDealCardId(deal.id).title).toBe(expected);
+    expect(opportunityId).toBe(getOpportunityByDealCardId(deal.id).id);
+  });
+
+  it('never rewrites a title that says something real', () => {
+    const { deal } = createLead('confirmed');
+    updateDealCard(deal.id, { title: 'The Gilstrap tract, seller says 12 acres' });
+    const opportunity = getOpportunityByDealCardId(deal.id);
+    updateOpportunityTitle(opportunity.id, 'The Gilstrap tract, seller says 12 acres', { actor: 'owner' });
+    synchronizePropertySummaryForDeal({
+      dealCardId: deal.id,
+      actor: 'legacy-test',
+      changeReason: 'Canonical identity accepted',
+    });
+    expect(getDealCard(deal.id)!.title).toBe('The Gilstrap tract, seller says 12 acres');
+    expect(getOpportunityByDealCardId(deal.id).title).toBe('The Gilstrap tract, seller says 12 acres');
+  });
+
+  it('leaves the honest placeholder alone while the parcel is unconfirmed', () => {
+    const { deal } = createLead('unresolved');
+    updateDealCard(deal.id, { title: 'Unresolved parcel, Cleveland, GA' });
+    const opportunity = getOpportunityByDealCardId(deal.id);
+    updateOpportunityTitle(opportunity.id, 'Unresolved parcel, Cleveland, GA', { actor: 'test-intake' });
+    synchronizePropertySummaryForDeal({
+      dealCardId: deal.id,
+      actor: 'legacy-test',
+      changeReason: 'Still unresolved',
+    });
+    expect(getDealCard(deal.id)!.title).toBe('Unresolved parcel, Cleveland, GA');
+    expect(getOpportunityByDealCardId(deal.id).title).toBe('Unresolved parcel, Cleveland, GA');
   });
 });

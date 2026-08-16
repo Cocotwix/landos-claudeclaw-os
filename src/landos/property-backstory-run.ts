@@ -21,6 +21,7 @@
 // and this module inherits unchanged.
 
 import { logger } from '../logger.js';
+import { documentUrlIdentity } from './document-url-identity.js';
 import { composeOfficialDocumentSummary } from './official-document-summary.js';
 import { mineDocumentContext, retainDiscoveredContext, type SubjectAnchors } from './official-document-context.js';
 import {
@@ -117,7 +118,11 @@ export async function runPropertyBackstory(
     limitations.push(`Retained document intelligence could not be read (${error instanceof Error ? error.message : String(error)}).`);
   }
   const storedKeys = new Set(stored.documents.map((document) => document.documentKey).filter(Boolean));
+  // Both the URL as stored and the DOCUMENT it names. A document already mined
+  // under one of a site's addresses must not be downloaded and mined again
+  // because a search returned the other one.
   const storedUrls = new Set(stored.documents.map((document) => document.sourceUrl).filter(Boolean));
+  const storedDocuments = new Set(stored.documents.map((document) => documentUrlIdentity(document.sourceUrl)).filter(Boolean));
   for (const document of stored.documents) {
     sourcesConsulted.push({
       url: document.sourceUrl,
@@ -147,14 +152,22 @@ export async function runPropertyBackstory(
 
   if (shouldExpand && maxDocuments > 0) {
     const candidates: Array<{ url: string; title: string | null }> = [];
-    for (const url of subject.knownSourceUrls) {
-      if (url && !candidates.some((row) => row.url === url)) candidates.push({ url, title: null });
-    }
+    // One entry per DOCUMENT: a candidate list holding two spellings of one
+    // file spends two of the run's document budget on the same document.
+    const offered = new Set<string>();
+    const offer = (url: string, title: string | null): void => {
+      if (!url) return;
+      const identity = documentUrlIdentity(url) || url.trim().toLowerCase();
+      if (offered.has(identity)) return;
+      offered.add(identity);
+      candidates.push({ url, title });
+    };
+    for (const url of subject.knownSourceUrls) offer(url, null);
     if (deps.search) {
       for (const query of buildBackstoryQueries(subject, deps.maxQueries ?? 5)) {
         try {
           const hits = await deps.search(query, { maxResults: 8, timeoutMs });
-          for (const hit of hits) if (!candidates.some((row) => row.url === hit.url)) candidates.push({ url: hit.url, title: hit.title });
+          for (const hit of hits) offer(hit.url, hit.title);
         } catch {
           limitations.push(`The keyless search transport did not answer for "${query}".`);
         }
@@ -167,7 +180,7 @@ export async function runPropertyBackstory(
     for (const candidate of candidates) {
       if (retrieved >= maxDocuments) break;
       const key = documentKeyFor(candidate.url);
-      if (storedKeys.has(key) || storedUrls.has(candidate.url)) {
+      if (storedKeys.has(key) || storedUrls.has(candidate.url) || storedDocuments.has(documentUrlIdentity(candidate.url))) {
         sourcesConsulted.push({
           url: candidate.url,
           title: candidate.title,
@@ -290,8 +303,13 @@ export async function runPropertyBackstory(
     summaries: current.summaries,
   });
 
+  // "Already retrieved this run" is a question about the DOCUMENT. Comparing
+  // URL text listed a document twice on the card — once as reused, once as
+  // retrieved — whenever the site served it at a second address.
+  const retrievedThisRun = new Set(documentsRetrieved.map((row) => documentUrlIdentity(row.sourceUrl)).filter(Boolean));
   const documentsReused = current.documents
-    .filter((document) => !documentsRetrieved.some((row) => row.sourceUrl === document.sourceUrl))
+    .filter((document) => !(retrievedThisRun.has(documentUrlIdentity(document.sourceUrl))
+      || documentsRetrieved.some((row) => row.sourceUrl === document.sourceUrl)))
     .map((document) => ({
       documentKey: document.documentKey,
       sourceUrl: document.sourceUrl,

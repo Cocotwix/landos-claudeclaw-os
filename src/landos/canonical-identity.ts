@@ -30,6 +30,9 @@
 // superseded; they are never revoked and never presented as the current state.
 
 import { getLandosDb } from './db.js';
+import { getDealCard, updateDealCard } from './deal-card.js';
+import { buildLeadCardTitle, isPlaceholderPropertyLabel } from './lead-identity.js';
+import { getOpportunityByDealCardId, updateOpportunityTitle } from './opportunity.js';
 import { readParcelIdentity, type ParcelIdentityRecord } from './parcel-identity.js';
 import { readCurrentPropertyIdentity, type PropertyIdentityVersion, type PropertyIdentityStatus } from './property-summary-slice.js';
 
@@ -233,4 +236,88 @@ export function dealCardsAwaitingCanonicalReconciliation(): number[] {
     WHERE pi.state = 'confirmed' AND v.id IS NULL
     ORDER BY pi.deal_card_id
   `).all() as Array<{ dealCardId: number }>).map((r) => r.dealCardId);
+}
+
+/**
+ * NAME the card from the parcel its canonical identity names.
+ *
+ * Intake names a Deal Card from whatever it could read, and a lead that arrived
+ * with only a town is stored as "Unresolved parcel, Fairview, TN". Resolution
+ * then established the parcel and wrote it to the property record, but nothing
+ * carried that back to the label: the pipeline row and the Deal Card kept
+ * announcing an unresolved parcel while the same screen printed the address,
+ * the APN, the owner of record and the acreage.
+ *
+ * A NAME IS NOT A VERIFICATION CLAIM. It says which property the card is about,
+ * which is why a research-grade CANDIDATE names its card too: "Map 042 Parcel
+ * 123, Fairview, TN" is what the card's own address field already reads, while
+ * "Unresolved parcel" is simply untrue of a parcel LandOS has resolved to an
+ * APN. How strongly that identity is held stays where it belongs — the identity
+ * panel, its status and its basis — and invariants 2-4 are untouched: nothing
+ * here confirms a parcel, and a title never becomes evidence of one.
+ *
+ * A DISPUTED, rejected, archived or genuinely unresolved identity names nothing
+ * and renames nothing: the honest placeholder stays until the disagreement is
+ * settled.
+ *
+ * Called wherever an identity is established or reconciled, never from a GET.
+ * Idempotent, and two SELECTs when there is nothing to do.
+ *
+ * The rename happens ONLY over a LandOS placeholder. A title that says anything
+ * real — an address, an APN, or the operator's own words — is accepted operator
+ * information and is never rewritten by a background lane;
+ * `isPlaceholderPropertyLabel` is exactly the line between the two. The intake
+ * record is untouched: `raw_input` still holds what the operator pasted.
+ */
+export function nameCardFromCanonicalIdentity(
+  dealCardId: number,
+  actor: string,
+): { renamed: boolean; title: string | null; reason: string } {
+  const canonical = resolveCanonicalIdentity(dealCardId);
+  if (!(canonical.confirmed || canonical.status === 'candidate')) {
+    return { renamed: false, title: null, reason: `The canonical identity is ${canonical.status}, so it names no parcel to name the card with.` };
+  }
+
+  // The identity's address falls back to the Deal Card title on some paths, so
+  // a placeholder can arrive dressed as an address. Feeding it back in would
+  // build "Unresolved parcel, Fairview, TN, Fairview, TN".
+  const title = buildLeadCardTitle({
+    address: isPlaceholderPropertyLabel(canonical.address) ? null : canonical.address,
+    apn: canonical.apn,
+    city: canonical.city,
+    county: canonical.county,
+    state: canonical.state,
+  });
+  // A parcel LandOS still cannot name keeps the honest placeholder it has.
+  if (!title || isPlaceholderPropertyLabel(title)) {
+    return { renamed: false, title: null, reason: 'The canonical identity carries no address or APN to name the card with.' };
+  }
+
+  let renamed = false;
+  try {
+    const deal = getDealCard(dealCardId) as { title?: string } | undefined;
+    const dealTitle = typeof deal?.title === 'string' ? deal.title : null;
+    if (deal && isPlaceholderPropertyLabel(dealTitle) && dealTitle !== title) {
+      updateDealCard(dealCardId, { title });
+      renamed = true;
+    }
+  } catch { /* the accepted identity is the record; the label is a projection of it */ }
+  try {
+    const opportunity = getOpportunityByDealCardId(dealCardId);
+    if (opportunity && isPlaceholderPropertyLabel(opportunity.title) && opportunity.title !== title) {
+      updateOpportunityTitle(opportunity.id, title, {
+        actor,
+        note: `Canonical property identity (${canonical.status}) names this parcel; the placeholder title "${opportunity.title}" was replaced with "${title}". The title names the property, not its verification state. Original intake retained in raw_input.`,
+      });
+      renamed = true;
+    }
+  } catch { /* the pipeline label never blocks the identity it describes */ }
+
+  return {
+    renamed,
+    title,
+    reason: renamed
+      ? `The card is named from its ${canonical.status} canonical identity: "${title}".`
+      : 'The card already carries a real name; a canonical identity never overwrites one.',
+  };
 }
