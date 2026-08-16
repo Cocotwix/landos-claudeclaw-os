@@ -1,40 +1,40 @@
 {
   "schema": 1,
-  "recordedAt": "2026-08-16T05:55:00.0000000Z",
-  "headUnderReview": "b79d224",
-  "commitState": "Committed and pushed to main at b79d224: five source files modified, two new files added. The three pre-existing browser-pairing files were left unstaged and untouched, as were the five untracked paths.",
+  "recordedAt": "2026-08-16T10:15:00.0000000Z",
+  "headUnderReview": "7a4029c",
+  "commitState": "Committed and pushed to main at 7a4029c: three files staged individually by path (subdivision-regulations.ts, subdivision-property-read.ts, property-backstory-zoning-subdivision.test.ts). The three pre-existing browser-pairing files were left unstaged and untouched, as were the five untracked paths.",
   "tests": {
     "status": "PASS on the focused suites",
-    "timestamp": "2026-08-16T05:51:26.0000000Z",
-    "summary": "272 focused across seven suites: subdivision-regulation-retention 12 (new), property-backstory-zoning-subdivision 50, land-use-source-racing 39, ordinance-text 14, land-use 114, landos 22 (schema), jurisdiction-and-pdf-identity 21. No full-suite run, by instruction"
+    "timestamp": "2026-08-16T08:58:00.0000000Z",
+    "summary": "279 focused across seven suites: property-backstory-zoning-subdivision 57 (7 new), subdivision-regulation-retention 12, land-use-source-racing 39, ordinance-text 14, land-use 114, landos 22 (schema), jurisdiction-and-pdf-identity 21. No full-suite run, by instruction"
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-08-16T05:45:00.0000000Z",
+    "timestamp": "2026-08-16T09:00:00.0000000Z",
     "summary": "tsc --noEmit reports zero errors"
   },
   "build": {
     "status": "PASS on both halves",
-    "timestamp": "2026-08-16T05:44:00.0000000Z",
+    "timestamp": "2026-08-16T09:02:00.0000000Z",
     "summary": "vite build and tsc both clean; dist rebuilt and the managed runtime restarted onto it"
   },
   "runtime": {
     "status": "RUNNING and healthy on port 3141, HTTP 200, rebuilt and restarted",
-    "timestamp": "2026-08-16T05:47:00.0000000Z",
-    "pid": 35976,
+    "timestamp": "2026-08-16T09:03:00.0000000Z",
+    "pid": 115864,
     "url": "http://localhost:3141"
   },
   "operatorAcceptance": {
     "status": "PASS",
-    "workflow": "Five consecutive live retrievals for Fairview / Deal Card 89 — four through the production subdivision capability with real keyless search and government fetch, the fifth through the operator's own Re-run research button — then the Deal Card read in the browser.",
+    "workflow": "Tier 2. Re-ran research for Fairview / Deal Card 89 through the operator's own Re-run research button, then reloaded the Deal Card and read the Subdivision rules & feasibility section in the browser.",
     "url": "http://localhost:3141/dept/acquisitions/v2?deal=89&section=property-market",
     "evidence": {
-      "reproducibility": "Every run returned the same 26 rules from the same 10 official documents, statedMaxMinorLots 2, likely path major subdivision. Before the change, four live runs on the same parcel returned Articles 1+4, then Article 2, then Article 1 alone, then nothing.",
-      "seriesCompletion": "One discovered article seeds the walk of the government's own URL pattern; the run that reached Article 1 by search retrieved parts 3-7 by pattern and recorded that it did so.",
-      "retention": "The set is retained against the government in landos_regulation_document; run two onward released via the retained_regulations lane in 4s instead of a search round trip.",
-      "threshold": "Article II's minor-subdivision definition carries the boundary at 2 lots, so the 119-lot Kingwood history reads as major subdivision on the card rather than depending on Article IV's illustrative 'up to three lots'.",
-      "operatorSurface": "Deal Card 89 Property & Market shows Subdivision path major subdivision, the 2-vs-119 statement, 26 sectioned rules and all 10 source documents. Page text read rather than screenshotted: capture would activate the operator's Chrome.",
-      "note": "No paid API, no credential, no LandPortal action. Current zoning remains UNRESOLVED and untouched by this work."
+      "noNumberExists": "All ten official Fairview documents were fetched through the production PDF path and swept: none states a numeric minimum lot size. The only lot-area rule in the adopted set is Article IV 4-110.2, 'Lot area shall comply with the minimum standards of the Zoning Ordinance'.",
+      "delegationExtracted": "The card shows a new rule row, 'Minimum Lot Size (Set By The Zoning Ordinance)', carrying that wording verbatim at confidence confirmed and linked to its source PDF.",
+      "countStaysUnresolved": "Theoretical lots reads 'Not calculated: the subdivision regulations state no lot area of their own and require it to meet the zoning ordinance's standards (FAIRVIEW-SUBDIVISION-REGULATIONS.pdf)...' and quotes the regulation. No lot size was invented and no district was asserted.",
+      "noRegression": "Diffed the new live retrieval against the last pre-change one: all 26 previously proven rules are byte-identical in value, section and source; exactly one rule added; statedMaxMinorLots still 2 and the 119-lot Kingwood record still reads major subdivision.",
+      "guardHolds": "A frontage or lot-width measurement cannot enter the lot-area rule (each widened alternative requires an area unit), and a stated minimum always outranks a delegation. Both are covered by new focused tests.",
+      "note": "No paid API, no credential, no LandPortal action. Current zoning remains UNRESOLVED and untouched; it is now what the lot count explicitly waits on. Page text and DOM read rather than screenshotted where capture would activate the operator's Chrome."
     }
   }
 }
