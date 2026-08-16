@@ -175,7 +175,33 @@ describe('Property Inspection capability', () => {
       nowMs: () => clock,
     });
 
-    expect(budgets).toEqual([1_000, 600]);
+    // ONE deadline, and the official-records lane holds a reserved share of it.
+    // LandPortal used to be handed the whole budget and routinely consumed it,
+    // so the county lane — the only path to the assessor, recorder and
+    // collecting office — was recorded as "queued for the next run" every run.
+    // The reserve is capped at a third of the budget so a tight deadline cannot
+    // starve the parcel read instead: 1000ms → 333 reserved, 667 to LandPortal,
+    // and the county lane still gets whatever is genuinely left (600 here).
+    expect(budgets).toEqual([667, 600]);
+  });
+
+  it('does not reserve official-records time when that lane will not run', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'parcel read',
+      inspection: { parcelUrl: 'https://landportal.example/parcel', comparablesUrl: null, parcelFacts: { 'Owner Name': 'DOE', 'Parcel ID': 'R123', Acres: '10' }, assets: [], overlays: [], visualObservations: [], comparables: [] },
+    } satisfies BrowserEvidence;
+    const budgets: number[] = [];
+    const landPortalService: BrowserService = {
+      ...fakeService(landportal),
+      async runWorkflow(_input, options) { budgets.push(options.timeoutMs); return landportal; },
+    };
+    await runPropertyInspection({
+      searchKey: { address: '1 Main St', county: 'Example', state: 'TX' },
+      mode: 'deep_record',
+      timeoutMs: 1_000,
+    }, { landPortalBrowser: landPortalService, googleVisualConfigured: false });
+
+    expect(budgets).toEqual([1_000]);
   });
 
   it('does not let Google visual capture overrun an exhausted identity deadline', async () => {
@@ -246,13 +272,54 @@ describe('Property Inspection capability', () => {
     }, { landPortalBrowser: fakeService(landportal), googleVisualConfigured: false });
 
     expect(result.inspection.parcelFacts['Road Frontage']).not.toMatch(/\d/);
+    // The DECISION slot carries no number a reader could parse.
     expect(result.inspection.parcelFacts['Slope Avg']).not.toMatch(/\d/);
     expect(result.inspection.parcelFacts['Buildability total (%)']).not.toMatch(/\d/);
+    // The OBSERVATION survives under its own companion key, so the operator can
+    // still be told what the provider reported and why it is not being relied
+    // on. Quarantine withholds a number from decisions; it never deletes it.
+    expect(result.inspection.parcelFacts['Slope Avg (provider observation)']).toBe('53.57 %');
+    expect(result.inspection.parcelFacts['Buildability total (%) (provider observation)']).toBe('0.28 %');
+    expect(result.inspection.parcelFacts['Terrain Quarantine Reason']).toMatch(/average slope 53\.57%/);
     expect(result.inspection.evidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Road frontage conflict', status: 'needs_verification' }),
       expect.objectContaining({ label: 'Terrain and buildability conflict', status: 'needs_verification' }),
-      expect.objectContaining({ label: 'Slope Avg', status: 'needs_verification', confidence: 'low' }),
+      expect.objectContaining({ label: 'Slope Avg (provider observation)', status: 'needs_verification', confidence: 'low' }),
     ]));
+  });
+
+  it('reconciles buildable area against ANY acreage basis the provider published', async () => {
+    // The provider states an assessed acreage AND its own calculated acreage,
+    // and runs its terrain model over the calculated one. Reconciling against
+    // the assessed figure alone quarantined correct terrain output and then
+    // destroyed it, which is how a 30.52% buildability that reconciles exactly
+    // against 50.69 calculated acres was reported as unsupplied.
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [], sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: [], note: 'parcel read',
+      inspection: {
+        parcelUrl: 'https://landportal.example/parcel',
+        comparablesUrl: null,
+        parcelFacts: {
+          'Parcel ID': 'R900',
+          Acres: '75.91',
+          'Calc Acres': '50.69',
+          'Slope Avg': '18.65 %',
+          'Buildability total (%)': '30.52 %',
+          'Buildability area (acres)': '15.49 ac.',
+        },
+        assets: [], overlays: [], visualObservations: [], comparables: [],
+      },
+    } satisfies BrowserEvidence;
+    const result = await runPropertyInspection({
+      searchKey: { address: '1 Kingwood Blvd', county: 'Williamson', state: 'TN' },
+      existingEvidence: [landportal],
+      timeoutMs: 1000,
+    }, { landPortalBrowser: fakeService(landportal), googleVisualConfigured: false });
+
+    expect(result.inspection.parcelFacts['Slope Avg']).toBe('18.65 %');
+    expect(result.inspection.parcelFacts['Buildability total (%)']).toBe('30.52 %');
+    expect(result.inspection.parcelFacts['Buildability area (acres)']).toBe('15.49 ac.');
+    expect(result.inspection.parcelFacts['Terrain Quarantine Reason']).toBeUndefined();
   });
 
   it('preserves extreme terrain values only when a medium/high-confidence visual interpretation corroborates them', async () => {

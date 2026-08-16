@@ -1169,6 +1169,55 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
     summary: `Captured property inspection (${assets.length} image(s), ${payload.comparables.length} comparable row(s)).`,
     ref: JSON.stringify(payload),
   });
+  promoteRetainedParcelEnrichment(cardId, payload.parcelFacts);
+}
+
+/**
+ * Carry the retained parcel record's ZIP and centroid onto the property card.
+ *
+ * FILL-ONLY, and enrichment only. It writes nothing that is already set, so no
+ * accepted operator value can be changed, and it never touches identity: a
+ * centroid places a parcel, it never establishes which parcel this is.
+ *
+ * Without this the two facts sat in the inspection record and nowhere else.
+ * Every later reader looks on the CARD — the comparable map and its distance
+ * bands, the ZIP market record, the data-center radius screen — so a subject
+ * whose own centroid and ZIP had been captured still read as having neither,
+ * and the surfaces that depend on a subject point reported everything
+ * "location unresolved".
+ */
+function promoteRetainedParcelEnrichment(cardId: number, facts: Record<string, string>): void {
+  const text = (...labels: string[]): string | null => {
+    for (const label of labels) {
+      const raw = facts[label];
+      if (typeof raw === 'string' && raw.trim() && !/^(?:-|--|n\/?a)$/i.test(raw.trim())) return raw.trim();
+    }
+    return null;
+  };
+  const number = (...labels: string[]): number | null => {
+    const raw = text(...labels);
+    if (raw == null) return null;
+    const value = Number(raw.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/)?.[0] ?? Number.NaN);
+    return Number.isFinite(value) ? value : null;
+  };
+  const zipRaw = text('Parcel Address Zip Code', 'Parcel Address ZIP Code');
+  const zip = zipRaw && /^\d{5}/.test(zipRaw) ? zipRaw.slice(0, 5) : null;
+  const lat = number('Centroid Latitude', 'Latitude', 'Situs Latitude');
+  const lng = number('Centroid Longitude', 'Longitude', 'Situs Longitude');
+  const pointUsable = lat != null && lng != null
+    && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0);
+  if (!zip && !pointUsable) return;
+  const db = getLandosDb();
+  try {
+    if (zip) {
+      db.prepare("UPDATE landos_property_card SET zip = ? WHERE id = ? AND (zip IS NULL OR trim(zip) = '')")
+        .run(zip, cardId);
+    }
+    if (pointUsable) {
+      db.prepare('UPDATE landos_property_card SET lat = ?, lng = ? WHERE id = ? AND lat IS NULL AND lng IS NULL')
+        .run(lat, lng, cardId);
+    }
+  } catch { /* enrichment must never fail a capture */ }
 }
 
 /**
@@ -1183,19 +1232,77 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
  * Rows stamped with the newest capture time are the current set. When nothing is
  * stamped at all — only pre-stamping history exists — every row is returned, so
  * an older card never loses its comps to this rule.
+ *
+ * A GENERATION IS PER SURFACE. The provider publishes its comparables on more
+ * than one surface — the parcel sidebar and the "Show on Map" expansion — and
+ * they are captured by different writers, minutes apart. Treating the whole
+ * record as one generation meant whichever surface was written last silently
+ * deleted the other from every read: rows only the map published were captured,
+ * retained, and then filtered out of the registry, the research lanes, and the
+ * operator's comparable list. Each surface keeps its own newest generation, so
+ * re-reading one surface replaces only that surface and never erases another.
  */
 export function currentComparables(
   inspection: PropertyInspectionRecord | null | undefined,
 ): LandPortalComparableRecord[] {
   const rows = inspection?.comparables ?? [];
+  if (!rows.length) return rows;
+  const stampOf = (row: LandPortalComparableRecord): string | null =>
+    (typeof row.capturedAtIso === 'string' && row.capturedAtIso ? row.capturedAtIso : null);
+  const surfaceOf = (row: LandPortalComparableRecord): string =>
+    (typeof row.surface === 'string' && row.surface.trim() ? row.surface.trim().toLowerCase() : 'sidebar');
+  if (!rows.some(stampOf)) return rows;
+
+  // Newest generation WITHIN each surface. A surface a newer capture did not
+  // re-read keeps its own most recent generation instead of being erased by it.
+  const newestBySurface = new Map<string, string>();
+  for (const row of rows) {
+    const stamp = stampOf(row);
+    if (!stamp) continue;
+    const surface = surfaceOf(row);
+    const seen = newestBySurface.get(surface);
+    if (!seen || stamp > seen) newestBySurface.set(surface, stamp);
+  }
+  // A completed generation still pins the surfaces IT wrote, so a newer but
+  // partially written capture of the same surface cannot supersede it. It pins
+  // only its own surfaces; that is the whole difference from the rule that was
+  // deleting the other surface's rows.
   const completedGeneration = inspection?.comparablesCapturedAt ?? null;
-  if (completedGeneration) return rows.filter((row) => row.capturedAtIso === completedGeneration);
-  const stamps = rows
-    .map((row) => (typeof row.capturedAtIso === 'string' ? row.capturedAtIso : null))
-    .filter((value): value is string => !!value);
-  if (!stamps.length) return rows;
-  const newest = stamps.reduce((a, b) => (a > b ? a : b));
-  return rows.filter((row) => row.capturedAtIso === newest);
+  if (completedGeneration) {
+    const generationRows = rows.filter((row) => stampOf(row) === completedGeneration);
+    if (generationRows.length) {
+      for (const row of generationRows) newestBySurface.set(surfaceOf(row), completedGeneration);
+    } else {
+      // A COMPLETED capture that returned nothing at all names no surface, and
+      // it is the newest statement about this parcel's comparables: the
+      // provider now publishes none. Every earlier generation is superseded,
+      // exactly as before — an empty answer is still an answer.
+      return [];
+    }
+  }
+  const current = rows.filter((row) => {
+    const stamp = stampOf(row);
+    return !!stamp && newestBySurface.get(surfaceOf(row)) === stamp;
+  });
+
+  // One record per parcel. Where surfaces disagree the NEWEST observation of
+  // that parcel wins, so a re-read that reclassifies a row cannot leave the
+  // superseded copy of the same parcel standing beside it.
+  const newestForParcel = new Map<string, string>();
+  const parcelKey = (row: LandPortalComparableRecord): string | null =>
+    (row.apn ? `apn:${row.apn.replace(/[^0-9a-z]/gi, '').toLowerCase()}` : null);
+  for (const row of current) {
+    const key = parcelKey(row);
+    const stamp = stampOf(row);
+    if (!key || !stamp) continue;
+    const seen = newestForParcel.get(key);
+    if (!seen || stamp > seen) newestForParcel.set(key, stamp);
+  }
+  return current.filter((row) => {
+    const key = parcelKey(row);
+    if (!key) return true;
+    return newestForParcel.get(key) === stampOf(row);
+  });
 }
 
 /** Load the cumulative, non-destructive property inspection for a card. */

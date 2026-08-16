@@ -7,14 +7,17 @@ import {
 import type {
   AccessPresentationView,
   ExactAddressListingsView,
+  MarketContextRecordView,
   MarketContextView,
   PiDdItem,
   PiEvidenceItem,
   PiFact,
+  ParcelFactSheetView,
   ResearchStatusView,
   SoilsSepticView,
   VisualBuyerNarrativeView,
 } from './AcquisitionWorkspaceV2PropertyIntelligence';
+import type { RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
 import type { CompsValuationViewData } from './AcquisitionWorkspaceV2CompsValuation';
 import '../styles/workspace-v2-overview.css';
 
@@ -50,6 +53,16 @@ export interface OverviewSnapshotView {
   dueDiligence?: PiDdItem[];
   evidence?: PiEvidenceItem[];
   subjectParcelUrl?: string | null;
+  /**
+   * The strategy lane's own output. Every run produces a full read of each
+   * exit — what supports it, what blocks it, the effort, the timeline, the
+   * value-creation path, the risk, and the next thing to confirm. None of it
+   * reached the operator: the workspace printed only the one-line reason the
+   * preferred strategy could not yet be chosen, so a lane that had run and
+   * delivered looked like a lane that had produced nothing.
+   */
+  strategies?: OverviewStrategyView[];
+  recommendation?: OverviewRecommendationView | null;
   operatorAnalysis?: {
     scores?: { property?: OverviewScoreView; market?: OverviewScoreView; seller?: OverviewScoreView };
     canonical?: CanonicalOverviewState | null;
@@ -66,6 +79,40 @@ export interface OverviewSnapshotView {
     };
   };
 }
+
+/** One exit strategy as the strategy lane assessed it for this subject. */
+export interface OverviewStrategyView {
+  strategy: string;
+  /** 'viable' | 'conditional' | 'blocked' | 'not_applicable', as the lane states it. */
+  applicability?: string | null;
+  supportingFacts?: string[];
+  blockers?: string[];
+  effort?: string | null;
+  timeline?: string | null;
+  valueCreationPath?: string | null;
+  risk?: string | null;
+  nextVerificationStep?: string | null;
+}
+
+/** The strategy lane's reconciled recommendation across those exits. */
+export interface OverviewRecommendationView {
+  preferredStrategy?: string | null;
+  why?: string | null;
+  posture?: string | null;
+  postureWhy?: string | null;
+  shouldPursue?: string | null;
+  whatWouldChangeIt?: string[];
+  dealKillers?: string[];
+  nextConfirmations?: string[];
+  juiceWorthSqueeze?: { answer?: string | null; why?: string | null } | null;
+}
+
+const STRATEGY_APPLICABILITY_LABEL: Record<string, string> = {
+  viable: 'Viable',
+  conditional: 'Conditional',
+  blocked: 'Blocked',
+  not_applicable: 'Not applicable',
+};
 
 /** The 20-mile Brockovich data-center screen, as the snapshot carries it. */
 export interface OverviewDataCentersView {
@@ -119,6 +166,10 @@ interface OverviewSectionProps {
   acquisitionNextAction: { label?: string; reason?: string } | null;
   onOpenSection: (slug: 'property-intelligence' | 'comps-valuation') => void;
   formatUsd: (value: number) => string;
+  /** The canonical retained LandPortal parcel fact sheet. */
+  landPortalFacts?: ParcelFactSheetView | null;
+  /** Retained land-use intelligence: authority, current zoning, backstory. */
+  landUseIntelligence?: RetainedLandUseIntelligenceView | null;
 }
 
 const unique = (items: Array<string | null | undefined>) => Array.from(new Set(items.filter((item): item is string => !!item?.trim())));
@@ -183,6 +234,8 @@ export function OverviewSection({
   acquisitionNextAction,
   onOpenSection,
   formatUsd,
+  landPortalFacts,
+  landUseIntelligence,
 }: OverviewSectionProps) {
   const identity = snap.identity ?? {};
   const operator = snap.operatorAnalysis;
@@ -213,7 +266,14 @@ export function OverviewSection({
     acquisitionNextAction?.label ? `${acquisitionNextAction.label}${acquisitionNextAction.reason ? ` — ${acquisitionNextAction.reason}` : ''}` : null,
     ...canonicalActions,
   ]);
+
   const dataCenters = snap.operatorAnalysis?.market?.dataCenters ?? null;
+  // A radius was only measured when a lane actually ran it AND at least one
+  // finding carries a distance. Otherwise the findings are county-scoped.
+  const dataCenterMeasuredHits = (dataCenters?.items ?? []).filter((item) => item.distanceMiles != null);
+  const dataCenterRadiusMeasured = !!dataCenters
+    && (dataCenters.routesAttempted ?? []).some((route) => /brockovich/i.test(route) && !/not_run/i.test(route))
+    && dataCenterMeasuredHits.length > 0;
   const dataCenterHits = dataCenters?.items ?? [];
   const marketRecord = [market?.subjectBand, market?.zip, market?.county]
     .find((record) => record?.available && record.metrics) ?? null;
@@ -225,6 +285,37 @@ export function OverviewSection({
     marketMetrics?.monthsOfSupply != null ? { label: 'Months supply', value: `${marketMetrics.monthsOfSupply} mo`, kind: 'supply' } : null,
     marketMetrics?.medianPricePerAcre != null ? { label: 'Median $/acre', value: usd(marketMetrics.medianPricePerAcre), kind: 'price' } : null,
   ].filter((tile): tile is { label: string; value: string; kind: string } => tile != null);
+
+  // The acreage-band read. Retained on every run and, until now, reachable only
+  // by opening Comps & Valuation; the Overview showed four county-or-band
+  // numbers with nothing to compare them against.
+  const bandRow = (
+    record: MarketContextRecordView | null | undefined,
+    label: string,
+    isSubject: boolean,
+  ): { label: string; pricePerAcre: string; dom: string; sellThrough: string; monthsSupply: string; sold: string; isSubject: boolean } | null => {
+    const metrics = record?.available ? record.metrics : null;
+    if (!metrics) return null;
+    return {
+      label: record?.acreageBandLabel || label,
+      pricePerAcre: metrics.medianPricePerAcre != null ? usd(metrics.medianPricePerAcre) : '—',
+      dom: metrics.medianDaysOnMarket != null ? `${Math.round(metrics.medianDaysOnMarket)} d` : '—',
+      sellThrough: metrics.sellThroughRate != null ? `${Math.round(metrics.sellThroughRate)}%` : '—',
+      monthsSupply: metrics.monthsOfSupply != null ? `${metrics.monthsOfSupply} mo` : '—',
+      sold: metrics.soldCount != null ? String(metrics.soldCount) : '—',
+      isSubject,
+    };
+  };
+  const marketBandRows = [
+    bandRow(market?.subjectBand, 'Subject band', true),
+    bandRow(market?.fastestBand, 'Fastest-selling band', false),
+    bandRow(market?.county, 'All acreage', false),
+  ].filter((row): row is NonNullable<typeof row> => row != null);
+  const marketBandNote = market?.subjectBand?.available && market?.fastestBand?.available
+    && market.subjectBand.acreageBand !== market.fastestBand.acreageBand
+    ? `The subject's own band is not the county's liquid band. Read the ${market.subjectBand.acreageBandLabel} row as this parcel's market; the ${market.fastestBand.acreageBandLabel} row shows where the county's demand actually is, and it does not price this parcel.`
+    : null;
+  const marketReadHeadline = market?.read?.headline ?? null;
 
   // The reconciled subject decides whether a public listing exists. Overview no
   // longer re-derives it from whichever retained source sorted first, which is
@@ -292,15 +383,30 @@ export function OverviewSection({
   // deal id or proof-property special case participates in the design.
   const factValue = (...keys: string[]): string | null => snap.facts?.find((item) => keys.includes(item.key))?.value ?? null;
   const diligence = new Map((snap.dueDiligence ?? []).map((item) => [item.key, item]));
-  const slopeRaw = factValue('lp_sidebar_slope', 'lp_sidebar_average_slope', 'lp_sidebar_slope_description')
-    ?? diligence.get('terrain')?.headline ?? null;
-  const buildabilityRaw = factValue('lp_sidebar_buildability', 'lp_sidebar_buildable_area', 'lp_sidebar_buildability_pct')
-    ?? diligence.get('terrain')?.headline ?? null;
-  const wetlandsRaw = factValue('lp_sidebar_wetlands', 'lp_sidebar_wetlands_pct', 'lp_sidebar_wetland_type')
+  // The canonical retained parcel fact sheet answers first. The due-diligence
+  // HEADLINE is a verdict sentence, never a measurement, and using it as the
+  // fallback value is what printed a review sentence into the slot where the
+  // slope percentage belongs.
+  const lpf = landPortalFacts ?? null;
+  const sheetValue = (value: string | null | undefined): string | null => {
+    const text = typeof value === 'string' ? value.trim() : '';
+    return text && !/^needs verification$/i.test(text) ? text : null;
+  };
+  const terrainQuarantine = lpf?.terrainQuarantine ?? null;
+  const slopeRaw = sheetValue(lpf?.terrain?.slopeAvgPct)
+    ?? factValue('lp_sidebar_slope', 'lp_sidebar_average_slope', 'lp_sidebar_slope_description');
+  const buildabilityRaw = sheetValue(lpf?.buildability?.pct)
+    ?? factValue('lp_sidebar_buildability', 'lp_sidebar_buildable_area', 'lp_sidebar_buildability_pct');
+  const buildableAcresRaw = sheetValue(lpf?.buildability?.acres);
+  const wetlandsRaw = sheetValue(lpf?.environment?.wetlandsPct)
+    ?? factValue('lp_sidebar_wetlands', 'lp_sidebar_wetlands_pct', 'lp_sidebar_wetland_type')
     ?? diligence.get('wetlands')?.headline ?? null;
-  const femaRaw = factValue('lp_sidebar_fema_flood_zone_description', 'lp_sidebar_fema_flood_pct', 'lp_sidebar_flood_zone')
+  const femaRaw = sheetValue(lpf?.environment?.femaFloodZoneDescription)
+    ?? factValue('lp_sidebar_fema_flood_zone_description', 'lp_sidebar_fema_flood_pct', 'lp_sidebar_flood_zone')
     ?? diligence.get('flood')?.headline ?? null;
-  const waterFeature = factValue('lp_sidebar_water_feature_type', 'lp_sidebar_water_feature', 'lp_sidebar_water_features');
+  const femaCoverageRaw = sheetValue(lpf?.environment?.femaCoveragePct);
+  const waterFeature = sheetValue(lpf?.water?.label)
+    ?? factValue('lp_sidebar_water_feature_type', 'lp_sidebar_water_feature', 'lp_sidebar_water_features');
   const slopePct = numberIn(slopeRaw, /([\d.]+)\s*%\s*average slope/i)
     ?? numberIn(slopeRaw, /([\d.]+)\s*%/);
   const buildabilityPct = numberIn(buildabilityRaw, /([\d.]+)\s*%\s*buildability/i)
@@ -308,11 +414,39 @@ export function OverviewSection({
   const wetlandsPct = numberIn(wetlandsRaw, /([\d.]+)\s*%/);
   const femaPct = /not in (?:a )?flood hazard area|no (?:mapped )?flood/i.test(femaRaw ?? '')
     ? 0
-    : numberIn(femaRaw, /([\d.]+)\s*%/);
+    : numberIn(femaCoverageRaw, /([\d.]+)\s*%/) ?? numberIn(femaRaw, /([\d.]+)\s*%/);
   const affectedAcres = (pct: number | null, raw: string | null): number | null => (
     numberIn(raw, /([\d,.]+)\s*(?:acres?|ac)\b/i)
       ?? (pct != null && identity.acres != null ? identity.acres * pct / 100 : null)
   );
+  // Public record. Retained by the parcel read on every run, surfaced nowhere.
+  const lpEstimatePrice = sheetValue(lpf?.valuation?.lpEstimatePrice) ?? factValue('lpEstimateTotal');
+  const lpEstimatePpa = sheetValue(lpf?.valuation?.lpEstimatePpa) ?? factValue('lpEstimatePerAcre');
+  const publicRecordTiles = [
+    sheetValue(lpf?.valuation?.assessedValue)
+      ? { label: 'Assessed value', value: sheetValue(lpf?.valuation?.assessedValue)!, note: 'County roll is the stronger source' } : null,
+    sheetValue(lpf?.valuation?.totalMarketValue)
+      ? { label: 'Total market value', value: sheetValue(lpf?.valuation?.totalMarketValue)!, note: 'As the parcel record states it' } : null,
+    sheetValue(lpf?.valuation?.taxAmount)
+      ? { label: 'Annual tax', value: sheetValue(lpf?.valuation?.taxAmount)!, note: 'Delinquency not screened' } : null,
+    sheetValue(lpf?.improvement?.label)
+      ? { label: 'Improvements', value: sheetValue(lpf?.improvement?.label)!, note: sheetValue(lpf?.improvement?.yearBuilt) ? `Built ${sheetValue(lpf?.improvement?.yearBuilt)}` : 'Year built not published' } : null,
+    sheetValue(lpf?.parcelContext?.landUse)
+      ? { label: 'Land use', value: sheetValue(lpf?.parcelContext?.landUse)!, note: 'Parcel record classification' } : null,
+  ].filter((tile): tile is { label: string; value: string; note: string } => tile != null);
+  // Strategy is read straight from the lane that produced it. A lane that ran
+  // and delivered five assessed exits must not present as an empty section.
+  const strategies = (snap.strategies ?? []).filter((item) => !!item?.strategy);
+  const recommendation = snap.recommendation ?? null;
+  const backstory = landUseIntelligence?.backstory ?? null;
+  const zoningAuthority = (landUseIntelligence?.authority?.roles ?? []).find((role) => /zoning/i.test(role.role ?? ''));
+  const subdivisionPath = landUseIntelligence?.subdivision?.likelyPathLabel ?? null;
+  const authorityLine = zoningAuthority?.name
+    ? `Zoning and subdivision authority: ${zoningAuthority.name} (${zoningAuthority.determinationLabel ?? 'confirmed'}).${
+      landUseIntelligence?.currentZoning?.established ? '' : ' Current zoning remains unresolved: no current, parcel-specific official source has established the district.'
+    }${subdivisionPath ? ` Likely subdivision path: ${subdivisionPath.replace(/_/g, ' ')}.` : ''}`
+    : null;
+
   const acreageText = (value: number | null): string | null => value == null
     ? null
     : `${value.toLocaleString('en-US', { maximumFractionDigits: 2 })} ac`;
@@ -425,9 +559,19 @@ export function OverviewSection({
             <div><Droplets size={15} /><span><small>FEMA · LandPortal</small><b>{pctText(femaPct, femaRaw)}</b><i>{acreageText(affectedAcres(femaPct, femaRaw)) || 'Affected acres not retained'}</i></span></div>
             <div><Waves size={15} /><span><small>Wetlands · LandPortal</small><b>{pctText(wetlandsPct, wetlandsRaw)}</b><i>{acreageText(affectedAcres(wetlandsPct, wetlandsRaw)) || 'Affected acres not retained'}</i></span></div>
             <div><CircleDot size={15} /><span><small>Water feature</small><b>{waterFeature || 'Not retained'}</b><i>LandPortal</i></span></div>
-            <div><Mountain size={15} /><span><small>Average slope</small><b>{pctText(slopePct, slopeRaw)}</b><i>LandPortal</i></span></div>
-            <div class="wide"><Ruler size={15} /><span><small>Buildability</small><b>{pctText(buildabilityPct, buildabilityRaw)}</b><i>{acreageText(affectedAcres(buildabilityPct, buildabilityRaw)) ? `${acreageText(affectedAcres(buildabilityPct, buildabilityRaw))} buildable` : 'Buildable acres not retained'}</i></span></div>
+            <div><Mountain size={15} /><span><small>Average slope</small><b>{pctText(slopePct, terrainQuarantine?.slopeAvgPct ? `${terrainQuarantine.slopeAvgPct} (held)` : null)}</b><i>{terrainQuarantine && slopePct == null ? 'Provider figure held for verification' : 'LandPortal'}</i></span></div>
+            <div class="wide"><Ruler size={15} /><span><small>Buildability</small><b>{pctText(buildabilityPct, terrainQuarantine?.buildabilityPct ? `${terrainQuarantine.buildabilityPct} (held)` : null)}</b><i>{
+              buildableAcresRaw ? `${buildableAcresRaw} buildable`
+                : acreageText(affectedAcres(buildabilityPct, buildabilityRaw)) ? `${acreageText(affectedAcres(buildabilityPct, buildabilityRaw))} buildable`
+                  : terrainQuarantine?.buildableAcres ? `${terrainQuarantine.buildableAcres} reported, held for verification`
+                    : 'Buildable acres not retained'
+            }</i></span></div>
           </div>
+          {/* A held-back terrain figure is stated as such. Blanking it made a
+              reviewed conflict indistinguishable from an unread source. */}
+          {terrainQuarantine && slopePct == null && (
+            <p class="awv2-overview-terrain-hold">{terrainQuarantine.reason} Held out of scoring, valuation and strategy until an independent terrain read reconciles it.</p>
+          )}
           <div class="awv2-seller-card">
             <UserRound size={22} aria-hidden="true" />
             <div><small>Seller / lead</small><b>{seller?.name || 'Not collected'}</b><span>{seller?.phone || seller?.email || 'Contact details pending'}</span></div>
@@ -479,12 +623,144 @@ export function OverviewSection({
         </div>
       </section>
 
+      {/* ── 3a. Public record + planning history ──
+          Assessment, market value, annual tax and the provider's own estimate
+          are decision inputs an operator asks for first, and the retained
+          planning record is the story of what has already been attempted on
+          this parcel. All of it was retained and none of it reached this page. */}
+      {(publicRecordTiles.length > 0 || backstory) && (
+        <section class="awv2-overview-record" data-domain="property" aria-label="Public record and planning history">
+          <div class="section-heading">
+            <div>
+              <span class="awv2-dom-eyebrow" data-dom="property">Public record</span>
+              <h2>Assessment, tax &amp; planning history</h2>
+            </div>
+            <button type="button" onClick={() => onOpenSection('property-intelligence')}>Open property evidence →</button>
+          </div>
+          {publicRecordTiles.length > 0 && (
+            <div class="awv2-record-tiles">
+              {publicRecordTiles.map((tile) => (
+                <div><span>{tile.label}</span><b>{tile.value}</b><i>{tile.note}</i></div>
+              ))}
+            </div>
+          )}
+          {lpEstimatePrice && (
+            <p class="awv2-record-note">
+              <b>LP Estimate {lpEstimatePrice}{lpEstimatePpa ? ` (${lpEstimatePpa}/ac)` : ''}.</b>{' '}
+              LandPortal&apos;s own automated estimate, shown exactly as it publishes it. It is
+              provider context and never an input to the LandOS land value or any acquisition level.
+            </p>
+          )}
+          {backstory && (
+            <div class="awv2-record-backstory">
+              <h3>Property backstory</h3>
+              <p>{backstory.narrative}</p>
+              {(backstory.highlights ?? []).length > 0 && (
+                <ul>{(backstory.highlights ?? []).slice(0, 4).map((item) => <li>{item}</li>)}</ul>
+              )}
+              {(backstory.openQuestions ?? []).length > 0 && (
+                <p class="awv2-record-note"><b>Open questions the record raises:</b> {(backstory.openQuestions ?? []).join(' ')}</p>
+              )}
+            </div>
+          )}
+          {authorityLine && <p class="awv2-record-note">{authorityLine}</p>}
+        </section>
+      )}
+
+      {/* ── 3b. Exit strategy ──
+          The strategy lane's real output. A BLOCKED strategy is a finding, not
+          an absence: it names the exit, what already supports it, and the one
+          thing standing between the operator and pursuing it. Printing only
+          "strategy selection is pending" threw all of that away. */}
+      {strategies.length > 0 && (
+        <section class="awv2-overview-strategy" data-domain="strategy" aria-label="Exit strategy">
+          <div class="section-heading">
+            <div>
+              <span class="awv2-dom-eyebrow" data-dom="strategy">Strategy</span>
+              <h2>{recommendation?.preferredStrategy
+                ? `Preferred exit: ${recommendation.preferredStrategy}`
+                : 'Exit strategies assessed'}</h2>
+            </div>
+            {recommendation?.posture && <span class="awv2-strategy-posture" data-posture={recommendation.posture}>{recommendation.posture}</span>}
+          </div>
+          {(recommendation?.postureWhy || recommendation?.why) && (
+            <p class="awv2-strategy-why">{recommendation?.postureWhy || recommendation?.why}</p>
+          )}
+          <div class="awv2-strategy-grid">
+            {strategies.map((item) => {
+              const applicability = (item.applicability || '').toLowerCase();
+              return (
+                <article class="awv2-strategy-card" data-applicability={applicability || 'unstated'}>
+                  <header>
+                    <b>{item.strategy}</b>
+                    <em>{STRATEGY_APPLICABILITY_LABEL[applicability] ?? 'Assessed'}</em>
+                  </header>
+                  {item.valueCreationPath && <p class="path">{item.valueCreationPath}</p>}
+                  {(item.supportingFacts ?? []).length > 0 && (
+                    <ul class="supports">{(item.supportingFacts ?? []).slice(0, 3).map((fact) => <li>{fact}</li>)}</ul>
+                  )}
+                  {(item.blockers ?? []).length > 0 && (
+                    <ul class="blocks">{(item.blockers ?? []).slice(0, 2).map((blocker) => <li>{blocker}</li>)}</ul>
+                  )}
+                  <dl>
+                    {item.effort && <><dt>Effort</dt><dd>{item.effort}</dd></>}
+                    {item.timeline && <><dt>Timeline</dt><dd>{item.timeline}</dd></>}
+                    {item.risk && <><dt>Risk</dt><dd>{item.risk}</dd></>}
+                    {item.nextVerificationStep && <><dt>Next to confirm</dt><dd>{item.nextVerificationStep}</dd></>}
+                  </dl>
+                </article>
+              );
+            })}
+          </div>
+          {(recommendation?.whatWouldChangeIt ?? []).length > 0 && (
+            <div class="awv2-strategy-unlock">
+              <h3>What would settle the strategy</h3>
+              <ul>{(recommendation?.whatWouldChangeIt ?? []).map((item) => <li>{item}</li>)}</ul>
+            </div>
+          )}
+          {recommendation?.juiceWorthSqueeze?.why && (
+            <p class="awv2-strategy-why">
+              <b>Worth the effort? {recommendation.juiceWorthSqueeze.answer ?? 'undetermined'}.</b>{' '}
+              {recommendation.juiceWorthSqueeze.why}
+            </p>
+          )}
+        </section>
+      )}
+
       {/* ── 4. Market intelligence ── */}
       <section class="awv2-overview-market" data-domain="market" aria-label="Market intelligence">
         <div class="section-heading"><div><span class="awv2-dom-eyebrow" data-dom="market">Market intelligence</span><h2>Local market read</h2></div><button type="button" onClick={() => onOpenSection('property-intelligence')}>Open Market Intelligence →</button></div>
         {marketTiles.length > 0
           ? <div class="awv2-market-tiles">{marketTiles.slice(0, 5).map((tile) => <div data-kind={tile.kind}><span>{tile.label}</span><b>{tile.value}</b><i /></div>)}</div>
           : <div class="awv2-market-empty"><span>No retained market pulse</span><b>Price from subject evidence</b><small>Market context remains compact until a supported record exists.</small></div>}
+        {/* The acreage-band read, which is the part of Market Research that
+            actually bears on this parcel. Four headline numbers alone say
+            nothing about whether the subject's own band is the liquid one; the
+            comparison against the county and the fastest-selling band is the
+            read an operator uses, and it was retained but never shown here. */}
+        {marketBandRows.length > 0 && (
+          <div class="awv2-market-bands">
+            <table>
+              <thead>
+                <tr><th>Acreage band</th><th>Median $/ac</th><th>Median DOM</th><th>Sell-through</th><th>Months supply</th><th>Sold</th></tr>
+              </thead>
+              <tbody>
+                {marketBandRows.map((row) => (
+                  <tr data-subject={row.isSubject ? 'true' : 'false'}>
+                    <td>{row.label}{row.isSubject ? <em> subject band</em> : null}</td>
+                    <td>{row.pricePerAcre}</td>
+                    <td>{row.dom}</td>
+                    <td>{row.sellThrough}</td>
+                    <td>{row.monthsSupply}</td>
+                    <td>{row.sold}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {marketBandNote && <p class="awv2-market-band-note">{marketBandNote}</p>}
+          </div>
+        )}
+        {marketReadHeadline && <p class="awv2-market-band-note">{marketReadHeadline}</p>}
         {narrative?.overviewMarketLine && <details class="awv2-market-detail"><summary>Market interpretation</summary><p>{narrative.overviewMarketLine}</p></details>}
         {/* The 20-mile data-center screen. Either the nearby project(s) with
             status, distance and source, or an explicit "none found" — never a
@@ -492,11 +768,18 @@ export function OverviewSection({
         {dataCenters && (
           <details class="awv2-market-detail">
             <summary>
-              {`Data centers within ${dataCenters.searchedWithinMiles ?? 20} miles — `}
-              {dataCenterHits.length
-                ? `${dataCenterHits.length} found`
-                : dataCenters.status === 'none_found' ? 'none found'
-                  : (dataCenters.status ?? 'not run').replace(/_/g, ' ')}
+              {/* Only a screen that actually measured the radius may claim a
+                  distance. County-scoped search signals whose locations were
+                  never established are real findings, but they are not "within
+                  20 miles", and saying so states a proximity nothing measured. */}
+              {dataCenterRadiusMeasured
+                ? `Data centers within ${dataCenters.searchedWithinMiles ?? 20} miles — ${dataCenterMeasuredHits.length} measured${
+                  dataCenterHits.length > dataCenterMeasuredHits.length
+                    ? ` · ${dataCenterHits.length - dataCenterMeasuredHits.length} further county signal(s), distance not established`
+                    : ''}`
+                : dataCenterHits.length
+                  ? `Data-center activity reported in the county — ${dataCenterHits.length} signal(s), distance from the subject not measured`
+                  : `Data-center screen — ${(dataCenters.status ?? 'not run').replace(/_/g, ' ')}`}
             </summary>
             <p>{dataCenters.verdict || dataCenters.summary || 'No data-center result was retained for this subject.'}</p>
             {dataCenterHits.length > 0 && (

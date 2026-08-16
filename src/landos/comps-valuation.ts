@@ -393,6 +393,32 @@ export interface CompsValuationView {
 }
 
 /**
+ * The subject parcel's own centroid, as the retained parcel record publishes
+ * it. ENRICHMENT ONLY: it places the subject on a map and makes distances
+ * measurable. It never verifies parcel identity, and no comparison against it
+ * may establish which parcel a card is about.
+ */
+export function retainedParcelCentroid(
+  inspection: { parcelFacts?: Record<string, string> } | null | undefined,
+): { lat: number; lng: number } | null {
+  const facts = inspection?.parcelFacts ?? {};
+  const read = (...labels: string[]): number | null => {
+    for (const label of labels) {
+      const raw = facts[label];
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      const value = Number(raw.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/)?.[0] ?? Number.NaN);
+      if (Number.isFinite(value)) return value;
+    }
+    return null;
+  };
+  const lat = read('Centroid Latitude', 'Latitude', 'Situs Latitude');
+  const lng = read('Centroid Longitude', 'Longitude', 'Situs Longitude');
+  if (lat == null || lng == null) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180 || (lat === 0 && lng === 0)) return null;
+  return { lat, lng };
+}
+
+/**
  * Read the subject's improvement status from the retained LandPortal inspection.
  * Never guesses: with no retained parcel facts or observations the subject is
  * reported as land, because that is the state the evidence supports.
@@ -2223,11 +2249,23 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const subjectAddress = subjectCard ? String(subjectCard.active_input_address ?? '') || null : null;
   const subjectCity = subjectCard ? String(subjectCard.city ?? '') || null : null;
   const subjectState = subjectCard ? String(subjectCard.state ?? '') || null : null;
+  const inspection = propertyCardId != null ? loadPropertyInspection(propertyCardId) : null;
   let subjectPoint: { lat: number; lng: number } | null = null;
   let subjectLocationSource: string | null = null;
+  const retainedCentroid = retainedParcelCentroid(inspection);
   if (subjectCard && typeof subjectCard.lat === 'number' && typeof subjectCard.lng === 'number') {
     subjectPoint = { lat: subjectCard.lat, lng: subjectCard.lng };
     subjectLocationSource = 'Retained subject property-card coordinates';
+  } else if (retainedCentroid) {
+    // The parcel record publishes this parcel's OWN centroid, and it is already
+    // retained. Skipping it and going straight to an address geocode left the
+    // subject with no point at all whenever the address is a map-and-parcel
+    // label rather than a street address — and with no subject point, every
+    // comparable reads "location unresolved", no distance is measurable, no
+    // radius band applies, and nothing can be placed on the map. A centroid is
+    // enrichment only: it places the subject, and never verifies its identity.
+    subjectPoint = retainedCentroid;
+    subjectLocationSource = 'Retained LandPortal parcel centroid (enrichment only; never an identity verification)';
   } else if (subjectAddress) {
     const cached = locations.get(subjectFullAddress(subjectAddress, subjectCity, subjectState));
     if (cached) {
@@ -2247,7 +2285,6 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     locationSource: subjectLocationSource,
   };
 
-  const inspection = propertyCardId != null ? loadPropertyInspection(propertyCardId) : null;
   let subjectImprovement = readSubjectImprovement(inspection);
   const retainedInspection = inspection ? currentComparables(inspection) : [];
   const ctx: ClassifyContext = {
@@ -2281,7 +2318,53 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     }
   }
 
-  const canonical = dedupeWorkspaceComps([...persisted, ...evidenceComps]);
+  // ── Retained LandPortal comparables, read at their own surface ────────────
+  //
+  // The registry only ever receives the rows the Hermes handback carries — the
+  // parcel sidebar set. The "Show on Map" expansion is captured into the SAME
+  // retained inspection record, minutes later and by a different writer, so
+  // rows that only that surface published reached no lane, no registry row and
+  // no operator surface: the capture was paid for and thrown away. The retained
+  // inspection IS the canonical LandPortal comparable set, so it is read here
+  // directly. Reading it also restores the surface provenance the registry
+  // write drops, which is why the sidebar / Show-on-Map counts read zero while
+  // both surfaces had in fact been reached.
+  const inspectionComps: WorkspaceComp[] = [];
+  for (const row of retainedInspection) {
+    const surface = typeof row.surface === 'string' ? row.surface.toLowerCase() : 'sidebar';
+    const fromSidebar = surface === 'sidebar' || surface === 'both';
+    const fromShowOnMap = surface === 'map' || surface === 'both';
+    const url = row.detailUrl ?? row.sourceUrl ?? null;
+    const identity = row.apn ?? row.address ?? url ?? `${row.price ?? ''}|${row.acres ?? ''}`;
+    const classified = classifyEvidenceComp(
+      `landportal-retained:${identity}`,
+      'LandPortal',
+      {
+        status: row.status ?? undefined,
+        price: row.price ?? undefined,
+        acres: row.acres ?? undefined,
+        pricePerAcre: row.pricePerAcre ?? undefined,
+        apn: row.apn ?? undefined,
+        address: row.address ?? undefined,
+        saleDate: row.saleDate ?? undefined,
+        url: url ?? undefined,
+      } as EvidenceCompValue,
+      url,
+      ctx,
+    );
+    classified.fromLandPortalSidebar = fromSidebar;
+    classified.fromLandPortalShowOnMap = fromShowOnMap;
+    // Which surface published it is provenance the operator needs when the row
+    // carries less than the sidebar rows do (a map-only row often states no
+    // address and no sale date). Stating the surface is what makes the thinner
+    // record legible instead of looking like a failed read.
+    classified.classificationReason = `${classified.classificationReason} Published by the LandPortal ${
+      fromSidebar && fromShowOnMap ? 'parcel sidebar and the "Show on Map" expansion' : fromShowOnMap ? '"Show on Map" expansion only' : 'parcel sidebar'
+    }.`;
+    inspectionComps.push(classified);
+  }
+
+  const canonical = dedupeWorkspaceComps([...persisted, ...inspectionComps, ...evidenceComps]);
   const comps = canonical.comps;
 
   // ── Acreage band + sale-recency window ────────────────────────────────────
@@ -2440,9 +2523,12 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     subjectImprovement.improved ? 'land_basis' : 'whole_property_basis',
   );
 
-  const sidebarCount = persisted.filter((c) => c.fromLandPortalSidebar).length;
-  const showOnMapCount = persisted.filter((c) => c.fromLandPortalShowOnMap).length;
-  const mergedUniqueCount = persisted.filter((c) => c.fromLandPortalSidebar || c.fromLandPortalShowOnMap).length;
+  // Counted on the DEDUPLICATED set, and on the surface provenance the retained
+  // capture states. Counting the registry rows alone reported zero for both
+  // surfaces, because the registry write is the step that drops the surface.
+  const sidebarCount = comps.filter((c) => c.fromLandPortalSidebar).length;
+  const showOnMapCount = comps.filter((c) => c.fromLandPortalShowOnMap).length;
+  const mergedUniqueCount = comps.filter((c) => c.fromLandPortalSidebar || c.fromLandPortalShowOnMap).length;
 
   // LandPortal's own subject estimate, reproduced verbatim. Read from the same
   // retained parcel facts every other LandPortal read uses, so it needs no
@@ -2625,9 +2711,25 @@ export async function resolveCompsValuationLocations(
   let subjectResolved = false;
   let subjectSource: string | null = null;
   const subjectAddress = subjectCard ? String(subjectCard.active_input_address ?? '') || null : null;
+  const retainedCentroid = propertyCardId != null
+    ? retainedParcelCentroid(loadPropertyInspection(propertyCardId))
+    : null;
   if (subjectCard && typeof subjectCard.lat === 'number' && typeof subjectCard.lng === 'number') {
     subjectResolved = true;
     subjectSource = 'Retained subject property-card coordinates';
+  } else if (retainedCentroid && propertyCardId != null) {
+    // Promote the parcel record's own centroid onto the card, fill-only. This
+    // is what a later reader, the market lanes and the comparable map all look
+    // for; leaving it only inside the inspection record is why a subject with a
+    // published centroid still had no point anywhere it mattered.
+    db.prepare('UPDATE landos_property_card SET lat = ?, lng = ? WHERE id = ? AND lat IS NULL AND lng IS NULL')
+      .run(retainedCentroid.lat, retainedCentroid.lng, propertyCardId);
+    subjectResolved = true;
+    subjectSource = 'Retained LandPortal parcel centroid (enrichment only; never an identity verification)';
+    landosAudit('landos/comps-valuation', 'subject_location_resolved',
+      `deal ${dealCardId} subject point taken from the retained parcel centroid (enrichment only; identity unchanged)`, {
+        refTable: 'landos_property_card', refId: propertyCardId,
+      });
   } else if (subjectAddress && propertyCardId != null) {
     const full = subjectFullAddress(subjectAddress, String(subjectCard?.city ?? '') || null, String(subjectCard?.state ?? '') || null);
     await geocodeAddressesToCache([full], deps);

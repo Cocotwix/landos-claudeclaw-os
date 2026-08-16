@@ -723,3 +723,151 @@
 @media (prefers-reduced-motion: reduce) {
   .awv2 * { animation: none !important; transition: none !important; }
 }
+
+/* ── Exit strategy ────────────────────────────────────────────────────────
+   The strategy lane runs on every research pass and assesses each exit. Its
+   output had no surface at all, so a delivered lane read as an empty one. It
+   spans the full width because a blocked exit still carries the operator's
+   next move, and that is decision content, not a footnote. */
+.awv2-overview-strategy {
+  grid-column: 1 / -1;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-action) 34%, var(--awv2-line));
+  border-top: 2px solid var(--awv2-dom-action);
+  border-radius: var(--awv2-radius-card);
+  background:
+    radial-gradient(120% 90% at 12% 0%, var(--awv2-dom-action-soft), transparent 55%),
+    var(--awv2-panel);
+}
+.awv2-overview-strategy .awv2-dom-eyebrow[data-dom="strategy"] { color: var(--awv2-dom-action); }
+.awv2-strategy-posture {
+  align-self: center;
+  padding: 5px 11px;
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-action) 45%, var(--awv2-line));
+  border-radius: 999px;
+  color: var(--awv2-dom-action);
+  font: 9.5px var(--awv2-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.awv2-strategy-why { margin: 6px 0 0; max-width: 96ch; color: var(--awv2-bone-dim); line-height: 1.55; }
+.awv2-strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.awv2-strategy-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 13px;
+  border: 1px solid var(--awv2-line);
+  border-left: 3px solid var(--awv2-bone-faint);
+  border-radius: var(--awv2-radius-tight);
+  background: rgba(255, 255, 255, .02);
+}
+.awv2-strategy-card[data-applicability="viable"] { border-left-color: var(--awv2-dom-valuation); }
+.awv2-strategy-card[data-applicability="conditional"] { border-left-color: var(--awv2-dom-risk); }
+.awv2-strategy-card[data-applicability="blocked"] { border-left-color: color-mix(in srgb, var(--awv2-dom-risk) 55%, var(--awv2-bone-faint)); }
+.awv2-strategy-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.awv2-strategy-card header b { color: var(--awv2-bone); font-size: 12.5px; }
+.awv2-strategy-card header em {
+  color: var(--awv2-bone-faint);
+  font: 8.5px var(--awv2-mono);
+  font-style: normal;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.awv2-strategy-card[data-applicability="viable"] header em { color: var(--awv2-dom-valuation); }
+.awv2-strategy-card[data-applicability="blocked"] header em { color: var(--awv2-dom-risk); }
+.awv2-strategy-card .path { margin: 0; color: var(--awv2-bone-dim); font-size: 11px; line-height: 1.5; }
+.awv2-strategy-card ul { margin: 0; padding-left: 15px; color: var(--awv2-bone-dim); font-size: 10.5px; line-height: 1.5; }
+.awv2-strategy-card ul.supports li::marker { color: var(--awv2-dom-valuation); }
+.awv2-strategy-card ul.blocks li::marker { color: var(--awv2-dom-risk); }
+.awv2-strategy-card dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 9px; margin: 2px 0 0; }
+.awv2-strategy-card dt {
+  color: var(--awv2-bone-faint);
+  font: 8px var(--awv2-mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.awv2-strategy-card dd { margin: 0; color: var(--awv2-bone-dim); font-size: 10px; line-height: 1.45; }
+.awv2-strategy-unlock { margin-top: 14px; }
+.awv2-strategy-unlock h3 {
+  margin: 0 0 5px;
+  color: var(--awv2-bone-faint);
+  font: 9px var(--awv2-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.awv2-strategy-unlock ul { margin: 0; padding-left: 16px; color: var(--awv2-bone-dim); font-size: 11px; line-height: 1.55; }
+
+/* ── Public record + planning history ─────────────────────────────────────
+   Assessment, market value, annual tax, improvements and the retained
+   planning record. All of it was already retained; none of it had a surface
+   on the page the operator actually decides from. */
+.awv2-overview-record {
+  grid-column: 1 / -1;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-property) 30%, var(--awv2-line));
+  border-top: 2px solid var(--awv2-dom-property);
+  border-radius: var(--awv2-radius-card);
+  background:
+    radial-gradient(120% 90% at 12% 0%, var(--awv2-dom-property-soft), transparent 55%),
+    var(--awv2-panel);
+}
+.awv2-record-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.awv2-record-tiles > div {
+  padding: 11px 12px;
+  border: 1px solid var(--awv2-line);
+  border-radius: var(--awv2-radius-tight);
+  background: rgba(255, 255, 255, .022);
+}
+.awv2-record-tiles span {
+  display: block;
+  color: var(--awv2-bone-faint);
+  font: 8px var(--awv2-mono);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.awv2-record-tiles b { display: block; margin-top: 4px; color: var(--awv2-bone); font-size: 14px; }
+.awv2-record-tiles i { display: block; margin-top: 3px; color: var(--awv2-bone-faint); font-size: 9.5px; font-style: normal; }
+.awv2-record-note { margin: 10px 0 0; max-width: 96ch; color: var(--awv2-bone-dim); font-size: 11px; line-height: 1.55; }
+.awv2-record-backstory { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--awv2-line); }
+.awv2-record-backstory h3 {
+  margin: 0 0 6px;
+  color: var(--awv2-bone-faint);
+  font: 9px var(--awv2-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.awv2-record-backstory p { margin: 0; max-width: 96ch; color: var(--awv2-bone-dim); line-height: 1.6; }
+.awv2-record-backstory ul { margin: 9px 0 0; padding-left: 16px; color: var(--awv2-bone-dim); font-size: 11px; line-height: 1.6; }
+.awv2-overview-terrain-hold { margin: 8px 0 0; color: var(--awv2-dom-risk); font-size: 10px; line-height: 1.5; }
+
+/* Acreage-band market read. The comparison IS the read: four numbers with
+   nothing to compare them against say nothing about this parcel's market. */
+.awv2-market-bands { margin-top: 12px; overflow-x: auto; }
+.awv2-market-bands table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+.awv2-market-bands th {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--awv2-line);
+  color: var(--awv2-bone-faint);
+  font: 8px var(--awv2-mono);
+  font-weight: 400;
+  letter-spacing: .08em;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.awv2-market-bands td { padding: 7px 8px; border-bottom: 1px solid rgba(255,255,255,.045); color: var(--awv2-bone-dim); white-space: nowrap; }
+.awv2-market-bands tr[data-subject="true"] td { color: var(--awv2-bone); background: var(--awv2-dom-market-soft); }
+.awv2-market-bands tr[data-subject="true"] td:first-child { box-shadow: inset 2px 0 0 var(--awv2-dom-market); }
+.awv2-market-bands em { color: var(--awv2-dom-market); font: 8px var(--awv2-mono); font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
+.awv2-market-band-note { margin: 8px 0 0; max-width: 96ch; color: var(--awv2-bone-dim); font-size: 10.5px; line-height: 1.55; }

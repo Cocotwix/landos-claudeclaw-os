@@ -407,6 +407,9 @@ import { addComp, enrichCompCoordinates, listComps, recommendCompSources, evalua
 import { buildCompsValuationView, setCompValuationSelection, resolveCompsValuationLocations, type CompSelectionAction } from './comps-valuation.js';
 import { enrichRetainedCompListings } from './comp-listing-enrichment.js';
 import { buildOfficialParcelGisView } from './official-parcel-gis-view.js';
+import {
+  TAX_STATUS_FIELDS, buildTaxStatusRead, taxAuthorityFor, taxStatusAttemptsFromSources,
+} from './tax-status-research.js';
 import { runOfficialParcelGis } from './official-parcel-gis-run.js';
 import { buildLandUseView, buildRetainedLandUseIntelligenceView } from './land-use-view.js';
 import { landPortalSetLabel } from './landportal-api.js';
@@ -7505,7 +7508,11 @@ export function registerLandosRoutes(app: Hono): void {
     // A screen taken from the ZIP centroid is also stale the moment the subject
     // has real coordinates — the radius must be measured from the parcel.
     const cachedRoutes = cached?.payload.dataCenterWatch?.routesAttempted ?? [];
-    const cachedScreenedRadius = cachedRoutes.some((route) => route.startsWith('brockovich'));
+    // A brockovich route that reports `not_run` did NOT screen the radius.
+    // Counting it as one kept a cached "no point to measure from" answer fresh
+    // for a week — including after the subject's own coordinates arrived, which
+    // is the exact condition that would let the screen finally run.
+    const cachedScreenedRadius = cachedRoutes.some((route) => route.startsWith('brockovich') && !/\bnot_run\b/i.test(route));
     const cachedFromZipCentroid = cachedRoutes.some((route) => route.includes('subject zip centroid'));
     const cacheFresh = !options.force
       && cacheAnswered
@@ -9160,7 +9167,13 @@ export function registerLandosRoutes(app: Hono): void {
       // Official parcel & GIS evidence: which government platform answered,
       // what it said about this parcel, and what stayed unresolved. Read-time
       // projection over the retained retrieval; SELECT-only.
-      officialParcelGis: buildOfficialParcelGisView(dealCardId),
+      officialParcelGis: buildOfficialParcelGisView(dealCardId, (() => {
+        // The official-records specialist reports its own attempt narrative. A
+        // lane that ran and matched nothing must not be shown as never run.
+        const specialist = (snapshot?.specialists ?? []).find((row) => row.id === 'government_records');
+        if (!specialist || specialist.status === 'queued' || specialist.status === 'running') return null;
+        return { ran: true, detail: specialist.summary ?? null };
+      })()),
       // Land use, zoning and by-right subdivision: the legal determination
       // built on top of the parcel evidence. Read-time projection over the
       // retained determination; SELECT-only.
@@ -9169,6 +9182,38 @@ export function registerLandosRoutes(app: Hono): void {
       // land_use_determination row, so this is the only way their confirmed
       // authority, backstory and subdivision rules reach the panel.
       landUseIntelligence: buildRetainedLandUseIntelligenceView(dealCardId),
+      // Property-tax payment status. Read-time projection over the labeled tax
+      // fields the run retained plus the payment-status sources it actually
+      // attempted. It never infers a standing, and when nothing resolved it
+      // names the collecting office and the blocker instead of reporting the
+      // question as unscreened.
+      taxStatus: (() => {
+        const inspection = linkCardId != null ? loadPropertyInspection(linkCardId) : null;
+        const parcelFacts = inspection?.parcelFacts ?? {};
+        const subjectCard = linkCardId != null ? getPropertyCard(linkCardId) : null;
+        const authority = taxAuthorityFor({
+          county: (subjectCard as Record<string, unknown> | null)?.county as string | undefined
+            ?? str(parcelFacts['Parcel Address County']),
+          state: (subjectCard as Record<string, unknown> | null)?.state as string | undefined
+            ?? str(parcelFacts['Parcel Address State']),
+        });
+        // Labeled public fields only. The retained EVIDENCE rows carry the
+        // county lane's own labels; the parcel fact map carries the provider's.
+        const fields: Record<string, string | number | null | undefined> = {};
+        for (const label of TAX_STATUS_FIELDS) {
+          fields[label] = parcelFacts[label]
+            ?? (inspection?.evidence ?? []).find((item) => item.label === label && item.status === 'verified')?.detail;
+        }
+        const answering = (inspection?.evidence ?? []).find((item) =>
+          TAX_STATUS_FIELDS.includes(item.label as typeof TAX_STATUS_FIELDS[number]) && item.status === 'verified');
+        return buildTaxStatusRead({
+          fields,
+          attempts: taxStatusAttemptsFromSources(inspection?.sources ?? []),
+          sourceLabel: answering?.source ?? null,
+          sourceUrl: answering?.url ?? null,
+          authority,
+        });
+      })(),
     };
   };
 

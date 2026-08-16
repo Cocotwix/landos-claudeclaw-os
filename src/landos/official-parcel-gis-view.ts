@@ -271,9 +271,34 @@ export function toOfficialParcelGisView(
  * The panel's data for one deal. SELECT-only and scoped by deal id, so no other
  * property's evidence can reach this surface.
  */
-export function buildOfficialParcelGisView(dealCardId: number): OfficialParcelGisView {
+export function buildOfficialParcelGisView(
+  dealCardId: number,
+  /**
+   * What the official-records lane actually reported on the latest run, when it
+   * ran without producing a parcel record. A lane that queried the state parcel
+   * layer under five APN patterns and a street search, and matched none of
+   * them, HAS BEEN RESEARCHED — reporting it as "not researched" hides real
+   * work, tells the operator the wrong next action, and invites a rerun that
+   * will fail the same way. The distinction is the same one the comparable
+   * lanes already draw between "not run" and "ran, no results".
+   */
+  attempt?: { ran: boolean; detail: string | null } | null,
+): OfficialParcelGisView {
   const record = getOfficialParcelGis(dealCardId);
-  if (!record) return emptyOfficialParcelGisView();
+  if (!record) {
+    const view = emptyOfficialParcelGisView();
+    if (!attempt?.ran) return view;
+    return {
+      ...view,
+      resolution: 'not_resolved',
+      statusHeadline: OFFICIAL_PARCEL_SOURCE_UNRESOLVED,
+      statusDetail: attempt.detail
+        ? `The official county parcel lane ran and matched no parcel. ${attempt.detail}`
+        : 'The official county parcel lane ran and matched no parcel for this property.',
+      provider: 'Official county sources — searched, no match',
+      parcelMatchLabel: 'Searched, no match',
+    };
+  }
   // Access is shared platform knowledge, looked up by the answering HOST. The
   // deal id never reaches the access tables, so one property's research can
   // never surface another's account state.

@@ -31,6 +31,7 @@ import {
   type BrowserWorkflowScope,
 } from './browser-session.js';
 import { analyseDealIntelligence } from './deal-intelligence-analysis.js';
+import { resolveCompsValuationLocations } from './comps-valuation.js';
 import { assembleDealIntelligencePackage, mapChildStatus } from './deal-intelligence-assembly.js';
 import { buildDealOperatorAnalysis, emptyDealOperatorContext } from './deal-operator-analysis.js';
 import {
@@ -54,6 +55,13 @@ import { reconcileSubjectIdentity } from './subject-identity-reconciliation.js';
 import { reconcilePropertyIntelligenceSnapshot, type PropertyIntelligenceSnapshot, type SnapshotSpecialistRecord } from './property-intelligence-snapshot.js';
 import type { SpecialistId } from './property-intelligence-specialists.js';
 import type { MissionProviderDeps } from './mission-provider-routing.js';
+
+/**
+ * Bound on the post-run comparable-location pass. Long enough for the free
+ * geocoders to place a run's comparables, short enough that it can never hold a
+ * completed run open; an overrun leaves the pass to finish on its own.
+ */
+const COMP_LOCATION_RESOLUTION_MS = 30_000;
 
 export interface BrowserCleanupResult {
   before: number;
@@ -620,6 +628,24 @@ async function finishDealIntelligenceRun(input: {
       error: reconciliation.reason ?? missionError ?? (missionFailed ? effectiveJoin.outcome : null),
       failureCategory: unusable ? (missionError ? 'crash' : 'invalid_output') : null,
     });
+    // ── Place the comparables the run just collected ─────────────────────────
+    //
+    // Resolving comparable locations was an operator-triggered endpoint and
+    // nothing else called it, so a research run finished with its comparables
+    // collected but unplaceable: no distance, no radius band, nothing on the
+    // map. That is not a missing lane the operator can act on — it reads as a
+    // run that found nothing. It is bounded, fill-only, uses free verified
+    // geocoders, and never blocks or fails the run.
+    if (!unusable) {
+      try {
+        await Promise.race([
+          resolveCompsValuationLocations(dealCardId),
+          new Promise((settle) => { setTimeout(settle, COMP_LOCATION_RESOLUTION_MS); }),
+        ]);
+      } catch (error) {
+        logger.warn({ err: error, dealCardId, runId }, 'comp_location_resolution_failed');
+      }
+    }
     return snapshot;
   } catch (error) {
     const failure = classifyFailure(error);

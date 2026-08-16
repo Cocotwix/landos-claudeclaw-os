@@ -1,64 +1,56 @@
 # Current Active Task
-None. The integration cleanup pass is complete, verified live on Deal Card 89, committed and pushed to `main` at `672a267`. Await Tyler's direction.
+None. The completeness repair and the tax-status wiring are built, rerun on Deal 89, verified live, and committed in the commit carrying this checkpoint. Await Tyler's direction.
 
 # Exact Operator Outcome
-Rerunning `Map 042 Parcel 123, Fairview, Tennessee` gives one clean canonical property: the pipeline row and Deal Card name the parcel instead of "Unresolved parcel, Fairview, TN"; the list shows the ten documents Fairview publishes, not thirteen with three duplicates; `Section 6 - 108` is no longer printed `§ Section 6 - 108`; and retained document intelligence a run already paid for reaches the lanes that read it. Three consecutive reruns gave the identical read.
+Deal 89 carries the intelligence its runs already paid for: terrain 18.65% slope / 30.52% buildable (15.49 ac) instead of a review sentence; 21 unique comps from all four lanes, 14 placed, sidebar and Show-on-Map counted separately (3 + 6 -> 6); assessment, tax, improvements, LP Estimate, the Kingwood 119-lot backstory, five exit strategies, the acreage-band read and a data center at 11.6 mi on the Overview; and a government-record lane that reaches the Official Tax Office and states payment status or the exact office and blocker.
 
 # Current State
 
-<!-- DERIVED:START -->
-- **Generated:** 2026-08-16T17:06:00.000Z
-- **HEAD at generation:** `672a267`
-- **Worktree:** DIRTY; 10 modified/untracked paths at refresh. Preserve unrelated changes.
-- **Latest tests:** PASS at 2026-08-16T16:50:00Z; 569 focused across 28 suites, 21 new. No full-suite run, by instruction.
-- **Latest typecheck:** PASS at 2026-08-16T16:49:00Z; tsc --noEmit zero errors.
-- **Latest production build:** PASS at 2026-08-16T16:48:00Z; vite and tsc clean; dist rebuilt and the runtime restarted onto it.
-- **Managed runtime:** RUNNING and healthy on port 3141, HTTP 200; PID 62020; http://localhost:3141.
-- **Prior tracked sprint:** sprint-2026-08-04-pi-workflow-finish (complete); not the Current Active Task.
-- **Sprint ledger:** .landos/sprints/sprint-2026-08-04-pi-workflow-finish/ledger.json; frozen capabilities 3.
-<!-- DERIVED:END -->
+- **Generated:** 2026-08-16T19:40Z. **HEAD at generation:** `822ce15`, the commit this was built on.
+- **Worktree:** DIRTY. Only the pairing files and untracked paths below stay dirty after this commit.
+- **Tests:** 106 pass across the tax-status seams; earlier sweep 5755 pass / 4 fail across 420 suites, all 4 proven pre-existing by stashing this sprint's files. **Typecheck** PASS. **Build** PASS.
+- **Runtime:** healthy on 3141, HTTP 200. **Deal 89:** snapshot sequence 12, complete.
 
 # Completed and Proven
-Four defects, four shared roots, proven live on Deal Card 89.
+Six shared roots. Each was intelligence already collected, then lost before the operator.
 
-**1. A document is one document however a site spells its address.** Everything asked "have I got this URL", so Fairview serving its regulations at both `/content/` and `/wp-content/` gave two of each: extra fetches, duplicate rows, thirteen documents where ten are published. `document-url-identity.ts` is the single answer — scheme and `www.` dropped, `/wp-content/` read as `/content/`, path case and query kept. Used by the within-run merge, the series walk, the retained set, the carried-rule lookup, the store's read and write, and the backstory already-mined check. Where both spellings arrive the lower-sorting address wins, so the link never depends on search order. Live: 10 documents, 27 rules, `learned=10 offered=10`.
+**1. Quarantine withholds a number from decisions; it never deletes it.** The terrain review overwrote every Slope*/Buildability* VALUE with its own sentence. The decision slot is now emptied, the observation kept under `<field> (provider observation)`, which no decision reader looks up, and the reason under `Terrain Quarantine Reason`, exposed as `terrainQuarantine`.
 
-**2. A citation prints its marker once.** Six surfaces each prefixed `§ ` to a verbatim citation. `sectionCitationLabel` in `web/src/lib/format.ts` adds it only when the citation carries no marker of its own. Live: `§ 2 - 101.201`, `Section 6 - 108`.
+**2. Buildable area reconciles against ANY published acreage basis.** The check used ASSESSED acreage only; LandPortal runs its model over its own `Calc Acres` (15.49/50.69 = 30.56% vs a stated 30.52%). Correct terrain was quarantined and destroyed on every parcel whose acreages differ. `acreageBasesFor` offers all four bases.
 
-**3. An identity names its card.** The title was rebuilt only by the manual owner-reconciliation route, so a resolved parcel kept its intake label everywhere else. `nameCardFromCanonicalIdentity` in `canonical-identity.ts` runs wherever an identity is established or reconciled. A NAME IS NOT A VERIFICATION CLAIM: a research-grade CANDIDATE names its card too, because "Unresolved parcel" is untrue of a parcel resolved to an APN, while how strongly it is held stays in the identity panel. Disputed, rejected, archived and unresolved name nothing, and it writes only over a LandOS stand-in label.
+**3. A comparable generation is PER SURFACE, and is read at that surface.** Sidebar and Show-on-Map are written minutes apart by different writers; one global capture stamp let the last writer delete the other's rows from every read (89 captured 6, served 3). Each surface now keeps its own newest generation, a completed capture pins only its own surfaces, a ZERO-result capture still supersedes everything. The Hermes handback is the only writer reaching `landos_comp` and it drops `surface`, so the projection reads the retained comparables directly, with provenance.
 
-**4. Document mining lands before the lanes that read it.** The resolver mined already-downloaded PDFs fire-and-forget and nothing awaited it, while the parcel-identity handback releases the backstory, land-use and subdivision lanes — each of which opens by asking the document store what LandOS holds. On a fresh card the two raced, so one first run could give two different cards. The handback now waits, bounded at 15s (`DOCUMENT_ENRICHMENT_HANDOFF_MS`). Zero overruns logged.
+**4. The retained centroid and ZIP reach the card, and a run places its own comparables.** Card 79 held `zip = ''` and null coordinates while the parcel record held both, so 18 of 21 comparables were unplaceable, no radius band applied, and the ZIP and data-center reads had no point to work from. `savePropertyInspection` promotes both, fill-only; the projection reads the centroid before any geocode. ENRICHMENT ONLY — invariants 2-4 unchanged. Location resolution, previously operator-only, now runs after a usable join.
 
-The subdivision read that had degraded to "Likely path: not established" on the 14:36 run — the run that also wrote the duplicate `/wp-content/` rows — is restored and identical on all three reruns: `major_subdivision`, review body `Fairview planning commission (1 - 107.102)`, 119 lots against the 2-lot threshold.
+**5. Panels read the canonical record, and a lane that ran says so.** Property & diligence read only the snapshot's `lp_sidebar_*` subset (2 keys on a real card), not the `landPortalFacts` sheet the API already projected, so seven retained parcel fields read "Not supplied". The sheet answers first; `Structure Year Built` is read; under-10% slope comes from the bins. New Overview sections: Public record, Exit strategy, acreage-band table. `officialParcelGis` reports "searched, no match" with its attempts.
+
+**6. The office that COLLECTS the tax is scheduled, funded, and reported.** An assessor levies; the trustee / treasurer / tax collector takes payment and alone publishes standing. The extraction existed and never ran: deep-record mode re-resolved `recorder` and `planning` when the cached county map lacked them but never `tax`, and LandPortal consumed the whole 120s budget, so the county lane logged "queued for the next run" every run. `tax` is now a required department and 45s is reserved for that lane, capped at a third of the budget, only when it will run. `tax-status-research.ts` names the office by state, carries ONE `deriveTaxStanding` rule shared with the browser extraction, and reports standing, amount owed, unpaid years, penalties and tax-sale status — or the sources attempted and the blocker, separating "reached and published nothing" from "never reached". Standing is never inferred. Live: Official Assessor and Official Tax Office both reached.
 
 # Remaining Work
-1. Three stale `/wp-content/` rows remain in `landos_regulation_document` from the 14:36 run. Invisible: the read collapses them and prefers the address that carried the rules. Deleting needs approval and buys nothing.
-2. Cards resolved before this pass keep an intake label until something re-runs on them. Deal 89 is fixed; no broader backfill was built.
-3. Fairview publishes no queryable zoning layer, so current zoning stays UNRESOLVED. Correct, not a defect.
-4. No lane establishes road frontage officially, so the frontage ceiling stays UNKNOWN.
-
-Not defects, do not re-chase. `§ 4.102.1201` is verbatim: adopted Article 4 prints that heading, dot and all, verified against the PDF. Deal 89's canonical identity is `candidate`, not confirmed, because no official county record has confirmed it — invariant 2 working. Vitest writes into `logs/main.log` as `deal1`; pre-existing, so filter by `dealCardId`.
+1. Three failures proven to predate this sprint: `deal-intelligence-run` (child status), `research-status` (expects `incompleteArea.label`, never present), `memory-bootstrap` (at its cap).
+2. Williamson TN publishes no online payment status; the reached tax office exposed no such field. Realtor.com searched 8 verified routes and published no qualifying comp. Neither is a defect.
+3. Three Show-on-Map comparables carry APN, price and acreage but no address or date, so they cannot be geocoded. Shown as asking references, missing fields disclosed. Elevation differs between captures; not chased.
 
 # Exact Next Action
-Await Tyler's direction. Nothing is half-built or blocked. Do not begin another sprint.
+Await Tyler's direction. Do not begin a sprint.
 
 # Relevant Files
-New: `src/landos/document-url-identity.ts` (+ test). Changed, under `src/landos/` unless shown: `subdivision-regulations.ts`, `regulation-document-store.ts`, `post-resolution-capabilities.ts`, `property-backstory-run.ts`, `canonical-identity.ts`, `property-summary-legacy-adapter.ts`, `subject-identity-reconciliation.ts`, `property-intelligence-live.ts`, `web/src/lib/format.ts`, `web/src/components/AcquisitionWorkspaceV2LandUse.tsx`. Tests extended: matching `.test.ts` files.
+New: `tax-status-research.ts` (+test), `comparable-surface-generation.test.ts`. `src/landos/`: `property-inspection.ts` (+test), `landportal-facts.ts` (+test), `property-card.ts`, `comps-valuation.ts`, `deal-intelligence-run.ts`, `official-parcel-gis-view.ts`, `county-records-browser.ts`, `public-property-intelligence-live.ts`, `routes.ts`. `web/src/`: three AcquisitionWorkspaceV2 files, `workspace-v2-lead-design.css`.
 
 # Relevant Records
-Fairview: opportunity 88 / deal card 89 / property card 79, now titled `Map 042 Parcel 123, Fairview, TN`. APN `042-123.00-000` (county form `042 123.00`), FIPS `47187`, Williamson County TN, LANDSOUTH LLC, 75.91 ac, LandPortal id `154591092`. Regulations: `FAIRVIEW-SUBDIVISION-REGULATIONS.pdf` plus Articles 1-9 on `fairview-tn.org`; Article 1 says PROPOSED and is used only where no adopted article states the rule. `/dept/acquisitions/v2?deal=89&section=property-market`.
+Fairview: opportunity 88 / deal card 89 / property card 79, `Map 042 Parcel 123, Fairview, TN`. APN `042-123.00-000`, FIPS `47187`, Williamson TN, LANDSOUTH LLC, 75.91 ac, LP id `154591092`, ZIP 37062. `/dept/acquisitions/v2?deal=89`.
 
 # Known Blockers
-None. No approval gate pending, no external blocker open.
+None
 
 # Do Not Inspect or Modify
-`src/dashboard.ts`, `src/dashboard.contract.test.ts` and `web/src/pages/BrowserConnect.tsx` are pre-existing uncommitted BROWSER-PAIRING work, deliberately left dirty. They survived this sprint untouched and unstaged and must keep surviving: never stage, revert, clean or "tidy" them. Same for untracked `.landos/tasks/`, `.omp/`, `scripts/omp/`, `scripts/landos/comp-lane-probe.mjs`, `scripts/landportal/capture-comp-locations.mjs`. Leave `.env`, secrets, the operator's Chrome and live Codex processes alone.
+`src/dashboard.ts`, `src/dashboard.contract.test.ts`, `web/src/pages/BrowserConnect.tsx` are pre-existing uncommitted BROWSER-PAIRING work, deliberately dirty. Never stage, revert, clean or tidy them. Same for untracked `.landos/tasks/`, `.omp/`, `scripts/omp/`, `scripts/landos/comp-lane-probe.mjs`, `scripts/landportal/capture-comp-locations.mjs`. Leave `.env`, secrets, the operator's Chrome and live Codex alone.
 
 # Runtime State
-Running and healthy on 3141, rebuilt and restarted onto this change. The one browser tab this session opened was closed. No paid API called. Code pushed at `672a267`; only the pairing files and untracked paths stay dirty.
+Healthy on 3141, restarted onto this change. Tabs closed, probe scripts removed, no paid API called.
 
 # Verification Required
-Re-verify on a change to `documentUrlIdentity` or any call site, to `sectionCitationLabel`, to `nameCardFromCanonicalIdentity` or its seams, or to the enrichment handoff wait — and, unchanged, to the shared section parser, the lot-area vocabulary, the delegation rule, the series walk, the retained set or the merge order. Rerun the suites named in Relevant Files plus `ordinance-text`, `land-use-source-racing`, `land-use`, `landos`, `jurisdiction-and-pdf-identity`, then rerun Deal 89 and read the pipeline row and Subdivision rules & feasibility.
+Re-verify on a change to the terrain quarantine, `acreageBasesFor`, `currentComparables`, the retained-comparable read or surface counters, `retainedParcelCentroid` / `promoteRetainedParcelEnrichment`, the post-run location pass, the `landPortalFacts` prop, `deriveTaxStanding`, `requiredDepartmentTypes`, or the official-records reserve — and, unchanged, the prior-sprint seams: `documentUrlIdentity`, `sectionCitationLabel`, `nameCardFromCanonicalIdentity`, the enrichment handoff, the section parser, the lot-area vocabulary, the delegation rule, the series walk, the merge order. Rerun the suites in Relevant Files plus `landportal-comp-card-detail`, `property-intelligence-presentation-ui`, `routes`; read Deal 89's three sections.
 
 # Completed and Protected
-Universal Property Resolution, LandPortal subject re-aim, official document intelligence, the 9490 Elk Lake Rd valuation behaviour, the 5170 Hwy 60 identity, and the three-workspace lead UI are unchanged. Property Backstory, controlling land-use authority and the land-use projection still reach the operator. Reproducible regulation retrieval, the delegated-lot-area read, the section a rule is cited to, and now one entry per published document, one marker per citation, and a card named by its identity, are protected. Corollary to invariants 2-4: a title names which property a card is about, never how strongly its identity is held. No sprint ledger: one workstream.
+Unchanged and protected: Universal Property Resolution, LandPortal subject re-aim, official document intelligence, the 9490 Elk Lake Rd valuation, the 5170 Hwy 60 identity, the three-workspace lead UI, Property Backstory, controlling land-use authority, the land-use projection, reproducible regulation retrieval, the delegated-lot-area read, the cited section, one entry per document, one marker per citation, a card named by its identity. Newly protected: a quarantine retains its observation; buildability reconciles against any published basis; a comparable generation is per surface; centroid and ZIP reach the card as enrichment only; a run places its own comparables; panels read the canonical fact sheet; the collecting office is scheduled, funded, reported.

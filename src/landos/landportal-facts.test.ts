@@ -227,3 +227,58 @@ describe('LandPortal intelligence is retained, field by field', () => {
     expect(buildParcelFactSheet(REAL_FIELDS).retention).toEqual(s.retention);
   });
 });
+
+describe('quarantined terrain stays reportable intelligence', () => {
+  const QUARANTINED: Record<string, string> = {
+    'Parcel ID': '042-123.00-000',
+    Acres: '75.910',
+    'Slope Avg': '',
+    'Buildability total (%)': '',
+    'Buildability area (acres)': '',
+    'Slope Avg (provider observation)': '18.65 %',
+    'Buildability total (%) (provider observation)': '30.52 %',
+    'Buildability area (acres) (provider observation)': '15.49 ac.',
+    'Terrain Quarantine Reason': 'Provider reported average slope 18.65%, buildability 30.52%, buildable area 15.49 acres, but the buildable-area arithmetic does not reconcile to parcel acreage.',
+  };
+
+  it('reports the provider figure and the reason instead of dropping both', () => {
+    const sheet = buildParcelFactSheet(QUARANTINED);
+    expect(sheet.terrain.slopeAvgPct).toBeNull();
+    expect(sheet.buildability.pct).toBeNull();
+    expect(sheet.terrainQuarantine).not.toBeNull();
+    expect(sheet.terrainQuarantine!.slopeAvgPct).toBe('18.65%');
+    expect(sheet.terrainQuarantine!.buildabilityPct).toBe('30.52%');
+    expect(sheet.terrainQuarantine!.buildableAcres).toBe('15.49 ac');
+    expect(sheet.terrainQuarantine!.reason).toMatch(/does not reconcile/);
+  });
+
+  it('does not report a held figure as a field the source never supplied', () => {
+    const sheet = buildParcelFactSheet(QUARANTINED);
+    expect(sheet.retention.retained).toContain('slopeAvg');
+    expect(sheet.retention.retained).toContain('buildabilityPct');
+    expect(sheet.retention.notSupplied).not.toContain('slopeAvg');
+  });
+
+  it('carries no quarantine block when nothing was held back', () => {
+    expect(buildParcelFactSheet({ 'Parcel ID': 'X', 'Slope Avg': '4 %' }).terrainQuarantine).toBeNull();
+  });
+});
+
+describe('fields the panel publishes under its own labels', () => {
+  it('reads Structure Year Built as the year built', () => {
+    expect(buildParcelFactSheet({ 'Structure Year Built': '1968', 'Building SqFt': '1534' }).improvement.yearBuilt).toBe('1968');
+  });
+
+  it('derives land under 10% slope from the published bins', () => {
+    const sheet = buildParcelFactSheet({
+      'Flat Slope (0-.5%)': '0.12 %',
+      'Minimal Slope (.5-5%)': '8.58 %',
+      'Moderate Slope (5-10%)': '17.20 %',
+    });
+    expect(sheet.terrain.slopeUnder10Pct).toBe('25.9%');
+  });
+
+  it('states no combined under-10% figure when a bin is missing', () => {
+    expect(buildParcelFactSheet({ 'Flat Slope (0-.5%)': '0.12 %' }).terrain.slopeUnder10Pct).toBeNull();
+  });
+});

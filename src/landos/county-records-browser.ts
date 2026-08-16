@@ -50,6 +50,7 @@ import {
   pickBestCandidate, planNavigationStrategy, rankSearchMethods,
   type PageObservation, type SearchMethod,
 } from './website-intelligence.js';
+import { deriveTaxStanding, TAX_STANDING_LABEL } from './tax-status-research.js';
 
 /** County workflow targets (the public resources the researcher navigates). */
 export const COUNTY_WORKFLOWS = [
@@ -146,11 +147,6 @@ function ownerSignature(value: string): string {
     .sort().join(' ');
 }
 
-function positiveMoney(value: string): boolean {
-  const amount = Number(value.replace(/[^0-9.-]/g, ''));
-  return Number.isFinite(amount) && amount > 0;
-}
-
 /** Add operator-facing conclusions only when the retained labeled county facts
  * support them. Missing ownership/title evidence remains explicitly unresolved. */
 function finalizeTaxAndImprovementFacts(facts: BrowserFact[], subjectOwner?: string): void {
@@ -163,14 +159,17 @@ function finalizeTaxAndImprovementFacts(facts: BrowserFact[], subjectOwner?: str
   const rawTaxStatus = extracted('taxPaymentStatus') ?? extracted('delinquencyStatus');
   const delinquentAmount = extracted('delinquentAmount');
   if (rawTaxStatus || delinquentAmount) {
-    const value = `${rawTaxStatus?.value ?? ''} ${delinquentAmount?.value ?? ''}`.trim();
     const basis = rawTaxStatus ?? delinquentAmount!;
-    const explicitlyCurrent = /\b(?:current|paid|no\s+(?:delinquen|past[- ]due|unpaid)|not\s+delinquent)\b/i.test(value)
-      || (delinquentAmount != null && !positiveMoney(delinquentAmount.value));
-    const explicitlyDelinquent = /\b(?:delinquent|unpaid|past[- ]due|back\s+tax|tax\s+sale)\b/i.test(value)
-      || (delinquentAmount != null && positiveMoney(delinquentAmount.value));
-    if (explicitlyCurrent) addDerived('taxStanding', 'Property-tax standing', 'Current / no delinquency shown by the public tax record', basis);
-    else if (explicitlyDelinquent) addDerived('taxStanding', 'Property-tax standing', 'Delinquent', basis);
+    // ONE derivation rule, shared with the payment-status projection. Two copies
+    // of "what counts as delinquent" is how a browser read and an operator panel
+    // end up disagreeing about the same parcel.
+    const standing = deriveTaxStanding({
+      paymentStatus: rawTaxStatus?.value ?? null,
+      delinquentAmount: delinquentAmount?.value ?? null,
+    });
+    if (standing !== 'unresolved') {
+      addDerived('taxStanding', 'Property-tax standing', TAX_STANDING_LABEL[standing], basis);
+    }
   }
 
   const structure = extracted('structureType') ?? extracted('improvements');
@@ -1036,8 +1035,14 @@ async function runCountyWorkflow(
   // independently when the cached county map does not contain it.
   // This keeps zoning/subdivision research from disappearing merely because
   // assessor/GIS/recorder/tax were already cached.
+  // TAX IS REQUIRED, NOT OPTIONAL. The assessor levies the tax; the collecting
+  // office (trustee / treasurer / tax collector / revenue commissioner) is the
+  // only one that publishes whether it was PAID. Leaving `tax` out of this list
+  // meant a county whose cached map happened to lack a tax source never had one
+  // resolved, so payment status came back unanswered on every lead in that
+  // county — while recorder and planning were re-resolved without fail.
   const requiredDepartmentTypes: CountySourceType[] = mode === 'deep_record'
-    ? ['recorder', 'planning']
+    ? ['recorder', 'planning', 'tax']
     : targets.includes('planning_zoning') ? ['planning'] : [];
   let enrichedCachedSources = false;
   for (const type of requiredDepartmentTypes) {

@@ -28,7 +28,7 @@ import {
   type SoilDetail, type BrowseruseResp, type StreetViewView, type VisualBuyerAnalysisView,
   type MissingDiligenceView, type AccessPresentationView, type SoilsSepticView,
   type ExactAddressListingsView,
-  type VisualBuyerNarrativeView, type ResearchStatusView,
+  type VisualBuyerNarrativeView, type ResearchStatusView, type ParcelFactSheetView, type TaxStatusView,
 } from '../components/AcquisitionWorkspaceV2PropertyIntelligence';
 import {
   CompsValuationSection, type CompsValuationViewData,
@@ -64,11 +64,9 @@ interface SnapshotView extends OverviewSnapshotView {
   headline?: { keyOpportunity?: string; topRisks?: string[]; confidence?: string; confidenceWhy?: string };
   blockers?: string[];
   nextActions?: string[];
-  recommendation?: {
-    posture?: string; postureWhy?: string; preferredStrategy?: string | null; why?: string;
-    whatWouldChangeIt?: string[]; nextConfirmations?: string[]; dealKillers?: string[];
-  };
-  strategies?: { strategy: string; applicability: string }[];
+  // `strategies` and `recommendation` are declared once, on OverviewSnapshotView,
+  // and inherited here. Redeclaring them narrower is what kept the strategy
+  // lane's assessed exits out of the view model in the first place.
   comps?: {
     sold?: PiCompRow[]; active?: PiCompRow[]; askingReferences?: PiCompRow[]; summaryLine?: string;
     conclusion?: string; landPortalRowsSeen?: number; totalCollected?: number; duplicatesMerged?: number;
@@ -103,8 +101,11 @@ interface IntelResp {
     landUse?: LandUseView | null;
     landUseIntelligence?: RetainedLandUseIntelligenceView | null;
     exactAddressListings?: ExactAddressListingsView | null;
+    landPortalFacts?: ParcelFactSheetView | null;
+    taxStatus?: TaxStatusView | null;
   };
   marketContext?: MarketContextView;
+  landPortalFacts?: ParcelFactSheetView | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -208,6 +209,13 @@ export function AcquisitionWorkspaceV2() {
   const [exactAddressListings, setExactAddressListings] = useState<ExactAddressListingsView | null>(null);
   const [researchStatus, setResearchStatus] = useState<ResearchStatusView | null>(null);
   const [compsValuation, setCompsValuation] = useState<CompsValuationViewData | null>(null);
+  // The canonical retained LandPortal parcel fact sheet. The API has always
+  // projected it; nothing passed it to the panels that display those exact
+  // fields, so they fell back to a two-key discovery subset of it.
+  const [landPortalFacts, setLandPortalFacts] = useState<ParcelFactSheetView | null>(null);
+  // Property-tax payment status, answered by the collecting office rather than
+  // the assessor. Without it the panel could only ever say "not screened".
+  const [taxStatus, setTaxStatus] = useState<TaxStatusView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Bumped when a research run settles, so the workspace re-reads the records
@@ -242,6 +250,8 @@ export function AcquisitionWorkspaceV2() {
         setExactAddressListings(i?.propertyIntelligence?.exactAddressListings ?? null);
         setResearchStatus(i?.propertyIntelligence?.researchStatus ?? null);
         setCompsValuation(i?.propertyIntelligence?.compsValuation ?? null);
+        setLandPortalFacts(i?.propertyIntelligence?.landPortalFacts ?? i?.landPortalFacts ?? null);
+        setTaxStatus(i?.propertyIntelligence?.taxStatus ?? null);
       } catch (e) {
         if (!dead) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -447,7 +457,7 @@ export function AcquisitionWorkspaceV2() {
             {propertyMarketView === 'comps-valuation' ? (
               <CompsValuationSection dealId={dealId} initial={compsValuation} onViewChange={setCompsValuation} />
             ) : (
-              <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} />
+              <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} landPortalFacts={landPortalFacts} taxStatus={taxStatus} />
             )}
           </main>
         ) : section === 'Deal Activity' ? (
@@ -493,6 +503,8 @@ export function AcquisitionWorkspaceV2() {
           onOpenVisualBuyerAnalysis={(e) => switchSection(e as unknown as MouseEvent, 'property-intelligence')}
           exactAddressListings={exactAddressListings}
           market={market}
+          landPortalFacts={landPortalFacts}
+          landUseIntelligence={landUseIntelligence}
           compsValuation={compsValuation}
           valuationBasisLabel={valuationBasisLabel}
           landBasisOpeningReference={landBasisOpeningReference}

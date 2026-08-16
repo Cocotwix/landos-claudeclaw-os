@@ -142,6 +142,45 @@ function factNumber(facts: Record<string, string>, names: string[]): number | nu
 }
 
 /**
+ * A quarantined provider value keeps its observation under `<field> (provider
+ * observation)` while the field itself is emptied. Every decision reader looks
+ * the field up by its exact name, so the companion key can never be mistaken
+ * for a usable figure — and the operator surfaces can still state what the
+ * provider actually said, with the reason it is not being relied on.
+ */
+/**
+ * Time held back from the parcel read for the official county-records lane, so
+ * the assessor / recorder / collecting-office pass is never starved by it.
+ */
+export const OFFICIAL_RECORDS_RESERVE_MS = 45_000;
+
+export const QUARANTINE_OBSERVATION_SUFFIX = ' (provider observation)';
+const QUARANTINE_OBSERVATION_SUFFIX_RE = /\(provider observation\)$/i;
+export const TERRAIN_QUARANTINE_REASON_FACT = 'Terrain Quarantine Reason';
+/** Empty, not prose: a sentence in a value slot renders as if it were a value. */
+const TERRAIN_QUARANTINE_PLACEHOLDER = '';
+
+/**
+ * Every acreage the retained parcel record states for THIS parcel, strongest
+ * basis first. A provider's derived model (buildable area, coverage overlays)
+ * may be computed against any of them.
+ */
+export function acreageBasesFor(facts: Record<string, string>): Array<{ label: string; acres: number }> {
+  const bases: Array<{ label: string; acres: number }> = [];
+  const add = (label: string, value: number | null): void => {
+    if (value == null || !Number.isFinite(value) || value <= 0) return;
+    if (bases.some((basis) => Math.abs(basis.acres - value) < 0.01)) return;
+    bases.push({ label, acres: value });
+  };
+  add('assessed acreage', factNumber(facts, ['Acres']));
+  add('provider calculated acreage', factNumber(facts, ['Calc Acres']));
+  add('MLS acreage', factNumber(facts, ['MLS Acres']));
+  const sqft = factNumber(facts, ['Parcel SqFt']);
+  add('parcel square footage', sqft != null && sqft > 0 ? Math.round((sqft / 43_560) * 100) / 100 : null);
+  return bases;
+}
+
+/**
  * LandPortal terrain/buildability values are provider-model outputs, not
  * surveyed facts. The previous path promoted every numeric provider field as
  * high-confidence evidence and downstream scoring consumed it verbatim even
@@ -189,7 +228,15 @@ function challengeImplausibleVisualFacts(inspection: PendingPropertyInspectionRe
     addChallenge('Road frontage conflict', `Provider frontage (${raw}) conflicts with the imagery observation (${visualFrontageMatch![0].trim()}); the numeric frontage is withheld from scoring and strategy until targeted access research resolves it.`);
   }
 
-  const acres = factNumber(facts, ['Acres', 'Calc Acres', 'MLS Acres']);
+  // A provider states more than one acreage for the same parcel: the assessed
+  // `Acres`, its own geometry-derived `Calc Acres`, and an MLS figure. Its
+  // terrain model runs over ONE of them, and it is not always the assessed one.
+  // Reconciling the buildable area against a single basis therefore rejects
+  // correct terrain output whenever the model used a different denominator —
+  // which is how a parcel whose buildable area reconciles exactly against the
+  // provider's own calculated acreage was quarantined against the assessed one.
+  const acreageBases = acreageBasesFor(facts);
+  const acres = acreageBases[0]?.acres ?? null;
   const slope = factNumber(facts, ['Slope Avg', 'Average Slope']);
   const slopeMax = factNumber(facts, ['Slope Max']);
   const buildability = factNumber(facts, ['Buildability total (%)', 'Buildability total', 'Buildability']);
@@ -203,8 +250,15 @@ function challengeImplausibleVisualFacts(inspection: PendingPropertyInspectionRe
     && /terrain|slope|contour|ridge|grade|topograph|buildab/i.test(`${row.label} ${row.detail} ${row.evidence}`)
     && /steep|very steep|extreme|mountain|strong relief|heavy grade/i.test(`${row.label} ${row.detail} ${row.evidence}`)
     && !/not\s+(?:uniformly\s+)?(?:steep|extreme)|rather than[^.]{0,30}(?:steep|extreme)/i.test(`${row.label} ${row.detail} ${row.evidence}`));
+  // Reconciled against ANY retained acreage basis. The arithmetic is only in
+  // conflict when NO basis the provider itself published explains the stated
+  // buildable percentage.
+  const reconcilingBasis = buildability != null && buildableAcres != null
+    ? acreageBases.find((basis) => basis.acres > 0
+      && Math.abs((buildableAcres / basis.acres) * 100 - buildability) <= Math.max(1, buildability * 0.2)) ?? null
+    : null;
   const arithmeticConflict = acres != null && acres > 0 && buildability != null && buildableAcres != null
-    && Math.abs((buildableAcres / acres) * 100 - buildability) > Math.max(1, buildability * 0.2);
+    && !reconcilingBasis;
   const extremeUncorroborated = !terrainCorroboratesExtreme
     && ((slope != null && slope >= 35) || (buildability != null && buildability < 5));
   const invalidTerrain = (buildability != null && (buildability < 0 || buildability > 100))
@@ -216,9 +270,20 @@ function challengeImplausibleVisualFacts(inspection: PendingPropertyInspectionRe
       buildability != null ? `buildability ${buildability}%` : null,
       buildableAcres != null ? `buildable area ${buildableAcres} acres` : null,
     ].filter(Boolean).join(', ');
+    // Quarantine withholds a number from DECISIONS. It must not delete the
+    // observation: the operator still needs to see what the provider actually
+    // reported, and a research lane still needs it to know what to reconcile
+    // against. The decision slot is emptied (no reader can parse a number out
+    // of it) while the observed value is retained under its own companion key,
+    // which no decision reader looks up.
     for (const key of Object.keys(facts)) {
       if (/^(?:Slope|Flat Slope|Minimal Slope|Moderate Slope|Heavy Slope|Extreme Slope|Buildability)/i.test(key)) {
-        facts[key] = 'Needs visual verification — provider terrain output is quarantined from decision calculations.';
+        if (QUARANTINE_OBSERVATION_SUFFIX_RE.test(key)) continue;
+        const observed = facts[key];
+        if (observed && !/^(?:-|--|n\/?a)$/i.test(observed.trim())) {
+          facts[`${key}${QUARANTINE_OBSERVATION_SUFFIX}`] = observed;
+        }
+        facts[key] = TERRAIN_QUARANTINE_PLACEHOLDER;
       }
     }
     const reason = arithmeticConflict
@@ -228,6 +293,7 @@ function challengeImplausibleVisualFacts(inspection: PendingPropertyInspectionRe
         : terrainContradictsExtreme
           ? 'the retained imagery interpretation describes materially gentler terrain'
           : 'the extreme provider values have no medium-confidence steep-terrain interpretation from the retained imagery';
+    facts[TERRAIN_QUARANTINE_REASON_FACT] = `Provider reported ${rawSummary || 'terrain/buildability values'}, but ${reason}.`;
     addChallenge('Terrain and buildability conflict', `Provider reported ${rawSummary || 'terrain/buildability values'}, but ${reason}. These numeric fields are withheld from scoring, valuation, septic conclusions, strategy ranking, and offer guidance pending visual reconciliation or an independent terrain source.`);
   }
   return out;
@@ -305,13 +371,21 @@ function evidenceFromInspection(inspection: PendingPropertyInspectionRecord): Pr
       && (existing.url ?? null) === (item.url ?? null))) return;
     evidence.push(item);
   };
+  const quarantineReason = inspection.parcelFacts[TERRAIN_QUARANTINE_REASON_FACT] ?? null;
   for (const [label, value] of Object.entries(inspection.parcelFacts)) {
     if (!value || /^not found$/i.test(value)) continue;
-    const challenged = /^needs visual verification\b/i.test(value);
+    if (label === TERRAIN_QUARANTINE_REASON_FACT) continue;
+    // A retained observation behind a quarantine is EVIDENCE OF WHAT THE
+    // PROVIDER SAID, never a verified parcel fact. It carries the quarantine
+    // reason with it so nothing downstream can read it as a settled figure.
+    const quarantinedObservation = QUARANTINE_OBSERVATION_SUFFIX_RE.test(label);
+    const challenged = quarantinedObservation || /^needs visual verification\b/i.test(value);
     pushUnique({
       label,
       status: challenged ? 'needs_verification' : 'verified',
-      detail: value,
+      detail: quarantinedObservation && quarantineReason
+        ? `Provider reported ${value}. Held for visual verification: ${quarantineReason}`
+        : value,
       confidence: challenged ? 'low' : 'high',
       source: (inspection.sources ?? []).find((s) => s.provider === 'LandPortal' || s.provider.startsWith('Official'))?.provider ?? null,
       url: inspection.parcelUrl,
@@ -493,6 +567,23 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   const nowMs = deps.nowMs ?? Date.now;
   const deadlineMs = nowMs() + Math.max(1, input.timeoutMs);
   const remainingMs = (): number => Math.max(0, deadlineMs - nowMs());
+  // ── The official-records lane gets a reserved floor ───────────────────────
+  //
+  // LandPortal ran first and was handed the ENTIRE remaining budget, so on a
+  // normal lead it consumed all of it and the official county lane was recorded
+  // as "queued for the next run" — every run. That lane is the only one that
+  // reaches the assessor, the recorder and the collecting office, so the
+  // questions only they can answer (payment status above all) came back
+  // unanswered not because a source refused, but because nothing was left to
+  // ask with. The reserve is withheld from LandPortal ONLY when that lane is
+  // actually going to run, and never takes more than a third of the budget, so
+  // a tight deadline cannot starve the parcel read instead.
+  const officialRecordsLaneExpected = input.mode === 'deep_record' && !!deps.countyRecordsBrowser?.configured() && countyEvidence == null;
+  const officialRecordsReserveMs = officialRecordsLaneExpected
+    ? Math.min(OFFICIAL_RECORDS_RESERVE_MS, Math.floor(Math.max(1, input.timeoutMs) / 3))
+    : 0;
+  /** What LandPortal may use: the remaining budget less the reserved floor. */
+  const landPortalBudgetMs = (): number => Math.max(1, remainingMs() - officialRecordsReserveMs);
 
   if (landPortalEvidence?.inspection) {
     const lp = packageFromLandPortal(landPortalEvidence);
@@ -501,7 +592,7 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   } else if (deps.landPortalBrowser?.configured()) {
     landPortalEvidence = await deps.landPortalBrowser.runWorkflow(
       { searchKey: input.searchKey, mode: input.mode, propertyCardId: input.cardId } satisfies BrowserWorkflowInput,
-      { timeoutMs: Math.max(1, remainingMs()), onSubjectFacts: input.onLandPortalSubjectFacts },
+      { timeoutMs: landPortalBudgetMs(), onSubjectFacts: input.onLandPortalSubjectFacts },
     );
     if (landPortalEvidence.inspection) {
       const lp = packageFromLandPortal(landPortalEvidence);

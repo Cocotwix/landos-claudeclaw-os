@@ -24,6 +24,9 @@
 //     apart from "we failed to keep it".
 
 import { landPortalSetLabel } from './landportal-api.js';
+import { QUARANTINE_OBSERVATION_SUFFIX, TERRAIN_QUARANTINE_REASON_FACT } from './property-inspection.js';
+
+const QUARANTINE_OBSERVATION_SUFFIX_RE = /\s*\(provider observation\)$/i;
 
 export type FactStatus = 'verified' | 'needs_verification';
 
@@ -61,6 +64,19 @@ export interface ParcelFactSheet {
     elevationMax: string | null;
     label: string;
   };
+  /**
+   * A terrain figure the review held back from decisions is still intelligence
+   * the operator is entitled to see, stated as what the provider reported and
+   * why it is not being relied on. `null` when nothing was held back. Nothing
+   * in here may be read as a settled figure or enter a calculation.
+   */
+  terrainQuarantine: {
+    reason: string;
+    observations: Array<{ label: string; value: string }>;
+    slopeAvgPct: string | null;
+    buildabilityPct: string | null;
+    buildableAcres: string | null;
+  } | null;
   environment: {
     femaFloodZone: string | null;
     /** The full FEMA description LandPortal shows, kept complete. */
@@ -148,11 +164,20 @@ function usd(n: number | null): string | null {
   return n == null ? null : `$${Math.round(n).toLocaleString('en-US')}`;
 }
 
+/**
+ * A review sentence is not a measurement. Records captured before quarantine
+ * stopped overwriting values still hold the review's own prose in the numeric
+ * slot; passing it through produced the run-together text an operator saw where
+ * a percentage belongs. Prose in a figure slot reads as no figure.
+ */
+const LEGACY_QUARANTINE_SENTENCE = /needs\s*visual\s*verification/i;
+const isProse = (value: string): boolean => LEGACY_QUARANTINE_SENTENCE.test(value) || /[a-z]{4,}\s+[a-z]{4,}/i.test(value);
+
 /** Normalize a percent-ish LandPortal value ("28.10 %", "0") to "28.10%" / "0%". */
 function pct(v: string | null): string | null {
   if (v == null) return null;
   const n = num(v);
-  if (n == null) return v.replace(/\s+/g, '');
+  if (n == null) return isProse(v) ? null : v.replace(/\s+/g, '');
   return `${n}%`;
 }
 
@@ -160,7 +185,23 @@ function pct(v: string | null): string | null {
 function acresStr(v: string | null): string | null {
   if (v == null) return null;
   const n = num(v);
-  return n == null ? v : `${n} ac`;
+  if (n == null) return isProse(v) ? null : v;
+  return `${n} ac`;
+}
+
+/**
+ * Land under 10% slope, summed from the published bins. The panel states the
+ * bins even when it states no combined figure, and it is the same measurement:
+ * an unstated total is a presentation gap, not missing terrain intelligence.
+ * Every bin under 10% must be present, otherwise the sum would understate it.
+ */
+function slopeUnder10FromBins(fields: Record<string, string>): string | null {
+  const bins = ['Flat Slope (0-.5%)', 'Minimal Slope (.5-5%)', 'Moderate Slope (5-10%)'];
+  const values = bins.map((bin) => num(pick(fields, bin)));
+  if (values.some((value) => value == null)) return null;
+  const total = values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  if (!Number.isFinite(total) || total <= 0 || total > 100) return null;
+  return `${Math.round(total * 100) / 100}%`;
 }
 
 export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefined | null): ParcelFactSheet {
@@ -202,17 +243,52 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
   const buildPct = pct(pick(fields, 'Buildability total (%)', 'Buildability total', 'Buildability'));
   const buildAcres = acresStr(pick(fields, 'Buildability area (acres)', 'Buildability area'));
   const slopeAvg = pct(pick(fields, 'Slope Avg'));
+
+  // A held-back terrain figure is reported, never dropped. The observation
+  // lives under its own companion key so no decision reader can reach it; this
+  // is the one place it is deliberately read, to state it back to the operator.
+  const quarantinedObservations = Object.entries(fields)
+    .filter(([key, value]) => QUARANTINE_OBSERVATION_SUFFIX_RE.test(key) && typeof value === 'string' && value.trim())
+    .map(([key, value]) => ({ label: key.replace(QUARANTINE_OBSERVATION_SUFFIX_RE, '').trim(), value: value.trim() }));
+  const quarantinedFact = (...labels: string[]): string | null =>
+    pick(fields, ...labels.map((label) => `${label}${QUARANTINE_OBSERVATION_SUFFIX}`));
+  // Records written before quarantine stopped overwriting values carry the
+  // review sentence in the value slot and no observation at all. They are still
+  // reported as held — with no figure, because that run genuinely destroyed it —
+  // rather than as a source that published nothing.
+  const legacyQuarantined = Object.entries(fields).some(([key, value]) =>
+    /^(?:Slope|Buildability)/i.test(key) && typeof value === 'string' && LEGACY_QUARANTINE_SENTENCE.test(value));
+  const quarantineReason = pick(fields, TERRAIN_QUARANTINE_REASON_FACT)
+    ?? (legacyQuarantined
+      ? 'Provider terrain output was held back by an earlier review, which did not retain the figures it held. Re-running the parcel read restores them.'
+      : null);
+  const terrainQuarantine = quarantineReason && (quarantinedObservations.length || legacyQuarantined)
+    ? {
+      reason: quarantineReason,
+      observations: quarantinedObservations,
+      slopeAvgPct: pct(quarantinedFact('Slope Avg')),
+      buildabilityPct: pct(quarantinedFact('Buildability total (%)', 'Buildability total', 'Buildability')),
+      buildableAcres: acresStr(quarantinedFact('Buildability area (acres)', 'Buildability area')),
+    }
+    : null;
+
   const buildLabel = buildPct
     ? `${buildPct} buildable${buildAcres ? ` (${buildAcres})` : ''}${slopeAvg ? ` · avg slope ${slopeAvg}` : ''}`
-    : 'Needs verification';
+    : terrainQuarantine?.buildabilityPct
+      ? `Provider reported ${terrainQuarantine.buildabilityPct} buildable${terrainQuarantine.buildableAcres ? ` (${terrainQuarantine.buildableAcres})` : ''} — held for visual verification`
+      : 'Needs verification';
 
   // Terrain: slope and elevation are retained whenever LandPortal shows them.
-  const slopeUnder10 = pct(pick(fields, 'Slope Under 10% (%)', 'Slope Under 10%', 'Pct Under 10% Slope'));
+  // The parcel panel does not always publish a single "under 10% slope"
+  // figure; where it instead publishes the slope BINS, that total is the sum of
+  // the bins it published and is derived here rather than reported as absent.
+  const slopeUnder10 = pct(pick(fields, 'Slope Under 10% (%)', 'Slope Under 10%', 'Pct Under 10% Slope'))
+    ?? slopeUnder10FromBins(fields);
   const elevationAvg = pick(fields, 'Elevation Avg');
   const elevationMin = pick(fields, 'Elevation Min');
   const elevationMax = pick(fields, 'Elevation Max');
   const terrainLabel = [
-    slopeAvg ? `avg slope ${slopeAvg}` : null,
+    slopeAvg ? `avg slope ${slopeAvg}` : terrainQuarantine?.slopeAvgPct ? `provider avg slope ${terrainQuarantine.slopeAvgPct} (held for visual verification)` : null,
     slopeUnder10 ? `${slopeUnder10} under 10% slope` : null,
     elevationAvg ? `elevation ${elevationAvg}` : null,
     elevationMin && elevationMax ? `range ${elevationMin} to ${elevationMax}` : null,
@@ -253,7 +329,9 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
   // Improvements. Kept strictly apart from buildability: Building SqFt is what
   // stands on the parcel today, buildability is what the terrain would allow.
   const buildingSqft = pick(fields, 'Building SqFt', 'Building Sq Ft', 'Improvement SqFt');
-  const yearBuilt = pick(fields, 'Year Built', 'Effective Year Built');
+  // `Structure Year Built` is the label the authenticated parcel panel actually
+  // publishes; reading only 'Year Built' reported a retained fact as absent.
+  const yearBuilt = pick(fields, 'Year Built', 'Structure Year Built', 'Effective Year Built');
   const improvementValue = pick(fields, 'Improvement Value', 'Improved Value');
   const buildingSqftNum = num(buildingSqft);
   const improvementValueNum = num(improvementValue);
@@ -271,8 +349,8 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
   // Valuation.
   const lastSalePrice = num(pick(fields, 'Last Sale Price'));
   const lastSaleDate = pick(fields, 'Last Sale Date');
-  const assessedValue = pick(fields, 'Assessed Value');
-  const totalMarketValue = pick(fields, 'Total Market Value');
+  const assessedValue = pick(fields, 'Assessed Value', 'Land Assessed Value');
+  const totalMarketValue = pick(fields, 'Total Market Value', 'Land Market Value');
   const taxAmount = pick(fields, 'Tax Amount');
   const lpEstimatePrice = pick(fields, 'Estimate price');
   const lpEstimatePpa = pick(fields, 'Estimate PPA');
@@ -301,8 +379,13 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
     ['floodZone', 'FEMA Flood Zone', femaZone],
     ['femaCoverage', 'FEMA Coverage', femaPct],
     ['wetlands', 'Wetlands Coverage', wetPct],
-    ['buildability', 'Buildability', buildPct ? `${buildPct}${buildAcres ? ` (${buildAcres})` : ''}` : null],
-    ['slope', 'Avg Slope', slopeAvg],
+    ['buildability', 'Buildability', buildPct
+      ? `${buildPct}${buildAcres ? ` (${buildAcres})` : ''}`
+      : terrainQuarantine?.buildabilityPct
+        ? `Provider reported ${terrainQuarantine.buildabilityPct}${terrainQuarantine.buildableAcres ? ` (${terrainQuarantine.buildableAcres})` : ''} — held for visual verification`
+        : null],
+    ['slope', 'Avg Slope', slopeAvg
+      ?? (terrainQuarantine?.slopeAvgPct ? `Provider reported ${terrainQuarantine.slopeAvgPct} — held for visual verification` : null)],
     ['slopeUnder10', 'Slope Under 10%', slopeUnder10],
     ['elevationAvg', 'Elevation Avg', elevationAvg],
     ['elevationRange', 'Elevation Range',
@@ -348,8 +431,12 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
     ['municipality', municipality], ['acres', acres], ['parcelSqft', parcelSqft],
     ['landUse', landUse], ['zoning', zoning],
     ['landLocked', landLocked], ['roadFrontage', roadFrontage],
-    ['buildabilityPct', buildPct], ['buildabilityAcres', buildAcres],
-    ['slopeAvg', slopeAvg], ['slopeUnder10', slopeUnder10],
+    // A figure held back for verification WAS supplied by the source. Listing
+    // it as notSupplied would say the panel never published it, which is a
+    // different and false statement.
+    ['buildabilityPct', buildPct ?? terrainQuarantine?.buildabilityPct ?? null],
+    ['buildabilityAcres', buildAcres ?? terrainQuarantine?.buildableAcres ?? null],
+    ['slopeAvg', slopeAvg ?? terrainQuarantine?.slopeAvgPct ?? null], ['slopeUnder10', slopeUnder10],
     ['elevationAvg', elevationAvg], ['elevationRange', elevationMin && elevationMax ? `${elevationMin} to ${elevationMax}` : null],
     ['femaFloodZone', femaZone], ['femaFloodZoneDescription', femaDescription], ['femaCoverage', femaPct],
     ['wetlandsCoverage', wetPct], ['waterFeature', waterLabel], ['soils', soilLabel],
@@ -368,6 +455,7 @@ export function buildParcelFactSheet(fieldsIn: Record<string, string> | undefine
       slopeAvgPct: slopeAvg, slopeUnder10Pct: slopeUnder10,
       elevationAvg, elevationMin, elevationMax, label: terrainLabel,
     },
+    terrainQuarantine,
     environment: {
       femaFloodZone: femaZone,
       femaFloodZoneDescription: femaDescription,

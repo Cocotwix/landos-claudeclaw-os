@@ -20,6 +20,7 @@ import type {
 } from './public-property-intelligence.js';
 import { PUBLIC_INTELLIGENCE_TASK_LABELS, SCREENING_DISCLAIMERS, slopeBandFor, SLOPE_BANDS } from './public-property-intelligence.js';
 import { findCountyGis, computeExactOverlaps, queryLayerByPolygon, queryLayerByEnvelope, type CountyGisCapability } from './county-gis-capabilities.js';
+import { taxAuthorityFor } from './tax-status-research.js';
 import { interiorGrid, measureFrontage, overlapLocationDescription, ringsAreaAcres, type Rings, type LonLat } from './parcel-spatial.js';
 import { addressVariantsCompatible, roadNamesCompatible } from './instruction-consistency.js';
 import type { SnapshotFact } from './property-intelligence-snapshot.js';
@@ -359,6 +360,21 @@ export function practicalOfficialParcelSources(
       url: capability.mapViewerUrl,
       mode: 'browser',
       note: 'Official parcel-map search requiring the public browser workflow; the destination alone is not parcel evidence.',
+    });
+  }
+  // THE COLLECTING OFFICE IS ITS OWN SOURCE. An assessor levies the tax; the
+  // trustee / treasurer / tax collector takes payment, and is therefore the only
+  // office that publishes standing, unpaid years and tax-sale status. Listing
+  // only the assessor meant no payment-status source was ever scheduled, so the
+  // question came back "not screened" on every lead — which reads as nobody
+  // looked, when in fact nobody had been asked to.
+  const taxAuthority = taxAuthorityFor({ county: input.county, state: input.state });
+  if (taxAuthority) {
+    sources.push({
+      source: taxAuthority.label,
+      url: taxAuthority.searchUrl,
+      mode: 'browser',
+      note: 'Official payment-status source (standing, unpaid years, amount owed, penalties, tax-sale status). The destination alone is not a tax fact.',
     });
   }
   return sources.filter((source, index, all) =>

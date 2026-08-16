@@ -155,6 +155,62 @@ export interface ResearchStatusView {
   incomplete: Array<{ id: string; label: string; delivered: boolean; status: string; reason: string | null; nextAction: string | null }>;
 }
 
+/**
+ * The canonical retained LandPortal parcel fact sheet, exactly as the API
+ * projects it. This is the record of what the provider actually published for
+ * this parcel; the snapshot's `lp_sidebar_*` facts are a discovery-stage subset
+ * and never the authority on what was retained.
+ */
+export interface ParcelFactSheetView {
+  access?: { label?: string | null; landLocked?: string | null; roadFrontage?: string | null; roadFrontageFt?: number | null } | null;
+  buildability?: { label?: string | null; pct?: string | null; acres?: string | null } | null;
+  terrain?: {
+    slopeAvgPct?: string | null; slopeUnder10Pct?: string | null;
+    elevationAvg?: string | null; elevationMin?: string | null; elevationMax?: string | null; label?: string | null;
+  } | null;
+  /** Provider figures held back from decisions, still reported as observations. */
+  terrainQuarantine?: {
+    reason: string;
+    observations: Array<{ label: string; value: string }>;
+    slopeAvgPct: string | null; buildabilityPct: string | null; buildableAcres: string | null;
+  } | null;
+  environment?: { femaFloodZone?: string | null; femaFloodZoneDescription?: string | null; femaCoveragePct?: string | null; wetlandsPct?: string | null; label?: string | null } | null;
+  water?: { present?: boolean; type?: string | null; label?: string | null } | null;
+  soils?: { type?: string | null; description?: string | null; label?: string | null } | null;
+  improvement?: { buildingSqft?: string | null; yearBuilt?: string | null; improvementValue?: string | null; improved?: boolean | null; label?: string | null } | null;
+  parcelContext?: { landUse?: string | null; landUseCode?: string | null; zoning?: string | null; parcelSqft?: string | null; subdivision?: string | null; label?: string | null } | null;
+  valuation?: {
+    lastSalePriceLabel?: string | null; lastSaleDate?: string | null;
+    assessedValue?: string | null; totalMarketValue?: string | null; taxAmount?: string | null;
+    lpEstimatePrice?: string | null; lpEstimatePpa?: string | null;
+  } | null;
+  retention?: { retained?: string[]; notSupplied?: string[] } | null;
+}
+
+/**
+ * Property-tax payment status, as the collecting office publishes it.
+ *
+ * `standing` is only ever `current` or `delinquent` when a labeled public field
+ * said so. Otherwise it is `unresolved` and `statement` names the exact sources
+ * attempted and the blocker — never a bare "not screened".
+ */
+export interface TaxStatusView {
+  standing: 'current' | 'delinquent' | 'unresolved';
+  standingLabel: string;
+  paymentStatus: string | null;
+  amountOwed: string | null;
+  unpaidYears: string | null;
+  delinquencySince: string | null;
+  penaltiesInterest: string | null;
+  taxSaleStatus: string | null;
+  attempts: Array<{ source: string; url: string | null; outcome: string; reached: boolean }>;
+  sourceLabel: string | null;
+  sourceUrl: string | null;
+  authorityOffice: string | null;
+  authoritySearchUrl: string | null;
+  statement: string;
+}
+
 /** The six listing states LandOS recognises. `unknown` is never read as active. */
 export type ListingStatusCodeView = 'active' | 'pending' | 'contingent' | 'sold' | 'off_market' | 'unknown';
 export type EngagementAvailabilityView = 'available' | 'unavailable';
@@ -478,8 +534,18 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary }: {
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus }: {
   snap: PiSnapshot;
+  /** Payment status from the collecting office, or the sources attempted. */
+  taxStatus?: TaxStatusView | null;
+  /**
+   * The canonical retained LandPortal parcel fact sheet. The snapshot's
+   * `lp_sidebar_*` facts are a sparse DISCOVERY-STAGE subset of it — on a real
+   * card they carry two or three fields — so reading only those reported
+   * retained terrain, water, improvement, parcel-context and frontage evidence
+   * as "not supplied by retained sources" while this sheet held every one.
+   */
+  landPortalFacts?: ParcelFactSheetView | null;
   market: MarketContextView | null;
   soils: SoilDetail[] | null;
   streetView: StreetViewView | null;
@@ -520,22 +586,51 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     }
     return null;
   };
-  const waterFeature = sidebar('water_feature_type');
-  const zoningCode = sidebar('zoning_code');
-  const femaDescription = sidebar('fema_flood_zone_description');
-  const landPortalTerrain = firstFact('lp_sidebar_terrain', 'lp_sidebar_terrain_type', 'lp_sidebar_topography');
-  const landPortalSlope = firstFact('lp_sidebar_slope', 'lp_sidebar_average_slope', 'lp_sidebar_slope_description');
-  const landPortalBuildability = firstFact('lp_sidebar_buildability', 'lp_sidebar_buildable_area', 'lp_sidebar_buildability_pct');
-  const landPortalWetlands = firstFact('lp_sidebar_wetlands', 'lp_sidebar_wetlands_pct', 'lp_sidebar_wetland_type');
-  const landPortalSoils = firstFact('lp_sidebar_soils', 'lp_sidebar_soil_type', 'lp_sidebar_soil_description');
-  const landPortalFrontage = firstFact('lp_sidebar_frontage', 'lp_sidebar_road_frontage');
-  const landPortalImprovement = firstFact('lp_sidebar_improvements', 'lp_sidebar_improvement_type', 'lp_sidebar_building_sqft');
-  const landPortalParcelContext = firstFact('lp_sidebar_parcel_context', 'lp_sidebar_land_use', 'lp_sidebar_property_type');
-  const lastSalePrice = sidebar('last_sale_price');
-  const lastSaleDate = sidebar('last_sale_date');
+  // ── ONE retained LandPortal record ────────────────────────────────────────
+  // The canonical parcel fact sheet answers first; the sparse discovery-stage
+  // `lp_sidebar_*` facts remain a fallback for cards captured before the sheet
+  // existed. Reading the subset alone is exactly how retained terrain, water,
+  // improvement and parcel-context evidence read as "Not supplied".
+  const lpf = landPortalFacts ?? null;
+  const sheet = (value: string | null | undefined): string | null => {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (!text || /^needs verification$/i.test(text)) return null;
+    return text;
+  };
+  const terrainQuarantine = lpf?.terrainQuarantine ?? null;
+  const waterFeature = sheet(lpf?.water?.label) ?? sidebar('water_feature_type');
+  const zoningCode = sheet(lpf?.parcelContext?.zoning) ?? sidebar('zoning_code');
+  const femaDescription = sheet(lpf?.environment?.femaFloodZoneDescription) ?? sidebar('fema_flood_zone_description');
+  const landPortalTerrain = sheet(lpf?.terrain?.label)
+    ?? firstFact('lp_sidebar_terrain', 'lp_sidebar_terrain_type', 'lp_sidebar_topography');
+  const landPortalSlope = sheet(lpf?.terrain?.slopeAvgPct)
+    ?? firstFact('lp_sidebar_slope', 'lp_sidebar_average_slope', 'lp_sidebar_slope_description');
+  const landPortalBuildability = sheet(lpf?.buildability?.label)
+    ?? firstFact('lp_sidebar_buildability', 'lp_sidebar_buildable_area', 'lp_sidebar_buildability_pct');
+  const landPortalWetlands = sheet(lpf?.environment?.wetlandsPct)
+    ?? firstFact('lp_sidebar_wetlands', 'lp_sidebar_wetlands_pct', 'lp_sidebar_wetland_type');
+  const landPortalSoils = sheet(lpf?.soils?.label)
+    ?? firstFact('lp_sidebar_soils', 'lp_sidebar_soil_type', 'lp_sidebar_soil_description');
+  const landPortalFrontage = sheet(lpf?.access?.roadFrontage)
+    ?? firstFact('lp_sidebar_frontage', 'lp_sidebar_road_frontage');
+  const landPortalImprovement = sheet(lpf?.improvement?.label)
+    ?? firstFact('lp_sidebar_improvements', 'lp_sidebar_improvement_type', 'lp_sidebar_building_sqft');
+  const landPortalParcelContext = sheet(lpf?.parcelContext?.label)
+    ?? firstFact('lp_sidebar_parcel_context', 'lp_sidebar_land_use', 'lp_sidebar_property_type');
+  const landPortalSlopeUnder10 = sheet(lpf?.terrain?.slopeUnder10Pct);
+  const landPortalElevation = lpf?.terrain?.elevationAvg && lpf?.terrain?.elevationMin && lpf?.terrain?.elevationMax
+    ? `${lpf.terrain.elevationAvg} average (${lpf.terrain.elevationMin} to ${lpf.terrain.elevationMax})`
+    : sheet(lpf?.terrain?.elevationAvg);
+  const lastSalePrice = sheet(lpf?.valuation?.lastSalePriceLabel) ?? sidebar('last_sale_price');
+  const lastSaleDate = sheet(lpf?.valuation?.lastSaleDate) ?? sidebar('last_sale_date');
   const bookNumber = sidebar('book_number');
   const pageNumber = sidebar('page_number');
-  const assessedValue = sidebar('assessed_value');
+  const assessedValue = sheet(lpf?.valuation?.assessedValue) ?? sidebar('assessed_value');
+  const totalMarketValue = sheet(lpf?.valuation?.totalMarketValue);
+  const taxAmount = sheet(lpf?.valuation?.taxAmount);
+  const lpEstimatePrice = sheet(lpf?.valuation?.lpEstimatePrice) ?? fact('lpEstimateTotal')?.value ?? null;
+  const lpEstimatePpa = sheet(lpf?.valuation?.lpEstimatePpa) ?? fact('lpEstimatePerAcre')?.value ?? null;
+  const yearBuilt = sheet(lpf?.improvement?.yearBuilt);
   const lastSalePriceUsd = lastSalePrice && /^[\d,.]+$/.test(lastSalePrice.trim())
     ? usd(Number(lastSalePrice.replace(/,/g, '')))
     : null;
@@ -910,8 +1005,10 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           <div class="awv2-panel-title">Terrain &amp; usable area</div>
           <div class="awv2-kv">
             <Kv k="Average slope" v={landPortalSlope || (slopePct ? `${slopePct}%` : null)} />
+            <Kv k="Land under 10% slope" v={landPortalSlopeUnder10} empty="Not published as a combined figure" />
             <Kv k="Buildability" v={landPortalBuildability || (buildPct ? `${buildPct}% shown` : null)} />
             <Kv k="Buildability view" v={hasBuildabilityCapture ? 'Dedicated yellow-overlay capture retained (gallery below)' : null} empty="No dedicated buildability capture" />
+            <Kv k="Elevation" v={landPortalElevation} />
             <Kv k="Terrain" v={landPortalTerrain || terrain?.detail || null} />
             {/* The listing's own read is stated once, in its own panel; this
                 points at it rather than reprinting the same sentence. */}
@@ -927,6 +1024,26 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
               empty="No 3D captures"
             />
           </div>
+          {/* A held-back provider figure is still intelligence. Stating what the
+              provider reported, and why it is not being relied on, is the honest
+              read; showing nothing made a reviewed conflict look like a source
+              that published nothing. */}
+          {terrainQuarantine && (
+            <div class="awv2-pi-note" data-testid="pi-terrain-quarantine">
+              <b>Held for visual verification:</b> {terrainQuarantine.reason}{' '}
+              {[
+                terrainQuarantine.slopeAvgPct ? `average slope ${terrainQuarantine.slopeAvgPct}` : null,
+                terrainQuarantine.buildabilityPct ? `buildability ${terrainQuarantine.buildabilityPct}` : null,
+                terrainQuarantine.buildableAcres ? `buildable area ${terrainQuarantine.buildableAcres}` : null,
+              ].filter(Boolean).length > 0
+                ? `Provider figures retained for follow-up: ${[
+                  terrainQuarantine.slopeAvgPct ? `average slope ${terrainQuarantine.slopeAvgPct}` : null,
+                  terrainQuarantine.buildabilityPct ? `buildability ${terrainQuarantine.buildabilityPct}` : null,
+                  terrainQuarantine.buildableAcres ? `buildable area ${terrainQuarantine.buildableAcres}` : null,
+                ].filter(Boolean).join(', ')}. They are excluded from scoring, valuation, septic conclusions and strategy until an independent terrain read reconciles them.`
+                : ''}
+            </div>
+          )}
         </section>
 
         <section data-domain="property" class="awv2-panel" id="environmental-soils">
@@ -1034,7 +1151,77 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         )}
       </section>
 
-      {/* ── Zoning, sale history, and assessment (LandPortal sidebar) ── */}
+      {/* ── Assessment, taxes and improvements ──
+          Public-record money facts are decision inputs, not provenance: what a
+          county says a parcel is worth, what it is taxed at, and what stands on
+          it are among the first things an operator asks. They were being kept
+          inside the collapsed provenance drawer, so a retained assessment, a
+          retained market value and a retained annual tax bill all read as
+          absent on the page an operator actually works from. */}
+      <section data-domain="valuation" class="awv2-panel" id="assessment-tax">
+        <div class="awv2-panel-title">
+          Assessment, taxes &amp; improvements
+          <span class="awv2-src-tag">LandPortal parcel record · county rolls remain the stronger official source</span>
+        </div>
+        <div class="awv2-kv">
+          <Kv k="Assessed value" v={assessedValue} empty="Not published by the retained source" />
+          <Kv k="Total market value" v={totalMarketValue} empty="Not published by the retained source" />
+          <Kv k="Annual tax" v={taxAmount} empty="Not published by the retained source" />
+          {/* The payment question is answered by the COLLECTING office, not the
+              assessor. When it resolved, say so and show what the record shows;
+              when it did not, the panel names the office and the blocker — a
+              bare "not screened" reads as nobody having looked. */}
+          <Kv
+            k="Tax payment status"
+            v={taxStatus && taxStatus.standing !== 'unresolved' ? taxStatus.standingLabel : null}
+            empty={taxStatus?.authorityOffice
+              ? `Not established — held by the ${taxStatus.authorityOffice}`
+              : 'Not established — no collecting office could be named'}
+          />
+          {taxStatus?.standing === 'delinquent' && (
+            <>
+              <Kv k="Amount owed" v={taxStatus.amountOwed} empty="Not published by the source" />
+              <Kv k="Unpaid years" v={taxStatus.unpaidYears} empty="Not published by the source" />
+              <Kv k="Penalties / interest" v={taxStatus.penaltiesInterest} empty="Not published by the source" />
+              <Kv k="Tax-sale status" v={taxStatus.taxSaleStatus} empty="Not published by the source" />
+            </>
+          )}
+          {/* Improvements carry their own year built inside the retained label.
+              Year built is rendered as a row in exactly one panel — the
+              listing-reported one, at listing weight — so the same fact never
+              appears twice under two different weights. */}
+          <Kv k="Improvements" v={landPortalImprovement} empty="No improvement fact supplied" />
+          <Kv k="Land use" v={sheet(lpf?.parcelContext?.landUse)} empty="Not published by the retained source" />
+          <Kv k="Last sale" v={lastSalePrice ? `${lastSalePriceUsd ? `${lastSalePriceUsd} · ` : ''}displayed “${lastSalePrice}”${lastSaleDate ? ` on ${lastSaleDate}` : ''}` : null} empty="Not published by the retained source" />
+        </div>
+        {lpEstimatePrice && (
+          <div class="awv2-pi-note">
+            <b>Provider estimate (not a LandOS valuation):</b> LandPortal publishes{' '}
+            {lpEstimatePrice}{lpEstimatePpa ? ` (${lpEstimatePpa}/ac)` : ''} for this parcel. It is
+            shown exactly as the provider states it and never enters the LandOS land value, the
+            cleaned fair market value, or any acquisition level.
+          </div>
+        )}
+        {taxStatus && (
+          <div class="awv2-pi-note" data-testid="pi-tax-status">
+            <b>Tax payment status:</b> {taxStatus.statement}
+            {taxStatus.sourceUrl && (
+              <> · <a href={taxStatus.sourceUrl} target="_blank" rel="noreferrer">source record</a></>
+            )}
+            {taxStatus.standing === 'unresolved' && taxStatus.authoritySearchUrl && (
+              <> · <a href={taxStatus.authoritySearchUrl} target="_blank" rel="noreferrer">open the {taxStatus.authorityOffice}</a></>
+            )}
+          </div>
+        )}
+        <div class="awv2-pi-note">
+          Assessment, market value and tax figures are as displayed on the retained LandPortal
+          parcel record. The county assessment roll and the collecting office&apos;s tax record
+          remain the stronger official sources, and payment status is only ever stated from one
+          of them.
+        </div>
+      </section>
+
+      {/* ── Zoning and deed provenance (LandPortal sidebar) ── */}
       <details class="awv2-collapse awv2-pi-diagnostics">
         <summary>LandPortal source facts and provenance</summary>
       <div class="awv2-grid cols-3">
@@ -1072,7 +1259,9 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           <div class="awv2-panel-title">Value &amp; assessment <span class="awv2-src-tag">LandPortal · discovery stage</span></div>
           <div class="awv2-kv">
             <Kv k="Assessed value" v={assessedValue} empty="Not supplied" />
-            <Kv k="LandPortal estimate" v={fact('lpEstimateTotal')?.value || null} empty="Not supplied" />
+            <Kv k="Total market value" v={totalMarketValue} empty="Not supplied" />
+            <Kv k="Annual tax" v={taxAmount} empty="Not supplied" />
+            <Kv k="LandPortal estimate" v={lpEstimatePrice ? `${lpEstimatePrice}${lpEstimatePpa ? ` (${lpEstimatePpa}/ac)` : ''}` : null} empty="Not supplied" />
           </div>
           {assessedValue && (
             <div class="awv2-pi-note">
