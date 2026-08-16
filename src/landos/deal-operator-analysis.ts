@@ -1712,6 +1712,16 @@ export function buildDealOperatorAnalysis(input: {
   const { pkg, context } = input;
   const canonical = input.canonical ?? null;
   const market = marketAnalysis(pkg, context);
+  const priorDataCenters = input.previousSnapshot?.operatorAnalysis?.market.dataCenters;
+  const hasAnsweredDataCenterScreen = (status: string | undefined): boolean =>
+    status === 'found' || status === 'none_found';
+  // Read-time enrichment and an interrupted rerun can supply a thinner market
+  // context than the last promoted snapshot. An unanswered replacement must
+  // not erase a completed subject screen; a newer answered screen still wins.
+  if (!hasAnsweredDataCenterScreen(market.dataCenters.status)
+    && hasAnsweredDataCenterScreen(priorDataCenters?.status)) {
+    market.dataCenters = priorDataCenters!;
+  }
   const property = propertyScore(pkg, context.visualAnalysis);
   // One comp tally. An explicit count still wins, but the canonical state is
   // the next authority — the market score may never count comps for itself.

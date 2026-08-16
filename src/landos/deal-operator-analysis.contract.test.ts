@@ -519,6 +519,52 @@ describe('DealOperatorAnalysis contract', () => {
     expect(analysis.changeNotes.join(' ')).toContain('1 new retained evidence item');
     expect(analysis.changeNotes.join(' ')).toContain('Assessor parcel record');
   });
+
+  it('keeps the last answered data-center screen until replacement input has an answer', () => {
+    const completedContext = emptyDealOperatorContext();
+    completedContext.marketScan = {
+      dataCenterWatch: {
+        status: 'none_found',
+        summary: 'The completed 20-mile subject screen found no qualifying data-center activity.',
+        verdict: 'No qualifying data-center activity was found within 20 miles.',
+        routesAttempted: ['web_search', 'browser_map'],
+        items: [],
+      },
+    };
+    const completed = buildDealOperatorAnalysis({
+      pkg: packageFor(),
+      context: completedContext,
+      generatedAt: '2026-07-27T12:00:00.000Z',
+    });
+
+    const interrupted = buildDealOperatorAnalysis({
+      pkg: packageFor(),
+      context: emptyDealOperatorContext(),
+      previousSnapshot: { operatorAnalysis: completed, evidence: [] } as never,
+      generatedAt: GENERATED_AT,
+    });
+    expect(interrupted.market.dataCenters).toEqual(completed.market.dataCenters);
+    expect(interrupted.market.dataCenters.status).toBe('none_found');
+
+    const replacementContext = emptyDealOperatorContext();
+    replacementContext.marketScan = {
+      dataCenterWatch: {
+        status: 'found',
+        summary: 'A newer completed screen found one qualifying project.',
+        verdict: 'One qualifying project was found within 20 miles.',
+        routesAttempted: ['official_search'],
+        items: [{ title: 'New campus', status: 'approved' }],
+      },
+    };
+    const replaced = buildDealOperatorAnalysis({
+      pkg: packageFor(),
+      context: replacementContext,
+      previousSnapshot: { operatorAnalysis: completed, evidence: [] } as never,
+      generatedAt: GENERATED_AT,
+    });
+    expect(replaced.market.dataCenters.status).toBe('found');
+    expect(replaced.market.dataCenters.summary).toContain('newer completed screen');
+  });
 });
 
 describe('whole-card multimodal Analyst normalization', () => {
