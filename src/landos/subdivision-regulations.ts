@@ -30,6 +30,7 @@ import {
   looksLikeTableOfContents,
   matchNumericRuleValue,
   matchRuleValue,
+  sectionCitationBefore,
 } from './ordinance-text.js';
 import { raceRecordOf, type LandUseRaceRecord } from './controlling-land-use-authority.js';
 import {
@@ -307,15 +308,6 @@ const EXTRACTION_RULES: ExtractionRule[] = [
   { key: 'review_fee', pattern: /\b(?:review|application|filing)\s+fee\b[^.\n]{0,200}/i },
 ];
 
-/**
- * A section reference, tolerant of how a PDF text layer renders one.
- *
- * Real regulations print "SECTION 1-101" and the extractor sees "SECTION 1 -
- * 101", because the glyphs wrapped. Requiring the separator to be tight made
- * every rule in the real Fairview document cite no section at all.
- */
-const SECTION_NEAR = /(?:§|\bSection\b|\bSec\.|\bArticle\b|\bArt\.|\bChapter\b|\bCh\.)\s*([0-9]+(?:\s*[.\-]\s*[0-9A-Za-z]+)*)/i;
-
 const clean = (value: string): string => value.replace(/\s+/g, ' ').trim();
 
 /**
@@ -364,24 +356,6 @@ export function readLotCount(text: string): number | null {
   if (words) return WORD_NUMBERS[words[1].toLowerCase()] ?? null;
   return null;
 }
-
-/**
- * The section printed nearest BEFORE this passage.
- *
- * Strictly before, and that matters: a regulation document prints its sections
- * in order, so a window that also looked forward would attribute a rule to the
- * NEXT section — "Minimum lot size" in Section 4.1 cited as Section 5.1, which
- * is a citation that fails the moment anyone checks it.
- */
-function sectionFor(text: string, index: number): string | null {
-  // A wide window, because flattening the line wrapping puts a whole page of
-  // dense prose between a heading and the rule it introduces.
-  const before = text.slice(Math.max(0, index - 1_200), index);
-  const matches = [...before.matchAll(new RegExp(SECTION_NEAR.source, 'gi'))];
-  const last = matches[matches.length - 1];
-  return last ? clean(last[0]) : null;
-}
-
 
 export interface ExtractSubdivisionRulesInput {
   text: string;
@@ -435,7 +409,7 @@ export function extractSubdivisionRules(input: ExtractSubdivisionRulesInput): Su
     // instead of a bare heading blocking the rule for the whole run.
     if (rule.preferred && value.length < 40) continue;
     seen.add(rule.key);
-    const section = sectionFor(text, match.index);
+    const section = sectionCitationBefore(text, match.index);
     out.push({
       key: rule.key,
       label: RULE_LABELS[rule.key],

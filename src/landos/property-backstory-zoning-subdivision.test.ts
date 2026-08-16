@@ -844,6 +844,11 @@ describe('subdivision regulations', () => {
     const deferred = rules.find((rule) => rule.key === 'minimum_lot_size_deferred_to');
     expect(deferred?.value).toMatch(/shall comply with the minimum standards of the Zoning Ordinance/i);
     expect(deferred?.label).toMatch(/zoning ordinance/i);
+    // Cited to the heading it is printed under, not to the cross-reference in
+    // the sentence before it. 4-102.2 governs critical lots and says nothing
+    // about lot area; sending anyone there is worse than citing no section.
+    expect(deferred?.section).toBe('4-110.2');
+    expect(deferred?.limitations.join(' ')).not.toMatch(/does not print an ordinance section/);
     // It names where the number lives. It establishes no number, and no district.
     expect(readMinimumLotAcres(deferred!.value).acres).toBeNull();
   });

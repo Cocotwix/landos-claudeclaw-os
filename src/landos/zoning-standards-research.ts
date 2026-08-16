@@ -49,6 +49,7 @@ import {
   flattenOrdinanceText as flattenText,
   looksLikeTableOfContents,
   scopeToDistrictBlock,
+  sectionCitationBefore,
 } from './ordinance-text.js';
 import type { GovFetchText } from './gis-transport.js';
 import type { IdentitySearchProvider } from './hermes-free-search.js';
@@ -111,17 +112,9 @@ export interface ZoningStandardsResult {
 }
 
 const clean = (value: string): string => value.replace(/\s+/g, ' ').trim();
-const SECTION_NEAR = /(?:§|\bSection\b|\bSec\.|\bArticle\b|\bArt\.|\bChapter\b|\bCh\.)\s*([0-9]+(?:\s*[.\-]\s*[0-9A-Za-z]+)*)/i;
 
 /** Undo a PDF text layer's line wrapping before reading rules out of it. */
 export const flattenOrdinanceText = flattenText;
-
-function sectionBefore(text: string, index: number): string | null {
-  const before = text.slice(Math.max(0, index - 1_200), index);
-  const matches = [...before.matchAll(new RegExp(SECTION_NEAR.source, 'gi'))];
-  const last = matches[matches.length - 1];
-  return last ? clean(last[0]) : null;
-}
 
 /**
  * Is this a planning RECORD rather than the adopted code?
@@ -204,7 +197,7 @@ export function readAllowedUses(input: {
       out.push({
         use,
         status: heading.status,
-        section: sectionBefore(scoped.text, match.index) ?? scoped.section,
+        section: sectionCitationBefore(scoped.text, match.index) ?? scoped.section,
         quote: clean(scoped.text.slice(Math.max(0, match.index - 100), match.index + complete.length + 120)).slice(0, 700),
         sourceLabel: input.sourceLabel,
         sourceUrl: input.sourceUrl,

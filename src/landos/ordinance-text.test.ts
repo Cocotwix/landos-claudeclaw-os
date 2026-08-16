@@ -23,6 +23,8 @@ import {
   endsSentenceAt,
   flattenOrdinanceText,
   looksLikeTableOfContents,
+  sectionCitationBefore,
+  sectionCitationIn,
   statesMeasurement,
 } from './ordinance-text.js';
 import { readZoningStandards } from './current-zoning-determination.js';
@@ -177,6 +179,80 @@ describe('rejecting passages that are not rules', () => {
     const standards = readZoningStandards({ text: ordinance, districtCode: 'RS-15', ...SOURCE });
     expect(standards.minimumLotSize).toMatch(/15,000/);
     expect(standards.frontage).toBeNull();
+  });
+});
+
+
+// ── The section a rule is printed under ────────────────────────────────────
+//
+// Both failures below are on the live Fairview card. A citation nobody can
+// look up is worse than none: it sends a buyer to a section that says
+// something else, and it says it with the confidence of a quoted regulation.
+
+describe('citing the section a passage is actually printed under', () => {
+  const cite = (text: string, needle: string): string | null =>
+    sectionCitationBefore(flattenOrdinanceText(text), flattenOrdinanceText(text).indexOf(needle));
+
+  it('reads a bare numbered heading as the heading it is', () => {
+    // Fairview Article IV, verbatim. The lot-area rule is printed under
+    // "4-110.2 Lot Dimensions", which carries no keyword — so the old parser
+    // fell back to a cross-reference from an earlier sentence and cited a
+    // section about critical lots.
+    const text = 'Section 4-102.2 Critical Lots shall be designated on the face of the plat. '
+      + '4-110.2 Lot Dimensions Lot area shall comply with the minimum standards of the Zoning Ordinance.';
+    expect(cite(text, 'Lot area shall comply')).toBe('4-110.2');
+  });
+
+  it('keeps citing a normal headed section, including the spacing a PDF produces', () => {
+    expect(cite('SECTION 1 - 112 VARIANCES. Minimum lot frontage shall be two hundred (200) feet.', 'Minimum lot frontage'))
+      .toBe('SECTION 1 - 112');
+    expect(cite('Section 4.1 Minimum lot size shall be one (1) acre.', 'Minimum lot size')).toBe('Section 4.1');
+    expect(cite('Sec. 8-40. - Definitions. Minor subdivision means four lots.', 'Minor subdivision means')).toBe('Sec. 8-40');
+  });
+
+  it('never promotes a cross-reference over the heading the rule sits under', () => {
+    const text = '4-110 Lot Requirements Each lot shall have frontage on a public street, '
+      + 'as required by Section 4-102.2. Minimum lot size shall be one (1) acre.';
+    expect(cite(text, 'Minimum lot size')).toBe('4-110');
+  });
+
+  it('rejoins a heading number the PDF text layer split', () => {
+    // Fairview's adopted regulations print "2-101.203"; the text layer renders
+    // it "2 - 10 1.203". Reading from the space cites "1.203", which is not a
+    // section of anything.
+    const text = '2 - 101.202 Minor Subdivision A division of land where the conditions for major subdivision '
+      + 'review, as set out in Subsection 2 - 101.201, are not present. '
+      + '2 - 10 1.203 Partition A division of land creating not more than two lots.';
+    expect(cite(text, 'not more than two lots')).toBe('2 - 101.203');
+  });
+
+  it('never reads a PDF running footer as a section', () => {
+    const text = 'Fairview Subdivision Regulations Article 1 - Page 7 '
+      + 'Minimum lot size shall be one (1) acre where public sewer is not available.';
+    expect(cite(text, 'Minimum lot size')).toBeNull();
+    expect(cite('Article IV Page 3 of 41 Minimum lot size shall be one (1) acre.', 'Minimum lot size')).toBeNull();
+  });
+
+  it('never reads a quantity, a date or a list ordinal as a bare heading', () => {
+    expect(cite('Cul-de-sac streets shall not exceed 1,000 feet. Minimum lot size shall be one (1) acre.', 'Minimum lot size'))
+      .toBeNull();
+    expect(cite('Adopted March 4, 2019. Minimum lot size shall be one (1) acre.', 'Minimum lot size')).toBeNull();
+    expect(cite('Permitted uses shall be: 1. Single-family dwellings. Minimum lot size shall be one (1) acre.', 'Minimum lot size'))
+      .toBeNull();
+  });
+
+  it('falls back to a reference only when the document prints no heading in range', () => {
+    // Honest and usable: the regulations say where the rule lives even though
+    // this page never prints a heading. It is a fallback, never a preference.
+    expect(cite('as provided in Section 3-101, the plat shall be recorded with the register of deeds.', 'the plat shall be recorded'))
+      .toBe('Section 3-101');
+    expect(cite('Minimum lot size shall be one (1) acre.', 'Minimum lot size')).toBeNull();
+  });
+
+  it('opens a district block at the heading that introduces it', () => {
+    expect(sectionCitationIn('Section 4.1 RS-15 Residential Suburban District. Minimum lot size shall be 15,000 square feet.'))
+      .toBe('Section 4.1');
+    expect(sectionCitationIn('Minimum lot size shall be one (1) acre.')).toBeNull();
   });
 });
 
