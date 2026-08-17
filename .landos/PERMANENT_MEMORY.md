@@ -1,8 +1,8 @@
 # LandOS Permanent Operating Memory
 
 Process, scope, stop conditions, acceptance tiers and approval gates live in
-`.landos/CODING_SESSION_PROTOCOL.md`, the canonical
-contract; the active handoff in `.landos/CHECKPOINT.md`.
+`.landos/CODING_SESSION_PROTOCOL.md`, the canonical contract. Development state
+lives in the Control DB; generated `.landos/STATE.md` is the active handoff.
 
 ## Acceptance authority
 

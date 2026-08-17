@@ -25,7 +25,7 @@ export const CONTROL_DB_PATH = 'landos/control/landos-control.db';
 export const LEGACY_CONTROL_DB_PATH = '.landos/control/landos-control.db';
 export const STATE_PATH = '.landos/STATE.md';
 export const DEFAULT_AUTHORITY_REF = 'main';
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
 export const TASK_STATUSES = [
   'OPEN',
@@ -106,6 +106,46 @@ function adoptLegacyDatabase(root, file) {
   }
 }
 
+function schemaVersion(db) {
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'control_meta'").get();
+  if (!table) return null;
+  const raw = db.prepare("SELECT value FROM control_meta WHERE key = 'schema_version'").get()?.value;
+  if (raw === undefined) return null;
+  const version = Number(raw);
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new Error(`Development Control DB has invalid schema version ${String(raw)}`);
+  }
+  return version;
+}
+
+function assertSchemaCompatible(db, { allowOlder = false } = {}) {
+  const version = schemaVersion(db);
+  if (version === null) {
+    if (allowOlder) return null;
+    throw new Error('Development Control DB is uninitialized; run landos:control init with the current client');
+  }
+  if (version > SCHEMA_VERSION) {
+    throw new Error(
+      `Development Control DB schema ${version} is newer than this client supports (${SCHEMA_VERSION}); refusing access without mutation`,
+    );
+  }
+  if (!allowOlder && version < SCHEMA_VERSION) {
+    throw new Error(
+      `Development Control DB schema ${version} requires explicit upgrade to ${SCHEMA_VERSION}; run landos:control init with the current client`,
+    );
+  }
+  return version;
+}
+
+function configureConnection(db, { writable }) {
+  db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
+  if (writable) {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = FULL');
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS control_meta (
@@ -139,6 +179,7 @@ function migrate(db) {
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES development_task(id),
       worker TEXT NOT NULL,
+      primary_writer_id TEXT,
       approach TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'IN_PROGRESS'
         CHECK (status IN ('IN_PROGRESS','CANDIDATE','VERIFIED','ACCEPTANCE_PENDING','ACCEPTED','FAILED')),
@@ -161,6 +202,24 @@ function migrate(db) {
         status NOT IN ('CANDIDATE','VERIFIED','ACCEPTANCE_PENDING','ACCEPTED')
         OR candidate_git_sha IS NOT NULL
       )
+    );
+
+    -- A writable workspace belongs to one exact task/attempt/writer tuple.
+    -- Git remains the worktree authority; this table makes that authority
+    -- mandatory before the associated attempt may be writable.
+    CREATE TABLE IF NOT EXISTS managed_workspace (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES development_task(id),
+      attempt_id TEXT NOT NULL REFERENCES development_attempt(id),
+      writer_id TEXT NOT NULL,
+      workspace_path TEXT NOT NULL UNIQUE,
+      branch TEXT NOT NULL,
+      base_git_sha TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('ACTIVE','RELEASED','STALE')),
+      created_at TEXT NOT NULL,
+      released_at TEXT,
+      CHECK (length(base_git_sha) = 40 AND base_git_sha NOT GLOB '*[^0-9a-f]*'),
+      CHECK ((status = 'RELEASED' AND released_at IS NOT NULL) OR status <> 'RELEASED')
     );
 
     CREATE TABLE IF NOT EXISTS development_evidence (
@@ -220,6 +279,15 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_verification_attempt ON development_verification(attempt_id, recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_acceptance_state ON acceptance_operation(state, prepared_at);
 
+    CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_task
+      ON managed_workspace(task_id) WHERE status = 'ACTIVE';
+    CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_attempt
+      ON managed_workspace(attempt_id) WHERE status = 'ACTIVE';
+    CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_writer
+      ON managed_workspace(writer_id) WHERE status = 'ACTIVE';
+    CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_branch
+      ON managed_workspace(branch) WHERE status = 'ACTIVE';
+
     CREATE TRIGGER IF NOT EXISTS task_acceptance_requires_gate
     BEFORE UPDATE OF status ON development_task
     WHEN NEW.status = 'ACCEPTED' AND NOT EXISTS (
@@ -246,27 +314,191 @@ function migrate(db) {
     END;
   `);
 
+  // Older accepted Slice 1 databases remain readable.  New writable attempts
+  // always populate this field; existing historical rows are not rewritten.
+  const columns = db.prepare('PRAGMA table_info(development_attempt)').all();
+  if (!columns.some((column) => column.name === 'primary_writer_id')) {
+    db.exec('ALTER TABLE development_attempt ADD COLUMN primary_writer_id TEXT');
+  }
+  // The rejected chain accidentally created this index over attempt_id.  The
+  // repaired schema makes writer uniqueness explicit while retaining a second
+  // attempt uniqueness index above.
+  db.exec('DROP INDEX IF EXISTS one_active_workspace_per_writer');
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_writer
+      ON managed_workspace(writer_id) WHERE status = 'ACTIVE';
+
+    CREATE TRIGGER IF NOT EXISTS writable_attempt_requires_workspace_insert
+    BEFORE INSERT ON development_attempt
+    WHEN NEW.status = 'IN_PROGRESS' AND (
+      NEW.primary_writer_id IS NULL OR
+      (SELECT COUNT(*) FROM managed_workspace workspace
+        WHERE workspace.status = 'ACTIVE'
+          AND workspace.task_id = NEW.task_id
+          AND workspace.attempt_id = NEW.id
+          AND workspace.writer_id = NEW.primary_writer_id
+          AND workspace.base_git_sha = NEW.base_git_sha) <> 1
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'writable attempt requires exactly one active managed workspace owned by its primary writer');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS writable_attempt_requires_workspace_update
+    BEFORE UPDATE OF status, task_id, primary_writer_id, base_git_sha ON development_attempt
+    WHEN NEW.status = 'IN_PROGRESS' AND (
+      NEW.primary_writer_id IS NULL OR
+      (SELECT COUNT(*) FROM managed_workspace workspace
+        WHERE workspace.status = 'ACTIVE'
+          AND workspace.task_id = NEW.task_id
+          AND workspace.attempt_id = NEW.id
+          AND workspace.writer_id = NEW.primary_writer_id
+          AND workspace.base_git_sha = NEW.base_git_sha) <> 1
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'writable attempt requires exactly one active managed workspace owned by its primary writer');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS active_workspace_requires_matching_attempt
+    BEFORE INSERT ON managed_workspace
+    WHEN NEW.status = 'ACTIVE' AND NOT EXISTS (
+      SELECT 1 FROM development_attempt attempt
+      WHERE attempt.id = NEW.attempt_id
+        AND attempt.task_id = NEW.task_id
+        AND attempt.primary_writer_id = NEW.writer_id
+        AND attempt.base_git_sha = NEW.base_git_sha
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'active managed workspace must match its task, attempt, base commit, and primary writer');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS active_workspace_update_requires_matching_attempt
+    BEFORE UPDATE OF status, task_id, attempt_id, writer_id, base_git_sha ON managed_workspace
+    WHEN NEW.status = 'ACTIVE' AND NOT EXISTS (
+      SELECT 1 FROM development_attempt attempt
+      WHERE attempt.id = NEW.attempt_id
+        AND attempt.task_id = NEW.task_id
+        AND attempt.primary_writer_id = NEW.writer_id
+        AND attempt.base_git_sha = NEW.base_git_sha
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'active managed workspace must match its task, attempt, base commit, and primary writer');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS writable_attempt_workspace_release_refused
+    BEFORE UPDATE OF status ON managed_workspace
+    WHEN OLD.status = 'ACTIVE' AND NEW.status <> 'ACTIVE' AND EXISTS (
+      SELECT 1 FROM development_attempt attempt
+      WHERE attempt.id = OLD.attempt_id AND attempt.status = 'IN_PROGRESS'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'cannot release the active workspace of a writable attempt');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS writable_attempt_workspace_delete_refused
+    BEFORE DELETE ON managed_workspace
+    WHEN OLD.status = 'ACTIVE' AND EXISTS (
+      SELECT 1 FROM development_attempt attempt
+      WHERE attempt.id = OLD.attempt_id AND attempt.status = 'IN_PROGRESS'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'cannot delete the active workspace of a writable attempt');
+    END;
+  `);
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS control_schema_version_monotonic_update
+    BEFORE UPDATE OF value ON control_meta
+    WHEN OLD.key = 'schema_version'
+      AND CAST(NEW.value AS INTEGER) < CAST(OLD.value AS INTEGER)
+    BEGIN
+      SELECT RAISE(ABORT, 'Development Control DB schema version cannot be downgraded');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS control_schema_version_delete_refused
+    BEFORE DELETE ON control_meta
+    WHEN OLD.key = 'schema_version'
+    BEGIN
+      SELECT RAISE(ABORT, 'Development Control DB schema version cannot be deleted');
+    END;
+  `);
+
   db.prepare(`
     INSERT INTO control_meta(key, value) VALUES ('schema_version', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(String(SCHEMA_VERSION));
 }
 
-export function openControlState(root, { dbPath, readonly = false } = {}) {
-  const file = resolveControlDatabasePath(root, dbPath);
-  if (!readonly) {
-    if (!dbPath) adoptLegacyDatabase(root, file);
-    mkdirSync(path.dirname(file), { recursive: true });
+function openDatabase(file, { writable }) {
+  const db = new Database(file, writable ? undefined : { readonly: true, fileMustExist: true });
+  try {
+    configureConnection(db, { writable });
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
   }
-  const db = new Database(file, readonly ? { readonly: true, fileMustExist: true } : undefined);
-  db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
-  if (!readonly) {
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = FULL');
-    migrate(db);
-  }
+}
+
+function stateHandle(db, file) {
   return { db, file, close: () => db.close() };
+}
+
+export function initializeControlState(root, { dbPath } = {}) {
+  const file = resolveControlDatabasePath(root, dbPath);
+  if (!dbPath) adoptLegacyDatabase(root, file);
+  mkdirSync(path.dirname(file), { recursive: true });
+  if (existsSync(file)) {
+    const probe = openDatabase(file, { writable: false });
+    try { assertSchemaCompatible(probe, { allowOlder: true }); }
+    finally { probe.close(); }
+  }
+  const db = openDatabase(file, { writable: true });
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      assertSchemaCompatible(db, { allowOlder: true });
+      migrate(db);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    assertSchemaCompatible(db);
+    return stateHandle(db, file);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+export function openControlState(root, { dbPath } = {}) {
+  const file = resolveControlDatabasePath(root, dbPath);
+  const db = openDatabase(file, { writable: false });
+  try {
+    assertSchemaCompatible(db);
+    return stateHandle(db, file);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+export function openControlStateWriter(root, { dbPath } = {}) {
+  const file = resolveControlDatabasePath(root, dbPath);
+  if (!existsSync(file)) {
+    throw new Error('Development Control DB is uninitialized; run landos:control init with the current client');
+  }
+  const probe = openDatabase(file, { writable: false });
+  try { assertSchemaCompatible(probe); }
+  finally { probe.close(); }
+  const db = openDatabase(file, { writable: true });
+  try {
+    assertSchemaCompatible(db);
+    return stateHandle(db, file);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 function taskFor(db, taskId) {
@@ -303,31 +535,187 @@ export function startAttempt(db, input, now) {
   if (task.status === 'ACCEPTANCE_PENDING') {
     throw new Error(`task ${task.id} has an ACCEPTANCE_PENDING operation; reconcile it before another attempt`);
   }
+  // Keep this exported name as an explicit refusal for integrations that used
+  // the Slice 1 lifecycle.  A writable attempt may only come from the atomic
+  // allocation below, which has a native Git worktree before it becomes live.
+  throw new Error('startAttempt cannot create a writable attempt without an atomic managed workspace allocation; use startManagedAttempt');
+}
+
+function gitWorktrees(root) {
+  const result = git(['worktree', 'list', '--porcelain'], root);
+  if (result.status !== 0) throw new Error('cannot enumerate registered Git worktrees');
+  const records = [];
+  let current = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      if (current) records.push(current);
+      current = { path: path.resolve(line.slice('worktree '.length)), branch: null, head: null };
+    } else if (current && line.startsWith('HEAD ')) current.head = line.slice(5).trim();
+    else if (current && line.startsWith('branch ')) current.branch = line.slice(7).replace(/^refs\/heads\//, '').trim();
+  }
+  if (current) records.push(current);
+  return records;
+}
+
+function workspaceFor(db, workspaceId) {
+  const workspace = db.prepare('SELECT * FROM managed_workspace WHERE id = ?').get(workspaceId);
+  if (!workspace) throw new Error(`unknown managed workspace ${workspaceId}`);
+  return workspace;
+}
+
+function workspaceIntegrity(root, workspace) {
+  const registered = gitWorktrees(root).find((item) => item.path === workspace.workspace_path) ?? null;
+  if (workspace.status === 'RELEASED') return { state: 'RELEASED', registered: false, dirty: false };
+  if (!existsSync(workspace.workspace_path)) return { state: 'MISSING', registered: !!registered, dirty: false };
+  if (!registered) return { state: 'UNREGISTERED', registered: false, dirty: false };
+  const dirty = gitStatusText(workspace.workspace_path).trim().length > 0;
+  if (registered.branch !== workspace.branch) return { state: 'BRANCH_MISMATCH', registered: true, dirty };
+  const baseAncestor = git(['merge-base', '--is-ancestor', workspace.base_git_sha, 'HEAD'], workspace.workspace_path);
+  if (baseAncestor.status !== 0) return { state: 'BASE_MISMATCH', registered: true, dirty };
+  return { state: 'ACTIVE', registered: true, dirty };
+}
+
+function managedWorkspaceInput(root, input) {
+  const workspacePath = path.resolve(required(input.workspacePath, 'workspace path'));
+  const baseGitSha = resolveCommit(root, required(input.baseGitSha, 'workspace base Git SHA'));
+  return {
+    id: input.workspaceId ? required(input.workspaceId, 'workspace id') : `workspace-${randomUUID()}`,
+    writerId: required(input.writerId, 'primary writer identity'),
+    workspacePath,
+    branch: required(input.branch, 'task branch'),
+    baseGitSha,
+  };
+}
+
+function assertWorkspaceAvailable(db, root, taskId, attemptId, workspace) {
+  if (existsSync(workspace.workspacePath) || gitWorktrees(root).some((item) => item.path === workspace.workspacePath)) {
+    throw new Error(`workspace path is already present or registered: ${workspace.workspacePath}`);
+  }
+  const active = db.prepare(`
+    SELECT id FROM managed_workspace
+    WHERE status = 'ACTIVE' AND (
+      task_id = ? OR attempt_id = ? OR writer_id = ? OR branch = ? OR workspace_path = ?
+    ) LIMIT 1
+  `).get(taskId, attemptId, workspace.writerId, workspace.branch, workspace.workspacePath);
+  if (active) throw new Error(`active managed workspace ${active.id} already owns this task, attempt, writer, branch, or path`);
+}
+
+export function startManagedAttempt(db, root, input, now) {
+  const task = taskFor(db, input.taskId);
+  if (task.status === 'ACCEPTED') throw new Error(`task ${task.id} is already ACCEPTED`);
+  if (task.status === 'ACCEPTANCE_PENDING') {
+    throw new Error(`task ${task.id} has an ACCEPTANCE_PENDING operation; reconcile it before another attempt`);
+  }
   const at = nowIso(now);
   const attemptId = input.id ? required(input.id, 'attempt id') : `attempt-${randomUUID()}`;
-  const baseSha = input.baseGitSha ? normalizedSha(input.baseGitSha, 'base Git SHA') : null;
-  const transaction = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO development_attempt(
-        id, task_id, worker, approach, status, base_git_sha, started_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'IN_PROGRESS', ?, ?, ?)
-    `).run(
-      attemptId,
-      task.id,
-      required(input.worker, 'worker'),
-      required(input.approach, 'attempt approach'),
-      baseSha,
-      at,
-      at,
-    );
-    db.prepare(`
-      UPDATE development_task
-      SET status = 'IN_PROGRESS', blocker = NULL, next_action = ?, updated_at = ?
-      WHERE id = ?
-    `).run(input.nextAction ? required(input.nextAction, 'attempt next action') : 'Complete the attempt and submit a candidate.', at, task.id);
-  });
-  transaction();
-  return attemptFor(db, attemptId);
+  const workspace = managedWorkspaceInput(root, input);
+  assertWorkspaceAvailable(db, root, task.id, attemptId, workspace);
+
+  // Git creates the native worktree first.  Until the following database
+  // transaction commits there is no writable attempt.  The transaction inserts
+  // an internal non-writable row, ownership record, then changes the attempt to
+  // IN_PROGRESS; schema triggers prove the final transition has exactly one
+  // matching active owner.  A database failure removes only this just-created,
+  // clean Git worktree.
+  const add = git(['worktree', 'add', '-b', workspace.branch, workspace.workspacePath, workspace.baseGitSha], root);
+  if (add.status !== 0) throw new Error(`Git could not create managed workspace: ${add.stderr.trim() || add.stdout.trim()}`);
+  try {
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO development_attempt(
+          id, task_id, worker, primary_writer_id, approach, status, base_git_sha, started_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'FAILED', ?, ?, ?)
+      `).run(
+        attemptId,
+        task.id,
+        required(input.worker, 'worker'),
+        workspace.writerId,
+        required(input.approach, 'attempt approach'),
+        workspace.baseGitSha,
+        at,
+        at,
+      );
+      db.prepare(`
+        INSERT INTO managed_workspace(
+          id, task_id, attempt_id, writer_id, workspace_path, branch, base_git_sha, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+      `).run(
+        workspace.id, task.id, attemptId, workspace.writerId,
+        workspace.workspacePath, workspace.branch, workspace.baseGitSha, at,
+      );
+      db.prepare(`
+        UPDATE development_attempt SET status = 'IN_PROGRESS', updated_at = ? WHERE id = ?
+      `).run(at, attemptId);
+      db.prepare(`
+        UPDATE development_task
+        SET status = 'IN_PROGRESS', blocker = NULL, next_action = ?, updated_at = ?
+        WHERE id = ?
+      `).run(input.nextAction ? required(input.nextAction, 'attempt next action') : 'Complete the attempt and submit a candidate.', at, task.id);
+    })();
+  } catch (error) {
+    const remove = git(['worktree', 'remove', workspace.workspacePath], root);
+    if (remove.status !== 0) {
+      throw new Error(`managed attempt allocation failed and its untouched workspace could not be removed: ${remove.stderr.trim() || remove.stdout.trim()}`);
+    }
+    throw error;
+  }
+  return { attempt: attemptFor(db, attemptId), workspace: workspaceFor(db, workspace.id) };
+}
+
+export function inspectManagedWorkspace(db, root, input = {}) {
+  const records = input.id
+    ? [workspaceFor(db, required(input.id, 'workspace id'))]
+    : db.prepare('SELECT * FROM managed_workspace ORDER BY created_at, id').all();
+  return records.map((workspace) => ({ ...workspace, integrity: workspaceIntegrity(root, workspace) }));
+}
+
+export function validateManagedWorkspace(db, root, input) {
+  const taskId = required(input.taskId, 'task id');
+  const attemptId = required(input.attemptId, 'attempt id');
+  const writerId = required(input.writerId, 'primary writer identity');
+  const attempt = attemptFor(db, attemptId);
+  if (attempt.task_id !== taskId) throw new Error(`attempt ${attempt.id} does not belong to task ${taskId}`);
+  if (attempt.status !== 'IN_PROGRESS') throw new Error(`attempt ${attempt.id} is not writable`);
+  if (attempt.primary_writer_id !== writerId) throw new Error(`writer ${writerId} does not own attempt ${attempt.id}`);
+  const workspaces = db.prepare(`
+    SELECT * FROM managed_workspace
+    WHERE task_id = ? AND attempt_id = ? AND writer_id = ? AND status = 'ACTIVE'
+    ORDER BY id
+  `).all(taskId, attemptId, writerId);
+  if (workspaces.length !== 1) {
+    throw new Error(`writable attempt ${attempt.id} requires exactly one active managed workspace for its primary writer`);
+  }
+  const workspace = workspaces[0];
+  if (path.resolve(required(input.cwd, 'executing working directory')) !== workspace.workspace_path) {
+    throw new Error(`executing working directory does not match managed workspace ${workspace.id}`);
+  }
+  const integrity = workspaceIntegrity(root, workspace);
+  if (integrity.state !== 'ACTIVE') throw new Error(`managed workspace ${workspace.id} is ${integrity.state}`);
+  return workspace;
+}
+
+export function releaseManagedWorkspace(db, root, input, now) {
+  const workspace = workspaceFor(db, required(input.id, 'workspace id'));
+  const taskId = required(input.taskId, 'task identity');
+  const attemptId = required(input.attemptId, 'attempt identity');
+  const writerId = required(input.writerId, 'primary writer identity');
+  if (workspace.task_id !== taskId) throw new Error(`task ${taskId} does not own managed workspace ${workspace.id}`);
+  if (workspace.attempt_id !== attemptId) throw new Error(`attempt ${attemptId} does not own managed workspace ${workspace.id}`);
+  if (workspace.writer_id !== writerId) throw new Error(`writer ${writerId} does not own managed workspace ${workspace.id}`);
+  if (workspace.status !== 'ACTIVE') throw new Error(`managed workspace ${workspace.id} is not actively owned`);
+  const attempt = attemptFor(db, attemptId);
+  if (attempt.primary_writer_id !== writerId) throw new Error(`writer ${writerId} does not own attempt ${attemptId}`);
+  if (attempt.status === 'IN_PROGRESS') throw new Error(`cannot release managed workspace ${workspace.id} while its attempt is writable`);
+  const integrity = workspaceIntegrity(root, workspace);
+  if (integrity.state !== 'ACTIVE') {
+    db.prepare("UPDATE managed_workspace SET status = 'STALE' WHERE id = ?").run(workspace.id);
+    throw new Error(`managed workspace ${workspace.id} metadata is ${integrity.state}; no files were removed`);
+  }
+  if (integrity.dirty) throw new Error(`managed workspace ${workspace.id} has uncommitted work; refusing destructive cleanup`);
+  const remove = git(['worktree', 'remove', workspace.workspace_path], root);
+  if (remove.status !== 0) throw new Error(`Git could not release managed workspace: ${remove.stderr.trim() || remove.stdout.trim()}`);
+  db.prepare("UPDATE managed_workspace SET status = 'RELEASED', released_at = ? WHERE id = ?").run(nowIso(now), workspace.id);
+  return workspaceFor(db, workspace.id);
 }
 
 export function addEvidence(db, input, now) {

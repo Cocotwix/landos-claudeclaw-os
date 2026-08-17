@@ -221,7 +221,7 @@ For LandOS coding work, load the shared agent-neutral process and compact memory
 
 @.landos/PERMANENT_MEMORY.md
 
-@.landos/CHECKPOINT.md
+@.landos/STATE.md
 
 The imported contract is the highest agent doctrine and carries the whole
 process: startup, scope, stop conditions, acceptance tiers, approval gates, and

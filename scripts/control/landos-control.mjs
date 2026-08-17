@@ -13,15 +13,19 @@ import {
   generateStateFile,
   listFailures,
   liveGitFacts,
+  initializeControlState,
   openControlState,
+  openControlStateWriter,
   prepareAcceptance,
   reconcileAcceptance,
   recordVerification,
   resolveCommit,
   runVerification,
-  startAttempt,
+  startManagedAttempt,
   submitCandidate,
   supersedeAcceptance,
+  inspectManagedWorkspace,
+  releaseManagedWorkspace,
 } from './control-state.mjs';
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -70,12 +74,23 @@ function taskSummary(task) {
   return `${task.id} [${task.status}] ${task.title}\nnext: ${task.next_action}`;
 }
 
+function isReadOnlyOperation(group, action) {
+  return group === 'status'
+    || group === 'failures'
+    || group === 'state'
+    || (group === 'workspace' && (action === 'inspect' || action === undefined));
+}
+
 export async function runCli(argv, { root: rootOverride } = {}) {
   const { positional, flags } = parseArgs(argv);
   const root = path.resolve(optionalFlag(flags, 'root') ?? rootOverride ?? DEFAULT_ROOT);
   const dbPath = optionalFlag(flags, 'db');
   const [group = 'status', action] = positional;
-  const state = openControlState(root, { dbPath });
+  const state = group === 'init'
+    ? initializeControlState(root, { dbPath })
+    : isReadOnlyOperation(group, action)
+      ? openControlState(root, { dbPath })
+      : openControlStateWriter(root, { dbPath });
   const refresh = () => generateStateFile(state.db, root);
   try {
     if (group === 'init') {
@@ -101,16 +116,37 @@ export async function runCli(argv, { root: rootOverride } = {}) {
       const base = optionalFlag(flags, 'base')
         ? resolveCommit(root, flags.base)
         : liveGitFacts(root).head;
-      const attempt = startAttempt(state.db, {
+      const allocation = startManagedAttempt(state.db, root, {
         id: optionalFlag(flags, 'id'),
         taskId: requireFlag(flags, 'task'),
         worker: requireFlag(flags, 'worker'),
+        writerId: requireFlag(flags, 'writer'),
         approach: requireFlag(flags, 'approach'),
         baseGitSha: base,
+        workspaceId: optionalFlag(flags, 'workspace-id'),
+        workspacePath: requireFlag(flags, 'path'),
+        branch: requireFlag(flags, 'branch'),
         nextAction: optionalFlag(flags, 'next-action'),
       });
       refresh();
-      output(attempt, flags.json);
+      output(allocation, flags.json);
+      return 0;
+    }
+
+    if (group === 'workspace' && (action === 'inspect' || action === undefined)) {
+      output(inspectManagedWorkspace(state.db, root, { id: optionalFlag(flags, 'id') }), flags.json);
+      return 0;
+    }
+
+    if (group === 'workspace' && action === 'release') {
+      const workspace = releaseManagedWorkspace(state.db, root, {
+        id: requireFlag(flags, 'id'),
+        taskId: requireFlag(flags, 'task'),
+        attemptId: requireFlag(flags, 'attempt'),
+        writerId: requireFlag(flags, 'writer'),
+      });
+      refresh();
+      output(workspace, flags.json);
       return 0;
     }
 
@@ -258,7 +294,9 @@ const USAGE = `LandOS Development Control Spine
 
   npm run landos:control -- init
   npm run landos:control -- task create --id <id> --title <text> --outcome <text> --next-action <text>
-  npm run landos:control -- attempt start --task <id> --worker <name> --approach <text> [--id <id>]
+  npm run landos:control -- attempt start --task <id> --worker <name> --writer <primary-writer> --path <new-worktree-path> --branch <task-branch> --approach <text> [--id <id>] [--base <sha>]
+  npm run landos:control -- workspace inspect [--id <id>]
+  npm run landos:control -- workspace release --id <id> --task <task-id> --attempt <attempt-id> --writer <primary-writer>
   npm run landos:control -- evidence add --attempt <id> --kind <kind> --summary <text> [--path <path>]
   npm run landos:control -- candidate submit --attempt <id> --commit <sha> --result <text>
   npm run landos:control -- verification run --attempt <id> --command <command> [--next-direction <text>]

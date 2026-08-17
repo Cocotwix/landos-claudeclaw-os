@@ -2,7 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,17 +12,23 @@ import {
   addEvidence,
   controlSnapshot,
   createTask,
+  failAttempt,
   generateStateFile,
+  initializeControlState,
   listFailures,
   openControlState,
+  openControlStateWriter,
   prepareAcceptance,
   reconcileAcceptance,
   renderStateMarkdown,
   resolveControlDatabasePath,
+  releaseManagedWorkspace,
   runVerification,
   startAttempt,
+  startManagedAttempt,
   submitCandidate,
   supersedeAcceptance,
+  validateManagedWorkspace,
 } from './control-state.mjs';
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'landos-control.mjs');
@@ -36,6 +42,7 @@ function runGit(dir, ...args) {
 
 function tempRepo() {
   const dir = mkdtempSync(path.join(tmpdir(), 'landos-control-'));
+  const managedWorkspaces = new Set();
   runGit(dir, 'init', '-q', '-b', 'main');
   runGit(dir, 'config', 'user.email', 'control@example.com');
   runGit(dir, 'config', 'user.name', 'Control Spine Test');
@@ -48,8 +55,29 @@ function tempRepo() {
     dir,
     baseSha,
     dbPath: path.join(dir, '.git', 'landos', 'control', 'landos-control.db'),
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    managedWorkspaces,
+    cleanup: () => {
+      for (const workspace of managedWorkspaces) {
+        spawnSync('git', ['worktree', 'remove', '--force', workspace], { cwd: dir, encoding: 'utf8', windowsHide: true });
+      }
+      rmSync(dir, { recursive: true, force: true });
+    },
   };
+}
+
+function startOwnedAttempt(state, repo, input, now) {
+  const attemptId = input.id ?? `attempt-${Math.random().toString(16).slice(2)}`;
+  const workspacePath = input.workspacePath ?? `${repo.dir}-${attemptId}-workspace`;
+  const allocation = startManagedAttempt(state.db, repo.dir, {
+    ...input,
+    id: attemptId,
+    writerId: input.writerId ?? `${input.worker}-${attemptId}`,
+    workspacePath,
+    branch: input.branch ?? `task/${attemptId}`,
+    baseGitSha: input.baseGitSha ?? repo.baseSha,
+  }, now);
+  repo.managedWorkspaces.add(workspacePath);
+  return allocation;
 }
 
 test('separate Git worktrees resolve and operate on one shared canonical database', (t) => {
@@ -62,7 +90,7 @@ test('separate Git worktrees resolve and operate on one shared canonical databas
   runGit(repo.dir, 'worktree', 'add', '-q', '-b', 'second-worktree', second);
 
   const legacyPath = path.join(repo.dir, '.landos', 'control', 'landos-control.db');
-  const legacy = openControlState(repo.dir, { dbPath: legacyPath });
+  const legacy = initializeControlState(repo.dir, { dbPath: legacyPath });
   createTask(legacy.db, {
     id: 'shared-control-state',
     title: 'Share canonical state across worktrees',
@@ -76,18 +104,19 @@ test('separate Git worktrees resolve and operate on one shared canonical databas
   assert.equal(secondPath, firstPath);
   assert.equal(firstPath, repo.dbPath);
 
-  const fromSecond = openControlState(second);
+  const fromSecond = initializeControlState(second);
   assert.equal(existsSync(firstPath), true);
   assert.equal(existsSync(legacyPath), true);
   assert.equal(existsSync(path.join(second, '.landos', 'control', 'landos-control.db')), false);
   assert.equal(controlSnapshot(fromSecond.db).activeTask.id, 'shared-control-state');
-  startAttempt(fromSecond.db, {
+  const allocation = startOwnedAttempt(fromSecond, repo, {
     id: 'shared-attempt',
     taskId: 'shared-control-state',
     worker: 'second-worktree',
     approach: 'Open the shared database through the second worktree.',
     baseGitSha: repo.baseSha,
   });
+  assert.equal(allocation.attempt.status, 'IN_PROGRESS');
   fromSecond.close();
 
   const fromFirst = openControlState(repo.dir);
@@ -97,6 +126,98 @@ test('separate Git worktrees resolve and operate on one shared canonical databas
     'second-worktree',
   );
   fromFirst.close();
+});
+
+test('schema version is monotonic and writers require explicit current-client initialization', (t) => {
+  const repo = tempRepo();
+  const state = initializeControlState(repo.dir);
+  t.after(() => { state.close(); repo.cleanup(); });
+  assert.equal(state.db.prepare("SELECT value FROM control_meta WHERE key = 'schema_version'").get().value, '4');
+  assert.throws(
+    () => state.db.prepare("UPDATE control_meta SET value = '3' WHERE key = 'schema_version'").run(),
+    /cannot be downgraded/i,
+  );
+  assert.equal(state.db.prepare("SELECT value FROM control_meta WHERE key = 'schema_version'").get().value, '4');
+});
+
+test('managed allocation is the only writable attempt path and validates exact owner identity', (t) => {
+  const repo = tempRepo();
+  const state = initializeControlState(repo.dir);
+  t.after(() => { state.close(); repo.cleanup(); });
+  createTask(state.db, { id: 'owned-task', title: 'Owned', outcome: 'One writable workspace.', nextAction: 'Allocate.' });
+  createTask(state.db, { id: 'other-task', title: 'Other', outcome: 'Cannot take another workspace.', nextAction: 'Wait.' });
+
+  assert.throws(() => startAttempt(state.db, {
+    id: 'unowned-attempt', taskId: 'owned-task', worker: 'codex', approach: 'Bypass workspace ownership.', baseGitSha: repo.baseSha,
+  }), /managed workspace allocation/i);
+  assert.throws(() => state.db.prepare(`
+    INSERT INTO development_attempt(
+      id, task_id, worker, primary_writer_id, approach, status, base_git_sha, started_at, updated_at
+    ) VALUES ('sql-bypass', 'owned-task', 'codex', 'sql-writer', 'Bypass the allocator.', 'IN_PROGRESS', ?, '2026-08-17T00:00:00.000Z', '2026-08-17T00:00:00.000Z')
+  `).run(repo.baseSha), /requires exactly one active managed workspace/i);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM development_attempt WHERE status = 'IN_PROGRESS'").get().count, 0);
+
+  const allocation = startOwnedAttempt(state, repo, {
+    id: 'owned-attempt', taskId: 'owned-task', worker: 'codex', writerId: 'writer-owned',
+    approach: 'Allocate a native owned workspace.', baseGitSha: repo.baseSha,
+  });
+  const { workspace } = allocation;
+  assert.equal(allocation.attempt.status, 'IN_PROGRESS');
+  assert.equal(workspace.status, 'ACTIVE');
+  assert.equal(workspace.writer_id, 'writer-owned');
+  assert.throws(() => startOwnedAttempt(state, repo, {
+    id: 'same-writer', taskId: 'other-task', worker: 'claude', writerId: 'writer-owned',
+    approach: 'Try to reuse an active primary writer.', baseGitSha: repo.baseSha,
+  }), /active managed workspace/i);
+  const other = startOwnedAttempt(state, repo, {
+    id: 'other-attempt', taskId: 'other-task', worker: 'claude', writerId: 'other-writer',
+    approach: 'Create a distinct owned workspace for wrong-attempt checks.', baseGitSha: repo.baseSha,
+  });
+
+  assert.throws(() => validateManagedWorkspace(state.db, repo.dir, {
+    taskId: 'owned-task', attemptId: 'owned-attempt', writerId: 'writer-owned', cwd: repo.dir,
+  }), /working directory/i);
+  assert.throws(() => validateManagedWorkspace(state.db, repo.dir, {
+    taskId: 'other-task', attemptId: 'owned-attempt', writerId: 'writer-owned', cwd: workspace.workspace_path,
+  }), /does not belong/i);
+  assert.throws(() => validateManagedWorkspace(state.db, repo.dir, {
+    taskId: 'owned-task', attemptId: 'other-attempt', writerId: 'other-writer', cwd: other.workspace.workspace_path,
+  }), /does not belong/i);
+  assert.throws(() => validateManagedWorkspace(state.db, repo.dir, {
+    taskId: 'owned-task', attemptId: 'owned-attempt', writerId: 'wrong-writer', cwd: workspace.workspace_path,
+  }), /does not own attempt/i);
+  assert.equal(validateManagedWorkspace(state.db, repo.dir, {
+    taskId: 'owned-task', attemptId: 'owned-attempt', writerId: 'writer-owned', cwd: workspace.workspace_path,
+  }).id, workspace.id);
+
+  assert.throws(() => releaseManagedWorkspace(state.db, repo.dir, {
+    id: workspace.id, taskId: 'other-task', attemptId: 'owned-attempt', writerId: 'writer-owned',
+  }), /does not own/i);
+  assert.throws(() => releaseManagedWorkspace(state.db, repo.dir, {
+    id: workspace.id, taskId: 'owned-task', attemptId: 'other-attempt', writerId: 'other-writer',
+  }), /does not own/i);
+  assert.throws(() => releaseManagedWorkspace(state.db, repo.dir, {
+    id: workspace.id, taskId: 'owned-task', attemptId: 'owned-attempt', writerId: 'wrong-writer',
+  }), /does not own/i);
+  assert.throws(() => releaseManagedWorkspace(state.db, repo.dir, {
+    id: workspace.id, taskId: 'owned-task', attemptId: 'owned-attempt', writerId: 'writer-owned',
+  }), /while its attempt is writable/i);
+
+  failAttempt(state.db, { attemptId: 'owned-attempt', result: 'Finish release proof.' });
+  writeFileSync(path.join(workspace.workspace_path, 'primary-dirty.txt'), 'primary writer work\n');
+  assert.throws(() => releaseManagedWorkspace(state.db, repo.dir, {
+    id: workspace.id, taskId: 'owned-task', attemptId: 'owned-attempt', writerId: 'writer-owned',
+  }), /uncommitted work/i);
+  assert.equal(existsSync(path.join(workspace.workspace_path, 'primary-dirty.txt')), true);
+  rmSync(path.join(workspace.workspace_path, 'primary-dirty.txt'));
+  assert.equal(releaseManagedWorkspace(state.db, repo.dir, {
+    id: workspace.id, taskId: 'owned-task', attemptId: 'owned-attempt', writerId: 'writer-owned',
+  }).status, 'RELEASED');
+  repo.managedWorkspaces.delete(workspace.workspace_path);
+  assert.equal(existsSync(workspace.workspace_path), false);
+  assert.throws(() => releaseManagedWorkspace(state.db, repo.dir, {
+    id: workspace.id, taskId: 'owned-task', attemptId: 'owned-attempt', writerId: 'writer-owned',
+  }), /not actively owned/i);
 });
 
 function makeCandidate(repo) {
@@ -111,7 +232,7 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
   const repo = tempRepo();
   t.after(repo.cleanup);
   const candidateSha = makeCandidate(repo);
-  const state = openControlState(repo.dir);
+  const state = initializeControlState(repo.dir);
   t.after(() => {
     try { state.close(); } catch { /* already closed for fresh-process proof */ }
   });
@@ -122,7 +243,7 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
     outcome: 'A verified candidate is accepted only at its exact main commit.',
     nextAction: 'Start the first attempt.',
   }, at('2026-08-16T20:00:00.000Z'));
-  startAttempt(state.db, {
+  startOwnedAttempt(state, repo, {
     id: 'attempt-pass',
     taskId: 'slice-1',
     worker: 'codex',
@@ -180,7 +301,7 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
   runGit(repo.dir, 'merge', '--ff-only', '-q', 'candidate');
   assert.equal(runGit(repo.dir, 'rev-parse', 'main'), candidateSha);
 
-  const recovered = openControlState(repo.dir);
+  const recovered = openControlStateWriter(repo.dir);
   const reconciled = reconcileAcceptance(recovered.db, repo.dir, { id: operation.id }, at('2026-08-16T20:07:00.000Z'));
   assert.equal(reconciled[0].reconciled, true);
   assert.equal(reconciled[0].state, 'ACCEPTED');
@@ -200,6 +321,7 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
   assert.equal(readFileSync(path.join(repo.dir, '.landos', 'STATE.md'), 'utf8'), once);
   recovered.close();
 
+  const beforeStatus = { bytes: readFileSync(repo.dbPath), stat: statSync(repo.dbPath) };
   const fresh = spawnSync(process.execPath, [SCRIPT, 'status', '--root', repo.dir, '--json'], {
     cwd: repo.dir,
     encoding: 'utf8',
@@ -209,13 +331,17 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
   const reconstructed = JSON.parse(fresh.stdout);
   assert.equal(reconstructed.latestAccepted.accepted_git_sha, candidateSha);
   assert.equal(reconstructed.git.authoritySha, candidateSha);
+  const afterStatus = { bytes: readFileSync(repo.dbPath), stat: statSync(repo.dbPath) };
+  assert.deepEqual(afterStatus.bytes, beforeStatus.bytes);
+  assert.equal(afterStatus.stat.size, beforeStatus.stat.size);
+  assert.equal(afterStatus.stat.mtimeMs, beforeStatus.stat.mtimeMs);
 });
 
 test('failed verification survives process loss with evidence and a useful next direction', async (t) => {
   const repo = tempRepo();
   t.after(repo.cleanup);
   const candidateSha = makeCandidate(repo);
-  const state = openControlState(repo.dir);
+  const state = initializeControlState(repo.dir);
 
   createTask(state.db, {
     id: 'slice-failure',
@@ -223,7 +349,7 @@ test('failed verification survives process loss with evidence and a useful next 
     outcome: 'A future builder can retrieve why the attempt failed.',
     nextAction: 'Try the candidate.',
   }, at('2026-08-16T21:00:00.000Z'));
-  startAttempt(state.db, {
+  startOwnedAttempt(state, repo, {
     id: 'attempt-fail',
     taskId: 'slice-failure',
     worker: 'codex',
@@ -265,14 +391,14 @@ test('a pending acceptance never follows main to a different commit', async (t) 
   const repo = tempRepo();
   t.after(repo.cleanup);
   const candidateSha = makeCandidate(repo);
-  const state = openControlState(repo.dir);
+  const state = initializeControlState(repo.dir);
   createTask(state.db, {
     id: 'slice-mismatch',
     title: 'Reject contradictory promotion',
     outcome: 'The gate accepts only its exact pending SHA.',
     nextAction: 'Build candidate.',
   });
-  startAttempt(state.db, {
+  startOwnedAttempt(state, repo, {
     id: 'attempt-mismatch',
     taskId: 'slice-mismatch',
     worker: 'codex',
@@ -312,14 +438,14 @@ test('an invalidated pending candidate becomes durable failure knowledge before 
   const repo = tempRepo();
   t.after(repo.cleanup);
   const candidateSha = makeCandidate(repo);
-  const state = openControlState(repo.dir);
+  const state = initializeControlState(repo.dir);
   createTask(state.db, {
     id: 'slice-supersession',
     title: 'Replace an invalid pending candidate',
     outcome: 'The invalid candidate remains durable failure knowledge.',
     nextAction: 'Build candidate.',
   });
-  startAttempt(state.db, {
+  startOwnedAttempt(state, repo, {
     id: 'attempt-superseded',
     taskId: 'slice-supersession',
     worker: 'codex',
@@ -351,14 +477,24 @@ test('an invalidated pending candidate becomes durable failure knowledge before 
     listFailures(state.db, 'slice-supersession')[0].root_cause,
     'A pre-promotion invariant invalidated this candidate.',
   );
-  const replacement = startAttempt(state.db, {
+  const supersededWorkspace = state.db.prepare(`
+    SELECT * FROM managed_workspace WHERE attempt_id = 'attempt-superseded' AND status = 'ACTIVE'
+  `).get();
+  assert.equal(releaseManagedWorkspace(state.db, repo.dir, {
+    id: supersededWorkspace.id,
+    taskId: 'slice-supersession',
+    attemptId: 'attempt-superseded',
+    writerId: supersededWorkspace.writer_id,
+  }).status, 'RELEASED');
+  repo.managedWorkspaces.delete(supersededWorkspace.workspace_path);
+  const replacement = startOwnedAttempt(state, repo, {
     id: 'attempt-replacement',
     taskId: 'slice-supersession',
     worker: 'codex',
     approach: 'Repair the invalidated invariant.',
     baseGitSha: candidateSha,
   });
-  assert.equal(replacement.status, 'IN_PROGRESS');
+  assert.equal(replacement.attempt.status, 'IN_PROGRESS');
   const reconciliation = reconcileAcceptance(state.db, repo.dir, { id: 'gate-superseded' });
   assert.equal(reconciliation[0].superseded, true);
   assert.equal(controlSnapshot(state.db).latestAccepted, null);

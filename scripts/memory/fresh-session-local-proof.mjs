@@ -14,9 +14,9 @@ const root = process.cwd();
 const agents = readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
 const protocol = readFileSync(path.join(root, '.landos', 'CODING_SESSION_PROTOCOL.md'), 'utf8');
 const permanent = readFileSync(path.join(root, '.landos', 'PERMANENT_MEMORY.md'), 'utf8');
-const checkpoint = readFileSync(path.join(root, '.landos', 'CHECKPOINT.md'), 'utf8');
+const state = readFileSync(path.join(root, '.landos', 'STATE.md'), 'utf8');
 const status = buildStatus(root);
-const section = (heading) => checkpoint.split('# ' + heading)[1]?.split('\n# ')[0]?.trim() ?? null;
+const section = (heading) => state.split('## ' + heading)[1]?.split('\n## ')[0]?.trim() ?? null;
 const result = {
   method: 'isolated offline local-process contract proof; not an independent model session',
   request,
@@ -29,12 +29,11 @@ const result = {
     stagedBrowserQa: /staged workstreams[\s\S]*independent live browser QA/i.test(permanent),
     approvalGates: /Approval is required/.test(permanent),
   },
-  checkpoint: {
-    path: '.landos/CHECKPOINT.md',
-    currentActiveTask: section('Current Active Task'),
-    remainingWork: section('Remaining Work'),
-    exactNextAction: section('Exact Next Action'),
-    relevantFiles: section('Relevant Files'),
+  handoff: {
+    path: '.landos/STATE.md',
+    currentTask: section('Current task'),
+    blockers: section('Blockers'),
+    nextAction: section('Next action'),
   },
   // These two probe the CONSOLIDATED contract wording. They previously matched
   // pre-consolidation prose, so both silently reported false and the proof
@@ -45,7 +44,7 @@ const result = {
   narrowStartup: /Inspect only files named in the checkpoint/.test(protocol) && /Never automatically audit the repository broadly/.test(protocol),
   managedRuntimeAvailable: /landos:status[\s\S]*landos:health/.test(permanent),
   safetyBoundariesAvailable: /Do not commit or push/.test(permanent) && /Preserve unrelated dirty work/.test(permanent),
-  relevantReports: [...checkpoint.matchAll(/docs\/landos\/[A-Za-z0-9_.-]+\.md/g)].map((match) => match[0]),
+  relevantReports: [...state.matchAll(/docs\/landos\/[A-Za-z0-9_.-]+\.md/g)].map((match) => match[0]),
   liveStateOutranksCheckpoint: /override memory-file narrative/.test(permanent),
   requestReadOnly: /Do not modify code\.$/.test(request),
   continueLandosRan: false,

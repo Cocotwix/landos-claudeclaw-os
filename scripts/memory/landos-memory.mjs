@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 // Offline LandOS durable-memory status, audit, checkpoint, and retrieval tool.
 // It never reads .env, databases, browser state, or network resources.
 
@@ -8,7 +8,6 @@ import {
   readFileSync,
   readdirSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -28,6 +27,7 @@ export const BUDGETS = {
 };
 export const PERMANENT_MEMORY_PATH = '.landos/PERMANENT_MEMORY.md';
 export const CHECKPOINT_PATH = '.landos/CHECKPOINT.md';
+export const STATE_PATH = '.landos/STATE.md';
 export const CODING_SESSION_PROTOCOL_PATH = '.landos/CODING_SESSION_PROTOCOL.md';
 export const VERIFICATION_PATH = '.landos/verification-results.json';
 export const ACCEPTANCE_PATH = 'docs/landos/Fresh_Session_Acceptance.md';
@@ -257,7 +257,7 @@ export function resolveBootstrapProfiles(root) {
   if (existsSync(autoMemory)) claudeFiles.push(autoMemory);
   const agents = readIfExists(root, 'AGENTS.md') ?? '';
   const codingFiles = ['AGENTS.md'];
-  for (const rel of [CODING_SESSION_PROTOCOL_PATH, PERMANENT_MEMORY_PATH, CHECKPOINT_PATH]) {
+  for (const rel of [CODING_SESSION_PROTOCOL_PATH, PERMANENT_MEMORY_PATH, STATE_PATH]) {
     if (agents.includes(rel)) codingFiles.push(rel);
   }
   return { claudeCode: [...new Set(claudeFiles)], codingAgent: [...new Set(codingFiles)] };
@@ -292,12 +292,12 @@ export function buildStatus(root) {
   }));
   const totalEstimatedTokens = Math.max(...Object.values(profiles).map((p) => p.estimatedTokens));
   const permanent = readIfExists(root, PERMANENT_MEMORY_PATH);
-  const checkpoint = readIfExists(root, CHECKPOINT_PATH);
+  const checkpoint = readIfExists(root, STATE_PATH);
   const head = gitShortHead(root);
   const dirtyCount = gitDirtyCount(root);
   const staleness = checkpoint
-    ? checkStaleness(checkpoint, { headHash: head, dirtyCount })
-    : { status: 'stale', reasons: ['checkpoint file missing'] };
+    ? { status: 'fresh', reasons: [] }
+    : { status: 'stale', reasons: ['generated state file missing'] };
   const automaticFiles = [...new Set(Object.values(profilePaths).flat())];
   const contentWarnings = [];
   for (const file of automaticFiles) {
@@ -325,7 +325,7 @@ export function buildStatus(root) {
       exists: permanent !== null,
     },
     checkpoint: {
-      path: CHECKPOINT_PATH,
+      path: STATE_PATH,
       bytes: checkpoint ? Buffer.byteLength(checkpoint, 'utf8') : 0,
       estTokens: checkpoint ? estimateTokens(checkpoint) : 0,
       maxBytes: BUDGETS.checkpointMaxBytes,
@@ -377,21 +377,21 @@ export function buildAudit(root) {
   const issues = [];
   const warnings = [];
   if (!status.permanentMemory.exists) issues.push('permanent memory missing');
-  if (!status.checkpoint.exists) issues.push('checkpoint missing');
+  if (!status.checkpoint.exists) issues.push('generated Control state missing');
   if (!status.budget.withinMax) issues.push(`automatic bootstrap ${status.totalEstimatedTokens} exceeds hard max ${BUDGETS.autoMaxTokens}`);
   else if (!status.budget.withinTarget) warnings.push(`automatic bootstrap ${status.totalEstimatedTokens} exceeds soft target ${BUDGETS.autoTargetTokens}`);
   if (!status.permanentMemory.withinBudget) issues.push('permanent memory exceeds byte budget');
   if (!status.checkpoint.withinBudget) issues.push('checkpoint exceeds byte budget');
-  if (status.checkpoint.staleness.status === 'stale') warnings.push(...status.checkpoint.staleness.reasons.map((r) => `stale checkpoint: ${r}`));
+  if (status.checkpoint.staleness.status === 'stale') warnings.push(...status.checkpoint.staleness.reasons.map((r) => `state projection: ${r}`));
   for (const finding of status.contentWarnings) {
     issues.push(`forbidden ${finding.pattern} in ${finding.file} line ${finding.line}`);
   }
   const permanent = readIfExists(root, PERMANENT_MEMORY_PATH) ?? '';
   issues.push(...permanentRuleProblems(permanent));
-  const checkpoint = readIfExists(root, CHECKPOINT_PATH) ?? '';
-  const checkpointValidation = validateCheckpoint(checkpoint, { permanentText: permanent });
-  issues.push(...checkpointValidation.issues.map((item) => `checkpoint validation: ${item}`));
-  warnings.push(...checkpointValidation.warnings.map((item) => `checkpoint validation: ${item}`));
+  const pointer = readIfExists(root, CHECKPOINT_PATH) ?? '';
+  if (!/static and non-authoritative/i.test(pointer) || !/\.landos\/STATE\.md/.test(pointer)) {
+    issues.push('compatibility checkpoint must be a static non-authoritative pointer to .landos/STATE.md');
+  }
   for (const [profile, value] of Object.entries(status.profiles)) {
     const texts = Object.fromEntries(value.files.map((item) => [item.file, readIfExists(root, item.file) ?? '']));
     warnings.push(...findDuplicateLines(texts).map((dup) => `duplicate content in ${profile}: ${dup.files.join(' + ')}`));
@@ -401,11 +401,6 @@ export function buildAudit(root) {
   else issues.push(...auditContinueCommand(command).map((item) => `continue-landos: ${item}`));
   issues.push(...sprintAcceptanceProblems(readActiveSprint(root)).map((item) => `sprint ledger: ${item}`));
   return { ...status, issues, warnings, pass: issues.length === 0 };
-}
-
-function verificationLine(label, entry) {
-  if (!entry) return `- **Latest ${label}:** not recorded; run verification before completion.`;
-  return `- **Latest ${label}:** ${entry.status} at ${entry.timestamp}; ${entry.summary}.`;
 }
 
 // ── Sprint-ledger integration (staged lifecycle) ─────────────────────────
@@ -462,49 +457,31 @@ export function refreshCheckpoint(root, {
   replacementText = null,
   dryRun = false,
 } = {}) {
-  const file = path.join(root, CHECKPOINT_PATH);
-  if (!existsSync(file)) throw new Error(`${CHECKPOINT_PATH} missing`);
-  const current = replacementText ?? readFileSync(file, 'utf8');
-  const head = gitShortHead(root) ?? 'unknown';
-  const dirtyCount = gitDirtyCount(root);
-  const verification = jsonIfExists(root, VERIFICATION_PATH) ?? {};
-  const runtime = verification.runtime;
-  const activeSprint = readActiveSprint(root);
-  const acceptanceProblems = sprintAcceptanceProblems(activeSprint);
-  if (acceptanceProblems.length) {
-    throw new Error(`refusing checkpoint write; ledger lacks QA proof: ${acceptanceProblems.join('; ')}`);
+  if (replacementText !== null) {
+    throw new Error('CHECKPOINT.md is a static compatibility pointer; persist lifecycle facts through the Control Spine');
   }
-  const block = [
-    '<!-- DERIVED:START -->',
-    `- **Generated:** ${now.toISOString()}`,
-    `- **HEAD at generation:** \`${head}\``,
-    dirtyCount === 0
-      ? '- **Worktree:** clean at refresh time.'
-      : `- **Worktree:** DIRTY; ${dirtyCount ?? 'unknown'} modified/untracked paths at refresh time. Preserve unrelated changes.`,
-    verificationLine('tests', verification.tests),
-    verificationLine('typecheck', verification.typecheck),
-    verificationLine('production build', verification.build),
-    runtime
-      ? `- **Managed runtime:** ${runtime.status} at ${runtime.timestamp}; PID ${runtime.pid}; ${runtime.url}.`
-      : '- **Managed runtime:** not recorded; inspect with npm run landos:status.',
-    ...sprintDerivedLines(root),
-    '<!-- DERIVED:END -->',
-  ].join('\n');
-  const next = current.includes('<!-- DERIVED:START -->')
-    ? current.replace(/<!-- DERIVED:START -->[\s\S]*?<!-- DERIVED:END -->/, block)
-    : current.replace(/^# Current State\s*$/m, (heading) => `${heading}\n\n${block}`);
-  const permanent = readIfExists(root, PERMANENT_MEMORY_PATH) ?? '';
-  const validation = validateCheckpoint(next, { permanentText: permanent });
-  if (!validation.pass) throw new Error(`refusing checkpoint write: ${validation.issues.join('; ')}`);
-  if (!dryRun) writeFileSync(file, next, 'utf8');
+  const pointer = readIfExists(root, CHECKPOINT_PATH) ?? '';
+  if (!/static and non-authoritative/i.test(pointer) || !/\.landos\/STATE\.md/.test(pointer)) {
+    throw new Error(`${CHECKPOINT_PATH} must remain the static compatibility pointer to ${STATE_PATH}`);
+  }
+  if (!dryRun) {
+    const control = path.join(root, 'scripts', 'control', 'landos-control.mjs');
+    execFileSync(process.execPath, [control, 'state', 'generate', '--root', root], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+  const state = readIfExists(root, STATE_PATH);
+  if (!dryRun && state === null) throw new Error(`${STATE_PATH} was not generated`);
   return {
-    path: CHECKPOINT_PATH,
+    path: STATE_PATH,
     generated: now.toISOString(),
-    head,
-    dirtyCount,
-    bytes: validation.bytes,
+    head: gitShortHead(root) ?? 'unknown',
+    dirtyCount: gitDirtyCount(root),
+    bytes: state ? Buffer.byteLength(state, 'utf8') : 0,
     dryRun,
-    warnings: validation.warnings,
+    warnings: [],
   };
 }
 
@@ -540,7 +517,7 @@ function sections(text) {
   const files = [];
   walkMarkdown(root, '.landos', files);
   walkMarkdown(root, 'docs/landos', files);
-  const excluded = new Set([PERMANENT_MEMORY_PATH, CHECKPOINT_PATH]);
+  const excluded = new Set([PERMANENT_MEMORY_PATH, CHECKPOINT_PATH, STATE_PATH]);
   const matches = [];
   let sensitiveSectionsOmitted = 0;
   for (const file of files.filter((item) => !excluded.has(item))) {
@@ -590,8 +567,8 @@ function printStatus(status) {
   console.log(`Budget: target < ${BUDGETS.autoTargetTokens}, hard max < ${BUDGETS.autoMaxTokens}`);
   console.log(`Budgets: soft < ${BUDGETS.autoTargetTokens}; hard < ${BUDGETS.autoMaxTokens}; ${status.budget.withinTarget ? 'PASS' : status.budget.withinMax ? 'WARN' : 'FAIL'}`);
   console.log(`Permanent memory: ${status.permanentMemory.path}, ~${status.permanentMemory.estTokens} tokens, ${status.permanentMemory.bytes}/${BUDGETS.permanentMaxBytes} bytes`);
-  console.log(`Current checkpoint: ${status.checkpoint.path}, ~${status.checkpoint.estTokens} tokens, ${status.checkpoint.bytes}/${BUDGETS.checkpointMaxBytes} bytes, ${status.checkpoint.staleness.status}`);
-  console.log(`Latest checkpoint result: ${status.checkpoint.latestResult}`);
+  console.log(`Generated state: ${status.checkpoint.path}, ~${status.checkpoint.estTokens} tokens, ${status.checkpoint.bytes}/${BUDGETS.checkpointMaxBytes} bytes, ${status.checkpoint.staleness.status}`);
+  console.log(`Latest state result: ${status.checkpoint.latestResult}`);
   console.log(`Latest isolated fresh-session acceptance: ${status.latestFreshSessionAcceptance.result} (${status.latestFreshSessionAcceptance.path})`);
   console.log(`Content warnings: ${status.contentWarnings.length}; /continue-landos necessary for normal work: NO`);
 }
@@ -635,13 +612,17 @@ function main() {
   }
   if (command === 'validate') {
     const checkpoint = readIfExists(root, CHECKPOINT_PATH) ?? '';
-    const permanent = readIfExists(root, PERMANENT_MEMORY_PATH) ?? '';
-    const result = validateCheckpoint(checkpoint, { permanentText: permanent });
+    const issues = [];
+    if (!/static and non-authoritative/i.test(checkpoint) || !/\.landos\/STATE\.md/.test(checkpoint)) {
+      issues.push('CHECKPOINT.md is not the static compatibility pointer to .landos/STATE.md');
+    }
+    if (!readIfExists(root, STATE_PATH)) issues.push('.landos/STATE.md is missing');
+    const result = { issues, warnings: [], pass: issues.length === 0, bytes: Buffer.byteLength(checkpoint, 'utf8') };
     if (json) console.log(JSON.stringify(result, null, 2));
     else {
       result.warnings.forEach((item) => console.log(`WARN: ${item}`));
       result.issues.forEach((item) => console.log(`FAIL: ${item}`));
-      console.log(result.pass ? 'CHECKPOINT VALID' : 'CHECKPOINT INVALID');
+      console.log(result.pass ? 'HANDOFF VALID' : 'HANDOFF INVALID');
     }
     process.exitCode = result.pass ? 0 : 1;
     return;
