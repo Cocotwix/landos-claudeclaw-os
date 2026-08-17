@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 
 import { git } from '../dev/verify.mjs';
+import { normalizePhysicalResource } from './resource-ownership.mjs';
 
 export const VERIFICATION_POLICY_VERSION = 'landos-verification-v3';
 
@@ -47,6 +48,26 @@ function exactSha(value, label) {
 function strings(value, label) {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
   return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))].sort();
+}
+
+function resourceRequirements(value, label) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  const normalized = value.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`${label}[${index}] must be a canonical resource descriptor`);
+    }
+    const resourceType = required(item.resourceType, `${label}[${index}] resource type`);
+    const endpoint = required(item.endpoint, `${label}[${index}] endpoint`);
+    const physical = normalizePhysicalResource({ resourceType, endpoint });
+    return Object.freeze({
+      resourceId: required(item.resourceId, `${label}[${index}] resource ID`),
+      resourceType,
+      endpoint,
+      normalizedIdentity: physical.identity,
+    });
+  });
+  return normalized.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
 }
 
 function stable(value) {
@@ -100,7 +121,7 @@ function executableObligation(id, kind, command, summary, { capabilityId = null,
     command: required(command, `${id} command`),
     summary,
     mandatory: true,
-    resources: strings(resources, `${id} resources`),
+    resources: resourceRequirements(resources, `${id} resources`),
   });
 }
 
@@ -200,7 +221,7 @@ export function deriveVerificationPlan(root, input) {
         'capability',
         command,
         `Exact-commit policy requires verification for ${capability.name ?? capability.id}.`,
-        { capabilityId: String(capability.id), resources: capability.verificationResources ?? capability.governedResources ?? capability.requiredResources ?? [] },
+        { capabilityId: String(capability.id), resources: capability.verificationResources ?? [] },
       ));
     }
   }

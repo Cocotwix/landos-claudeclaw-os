@@ -8,6 +8,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   constants as fsConstants,
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -21,12 +22,13 @@ import Database from 'better-sqlite3';
 
 import { git, gitStatusText, runCheck, failureEvidence } from '../dev/verify.mjs';
 import { deriveVerificationPlan } from './verification-plan.mjs';
+import { acquireResource, ensureProtectedPrimaryResources, releaseResource } from './resource-ownership.mjs';
 
 export const CONTROL_DB_PATH = 'landos/control/landos-control.db';
 export const LEGACY_CONTROL_DB_PATH = '.landos/control/landos-control.db';
 export const STATE_PATH = '.landos/STATE.md';
 export const DEFAULT_AUTHORITY_REF = 'main';
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const TASK_STATUSES = [
   'OPEN',
@@ -142,7 +144,9 @@ function configureConnection(db, { writable }) {
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   if (writable) {
-    db.pragma('journal_mode = WAL');
+    // DELETE journaling leaves no shared-memory sidecars merely because a
+    // read-only status process opens the canonical DB.
+    db.pragma('journal_mode = DELETE');
     db.pragma('synchronous = FULL');
   }
 }
@@ -409,6 +413,33 @@ function migrate(db) {
       recorded_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS managed_resource (
+      resource_id TEXT PRIMARY KEY,
+      normalized_identity TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      owner_kind TEXT NOT NULL CHECK (owner_kind IN ('PRIMARY_RUNTIME','TASK')),
+      owner_task_id TEXT REFERENCES development_task(id),
+      owner_attempt_id TEXT REFERENCES development_attempt(id),
+      status TEXT NOT NULL CHECK (status IN ('ACTIVE','RELEASED')),
+      acquired_at TEXT NOT NULL,
+      released_at TEXT,
+      CHECK ((owner_kind = 'PRIMARY_RUNTIME' AND owner_task_id IS NULL AND owner_attempt_id IS NULL) OR
+             (owner_kind = 'TASK' AND owner_task_id IS NOT NULL AND owner_attempt_id IS NOT NULL)),
+      CHECK ((status = 'ACTIVE' AND released_at IS NULL) OR (status = 'RELEASED' AND released_at IS NOT NULL))
+    );
+
+    CREATE TABLE IF NOT EXISTS managed_resource_event (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attempt_id TEXT REFERENCES development_attempt(id),
+      resource_id TEXT,
+      normalized_identity TEXT,
+      action TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK (outcome IN ('PASS','FAIL')),
+      summary TEXT NOT NULL,
+      recorded_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS acceptance_operation (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES development_task(id),
@@ -437,6 +468,7 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_evidence_attempt ON development_evidence(attempt_id, recorded_at);
     CREATE INDEX IF NOT EXISTS idx_verification_attempt ON development_verification(attempt_id, recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_verification_obligation_attempt ON verification_obligation(attempt_id, status);
+    CREATE INDEX IF NOT EXISTS idx_resource_event_attempt ON managed_resource_event(attempt_id, recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_acceptance_state ON acceptance_operation(state, prepared_at);
 
     CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_task
@@ -525,6 +557,13 @@ function migrate(db) {
     DROP TRIGGER IF EXISTS verification_result_delete_refused;
     DROP VIEW IF EXISTS canonical_verification_eligibility;
     DROP VIEW IF EXISTS canonical_sealed_verification_plan;
+    DROP TRIGGER IF EXISTS governed_execution_requires_context_delivery;
+    DROP TRIGGER IF EXISTS completed_execution_requires_submission_bundle;
+    DROP TRIGGER IF EXISTS active_task_resource_requires_canonical_attempt_insert;
+    DROP TRIGGER IF EXISTS active_task_resource_requires_canonical_attempt_update;
+    DROP TRIGGER IF EXISTS verification_resource_event_binding_required;
+    DROP TRIGGER IF EXISTS verification_resource_event_update_refused;
+    DROP TRIGGER IF EXISTS verification_resource_event_delete_refused;
   `);
   const planTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'verification_plan'").get()?.sql ?? '';
   if (!planTableSql.includes('architecture-critical')) {
@@ -618,6 +657,51 @@ function migrate(db) {
       db.exec(`ALTER TABLE verification_obligation_result ADD COLUMN ${name} ${definition}`);
     }
   }
+  // The rejected Slice 6 left an empty pre-normalization resource table in the
+  // shared canonical DB.  Upgrade it in place so its historical rows remain
+  // readable while no legacy active record can bypass physical normalization.
+  const resourceColumns = db.prepare('PRAGMA table_info(managed_resource)').all();
+  if (!resourceColumns.some((column) => column.name === 'normalized_identity')) {
+    db.exec('ALTER TABLE managed_resource ADD COLUMN normalized_identity TEXT');
+  }
+  if (!resourceColumns.some((column) => column.name === 'owner_attempt_id')) {
+    db.exec('ALTER TABLE managed_resource ADD COLUMN owner_attempt_id TEXT');
+  }
+  const resourceEventColumns = db.prepare('PRAGMA table_info(managed_resource_event)').all();
+  for (const [name, definition] of [
+    ['task_id', 'TEXT'],
+    ['verification_plan_id', 'TEXT'],
+    ['obligation_id', 'TEXT'],
+    ['candidate_git_sha', 'TEXT'],
+    ['resource_type', 'TEXT'],
+    ['endpoint', 'TEXT'],
+  ]) {
+    if (!resourceEventColumns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE managed_resource_event ADD COLUMN ${name} ${definition}`);
+    }
+  }
+  db.exec(`
+    DROP INDEX IF EXISTS one_active_physical_resource;
+    UPDATE managed_resource
+    SET status = 'RELEASED', released_at = COALESCE(released_at, acquired_at)
+    WHERE status = 'ACTIVE' AND (
+      normalized_identity IS NULL
+      OR (normalized_identity NOT LIKE 'network:%' AND normalized_identity NOT LIKE 'filesystem:%')
+    );
+    UPDATE managed_resource
+    SET status = 'RELEASED', released_at = COALESCE(released_at, acquired_at)
+    WHERE rowid IN (
+      SELECT rowid FROM (
+        SELECT rowid, ROW_NUMBER() OVER (
+          PARTITION BY normalized_identity
+          ORDER BY CASE owner_kind WHEN 'PRIMARY_RUNTIME' THEN 0 ELSE 1 END, acquired_at, resource_id
+        ) AS ownership_rank
+        FROM managed_resource WHERE status = 'ACTIVE'
+      ) WHERE ownership_rank > 1
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS one_active_physical_resource
+      ON managed_resource(normalized_identity) WHERE status = 'ACTIVE';
+  `);
   // The rejected chain accidentally created this index over attempt_id.  The
   // repaired schema makes writer uniqueness explicit while retaining a second
   // attempt uniqueness index above.
@@ -639,6 +723,9 @@ function migrate(db) {
     DROP TRIGGER IF EXISTS verification_result_delete_refused;
     DROP VIEW IF EXISTS canonical_verification_eligibility;
     DROP VIEW IF EXISTS canonical_sealed_verification_plan;
+    DROP TRIGGER IF EXISTS verification_resource_event_binding_required;
+    DROP TRIGGER IF EXISTS verification_resource_event_update_refused;
+    DROP TRIGGER IF EXISTS verification_resource_event_delete_refused;
   `);
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_writer
@@ -647,6 +734,9 @@ function migrate(db) {
       ON submission_bundle(execution_id) WHERE execution_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS one_verification_plan_identity
       ON verification_plan(id) WHERE id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS one_governed_resource_event_per_action
+      ON managed_resource_event(verification_plan_id, obligation_id, normalized_identity, action)
+      WHERE verification_plan_id IS NOT NULL AND outcome = 'PASS';
 
     CREATE VIEW canonical_sealed_verification_plan AS
     SELECT plan.attempt_id, plan.id AS plan_id, plan.task_id,
@@ -734,6 +824,30 @@ function migrate(db) {
           obligation.status <> 'PASS'
           OR (SELECT COUNT(*) FROM verification_obligation_result result
               WHERE result.obligation_id = obligation.id) <> 1
+          OR EXISTS (
+            SELECT 1 FROM json_each(obligation.resources_json) resource
+            WHERE json_extract(resource.value, '$.normalizedIdentity') IS NULL
+              OR NOT EXISTS (
+                SELECT 1 FROM managed_resource_event event
+                WHERE event.task_id = sealed.task_id
+                  AND event.attempt_id = sealed.attempt_id
+                  AND event.verification_plan_id = sealed.plan_id
+                  AND event.obligation_id = obligation.id
+                  AND event.candidate_git_sha = sealed.candidate_git_sha
+                  AND event.normalized_identity = json_extract(resource.value, '$.normalizedIdentity')
+                  AND event.action = 'ACQUIRE' AND event.outcome = 'PASS'
+              )
+              OR NOT EXISTS (
+                SELECT 1 FROM managed_resource_event event
+                WHERE event.task_id = sealed.task_id
+                  AND event.attempt_id = sealed.attempt_id
+                  AND event.verification_plan_id = sealed.plan_id
+                  AND event.obligation_id = obligation.id
+                  AND event.candidate_git_sha = sealed.candidate_git_sha
+                  AND event.normalized_identity = json_extract(resource.value, '$.normalizedIdentity')
+                  AND event.action = 'RELEASE' AND event.outcome = 'PASS'
+              )
+          )
           OR NOT EXISTS (
             SELECT 1
             FROM verification_obligation_result result
@@ -763,6 +877,117 @@ function migrate(db) {
           )
         )
     );
+
+    CREATE TRIGGER governed_execution_requires_context_delivery
+    BEFORE INSERT ON governed_execution
+    WHEN NOT EXISTS (
+      SELECT 1 FROM context_pack_delivery delivery
+      JOIN managed_workspace workspace ON workspace.id = NEW.workspace_id
+      JOIN development_attempt attempt ON attempt.id = NEW.attempt_id
+      WHERE delivery.task_id = NEW.task_id
+        AND delivery.attempt_id = NEW.attempt_id
+        AND delivery.workspace_id = NEW.workspace_id
+        AND delivery.context_pack_hash = NEW.context_pack_hash
+        AND workspace.task_id = NEW.task_id
+        AND workspace.attempt_id = NEW.attempt_id
+        AND workspace.writer_id = NEW.writer_id
+        AND workspace.status = 'ACTIVE'
+        AND workspace.workspace_path = NEW.working_directory
+        AND attempt.task_id = NEW.task_id
+        AND attempt.primary_writer_id = NEW.writer_id
+        AND attempt.status = 'IN_PROGRESS'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'governed execution requires an exact attempt-bound delivered Context Pack and managed workspace');
+    END;
+
+    CREATE TRIGGER completed_execution_requires_submission_bundle
+    BEFORE UPDATE OF state ON governed_execution
+    WHEN NEW.state = 'COMPLETED' AND NOT EXISTS (
+      SELECT 1 FROM submission_bundle bundle
+      WHERE bundle.execution_id = NEW.id
+        AND bundle.task_id = NEW.task_id
+        AND bundle.attempt_id = NEW.attempt_id
+        AND bundle.workspace_id = NEW.workspace_id
+        AND bundle.writer_id = NEW.writer_id
+        AND bundle.provider = NEW.provider
+        AND bundle.context_pack_hash = NEW.context_pack_hash
+        AND bundle.candidate_git_sha = NEW.observed_candidate_git_sha
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'completed governed execution requires its normalized Submission Bundle');
+    END;
+
+    CREATE TRIGGER active_task_resource_requires_canonical_attempt_insert
+    BEFORE INSERT ON managed_resource
+    WHEN NEW.owner_kind = 'TASK' AND NEW.status = 'ACTIVE' AND NOT EXISTS (
+      SELECT 1 FROM development_attempt attempt
+      WHERE attempt.id = NEW.owner_attempt_id
+        AND attempt.task_id = NEW.owner_task_id
+        AND attempt.status IN ('IN_PROGRESS','CANDIDATE')
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'active task resource requires a canonical active task and attempt owner');
+    END;
+
+    CREATE TRIGGER active_task_resource_requires_canonical_attempt_update
+    BEFORE UPDATE OF owner_kind, owner_task_id, owner_attempt_id, status ON managed_resource
+    WHEN NEW.owner_kind = 'TASK' AND NEW.status = 'ACTIVE' AND NOT EXISTS (
+      SELECT 1 FROM development_attempt attempt
+      WHERE attempt.id = NEW.owner_attempt_id
+        AND attempt.task_id = NEW.owner_task_id
+        AND attempt.status IN ('IN_PROGRESS','CANDIDATE')
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'active task resource requires a canonical active task and attempt owner');
+    END;
+
+    CREATE TRIGGER verification_resource_event_binding_required
+    BEFORE INSERT ON managed_resource_event
+    WHEN NEW.verification_plan_id IS NOT NULL AND (
+      NEW.task_id IS NULL OR NEW.attempt_id IS NULL OR NEW.obligation_id IS NULL
+      OR NEW.candidate_git_sha IS NULL OR NEW.normalized_identity IS NULL
+      OR NOT EXISTS (
+        SELECT 1
+        FROM verification_obligation obligation
+        JOIN verification_plan plan ON plan.id = obligation.verification_plan_id
+        JOIN json_each(obligation.resources_json) resource
+        WHERE obligation.id = NEW.obligation_id
+          AND obligation.task_id = NEW.task_id
+          AND obligation.attempt_id = NEW.attempt_id
+          AND obligation.candidate_git_sha = NEW.candidate_git_sha
+          AND obligation.verification_plan_id = NEW.verification_plan_id
+          AND plan.lifecycle_state = 'SEALED'
+          AND json_extract(resource.value, '$.normalizedIdentity') = NEW.normalized_identity
+      )
+      OR (NEW.outcome = 'PASS' AND NOT EXISTS (
+        SELECT 1 FROM managed_resource resource
+        WHERE resource.resource_id = NEW.resource_id
+          AND resource.normalized_identity = NEW.normalized_identity
+          AND resource.owner_kind = 'TASK'
+          AND resource.owner_task_id = NEW.task_id
+          AND resource.owner_attempt_id = NEW.attempt_id
+          AND ((NEW.action = 'ACQUIRE' AND resource.status = 'ACTIVE')
+            OR (NEW.action = 'RELEASE' AND resource.status = 'RELEASED'))
+      ))
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'verification resource event requires exact sealed-obligation physical ownership evidence');
+    END;
+
+    CREATE TRIGGER verification_resource_event_update_refused
+    BEFORE UPDATE ON managed_resource_event
+    WHEN OLD.verification_plan_id IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'governed verification resource events are immutable');
+    END;
+
+    CREATE TRIGGER verification_resource_event_delete_refused
+    BEFORE DELETE ON managed_resource_event
+    WHEN OLD.verification_plan_id IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'governed verification resource events cannot be deleted');
+    END;
 
     CREATE TRIGGER IF NOT EXISTS governed_candidate_requires_execution_bundle
     BEFORE UPDATE OF status, candidate_git_sha ON development_attempt
@@ -929,10 +1154,16 @@ function migrate(db) {
           AND (
             (obligation.obligation_type = 'EXECUTABLE'
               AND NEW.result_source = 'GOVERNED_EXECUTION'
-              AND evidence.kind = 'verification_execution'
-              AND evidence.command = obligation.execution_command
-              AND ((NEW.outcome = 'PASS' AND evidence.exit_code = 0)
-                OR (NEW.outcome <> 'PASS' AND evidence.exit_code IS NOT NULL)))
+              AND (
+                (NEW.outcome = 'BLOCKED'
+                  AND evidence.kind = 'verification_resource_acquisition_failure')
+                OR
+                (NEW.outcome <> 'BLOCKED'
+                  AND evidence.kind = 'verification_execution'
+                  AND evidence.command = obligation.execution_command
+                  AND ((NEW.outcome = 'PASS' AND evidence.exit_code = 0)
+                    OR (NEW.outcome = 'FAIL' AND evidence.exit_code IS NOT NULL)))
+              ))
             OR
             (obligation.obligation_type = 'MANUAL_REVIEW'
               AND NEW.result_source = 'MANUAL_REVIEW'
@@ -1119,8 +1350,26 @@ function openDatabase(file, { writable }) {
   }
 }
 
-function stateHandle(db, file) {
-  return { db, file, close: () => db.close() };
+function lockControlDatabase(file) {
+  if (existsSync(file)) chmodSync(file, 0o444);
+}
+
+function unlockControlDatabase(file) {
+  if (existsSync(file)) chmodSync(file, 0o666);
+}
+
+function stateHandle(db, file, { lockOnClose = false } = {}) {
+  let closed = false;
+  return {
+    db,
+    file,
+    close: () => {
+      if (closed) return;
+      closed = true;
+      try { db.close(); }
+      finally { if (lockOnClose) lockControlDatabase(file); }
+    },
+  };
 }
 
 export function initializeControlState(root, { dbPath } = {}) {
@@ -1132,7 +1381,10 @@ export function initializeControlState(root, { dbPath } = {}) {
     try { assertSchemaCompatible(probe, { allowOlder: true }); }
     finally { probe.close(); }
   }
-  const db = openDatabase(file, { writable: true });
+  unlockControlDatabase(file);
+  let db;
+  try { db = openDatabase(file, { writable: true }); }
+  catch (error) { lockControlDatabase(file); throw error; }
   try {
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -1144,9 +1396,11 @@ export function initializeControlState(root, { dbPath } = {}) {
       throw error;
     }
     assertSchemaCompatible(db);
-    return stateHandle(db, file);
+    ensureProtectedPrimaryResources(db, root);
+    return stateHandle(db, file, { lockOnClose: true });
   } catch (error) {
     db.close();
+    lockControlDatabase(file);
     throw error;
   }
 }
@@ -1171,12 +1425,16 @@ export function openControlStateWriter(root, { dbPath } = {}) {
   const probe = openDatabase(file, { writable: false });
   try { assertSchemaCompatible(probe); }
   finally { probe.close(); }
-  const db = openDatabase(file, { writable: true });
+  unlockControlDatabase(file);
+  let db;
+  try { db = openDatabase(file, { writable: true }); }
+  catch (error) { lockControlDatabase(file); throw error; }
   try {
     assertSchemaCompatible(db);
-    return stateHandle(db, file);
+    return stateHandle(db, file, { lockOnClose: true });
   } catch (error) {
     db.close();
+    lockControlDatabase(file);
     throw error;
   }
 }
@@ -2052,6 +2310,43 @@ export function failAttempt(db, input, now) {
   return attemptFor(db, attempt.id);
 }
 
+function blockVerificationObligation(db, attempt, obligation, summary, now) {
+  const at = nowIso(now);
+  const plan = planFor(db, attempt.id);
+  const transaction = db.transaction(() => {
+    const evidence = addEvidence(db, {
+      attemptId: attempt.id,
+      kind: 'verification_resource_acquisition_failure',
+      summary,
+      command: obligation.command,
+    }, () => at);
+    db.prepare(`
+      INSERT INTO verification_obligation_result(
+        obligation_id, outcome, summary, evidence_id, recorded_at,
+        task_id, attempt_id, candidate_git_sha, verification_plan_id,
+        policy_version, evidence_references_json, result_source, actor
+      ) VALUES (?, 'BLOCKED', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'GOVERNED_EXECUTION', 'control-spine-verifier')
+    `).run(
+      obligation.id, summary, evidence.id, at, attempt.task_id, attempt.id,
+      attempt.candidate_git_sha, plan.id, plan.policy_version,
+      JSON.stringify([`development_evidence:${evidence.id}`]),
+    );
+    db.prepare(`UPDATE verification_obligation SET status = 'BLOCKED', updated_at = ? WHERE id = ?`).run(at, obligation.id);
+    db.prepare(`
+      UPDATE development_attempt
+      SET status = 'FAILED', result = ?, root_cause = ?, next_direction = ?, completed_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run('Required verification resource acquisition failed.', summary, 'Resolve the governed resource conflict and start a replacement attempt.', at, at, attempt.id);
+    db.prepare(`
+      UPDATE development_task SET status = 'FAILED', blocker = ?, next_action = ?, updated_at = ? WHERE id = ?
+    `).run(summary, 'Resolve the governed resource conflict and start a replacement attempt.', at, attempt.task_id);
+  });
+  transaction();
+  return db.prepare(`
+    SELECT * FROM verification_obligation_result WHERE obligation_id = ? ORDER BY id DESC LIMIT 1
+  `).get(obligation.id);
+}
+
 export async function runVerification(db, root, input, now) {
   const attempt = attemptFor(db, input.attemptId);
   if (!attempt.candidate_git_sha) throw new Error('submit a candidate commit before verification');
@@ -2065,7 +2360,57 @@ export async function runVerification(db, root, input, now) {
   if (obligation.obligation_type !== 'EXECUTABLE' || !obligation.execution_command) {
     throw new Error(`verification run accepts only executable obligations; ${obligation.id} is ${obligation.obligation_type}`);
   }
-  const check = await runCheck({ id: obligation.id, command: obligation.execution_command }, root);
+  const resourceContext = {
+    taskId: attempt.task_id,
+    attemptId: attempt.id,
+    verificationPlanId: obligation.verification_plan_id,
+    obligationId: obligation.id,
+    candidateGitSha: attempt.candidate_git_sha,
+  };
+  const acquired = [];
+  try {
+    for (const [index, resource] of obligation.resources.entries()) {
+      const resourceId = `${attempt.id}:${obligation.id}:${String(resource.resourceId ?? `resource-${index}`)}`;
+      const ownership = acquireResource(db, {
+        resourceId,
+        resourceType: resource.resourceType,
+        endpoint: resource.endpoint,
+        ...resourceContext,
+      });
+      acquired.push(resourceId);
+      if (ownership.normalized_identity !== resource.normalizedIdentity) {
+        throw new Error(`planned physical resource ${resource.normalizedIdentity} changed to ${ownership.normalized_identity}`);
+      }
+    }
+  } catch (error) {
+    for (const resourceId of acquired.reverse()) {
+      try { releaseResource(db, { resourceId, ...resourceContext }); } catch { /* preserve original refusal */ }
+    }
+    return { outcome: 'BLOCKED', ...blockVerificationObligation(db, attempt, obligation, `Required governed resource acquisition failed: ${error instanceof Error ? error.message : String(error)}`, now) };
+  }
+
+  let check;
+  let releaseFailure = null;
+  try {
+    check = await runCheck({ id: obligation.id, command: obligation.execution_command }, root);
+  } finally {
+    for (const resourceId of acquired.reverse()) {
+      try { releaseResource(db, { resourceId, ...resourceContext }); }
+      catch (error) { releaseFailure ??= error; }
+    }
+  }
+  if (releaseFailure) {
+    return {
+      outcome: 'BLOCKED',
+      ...blockVerificationObligation(
+        db,
+        attempt,
+        obligation,
+        `Governed verification resource release failed: ${releaseFailure instanceof Error ? releaseFailure.message : String(releaseFailure)}`,
+        now,
+      ),
+    };
+  }
   const diagnosis = check.ok ? null : failureEvidence([check])[0];
   const summary = input.summary
     ? required(input.summary, 'verification summary')

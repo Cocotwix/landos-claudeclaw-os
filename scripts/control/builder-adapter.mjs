@@ -4,6 +4,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import process from 'node:process';
 
 import { ENGINES } from '../dev/providers.mjs';
 import { gitStatusText } from '../dev/verify.mjs';
@@ -96,6 +97,25 @@ export const BUILDER_ADAPTERS = Object.freeze({
     parse(raw) {
       const value = json(raw.stdout, 'Grok completion');
       return { model: value.model ?? null, sessionId: value.session_id ?? null, claims: value.changedPaths ?? value.claims ?? [], message: value.result ?? value.output ?? null };
+    },
+  },
+  'local-replay': {
+    id: 'local-replay',
+    launch(request) {
+      const program = [
+        "let input = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => { input += chunk; });",
+        "process.stdin.on('end', () => {",
+        "  if (!input.includes('Context Pack')) process.exit(2);",
+        "  console.log(JSON.stringify({ model: 'deterministic-local-replay-v1', session_id: 'local-replay', result: 'Deterministic local replay executed against the managed workspace.' }));",
+        '});',
+      ].join('\n');
+      return { command: process.execPath, args: ['--input-type=module', '--eval', program], cwd: request.workspacePath, stdin: promptFor(request) };
+    },
+    parse(raw) {
+      const value = json(raw.stdout, 'local replay completion');
+      return { model: value.model, sessionId: value.session_id, claims: [], message: value.result };
     },
   },
 });

@@ -31,6 +31,7 @@ import {
   releaseManagedWorkspace,
 } from './control-state.mjs';
 import { runGovernedExecution } from './builder-adapter.mjs';
+import { acquireResource, inspectResources, registerPrimaryResource, releaseResource } from './resource-ownership.mjs';
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -102,6 +103,7 @@ function isReadOnlyOperation(group, action) {
     || group === 'failures'
     || group === 'state'
     || (group === 'verification' && action === 'plan')
+    || (group === 'resource' && (action === 'inspect' || action === undefined))
     || (group === 'workspace' && (action === 'inspect' || action === undefined));
 }
 
@@ -211,6 +213,33 @@ export async function runCli(argv, { root: rootOverride } = {}) {
       });
       refresh();
       output(workspace, flags.json);
+      return 0;
+    }
+
+    if (group === 'resource' && (action === 'inspect' || action === undefined)) {
+      output(inspectResources(state.db), flags.json);
+      return 0;
+    }
+
+    if (group === 'resource' && action === 'register-primary') {
+      output(registerPrimaryResource(state.db, {
+        resourceId: requireFlag(flags, 'id'), resourceType: requireFlag(flags, 'type'), endpoint: requireFlag(flags, 'endpoint'),
+      }), flags.json);
+      return 0;
+    }
+
+    if (group === 'resource' && action === 'acquire') {
+      output(acquireResource(state.db, {
+        resourceId: requireFlag(flags, 'id'), resourceType: requireFlag(flags, 'type'), endpoint: requireFlag(flags, 'endpoint'),
+        taskId: requireFlag(flags, 'task'), attemptId: requireFlag(flags, 'attempt'),
+      }), flags.json);
+      return 0;
+    }
+
+    if (group === 'resource' && action === 'release') {
+      output(releaseResource(state.db, {
+        resourceId: requireFlag(flags, 'id'), taskId: requireFlag(flags, 'task'), attemptId: requireFlag(flags, 'attempt'),
+      }), flags.json);
       return 0;
     }
 
@@ -380,7 +409,11 @@ const USAGE = `LandOS Development Control Spine
   npm run landos:control -- attempt start --task <id> --worker <name> --writer <primary-writer> --path <new-worktree-path> --branch <task-branch> --approach <text> [--id <id>] [--base <sha>]
   npm run landos:control -- workspace inspect [--id <id>]
   npm run landos:control -- workspace release --id <id> --task <task-id> --attempt <attempt-id> --writer <primary-writer>
-  npm run landos:control -- execution run --task <task-id> --attempt <attempt-id> --writer <primary-writer> --cwd <managed-worktree> --provider claude|codex|grok [--context-pack <expected-sha256>]
+  npm run landos:control -- resource inspect
+  npm run landos:control -- resource register-primary --id <id> --type runtime-port|browser-cdp|browser-profile --endpoint <identity>
+  npm run landos:control -- resource acquire --id <id> --type <type> --endpoint <identity> --task <task-id> --attempt <attempt-id>
+  npm run landos:control -- resource release --id <id> --task <task-id> --attempt <attempt-id>
+  npm run landos:control -- execution run --task <task-id> --attempt <attempt-id> --writer <primary-writer> --cwd <managed-worktree> --provider claude|codex|grok|local-replay [--context-pack <expected-sha256>]
   npm run landos:control -- evidence add --attempt <id> --kind <kind> --summary <text> [--path <path>]
   npm run landos:control -- candidate submit ... # always refused; governed execution owns submission
   npm run landos:control -- verification plan --attempt <id>

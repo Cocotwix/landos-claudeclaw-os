@@ -50,6 +50,22 @@ The Acquisition Workspace V2 baseline covers Property Intelligence, Comps and
 Valuation, Land Use and official GIS, run-status, map/details, visible styles,
 and routes/contracts at their current component seams.
 
+Repaired Slice 6 normalizes ports, endpoints, CDP endpoints, browser profiles,
+databases, and runtimes to physical identities before ownership is granted.
+Network identity is TCP plus normalized host scope and port. Existing
+filesystem identity uses the real target and stable device/file identity, so a
+junction or hard link cannot create a second owner. A not-yet-created path is
+reserved by the physical identity of its nearest real existing parent plus the
+case-normalized intended child path; active reservations are re-resolved after
+creation so an alias cannot take ownership during that transition.
+Port 3141, CDP 9224, and the dedicated LandOS browser profile are represented
+as protected primary resources. Candidate resources can be acquired, inspected,
+and released only against their canonical task and attempt. A verification
+obligation that requires a runtime or browser resource acquires it through that
+same boundary; acquire/release events bind task, attempt, plan, obligation,
+candidate SHA, and physical identity. Conflict evidence blocks the obligation
+durably, and no resource-bearing result is eligible without both events.
+
 ## Authority and files
 
 - Git `main` is the default accepted-source authority.
@@ -140,7 +156,17 @@ registers current-client bootstrap metadata. Mutation commands require an
 already-current schema. `status`, inspection, failures, and `state generate`
 open the shared database read-only; they never migrate, register resources, or
 rewrite canonical rows. The schema-version row is monotonic, so an older client
-cannot lower a newer shared database version.
+cannot lower a newer shared database version. The DB is filesystem read-only at
+rest; explicit current-client bootstrap/writer handles temporarily unlock it
+and restore the lock on close. This makes archived clients fail before their
+migrations can change schema or resource rows. DELETE journaling keeps status
+reads from creating WAL/SHM sidecars.
+
+`local-replay` is an explicit deterministic governed executor. It runs as a
+real child process and can report only claims; candidate identity is still the
+internally observed clean managed-workspace HEAD, and every sealed verification
+and Integration Gate rule remains mandatory. It exists for honest deterministic
+replay without creating a migration-only acceptance path.
 
 `verification run` requires a clean worktree at the submitted candidate commit
 and executes the sealed obligation itself, so its result is Git-specific. The

@@ -28,7 +28,7 @@ function git(dir, ...args) {
   return result.stdout.trim();
 }
 
-function fixture() {
+function fixture(capabilityCommand = 'node -e "process.exit(0)"', verificationResources = []) {
   const dir = mkdtempSync(path.join(tmpdir(), 'landos-verification-plan-'));
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'config', 'user.email', 'control@example.com');
@@ -44,8 +44,8 @@ function fixture() {
     id: 'acquisition-workspace-v2-fixture',
     name: 'Acquisition Workspace V2 fixture',
     sharedDependencyPaths: ['web/src/pages/AcquisitionWorkspaceV2.tsx', 'web/src/styles/workspace-v2*.css'],
-    verificationCommands: ['node -e "process.exit(0)"'],
-    verificationResources: ['browser:fixture'],
+    verificationCommands: [capabilityCommand],
+    verificationResources,
   }] }));
   writeFileSync(path.join(dir, '.gitignore'), '*.db\n*.db-wal\n*.db-shm\n.landos/STATE.md\n');
   writeFileSync(path.join(dir, 'web/src/pages/AcquisitionWorkspaceV2.tsx'), 'base\n');
@@ -167,7 +167,7 @@ test('canonical inputs, exact Git diff, risk policy, and exact-commit capability
   assert.ok(protectedCandidate.plan.obligations.some((item) => item.kind === 'capability'));
   assert.deepEqual(
     protectedCandidate.plan.obligations.find((item) => item.kind === 'capability').resources,
-    ['browser:fixture'],
+    [],
   );
   rmSync(path.join(repo.dir, '.landos', 'capabilities.json'));
   git(repo.dir, 'restore', '.landos/capabilities.json');
@@ -348,4 +348,122 @@ test('planning refuses a missing Submission Bundle and malformed bundle state', 
   assert.throws(() => persistCanonicalVerificationPlan(state.db, workspacePath, {
     attemptId: allocation.attempt.id, candidateGitSha: git(workspacePath, 'rev-parse', 'HEAD'), submissionBundleId: 999999,
   }), /persisted normalized Submission Bundle/i);
+});
+
+test('required resource acquisition blocks the obligation and persists evidence', async (t) => {
+  const repo = fixture('node -e "process.exit(0)"', [{ resourceId: 'try-primary-cdp', resourceType: 'browser-cdp', endpoint: '9224' }]);
+  const state = initializeControlState(repo.dir); t.after(() => { state.close(); repo.cleanup(); });
+  const candidate = await governedCandidate(state, repo, {
+    pathname: 'web/src/pages/AcquisitionWorkspaceV2.tsx', contents: 'resource blocked protected change\n',
+  });
+  const blocked = await runVerification(state.db, candidate.workspacePath, {
+    attemptId: candidate.attemptId,
+    obligationId: candidate.plan.obligations.find((item) => item.kind === 'capability').id,
+  });
+  assert.equal(blocked.outcome, 'BLOCKED');
+  const obligation = candidate.plan.obligations.find((item) => item.kind === 'capability');
+  assert.equal(state.db.prepare('SELECT status FROM verification_obligation WHERE id = ?').get(obligation.id).status, 'BLOCKED');
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM development_evidence WHERE attempt_id = ? AND kind = 'verification_resource_acquisition_failure'").get(candidate.attemptId).count, 1);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM managed_resource_event WHERE attempt_id = ? AND action = 'ACQUIRE' AND outcome = 'FAIL'").get(candidate.attemptId).count, 1);
+  const result = state.db.prepare('SELECT * FROM verification_obligation_result WHERE obligation_id = ?').get(obligation.id);
+  assert.equal(result.task_id, candidate.taskId);
+  assert.equal(result.attempt_id, candidate.attemptId);
+  assert.equal(result.candidate_git_sha, candidate.candidateSha);
+  assert.equal(result.verification_plan_id, candidate.plan.id);
+  assert.equal(result.policy_version, candidate.plan.policy_version);
+  assert.throws(() => prepareAcceptance(state.db, repo.dir, { attemptId: candidate.attemptId }), /FAILED|VERIFIED candidate/i);
+});
+
+test('a resource-required executable result without governed resource events cannot verify', async (t) => {
+  const repo = fixture('node -e "process.exit(0)"', [{
+    resourceId: 'missing-event-port', resourceType: 'runtime-port', endpoint: '43156',
+  }]);
+  const state = initializeControlState(repo.dir);
+  t.after(() => { state.close(); repo.cleanup(); });
+  const candidate = await governedCandidate(state, repo, {
+    pathname: 'web/src/pages/AcquisitionWorkspaceV2.tsx', contents: 'missing event protected change\n',
+  });
+  const resourceObligation = candidate.plan.obligations.find((item) => item.kind === 'capability');
+  for (const obligation of candidate.plan.obligations.filter((item) => item.id !== resourceObligation.id)) {
+    if (obligation.obligation_type === 'MANUAL_REVIEW') {
+      recordManualReview(state.db, {
+        attemptId: candidate.attemptId,
+        obligationId: obligation.id,
+        outcome: 'PASS',
+        reviewer: 'fixture-reviewer',
+        reviewEvidence: `fixture-review:${obligation.kind}`,
+        summary: `Review passed for ${obligation.kind}.`,
+      });
+    } else {
+      await runVerification(state.db, candidate.workspacePath, {
+        attemptId: candidate.attemptId,
+        obligationId: obligation.id,
+      });
+    }
+  }
+  const evidence = state.db.prepare(`
+    INSERT INTO development_evidence(attempt_id, kind, summary, command, exit_code, recorded_at)
+    VALUES (?, 'verification_execution', 'fabricated command-only result', ?, 0, ?)
+  `).run(candidate.attemptId, resourceObligation.command, new Date().toISOString());
+  state.db.prepare(`
+    INSERT INTO verification_obligation_result(
+      obligation_id, outcome, summary, evidence_id, recorded_at,
+      task_id, attempt_id, candidate_git_sha, verification_plan_id,
+      policy_version, evidence_references_json, result_source, actor
+    ) VALUES (?, 'PASS', 'fabricated command-only result', ?, ?, ?, ?, ?, ?, ?, '[]', 'GOVERNED_EXECUTION', 'control-spine-verifier')
+  `).run(
+    resourceObligation.id,
+    evidence.lastInsertRowid,
+    new Date().toISOString(),
+    candidate.taskId,
+    candidate.attemptId,
+    candidate.candidateSha,
+    candidate.plan.id,
+    candidate.plan.policy_version,
+  );
+  state.db.prepare("UPDATE verification_obligation SET status = 'PASS' WHERE id = ?").run(resourceObligation.id);
+  assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM canonical_verification_eligibility WHERE attempt_id = ?').get(candidate.attemptId).count, 0);
+  assert.throws(
+    () => state.db.prepare("UPDATE development_attempt SET status = 'VERIFIED' WHERE id = ?").run(candidate.attemptId),
+    /governed PASS|verified attempt/i,
+  );
+});
+
+test('resource-bearing verification acquires, executes, evidences, and releases under the exact obligation', async (t) => {
+  const repo = fixture('node -e "process.exit(0)"', [{
+    resourceId: 'fixture-runtime-port',
+    resourceType: 'runtime-port',
+    endpoint: '43155',
+  }]);
+  const state = initializeControlState(repo.dir);
+  t.after(() => { state.close(); repo.cleanup(); });
+  const candidate = await governedCandidate(state, repo, {
+    pathname: 'web/src/pages/AcquisitionWorkspaceV2.tsx',
+    contents: 'resource governed protected change\n',
+  });
+  const capabilityObligation = candidate.plan.obligations.find((item) => item.kind === 'capability');
+  assert.throws(() => recordManualReview(state.db, {
+    attemptId: candidate.attemptId,
+    obligationId: capabilityObligation.id,
+    outcome: 'PASS',
+    reviewer: 'caller',
+    reviewEvidence: 'caller-resource-claim',
+    summary: 'Caller claims resource verification passed.',
+  }), /cannot satisfy EXECUTABLE/i);
+  await passPlan(state, candidate);
+  assert.equal(state.db.prepare('SELECT status FROM development_attempt WHERE id = ?').get(candidate.attemptId).status, 'VERIFIED');
+  const obligation = capabilityObligation;
+  const events = state.db.prepare(`
+    SELECT * FROM managed_resource_event
+    WHERE task_id = ? AND attempt_id = ? AND verification_plan_id = ?
+      AND obligation_id = ? AND candidate_git_sha = ? AND outcome = 'PASS'
+    ORDER BY id
+  `).all(candidate.taskId, candidate.attemptId, candidate.plan.id, obligation.id, candidate.candidateSha);
+  assert.deepEqual(events.map((event) => event.action), ['ACQUIRE', 'RELEASE']);
+  assert.equal(events[0].normalized_identity, obligation.resources[0].normalizedIdentity);
+  assert.equal(events[1].normalized_identity, obligation.resources[0].normalizedIdentity);
+  assert.throws(
+    () => state.db.prepare('DELETE FROM managed_resource_event WHERE id = ?').run(events[0].id),
+    /cannot be deleted/i,
+  );
 });
