@@ -174,6 +174,173 @@
       },
       "acceptedAt": "2026-07-17T16:50:26.909Z",
       "sprintId": "sprint-2026-07-17-phase-1-correctness-repair"
+    },
+    {
+      "id": "development-control-spine",
+      "name": "LandOS Development Control Spine",
+      "department": "platform",
+      "invariant": "Governed candidates require canonical ownership, context, execution, submission, verification, and Integration Gate state.",
+      "riskPolicy": "architecture-critical",
+      "acceptancePolicy": "A non-empty canonical verification plan and durable PASS result for every mandatory obligation are required; only Integration Gate can accept.",
+      "sharedDependencyPaths": [
+        ".landos/CODING_SESSION_PROTOCOL.md",
+        ".landos/PERMANENT_MEMORY.md",
+        ".landos/capabilities.json",
+        ".landos/CHECKPOINT.md",
+        ".landos/verification-results.json",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/landos/development-control-spine.md",
+        "scripts/control",
+        "scripts/dev/providers.mjs",
+        "scripts/dev/task.mjs",
+        "scripts/dev/task.test.mjs",
+        "scripts/memory/landos-memory.mjs",
+        "package.json"
+      ],
+      "ownedInterfaces": [
+        "managed workspace allocation",
+        "governed provider execution",
+        "canonical Context Pack delivery",
+        "verification planning and obligation results",
+        "Integration Gate preparation and reconciliation"
+      ],
+      "verificationCommands": [
+        "npm run landos:control:test",
+        "npm run landos:task:test",
+        "npm run typecheck"
+      ],
+      "verificationObligations": [
+        "mandatory bypass suite",
+        "canonical Control DB consistency",
+        "fresh-process reconstruction"
+      ],
+      "governedResources": []
+    },
+    {
+      "id": "acquisition-workspace-v2-owner-family",
+      "name": "Acquisition Workspace V2 Owner-Visible Family",
+      "invariant": "Every live V2 owner-visible component, stylesheet, navigation contract, and route contract remains capability protected.",
+      "riskPolicy": "protected",
+      "acceptancePolicy": "Any current V2 family change requires the registered cross-surface verification command.",
+      "sharedDependencyPaths": [
+        "web/src/pages/AcquisitionWorkspaceV2.tsx",
+        "web/src/components/AcquisitionWorkspaceV2*.tsx",
+        "web/src/styles/workspace-v2*.css",
+        "web/src/lib/workspace-v2-nav.ts",
+        "web/src/App.tsx",
+        "src/landos/routes.ts",
+        "src/landos/command-contract.ts"
+      ],
+      "goldenJourneyIds": ["acquisition-workspace-v2-owner-family"],
+      "verificationCommands": [
+        "npx vitest run src/landos/workspace-v2-lead-design.test.ts src/landos/workspace-v2-canonical-state.test.ts src/landos/workspace-v2-routing.test.ts src/landos/workspace-v2-section-switching.test.ts src/landos/workspace-v2-comps-valuation-ui.test.ts"
+      ]
+    },
+    {
+      "id": "acquisition-workspace-v2-property-intelligence",
+      "name": "Acquisition Workspace V2 Property Intelligence",
+      "invariant": "The current V2 owner-visible Property Intelligence surface and its canonical contract stay aligned.",
+      "riskPolicy": "protected",
+      "acceptancePolicy": "Protected V2 changes require the registered focused verification command.",
+      "sharedDependencyPaths": [
+        "web/src/pages/AcquisitionWorkspaceV2.tsx",
+        "web/src/components/AcquisitionWorkspaceV2Overview.tsx",
+        "web/src/components/AcquisitionWorkspaceV2PropertyIntelligence.tsx",
+        "web/src/styles/workspace-v2.css",
+        "web/src/styles/workspace-v2-overview.css",
+        "web/src/styles/workspace-v2-property-intelligence.css",
+        "src/landos/property-intelligence-contract.ts"
+      ],
+      "goldenJourneyIds": ["acquisition-workspace-v2-property-intelligence"],
+      "verificationCommands": [
+        "npx vitest run src/landos/property-intelligence-contract.test.ts src/landos/property-intelligence.routes.test.ts src/landos/workspace-v2-lead-design.test.ts"
+      ]
+    },
+    {
+      "id": "acquisition-workspace-v2-comps-valuation",
+      "name": "Acquisition Workspace V2 Comps and Valuation",
+      "invariant": "The current V2 Comps and Valuation owner-visible surface preserves canonical valuation behavior.",
+      "riskPolicy": "protected",
+      "acceptancePolicy": "Protected V2 changes require the registered focused verification command.",
+      "sharedDependencyPaths": [
+        "web/src/pages/AcquisitionWorkspaceV2.tsx",
+        "web/src/components/AcquisitionWorkspaceV2CompsValuation.tsx",
+        "web/src/styles/workspace-v2-comps.css",
+        "src/landos/acquisitions.ts"
+      ],
+      "goldenJourneyIds": ["acquisition-workspace-v2-comps-valuation"],
+      "verificationCommands": [
+        "npx vitest run src/landos/acquisitions-workspace.test.ts src/landos/workspace-v2-comps-valuation-ui.test.ts src/landos/workspace-v2-canonical-state.test.ts"
+      ]
+    },
+    {
+      "id": "acquisition-workspace-v2-land-use-gis",
+      "name": "Acquisition Workspace V2 Land Use and Official GIS",
+      "invariant": "The current V2 Land Use and official GIS surfaces preserve canonical parcel truth.",
+      "riskPolicy": "protected",
+      "acceptancePolicy": "Protected V2 changes require the registered focused verification command.",
+      "sharedDependencyPaths": [
+        "web/src/pages/AcquisitionWorkspaceV2.tsx",
+        "web/src/components/AcquisitionWorkspaceV2LandUse.tsx",
+        "web/src/components/AcquisitionWorkspaceV2OfficialParcelGis.tsx",
+        "src/landos/land-use.ts",
+        "src/landos/official-parcel-gis.ts"
+      ],
+      "goldenJourneyIds": ["acquisition-workspace-v2-land-use-gis"],
+      "verificationCommands": [
+        "npx vitest run src/landos/land-use.test.ts src/landos/official-parcel-gis.test.ts src/landos/workspace-v2-lead-design.test.ts"
+      ]
+    },
+    {
+      "id": "acquisition-workspace-v2-run-status",
+      "name": "Acquisition Workspace V2 Property Intelligence Run Status",
+      "invariant": "The current V2 run-status surface reports canonical orchestration state truthfully.",
+      "riskPolicy": "protected",
+      "acceptancePolicy": "Protected V2 changes require the registered focused verification command.",
+      "sharedDependencyPaths": [
+        "web/src/pages/AcquisitionWorkspaceV2.tsx",
+        "web/src/components/AcquisitionWorkspaceV2RunStatus.tsx",
+        "src/landos/property-intelligence-orchestrator.ts"
+      ],
+      "goldenJourneyIds": ["acquisition-workspace-v2-run-status"],
+      "verificationCommands": [
+        "npx vitest run src/landos/property-intelligence-orchestrator.test.ts src/landos/property-intelligence-specialist-execution.test.ts"
+      ]
+    },
+    {
+      "id": "acquisition-workspace-v2-maps-details",
+      "name": "Acquisition Workspace V2 Comparable Maps and Details",
+      "invariant": "The current V2 comp maps, details, and photo surfaces remain coherent with canonical comp data.",
+      "riskPolicy": "protected",
+      "acceptancePolicy": "Protected V2 changes require the registered focused verification command.",
+      "sharedDependencyPaths": [
+        "web/src/components/AcquisitionWorkspaceV2CompMap.tsx",
+        "web/src/components/AcquisitionWorkspaceV2CompDetails.tsx",
+        "web/src/components/AcquisitionWorkspaceV2CompPhotoGallery.tsx"
+      ],
+      "goldenJourneyIds": ["acquisition-workspace-v2-maps-details"],
+      "verificationCommands": [
+        "npx vitest run src/landos/workspace-v2-comp-map-interaction.test.ts src/landos/workspace-v2-comp-map-expanded.test.ts src/landos/workspace-v2-comp-details-ui.test.ts"
+      ]
+    },
+    {
+      "id": "acquisition-workspace-v2-routes-contracts",
+      "name": "Acquisition Workspace V2 Routes and Contracts",
+      "invariant": "The current V2 routes, navigation, and API command contracts remain compatible.",
+      "riskPolicy": "protected",
+      "acceptancePolicy": "Protected V2 changes require the registered focused verification command.",
+      "sharedDependencyPaths": [
+        "web/src/App.tsx",
+        "web/src/lib/routes.ts",
+        "web/src/lib/workspace-v2-nav.ts",
+        "src/landos/routes.ts",
+        "src/landos/command-contract.ts"
+      ],
+      "goldenJourneyIds": ["acquisition-workspace-v2-routes-contracts"],
+      "verificationCommands": [
+        "npx vitest run src/landos/workspace-v2-routing.test.ts src/landos/workspace-v2-section-switching.test.ts web/src/lib/workspace-v2-nav.test.ts src/landos/landos-route-contract.test.ts"
+      ]
     }
   ]
 }

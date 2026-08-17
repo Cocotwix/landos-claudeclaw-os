@@ -154,7 +154,7 @@ test('manual candidate submission and candidate state without a bundle are mecha
   const noBundle = allocate(state, repo, 'no-bundle');
   assert.throws(() => state.db.prepare(`
     UPDATE development_attempt SET status = 'CANDIDATE', candidate_git_sha = ? WHERE id = ?
-  `).run(repo.base, noBundle.attempt.id), /requires a completed governed execution.*Submission Bundle/i);
+  `).run(repo.base, noBundle.attempt.id), /canonical verification plan|completed governed execution.*Submission Bundle/i);
   assert.equal(state.db.prepare('SELECT status FROM development_attempt WHERE id = ?').get(noBundle.attempt.id).status, 'IN_PROGRESS');
   assert.throws(() => submitCandidate(state.db, repo.dir, {
     attemptId: noBundle.attempt.id,

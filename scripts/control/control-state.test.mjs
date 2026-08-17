@@ -18,8 +18,10 @@ import {
   listFailures,
   openControlState,
   openControlStateWriter,
+  inspectionVerificationPlan,
   prepareAcceptance,
   reconcileAcceptance,
+  recordManualReview,
   renderStateMarkdown,
   resolveControlDatabasePath,
   releaseManagedWorkspace,
@@ -135,6 +137,25 @@ function activeWorkspacePath(state, attemptId) {
   return state.db.prepare(`
     SELECT workspace_path FROM managed_workspace WHERE attempt_id = ? AND status = 'ACTIVE'
   `).get(attemptId).workspace_path;
+}
+
+async function runMandatoryPlan(state, attemptId, now) {
+  const plan = inspectionVerificationPlan(state.db, attemptId);
+  let result;
+  for (const obligation of plan.obligations) {
+    if (obligation.kind === 'canonical_input_review' || obligation.kind === 'submission_evidence_review') {
+      result = recordManualReview(state.db, {
+        attemptId, obligationId: obligation.id, outcome: 'PASS', reviewer: 'fixture-reviewer',
+        reviewEvidence: `fixture-review:${obligation.kind}`,
+        summary: `Gate review passed for ${obligation.kind}.`,
+      }, now);
+    } else {
+      result = await runVerification(state.db, activeWorkspacePath(state, attemptId), {
+        attemptId, obligationId: obligation.id,
+      }, now);
+    }
+  }
+  return result;
 }
 
 test('separate Git worktrees resolve and operate on one shared canonical database', (t) => {
@@ -308,11 +329,7 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
     state, repo, 'attempt-pass', 'Candidate lifecycle implemented.',
   );
 
-  const verification = await runVerification(state.db, activeWorkspacePath(state, 'attempt-pass'), {
-    attemptId: 'attempt-pass',
-    command: 'node -e "process.exit(0)"',
-    summary: 'Focused candidate verification passed.',
-  }, at('2026-08-16T20:04:00.000Z'));
+  const verification = await runMandatoryPlan(state, 'attempt-pass', at('2026-08-16T20:04:00.000Z'));
   assert.equal(verification.outcome, 'PASS');
   assert.equal(controlSnapshot(state.db).activeTask.status, 'CANDIDATE');
   assert.equal(controlSnapshot(state.db).latestAccepted, null);
@@ -404,9 +421,12 @@ test('failed verification survives process loss with evidence and a useful next 
   const candidateSha = await completeGovernedCandidate(
     state, repo, 'attempt-fail', 'Candidate ready for the failure-path proof.',
   );
-  const verification = await runVerification(state.db, activeWorkspacePath(state, 'attempt-fail'), {
-    attemptId: 'attempt-fail',
-    command: 'node -e "process.exit(9)"',
+  const planned = inspectionVerificationPlan(state.db, 'attempt-fail');
+  const failedObligation = planned.obligations.find((item) => item.kind === 'submission_evidence_review');
+  const verification = recordManualReview(state.db, {
+    attemptId: 'attempt-fail', obligationId: failedObligation.id, outcome: 'FAIL',
+    reviewer: 'fixture-reviewer', reviewEvidence: 'fixture-review:failure',
+    summary: 'The candidate violates the focused verification invariant.',
     rootCause: 'The candidate violates the focused verification invariant.',
     limitation: 'Exit code 9 prevents promotion.',
     nextDirection: 'Repair the invariant and start a new attempt from this evidence.',
@@ -422,8 +442,8 @@ test('failed verification survives process loss with evidence and a useful next 
   assert.equal(failures[0].limitation, 'Exit code 9 prevents promotion.');
   assert.equal(failures[0].next_direction, 'Repair the invariant and start a new attempt from this evidence.');
   assert.equal(failures[0].evidence.length, 1);
-  assert.equal(failures[0].evidence[0].kind, 'verification_result');
-  assert.equal(failures[0].evidence[0].exitCode, 9);
+  assert.equal(failures[0].evidence[0].kind, 'manual_verification_review');
+  assert.equal(failures[0].evidence[0].exitCode, null);
   const markdown = renderStateMarkdown(recovered.db, repo.dir);
   assert.match(markdown, /Latest relevant failed attempt/);
   assert.match(markdown, /Repair the invariant and start a new attempt/);
@@ -448,10 +468,7 @@ test('a pending acceptance never follows main to a different commit', async (t) 
     baseGitSha: repo.baseSha,
   });
   const candidateSha = await completeGovernedCandidate(state, repo, 'attempt-mismatch', 'Exact candidate submitted.');
-  await runVerification(state.db, activeWorkspacePath(state, 'attempt-mismatch'), {
-    attemptId: 'attempt-mismatch',
-    command: 'node -e "process.exit(0)"',
-  });
+  await runMandatoryPlan(state, 'attempt-mismatch');
   const operation = prepareAcceptance(state.db, repo.dir, {
     id: 'gate-mismatch',
     attemptId: 'attempt-mismatch',
@@ -490,10 +507,7 @@ test('an invalidated pending candidate becomes durable failure knowledge before 
     baseGitSha: repo.baseSha,
   });
   const candidateSha = await completeGovernedCandidate(state, repo, 'attempt-superseded', 'Candidate submitted.');
-  await runVerification(state.db, activeWorkspacePath(state, 'attempt-superseded'), {
-    attemptId: 'attempt-superseded',
-    command: 'node -e "process.exit(0)"',
-  });
+  await runMandatoryPlan(state, 'attempt-superseded');
   prepareAcceptance(state.db, repo.dir, {
     id: 'gate-superseded',
     attemptId: 'attempt-superseded',

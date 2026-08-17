@@ -19,7 +19,7 @@ import {
   prepareAcceptance,
   reconcileAcceptance,
   recordDecision,
-  recordVerification,
+  recordManualReview,
   resolveCommit,
   runVerification,
   setTaskContract,
@@ -27,6 +27,7 @@ import {
   submitCandidate,
   supersedeAcceptance,
   inspectManagedWorkspace,
+  inspectionVerificationPlan,
   releaseManagedWorkspace,
 } from './control-state.mjs';
 import { runGovernedExecution } from './builder-adapter.mjs';
@@ -100,6 +101,7 @@ function isReadOnlyOperation(group, action) {
   return group === 'status'
     || group === 'failures'
     || group === 'state'
+    || (group === 'verification' && action === 'plan')
     || (group === 'workspace' && (action === 'inspect' || action === undefined));
 }
 
@@ -268,7 +270,7 @@ export async function runCli(argv, { root: rootOverride } = {}) {
     if (group === 'verification' && action === 'run') {
       const verification = await runVerification(state.db, root, {
         attemptId: requireFlag(flags, 'attempt'),
-        command: requireFlag(flags, 'command'),
+        obligationId: requireFlag(flags, 'obligation'),
         summary: optionalFlag(flags, 'summary'),
         rootCause: optionalFlag(flags, 'root-cause'),
         limitation: optionalFlag(flags, 'limitation'),
@@ -279,16 +281,20 @@ export async function runCli(argv, { root: rootOverride } = {}) {
       return verification.outcome === 'PASS' ? 0 : 1;
     }
 
-    if (group === 'verification' && action === 'record') {
+    if (group === 'verification' && action === 'plan') {
+      output(inspectionVerificationPlan(state.db, requireFlag(flags, 'attempt')), flags.json);
+      return 0;
+    }
+
+    if (group === 'verification' && action === 'review') {
       const outcome = requireFlag(flags, 'outcome').toUpperCase();
-      const verification = recordVerification(state.db, {
+      const verification = recordManualReview(state.db, {
         attemptId: requireFlag(flags, 'attempt'),
+        obligationId: requireFlag(flags, 'obligation'),
         outcome,
-        gitSha: optionalFlag(flags, 'commit'),
-        command: requireFlag(flags, 'command'),
+        reviewer: requireFlag(flags, 'reviewer'),
+        reviewEvidence: requireFlag(flags, 'review-evidence'),
         summary: requireFlag(flags, 'summary'),
-        path: optionalFlag(flags, 'path'),
-        exitCode: optionalFlag(flags, 'exit-code'),
         rootCause: optionalFlag(flags, 'root-cause'),
         limitation: optionalFlag(flags, 'limitation'),
         nextDirection: optionalFlag(flags, 'next-direction'),
@@ -377,8 +383,9 @@ const USAGE = `LandOS Development Control Spine
   npm run landos:control -- execution run --task <task-id> --attempt <attempt-id> --writer <primary-writer> --cwd <managed-worktree> --provider claude|codex|grok [--context-pack <expected-sha256>]
   npm run landos:control -- evidence add --attempt <id> --kind <kind> --summary <text> [--path <path>]
   npm run landos:control -- candidate submit ... # always refused; governed execution owns submission
-  npm run landos:control -- verification run --attempt <id> --command <command> [--next-direction <text>]
-  npm run landos:control -- verification record --attempt <id> --outcome PASS|FAIL --command <command> --summary <text> [--commit <sha>]
+  npm run landos:control -- verification plan --attempt <id>
+  npm run landos:control -- verification run --attempt <id> --obligation <obligation-id> [--next-direction <text>]
+  npm run landos:control -- verification review --attempt <id> --obligation <manual-obligation-id> --outcome PASS|FAIL --reviewer <actor> --review-evidence <reference> --summary <text>
   npm run landos:control -- attempt fail --attempt <id> --result <text> [--root-cause <text>] [--next-direction <text>]
   npm run landos:control -- integration-gate prepare --attempt <id> [--authority-ref main]
   npm run landos:control -- integration-gate reconcile [--id <acceptance-id>]

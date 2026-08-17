@@ -12,6 +12,7 @@ import {
   canonicalAttempt,
   canonicalTask,
   failAttempt,
+  persistCanonicalVerificationPlan,
   resolveCommit,
   validateManagedWorkspace,
 } from './control-state.mjs';
@@ -279,6 +280,11 @@ function persistSubmission(db, { execution, task, attempt, workspace, delivery, 
           observed_candidate_git_sha = ?, completed_at = ?
       WHERE id = ?
     `).run(completion.model, completion.sessionId, candidateGitSha, at, current.id);
+    persistCanonicalVerificationPlan(db, workspace.workspace_path, {
+      attemptId: attempt.id,
+      candidateGitSha,
+      submissionBundleId: bundleId,
+    }, () => at);
     db.prepare(`
       UPDATE development_attempt
       SET status = 'CANDIDATE', candidate_git_sha = ?, result = ?, completed_at = ?, updated_at = ?

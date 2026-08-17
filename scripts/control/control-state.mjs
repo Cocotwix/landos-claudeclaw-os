@@ -20,12 +20,13 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { git, gitStatusText, runCheck, failureEvidence } from '../dev/verify.mjs';
+import { deriveVerificationPlan } from './verification-plan.mjs';
 
 export const CONTROL_DB_PATH = 'landos/control/landos-control.db';
 export const LEGACY_CONTROL_DB_PATH = '.landos/control/landos-control.db';
 export const STATE_PATH = '.landos/STATE.md';
 export const DEFAULT_AUTHORITY_REF = 'main';
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 12;
 
 export const TASK_STATUSES = [
   'OPEN',
@@ -361,6 +362,53 @@ function migrate(db) {
       )
     );
 
+    -- The plan is computed from the submitted base-to-candidate Git range.
+    -- Obligation rows, rather than a generic PASS, are the acceptance input.
+    CREATE TABLE IF NOT EXISTS verification_plan (
+      attempt_id TEXT PRIMARY KEY REFERENCES development_attempt(id),
+      base_git_sha TEXT NOT NULL,
+      candidate_git_sha TEXT NOT NULL,
+      actual_changed_paths_json TEXT NOT NULL,
+      touched_capabilities_json TEXT NOT NULL,
+      risk TEXT NOT NULL CHECK (risk IN ('low','protected','architecture-critical')),
+      planned_at TEXT NOT NULL,
+      id TEXT,
+      task_id TEXT,
+      submission_bundle_id INTEGER,
+      policy_git_sha TEXT,
+      policy_version TEXT,
+      canonical_input_digest TEXT,
+      submission_bundle_digest TEXT,
+      planning_inputs_json TEXT,
+      mandatory_obligation_count INTEGER,
+      CHECK (length(base_git_sha) = 40 AND base_git_sha NOT GLOB '*[^0-9a-f]*'),
+      CHECK (length(candidate_git_sha) = 40 AND candidate_git_sha NOT GLOB '*[^0-9a-f]*')
+    );
+
+    CREATE TABLE IF NOT EXISTS verification_obligation (
+      id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL REFERENCES development_attempt(id),
+      capability_id TEXT,
+      kind TEXT NOT NULL,
+      command TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      mandatory INTEGER NOT NULL CHECK (mandatory IN (0, 1)),
+      resources_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','PASS','FAIL','BLOCKED')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (attempt_id, id)
+    );
+
+    CREATE TABLE IF NOT EXISTS verification_obligation_result (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      obligation_id TEXT NOT NULL REFERENCES verification_obligation(id),
+      outcome TEXT NOT NULL CHECK (outcome IN ('PASS','FAIL','BLOCKED')),
+      summary TEXT NOT NULL,
+      evidence_id INTEGER REFERENCES development_evidence(id),
+      recorded_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS acceptance_operation (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES development_task(id),
@@ -388,6 +436,7 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_decision_capability ON development_decision(capability_id, recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_evidence_attempt ON development_evidence(attempt_id, recorded_at);
     CREATE INDEX IF NOT EXISTS idx_verification_attempt ON development_verification(attempt_id, recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_verification_obligation_attempt ON verification_obligation(attempt_id, status);
     CREATE INDEX IF NOT EXISTS idx_acceptance_state ON acceptance_operation(state, prepared_at);
 
     CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_task
@@ -456,15 +505,264 @@ function migrate(db) {
       db.exec(`ALTER TABLE submission_bundle ADD COLUMN ${name} ${definition}`);
     }
   }
+  // The rejected Slice 5 schema could not represent architecture-critical
+  // risk. Rebuild only this metadata table, preserving every historical row;
+  // historical rows stay incomplete and therefore ineligible under v2.
+  db.exec(`
+    DROP TRIGGER IF EXISTS verified_attempt_requires_complete_plan;
+    DROP TRIGGER IF EXISTS governed_candidate_requires_plan;
+    DROP TRIGGER IF EXISTS acceptance_attempt_requires_complete_plan;
+    DROP TRIGGER IF EXISTS acceptance_operation_requires_complete_plan;
+    DROP TRIGGER IF EXISTS acceptance_operation_update_requires_complete_plan;
+    DROP TRIGGER IF EXISTS verification_plan_seal_requires_definition;
+    DROP TRIGGER IF EXISTS sealed_verification_plan_update_refused;
+    DROP TRIGGER IF EXISTS sealed_verification_plan_delete_refused;
+    DROP TRIGGER IF EXISTS sealed_verification_obligation_insert_refused;
+    DROP TRIGGER IF EXISTS sealed_verification_obligation_update_refused;
+    DROP TRIGGER IF EXISTS sealed_verification_obligation_delete_refused;
+    DROP TRIGGER IF EXISTS verification_result_binding_required;
+    DROP TRIGGER IF EXISTS verification_result_update_refused;
+    DROP TRIGGER IF EXISTS verification_result_delete_refused;
+    DROP VIEW IF EXISTS canonical_verification_eligibility;
+    DROP VIEW IF EXISTS canonical_sealed_verification_plan;
+  `);
+  const planTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'verification_plan'").get()?.sql ?? '';
+  if (!planTableSql.includes('architecture-critical')) {
+    const historicalPlans = db.prepare('SELECT * FROM verification_plan').all();
+    db.exec(`
+      DROP TABLE verification_plan;
+      CREATE TABLE verification_plan (
+        attempt_id TEXT PRIMARY KEY REFERENCES development_attempt(id),
+        base_git_sha TEXT NOT NULL,
+        candidate_git_sha TEXT NOT NULL,
+        actual_changed_paths_json TEXT NOT NULL,
+        touched_capabilities_json TEXT NOT NULL,
+        risk TEXT NOT NULL CHECK (risk IN ('low','protected','architecture-critical')),
+        planned_at TEXT NOT NULL,
+        id TEXT,
+        task_id TEXT,
+        submission_bundle_id INTEGER,
+        policy_git_sha TEXT,
+        policy_version TEXT,
+        canonical_input_digest TEXT,
+        submission_bundle_digest TEXT,
+        planning_inputs_json TEXT,
+        mandatory_obligation_count INTEGER,
+        CHECK (length(base_git_sha) = 40 AND base_git_sha NOT GLOB '*[^0-9a-f]*'),
+        CHECK (length(candidate_git_sha) = 40 AND candidate_git_sha NOT GLOB '*[^0-9a-f]*')
+      );
+    `);
+    const restorePlan = db.prepare(`
+      INSERT INTO verification_plan(
+        attempt_id, base_git_sha, candidate_git_sha, actual_changed_paths_json,
+        touched_capabilities_json, risk, planned_at, id, task_id,
+        submission_bundle_id, policy_git_sha, policy_version,
+        canonical_input_digest, submission_bundle_digest, planning_inputs_json,
+        mandatory_obligation_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const row of historicalPlans) restorePlan.run(
+      row.attempt_id, row.base_git_sha, row.candidate_git_sha,
+      row.actual_changed_paths_json, row.touched_capabilities_json, row.risk, row.planned_at,
+      row.id ?? null, row.task_id ?? null, row.submission_bundle_id ?? null,
+      row.policy_git_sha ?? null, row.policy_version ?? null,
+      row.canonical_input_digest ?? null, row.submission_bundle_digest ?? null,
+      row.planning_inputs_json ?? null, row.mandatory_obligation_count ?? null,
+    );
+  }
+  const planColumns = db.prepare('PRAGMA table_info(verification_plan)').all();
+  for (const [name, definition] of [
+    ['id', 'TEXT'],
+    ['task_id', 'TEXT'],
+    ['submission_bundle_id', 'INTEGER'],
+    ['policy_git_sha', 'TEXT'],
+    ['policy_version', 'TEXT'],
+    ['canonical_input_digest', 'TEXT'],
+    ['submission_bundle_digest', 'TEXT'],
+    ['planning_inputs_json', 'TEXT'],
+    ['mandatory_obligation_count', 'INTEGER'],
+    ['lifecycle_state', "TEXT NOT NULL DEFAULT 'LEGACY'"],
+    ['sealed_mandatory_ids_json', 'TEXT'],
+    ['sealed_definition_digest', 'TEXT'],
+    ['sealed_at', 'TEXT'],
+  ]) {
+    if (!planColumns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE verification_plan ADD COLUMN ${name} ${definition}`);
+    }
+  }
+  const obligationColumns = db.prepare('PRAGMA table_info(verification_obligation)').all();
+  for (const [name, definition] of [
+    ['task_id', 'TEXT'],
+    ['candidate_git_sha', 'TEXT'],
+    ['verification_plan_id', 'TEXT'],
+    ['policy_version', 'TEXT'],
+    ['obligation_type', "TEXT NOT NULL DEFAULT 'LEGACY'"],
+    ['execution_command', 'TEXT'],
+  ]) {
+    if (!obligationColumns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE verification_obligation ADD COLUMN ${name} ${definition}`);
+    }
+  }
+  const resultColumns = db.prepare('PRAGMA table_info(verification_obligation_result)').all();
+  for (const [name, definition] of [
+    ['task_id', 'TEXT'],
+    ['attempt_id', 'TEXT'],
+    ['candidate_git_sha', 'TEXT'],
+    ['verification_plan_id', 'TEXT'],
+    ['policy_version', 'TEXT'],
+    ['evidence_references_json', "TEXT NOT NULL DEFAULT '[]'"],
+    ['result_source', "TEXT NOT NULL DEFAULT 'LEGACY'"],
+    ['actor', 'TEXT'],
+  ]) {
+    if (!resultColumns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE verification_obligation_result ADD COLUMN ${name} ${definition}`);
+    }
+  }
   // The rejected chain accidentally created this index over attempt_id.  The
   // repaired schema makes writer uniqueness explicit while retaining a second
   // attempt uniqueness index above.
-  db.exec('DROP INDEX IF EXISTS one_active_workspace_per_writer');
+  db.exec(`
+    DROP INDEX IF EXISTS one_active_workspace_per_writer;
+    DROP TRIGGER IF EXISTS verified_attempt_requires_complete_plan;
+    DROP TRIGGER IF EXISTS governed_candidate_requires_plan;
+    DROP TRIGGER IF EXISTS acceptance_attempt_requires_complete_plan;
+    DROP TRIGGER IF EXISTS acceptance_operation_requires_complete_plan;
+    DROP TRIGGER IF EXISTS acceptance_operation_update_requires_complete_plan;
+    DROP TRIGGER IF EXISTS verification_plan_seal_requires_definition;
+    DROP TRIGGER IF EXISTS sealed_verification_plan_update_refused;
+    DROP TRIGGER IF EXISTS sealed_verification_plan_delete_refused;
+    DROP TRIGGER IF EXISTS sealed_verification_obligation_insert_refused;
+    DROP TRIGGER IF EXISTS sealed_verification_obligation_update_refused;
+    DROP TRIGGER IF EXISTS sealed_verification_obligation_delete_refused;
+    DROP TRIGGER IF EXISTS verification_result_binding_required;
+    DROP TRIGGER IF EXISTS verification_result_update_refused;
+    DROP TRIGGER IF EXISTS verification_result_delete_refused;
+    DROP VIEW IF EXISTS canonical_verification_eligibility;
+    DROP VIEW IF EXISTS canonical_sealed_verification_plan;
+  `);
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_writer
       ON managed_workspace(writer_id) WHERE status = 'ACTIVE';
     CREATE UNIQUE INDEX IF NOT EXISTS one_submission_bundle_per_execution
       ON submission_bundle(execution_id) WHERE execution_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS one_verification_plan_identity
+      ON verification_plan(id) WHERE id IS NOT NULL;
+
+    CREATE VIEW canonical_sealed_verification_plan AS
+    SELECT plan.attempt_id, plan.id AS plan_id, plan.task_id,
+           plan.base_git_sha, plan.candidate_git_sha, plan.policy_version
+    FROM verification_plan plan
+    JOIN development_attempt attempt ON attempt.id = plan.attempt_id
+    JOIN submission_bundle bundle ON bundle.id = plan.submission_bundle_id
+    JOIN governed_execution execution ON execution.id = bundle.execution_id
+    WHERE plan.lifecycle_state = 'SEALED'
+      AND plan.id IS NOT NULL
+      AND plan.task_id = attempt.task_id
+      AND plan.base_git_sha = attempt.base_git_sha
+      AND plan.candidate_git_sha = bundle.candidate_git_sha
+      AND plan.policy_version IS NOT NULL
+      AND plan.policy_git_sha IS NOT NULL
+      AND plan.canonical_input_digest IS NOT NULL
+      AND plan.submission_bundle_digest IS NOT NULL
+      AND plan.planning_inputs_json IS NOT NULL
+      AND plan.sealed_at IS NOT NULL
+      AND plan.sealed_definition_digest IS NOT NULL
+      AND json_valid(plan.sealed_mandatory_ids_json)
+      AND json_type(plan.sealed_mandatory_ids_json) = 'array'
+      AND json_array_length(plan.sealed_mandatory_ids_json) > 0
+      AND bundle.task_id = plan.task_id
+      AND bundle.attempt_id = plan.attempt_id
+      AND execution.task_id = plan.task_id
+      AND execution.attempt_id = plan.attempt_id
+      AND execution.state = 'COMPLETED'
+      AND execution.observed_candidate_git_sha = plan.candidate_git_sha
+      AND (SELECT COUNT(*) FROM verification_obligation obligation
+           WHERE obligation.attempt_id = plan.attempt_id AND obligation.mandatory = 1)
+          = json_array_length(plan.sealed_mandatory_ids_json)
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(plan.sealed_mandatory_ids_json) required_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM verification_obligation obligation
+          WHERE obligation.id = required_id.value
+            AND obligation.attempt_id = plan.attempt_id
+            AND obligation.task_id = plan.task_id
+            AND obligation.candidate_git_sha = plan.candidate_git_sha
+            AND obligation.verification_plan_id = plan.id
+            AND obligation.policy_version = plan.policy_version
+            AND obligation.mandatory = 1
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM verification_obligation obligation
+        WHERE obligation.attempt_id = plan.attempt_id
+          AND obligation.mandatory = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM json_each(plan.sealed_mandatory_ids_json) required_id
+            WHERE required_id.value = obligation.id
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM verification_obligation obligation
+        WHERE obligation.attempt_id = plan.attempt_id
+          AND (
+            obligation.task_id <> plan.task_id
+            OR obligation.candidate_git_sha <> plan.candidate_git_sha
+            OR obligation.verification_plan_id <> plan.id
+            OR obligation.policy_version <> plan.policy_version
+            OR obligation.obligation_type NOT IN ('EXECUTABLE','MANUAL_REVIEW')
+            OR NOT json_valid(obligation.resources_json)
+            OR json_type(obligation.resources_json) <> 'array'
+            OR (obligation.obligation_type = 'EXECUTABLE' AND (
+              obligation.execution_command IS NULL OR trim(obligation.execution_command) = ''
+            ))
+            OR (obligation.obligation_type = 'MANUAL_REVIEW' AND (
+              obligation.execution_command IS NOT NULL
+              OR trim(obligation.command) <> ''
+              OR json_array_length(obligation.resources_json) <> 0
+            ))
+          )
+      );
+
+    CREATE VIEW canonical_verification_eligibility AS
+    SELECT sealed.*
+    FROM canonical_sealed_verification_plan sealed
+    WHERE NOT EXISTS (
+      SELECT 1 FROM verification_obligation obligation
+      WHERE obligation.attempt_id = sealed.attempt_id
+        AND obligation.mandatory = 1
+        AND (
+          obligation.status <> 'PASS'
+          OR (SELECT COUNT(*) FROM verification_obligation_result result
+              WHERE result.obligation_id = obligation.id) <> 1
+          OR NOT EXISTS (
+            SELECT 1
+            FROM verification_obligation_result result
+            JOIN development_evidence evidence ON evidence.id = result.evidence_id
+            WHERE result.obligation_id = obligation.id
+              AND result.task_id = sealed.task_id
+              AND result.attempt_id = sealed.attempt_id
+              AND result.candidate_git_sha = sealed.candidate_git_sha
+              AND result.verification_plan_id = sealed.plan_id
+              AND result.policy_version = sealed.policy_version
+              AND result.outcome = 'PASS'
+              AND evidence.attempt_id = sealed.attempt_id
+              AND (
+                (obligation.obligation_type = 'EXECUTABLE'
+                  AND result.result_source = 'GOVERNED_EXECUTION'
+                  AND evidence.kind = 'verification_execution'
+                  AND evidence.command = obligation.execution_command
+                  AND evidence.exit_code = 0)
+                OR
+                (obligation.obligation_type = 'MANUAL_REVIEW'
+                  AND result.result_source = 'MANUAL_REVIEW'
+                  AND result.actor IS NOT NULL AND trim(result.actor) <> ''
+                  AND evidence.kind = 'manual_verification_review'
+                  AND evidence.command IS NULL
+                  AND evidence.exit_code IS NULL)
+              )
+          )
+        )
+    );
 
     CREATE TRIGGER IF NOT EXISTS governed_candidate_requires_execution_bundle
     BEFORE UPDATE OF status, candidate_git_sha ON development_attempt
@@ -495,6 +793,20 @@ function migrate(db) {
       SELECT RAISE(ABORT, 'candidate attempt insertion is disabled; candidate state requires a completed governed execution');
     END;
 
+    CREATE TRIGGER governed_candidate_requires_plan
+    BEFORE UPDATE OF status, candidate_git_sha ON development_attempt
+    WHEN NEW.status IN ('CANDIDATE','VERIFIED','ACCEPTANCE_PENDING','ACCEPTED')
+      AND NOT EXISTS (
+        SELECT 1 FROM canonical_sealed_verification_plan sealed
+        WHERE sealed.attempt_id = NEW.id
+          AND sealed.task_id = NEW.task_id
+          AND sealed.base_git_sha = NEW.base_git_sha
+          AND sealed.candidate_git_sha = NEW.candidate_git_sha
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'candidate state requires exactly one sealed non-empty canonical verification plan');
+    END;
+
     CREATE TRIGGER IF NOT EXISTS writable_attempt_requires_workspace_insert
     BEFORE INSERT ON development_attempt
     WHEN NEW.status = 'IN_PROGRESS' AND (
@@ -508,6 +820,207 @@ function migrate(db) {
     )
     BEGIN
       SELECT RAISE(ABORT, 'writable attempt requires exactly one active managed workspace owned by its primary writer');
+    END;
+
+    CREATE TRIGGER verification_plan_seal_requires_definition
+    BEFORE UPDATE OF lifecycle_state ON verification_plan
+    WHEN NEW.lifecycle_state = 'SEALED' AND (
+      OLD.lifecycle_state <> 'DRAFT'
+      OR NEW.sealed_at IS NULL
+      OR NEW.sealed_definition_digest IS NULL
+      OR length(NEW.sealed_definition_digest) <> 64
+      OR NOT json_valid(NEW.sealed_mandatory_ids_json)
+      OR json_type(NEW.sealed_mandatory_ids_json) <> 'array'
+      OR json_array_length(NEW.sealed_mandatory_ids_json) < 1
+      OR (SELECT COUNT(*) FROM verification_obligation obligation
+          WHERE obligation.attempt_id = NEW.attempt_id AND obligation.mandatory = 1)
+         <> json_array_length(NEW.sealed_mandatory_ids_json)
+      OR EXISTS (
+        SELECT 1 FROM json_each(NEW.sealed_mandatory_ids_json) required_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM verification_obligation obligation
+          WHERE obligation.id = required_id.value
+            AND obligation.attempt_id = NEW.attempt_id
+            AND obligation.task_id = NEW.task_id
+            AND obligation.candidate_git_sha = NEW.candidate_git_sha
+            AND obligation.verification_plan_id = NEW.id
+            AND obligation.policy_version = NEW.policy_version
+            AND obligation.mandatory = 1
+        )
+      )
+      OR EXISTS (
+        SELECT 1 FROM verification_obligation obligation
+        WHERE obligation.attempt_id = NEW.attempt_id
+          AND obligation.mandatory = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM json_each(NEW.sealed_mandatory_ids_json) required_id
+            WHERE required_id.value = obligation.id
+          )
+      )
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'verification plan sealing requires the exact non-empty live mandatory obligation definition');
+    END;
+
+    CREATE TRIGGER sealed_verification_plan_update_refused
+    BEFORE UPDATE ON verification_plan
+    WHEN OLD.lifecycle_state = 'SEALED'
+    BEGIN
+      SELECT RAISE(ABORT, 'sealed verification plan is immutable');
+    END;
+
+    CREATE TRIGGER sealed_verification_plan_delete_refused
+    BEFORE DELETE ON verification_plan
+    WHEN OLD.lifecycle_state = 'SEALED'
+    BEGIN
+      SELECT RAISE(ABORT, 'sealed verification plan cannot be deleted');
+    END;
+
+    CREATE TRIGGER sealed_verification_obligation_insert_refused
+    BEFORE INSERT ON verification_obligation
+    WHEN EXISTS (
+      SELECT 1 FROM verification_plan plan
+      WHERE plan.id = NEW.verification_plan_id AND plan.lifecycle_state = 'SEALED'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'sealed verification plan obligations are immutable');
+    END;
+
+    CREATE TRIGGER sealed_verification_obligation_update_refused
+    BEFORE UPDATE OF id, attempt_id, task_id, candidate_git_sha,
+      verification_plan_id, policy_version, capability_id, kind, command,
+      summary, mandatory, resources_json, obligation_type, execution_command
+    ON verification_obligation
+    WHEN EXISTS (
+      SELECT 1 FROM verification_plan plan
+      WHERE plan.id = OLD.verification_plan_id AND plan.lifecycle_state = 'SEALED'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'sealed verification plan obligations are immutable');
+    END;
+
+    CREATE TRIGGER sealed_verification_obligation_delete_refused
+    BEFORE DELETE ON verification_obligation
+    WHEN EXISTS (
+      SELECT 1 FROM verification_plan plan
+      WHERE plan.id = OLD.verification_plan_id AND plan.lifecycle_state = 'SEALED'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'sealed verification plan obligations cannot be deleted');
+    END;
+
+    CREATE TRIGGER verification_result_binding_required
+    BEFORE INSERT ON verification_obligation_result
+    WHEN (SELECT COUNT(*) FROM verification_obligation_result result
+          WHERE result.obligation_id = NEW.obligation_id) <> 0
+      OR NOT EXISTS (
+        SELECT 1
+        FROM verification_obligation obligation
+        JOIN verification_plan plan ON plan.id = obligation.verification_plan_id
+        JOIN development_evidence evidence ON evidence.id = NEW.evidence_id
+        WHERE obligation.id = NEW.obligation_id
+          AND plan.lifecycle_state = 'SEALED'
+          AND obligation.task_id = NEW.task_id
+          AND obligation.attempt_id = NEW.attempt_id
+          AND obligation.candidate_git_sha = NEW.candidate_git_sha
+          AND obligation.verification_plan_id = NEW.verification_plan_id
+          AND obligation.policy_version = NEW.policy_version
+          AND evidence.attempt_id = NEW.attempt_id
+          AND (
+            (obligation.obligation_type = 'EXECUTABLE'
+              AND NEW.result_source = 'GOVERNED_EXECUTION'
+              AND evidence.kind = 'verification_execution'
+              AND evidence.command = obligation.execution_command
+              AND ((NEW.outcome = 'PASS' AND evidence.exit_code = 0)
+                OR (NEW.outcome <> 'PASS' AND evidence.exit_code IS NOT NULL)))
+            OR
+            (obligation.obligation_type = 'MANUAL_REVIEW'
+              AND NEW.result_source = 'MANUAL_REVIEW'
+              AND NEW.actor IS NOT NULL AND trim(NEW.actor) <> ''
+              AND obligation.execution_command IS NULL
+              AND json_array_length(obligation.resources_json) = 0
+              AND evidence.kind = 'manual_verification_review'
+              AND evidence.command IS NULL
+              AND evidence.exit_code IS NULL)
+          )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'verification result requires one exact sealed-plan result from its governed mechanism');
+    END;
+
+    CREATE TRIGGER verification_result_update_refused
+    BEFORE UPDATE ON verification_obligation_result
+    WHEN OLD.result_source IN ('GOVERNED_EXECUTION','MANUAL_REVIEW')
+    BEGIN
+      SELECT RAISE(ABORT, 'canonical verification results are immutable');
+    END;
+
+    CREATE TRIGGER verification_result_delete_refused
+    BEFORE DELETE ON verification_obligation_result
+    WHEN OLD.result_source IN ('GOVERNED_EXECUTION','MANUAL_REVIEW')
+    BEGIN
+      SELECT RAISE(ABORT, 'canonical verification results cannot be deleted');
+    END;
+
+    CREATE TRIGGER verified_attempt_requires_complete_plan
+    BEFORE UPDATE OF status ON development_attempt
+    WHEN NEW.status = 'VERIFIED' AND NOT EXISTS (
+      SELECT 1 FROM canonical_verification_eligibility eligible
+      WHERE eligible.attempt_id = NEW.id
+        AND eligible.task_id = NEW.task_id
+        AND eligible.base_git_sha = NEW.base_git_sha
+        AND eligible.candidate_git_sha = NEW.candidate_git_sha
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'a verified attempt requires one sealed canonical plan and one governed PASS for every live mandatory obligation');
+    END;
+
+    CREATE TRIGGER acceptance_attempt_requires_complete_plan
+    BEFORE UPDATE OF status ON development_attempt
+    WHEN NEW.status IN ('ACCEPTANCE_PENDING','ACCEPTED') AND (
+      OLD.status NOT IN ('VERIFIED','ACCEPTANCE_PENDING')
+      OR NOT EXISTS (
+        SELECT 1 FROM canonical_verification_eligibility eligible
+        WHERE eligible.attempt_id = NEW.id
+          AND eligible.task_id = NEW.task_id
+          AND eligible.base_git_sha = NEW.base_git_sha
+          AND eligible.candidate_git_sha = NEW.candidate_git_sha
+      )
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'acceptance state requires a verified sealed canonical plan with every live mandatory obligation passed');
+    END;
+
+    CREATE TRIGGER acceptance_operation_requires_complete_plan
+    BEFORE INSERT ON acceptance_operation
+    WHEN NEW.state <> 'ACCEPTANCE_PENDING' OR NOT EXISTS (
+      SELECT 1 FROM development_attempt attempt
+      JOIN canonical_verification_eligibility eligible ON eligible.attempt_id = attempt.id
+      WHERE attempt.id = NEW.attempt_id
+        AND attempt.task_id = NEW.task_id
+        AND attempt.status = 'VERIFIED'
+        AND attempt.candidate_git_sha = NEW.candidate_git_sha
+        AND eligible.task_id = NEW.task_id
+        AND eligible.candidate_git_sha = NEW.candidate_git_sha
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Integration Gate requires a verified sealed canonical plan with complete governed mandatory results');
+    END;
+
+    CREATE TRIGGER acceptance_operation_update_requires_complete_plan
+    BEFORE UPDATE OF state, task_id, attempt_id, candidate_git_sha ON acceptance_operation
+    WHEN NOT EXISTS (
+      SELECT 1 FROM development_attempt attempt
+      JOIN canonical_verification_eligibility eligible ON eligible.attempt_id = attempt.id
+      WHERE attempt.id = NEW.attempt_id
+        AND attempt.task_id = NEW.task_id
+        AND attempt.status IN ('VERIFIED','ACCEPTANCE_PENDING','ACCEPTED')
+        AND attempt.candidate_git_sha = NEW.candidate_git_sha
+        AND eligible.task_id = NEW.task_id
+        AND eligible.candidate_git_sha = NEW.candidate_git_sha
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Integration Gate operation update requires complete sealed-plan verification truth');
     END;
 
     CREATE TRIGGER IF NOT EXISTS writable_attempt_requires_workspace_update
@@ -1153,6 +1666,186 @@ export function liveGitFacts(root, authorityRef = DEFAULT_AUTHORITY_REF) {
   };
 }
 
+function parsedJsonColumn(row, column, label) {
+  try {
+    const value = JSON.parse(row[column]);
+    if (!Array.isArray(value)) throw new Error('expected array');
+    return value;
+  } catch (error) {
+    throw new Error(`${label} is malformed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function normalizedBundleForPlan(row) {
+  return {
+    id: row.id,
+    executionId: row.execution_id,
+    provider: row.provider,
+    workingBaseGitSha: row.working_base_git_sha,
+    candidateGitSha: row.candidate_git_sha,
+    changedPaths: parsedJsonColumn(row, 'changed_paths_json', 'Submission Bundle changed paths'),
+    implementationClaims: parsedJsonColumn(row, 'implementation_claims_json', 'Submission Bundle claims'),
+    workerTests: parsedJsonColumn(row, 'worker_tests_json', 'Submission Bundle worker tests'),
+    workerTestResults: parsedJsonColumn(row, 'worker_test_results_json', 'Submission Bundle worker test results'),
+    limitations: parsedJsonColumn(row, 'limitations_json', 'Submission Bundle limitations'),
+    evidenceReferences: parsedJsonColumn(row, 'evidence_references_json', 'Submission Bundle evidence references'),
+  };
+}
+
+export function persistCanonicalVerificationPlan(db, root, input, now) {
+  const attempt = attemptFor(db, required(input.attemptId, 'attempt ID'));
+  if (attempt.status !== 'IN_PROGRESS') throw new Error(`verification planning requires writable attempt ${attempt.id}`);
+  const candidateGitSha = resolveCommit(root, normalizedSha(input.candidateGitSha, 'candidate Git SHA'));
+  const bundle = db.prepare('SELECT * FROM submission_bundle WHERE id = ?').get(Number(input.submissionBundleId));
+  if (!bundle) throw new Error('verification planning requires a persisted normalized Submission Bundle');
+  const execution = db.prepare('SELECT * FROM governed_execution WHERE id = ?').get(bundle.execution_id);
+  if (!execution || execution.state !== 'COMPLETED'
+      || bundle.task_id !== attempt.task_id || bundle.attempt_id !== attempt.id
+      || bundle.candidate_git_sha !== candidateGitSha
+      || execution.attempt_id !== attempt.id || execution.observed_candidate_git_sha !== candidateGitSha) {
+    throw new Error('persisted Submission Bundle is not the completed governed execution for this exact candidate');
+  }
+  const contract = canonicalTaskContract(db, attempt.task_id);
+  const plan = deriveVerificationPlan(root, {
+    baseGitSha: attempt.base_git_sha,
+    candidateGitSha,
+    policyGitSha: contract.policyGitSha,
+    taskContract: contract,
+    submissionBundle: normalizedBundleForPlan(bundle),
+  });
+  if (!plan.obligations.length || !plan.obligations.some((item) => item.mandatory)) {
+    throw new Error('governed code candidate requires at least one mandatory verification obligation');
+  }
+  const existing = db.prepare('SELECT attempt_id FROM verification_plan WHERE attempt_id = ?').get(attempt.id);
+  if (existing) throw new Error(`attempt ${attempt.id} already has a persisted verification plan`);
+  const at = nowIso(now);
+  const planId = `${attempt.id}:${plan.policyVersion}:${plan.canonicalInputDigest.slice(0, 12)}:${plan.submissionBundleDigest.slice(0, 12)}`;
+  const plannedObligations = plan.obligations.map((obligation) => ({
+    ...obligation,
+    id: `${attempt.id}:${obligation.id}`,
+  }));
+  const mandatory = plannedObligations.filter((item) => item.mandatory);
+  const mandatoryIds = mandatory.map((item) => item.id).sort();
+  const definitionDigest = createHash('sha256').update(JSON.stringify(mandatory.map((item) => ({
+    id: item.id,
+    obligationType: item.obligationType,
+    kind: item.kind,
+    command: item.command,
+    capabilityId: item.capabilityId,
+    resources: item.resources,
+  })).sort((left, right) => left.id.localeCompare(right.id)))).digest('hex');
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO verification_plan(
+        attempt_id, base_git_sha, candidate_git_sha, actual_changed_paths_json,
+        touched_capabilities_json, risk, planned_at, id, task_id,
+        submission_bundle_id, policy_git_sha, policy_version,
+        canonical_input_digest, submission_bundle_digest, planning_inputs_json,
+        mandatory_obligation_count, lifecycle_state
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT')
+    `).run(
+      attempt.id, plan.baseGitSha, plan.candidateGitSha, JSON.stringify(plan.actualChangedPaths),
+      JSON.stringify(plan.touchedCapabilities), plan.risk, at,
+      planId, attempt.task_id, plan.submissionBundleId, plan.policyGitSha, plan.policyVersion,
+      plan.canonicalInputDigest, plan.submissionBundleDigest, JSON.stringify(plan.planningInputs),
+      mandatory.length,
+    );
+    const insert = db.prepare(`
+      INSERT INTO verification_obligation(
+        id, attempt_id, capability_id, kind, command, summary, mandatory,
+        resources_json, status, created_at, updated_at, task_id,
+        candidate_git_sha, verification_plan_id, policy_version,
+        obligation_type, execution_command
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const obligation of plannedObligations) {
+      insert.run(
+        obligation.id, attempt.id, obligation.capabilityId, obligation.kind, obligation.command ?? '',
+        obligation.summary, obligation.mandatory ? 1 : 0, JSON.stringify(obligation.resources), at, at,
+        attempt.task_id, candidateGitSha, planId, plan.policyVersion,
+        obligation.obligationType, obligation.obligationType === 'EXECUTABLE' ? obligation.command : null,
+      );
+    }
+    db.prepare(`
+      UPDATE verification_plan
+      SET lifecycle_state = 'SEALED', sealed_mandatory_ids_json = ?,
+          sealed_definition_digest = ?, sealed_at = ?
+      WHERE attempt_id = ? AND lifecycle_state = 'DRAFT'
+    `).run(JSON.stringify(mandatoryIds), definitionDigest, at, attempt.id);
+  })();
+  return planFor(db, attempt.id);
+}
+
+function planFor(db, attemptId) {
+  const plan = db.prepare('SELECT * FROM verification_plan WHERE attempt_id = ?').get(attemptId);
+  if (!plan?.id || !plan.policy_version || !plan.submission_bundle_id || plan.lifecycle_state !== 'SEALED') {
+    throw new Error(`attempt ${attemptId} has no complete sealed canonical verification plan`);
+  }
+  const bundle = db.prepare(`
+    SELECT bundle.id
+    FROM submission_bundle bundle
+    JOIN governed_execution execution ON execution.id = bundle.execution_id
+    WHERE bundle.id = ? AND bundle.task_id = ? AND bundle.attempt_id = ?
+      AND bundle.candidate_git_sha = ? AND execution.state = 'COMPLETED'
+      AND execution.attempt_id = bundle.attempt_id
+      AND execution.observed_candidate_git_sha = bundle.candidate_git_sha
+  `).get(plan.submission_bundle_id, plan.task_id, attemptId, plan.candidate_git_sha);
+  if (!bundle) throw new Error(`attempt ${attemptId} canonical verification plan has no valid persisted Submission Bundle`);
+  const sealed = db.prepare(`
+    SELECT 1 FROM canonical_sealed_verification_plan WHERE attempt_id = ?
+  `).get(attemptId);
+  if (!sealed) throw new Error(`attempt ${attemptId} sealed verification-plan definition is incomplete or contradictory`);
+  const obligations = db.prepare(`
+    SELECT * FROM verification_obligation WHERE attempt_id = ? ORDER BY id
+  `).all(attemptId).map((obligation) => ({
+    ...obligation,
+    command: obligation.execution_command,
+    resources: JSON.parse(obligation.resources_json),
+  }));
+  if (!obligations.some((obligation) => obligation.mandatory === 1)) {
+    throw new Error(`attempt ${attemptId} has zero mandatory verification obligations`);
+  }
+  return {
+    ...plan,
+    risk: plan.risk,
+    actual_changed_paths: JSON.parse(plan.actual_changed_paths_json),
+    touched_capabilities: JSON.parse(plan.touched_capabilities_json),
+    planning_inputs: JSON.parse(plan.planning_inputs_json),
+    obligations,
+  };
+}
+
+export function inspectionVerificationPlan(db, attemptId) {
+  attemptFor(db, required(attemptId, 'attempt ID'));
+  return planFor(db, attemptId);
+}
+
+function obligationFor(db, attemptId, obligationId) {
+  const obligation = db.prepare(`
+    SELECT * FROM verification_obligation WHERE attempt_id = ? AND id = ?
+  `).get(attemptId, required(obligationId, 'verification obligation ID'));
+  if (!obligation) throw new Error(`verification obligation ${obligationId} does not belong to attempt ${attemptId}`);
+  return {
+    ...obligation,
+    command: obligation.execution_command,
+    resources: JSON.parse(obligation.resources_json),
+  };
+}
+
+function incompleteMandatoryObligations(db, attemptId) {
+  return db.prepare(`
+    SELECT * FROM verification_obligation
+    WHERE attempt_id = ? AND mandatory = 1 AND status <> 'PASS'
+    ORDER BY id
+  `).all(attemptId);
+}
+
+function requiredPlanComplete(db, attemptId) {
+  return !!db.prepare(`
+    SELECT 1 FROM canonical_verification_eligibility WHERE attempt_id = ?
+  `).get(attemptId);
+}
+
 export function submitCandidate(db, root, input, now) {
   const attempt = attemptFor(db, input.attemptId);
   if (attempt.status === 'IN_PROGRESS') {
@@ -1177,7 +1870,7 @@ function latestVerification(db, attemptId) {
   `).get(attemptId);
 }
 
-export function recordVerification(db, input, now) {
+function recordCanonicalVerificationResult(db, input, mechanism, now) {
   const attempt = attemptFor(db, input.attemptId);
   if (attempt.status === 'ACCEPTANCE_PENDING' || attempt.status === 'ACCEPTED') {
     throw new Error(`attempt ${attempt.id} is ${attempt.status} and cannot receive another verification result`);
@@ -1191,6 +1884,20 @@ export function recordVerification(db, input, now) {
       throw new Error(`verification SHA ${gitSha ?? '(missing)'} does not match candidate ${attempt.candidate_git_sha}`);
     }
   }
+  const plan = planFor(db, attempt.id);
+  const obligation = obligationFor(db, attempt.id, required(input.obligationId, 'verification obligation ID'));
+  if (obligation.status !== 'PENDING') throw new Error(`verification obligation ${obligation.id} is already ${obligation.status}`);
+  if (obligation.verification_plan_id !== plan.id || obligation.candidate_git_sha !== plan.candidate_git_sha
+      || obligation.policy_version !== plan.policy_version) {
+    throw new Error(`verification obligation ${obligation.id} is not bound to the current canonical plan`);
+  }
+  if (obligation.obligation_type !== mechanism.obligationType) {
+    throw new Error(`${mechanism.label} cannot satisfy ${obligation.obligation_type} obligation ${obligation.id}`);
+  }
+  const command = mechanism.command ?? null;
+  if (mechanism.obligationType === 'EXECUTABLE' && command !== obligation.execution_command) {
+    throw new Error(`governed verification command does not match planned obligation ${obligation.id}`);
+  }
   const at = nowIso(now);
   const rootCause = input.rootCause ? String(input.rootCause).trim() : null;
   const limitation = input.limitation ? String(input.limitation).trim() : null;
@@ -1198,11 +1905,11 @@ export function recordVerification(db, input, now) {
   const transaction = db.transaction(() => {
     const evidence = addEvidence(db, {
       attemptId: attempt.id,
-      kind: 'verification_result',
+      kind: mechanism.evidenceKind,
       summary: required(input.summary, 'verification summary'),
-      path: input.path,
-      command: required(input.command, 'verification command'),
-      exitCode: input.exitCode,
+      path: input.evidenceReference ?? input.path,
+      command,
+      exitCode: mechanism.exitCode,
     }, () => at);
     db.prepare(`
       INSERT INTO development_verification(
@@ -1213,7 +1920,7 @@ export function recordVerification(db, input, now) {
       attempt.id,
       outcome,
       outcome === 'PASS' ? gitSha : (gitSha ?? attempt.candidate_git_sha),
-      required(input.command, 'verification command'),
+      command ?? '[manual review]',
       required(input.summary, 'verification summary'),
       evidence.id,
       rootCause,
@@ -1221,19 +1928,43 @@ export function recordVerification(db, input, now) {
       nextDirection,
       at,
     );
+    db.prepare(`
+      INSERT INTO verification_obligation_result(
+        obligation_id, outcome, summary, evidence_id, recorded_at,
+        task_id, attempt_id, candidate_git_sha, verification_plan_id,
+        policy_version, evidence_references_json, result_source, actor
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      obligation.id, outcome, required(input.summary, 'verification summary'), evidence.id, at,
+      attempt.task_id, attempt.id, attempt.candidate_git_sha, plan.id,
+      plan.policy_version, JSON.stringify([`development_evidence:${evidence.id}`]),
+      mechanism.resultSource, mechanism.actor,
+    );
+    db.prepare('UPDATE verification_obligation SET status = ?, updated_at = ? WHERE id = ?')
+      .run(outcome, at, obligation.id);
     if (outcome === 'PASS') {
-      db.prepare(`
-        UPDATE development_attempt
-        SET status = 'VERIFIED', root_cause = NULL, limitation = ?, next_direction = ?, updated_at = ?
-        WHERE id = ?
-      `).run(limitation, nextDirection, at, attempt.id);
-      db.prepare(`
-        UPDATE development_task
-        SET status = 'CANDIDATE', blocker = NULL,
-            next_action = 'Integration Gate: prepare acceptance, promote the candidate to main, then reconcile.',
-            updated_at = ?
-        WHERE id = ?
-      `).run(at, attempt.task_id);
+      if (requiredPlanComplete(db, attempt.id)) {
+        db.prepare(`
+          UPDATE development_attempt
+          SET status = 'VERIFIED', root_cause = NULL, limitation = ?, next_direction = ?, updated_at = ?
+          WHERE id = ?
+        `).run(limitation, nextDirection, at, attempt.id);
+        db.prepare(`
+          UPDATE development_task
+          SET status = 'CANDIDATE', blocker = NULL,
+              next_action = 'Integration Gate: prepare acceptance, promote the candidate to main, then reconcile.',
+              updated_at = ?
+          WHERE id = ?
+        `).run(at, attempt.task_id);
+      } else {
+        db.prepare(`
+          UPDATE development_task
+          SET status = 'CANDIDATE', blocker = NULL,
+              next_action = 'Complete every mandatory capability-aware verification obligation for the exact candidate.',
+              updated_at = ?
+          WHERE id = ?
+        `).run(at, attempt.task_id);
+      }
     } else {
       db.prepare(`
         UPDATE development_attempt
@@ -1254,6 +1985,38 @@ export function recordVerification(db, input, now) {
   });
   transaction();
   return latestVerification(db, attempt.id);
+}
+
+export function recordManualReview(db, input, now) {
+  const attempt = attemptFor(db, input.attemptId);
+  const reviewer = required(input.reviewer, 'manual reviewer identity');
+  const reviewEvidence = required(input.reviewEvidence ?? input.evidenceReference, 'manual review evidence');
+  return recordCanonicalVerificationResult(db, {
+    ...input,
+    gitSha: attempt.candidate_git_sha,
+    summary: required(input.summary, 'manual review summary'),
+    evidenceReference: reviewEvidence,
+  }, {
+    label: 'manual review',
+    obligationType: 'MANUAL_REVIEW',
+    resultSource: 'MANUAL_REVIEW',
+    evidenceKind: 'manual_verification_review',
+    command: null,
+    exitCode: null,
+    actor: reviewer,
+  }, now);
+}
+
+function recordExecutableVerificationResult(db, input, now) {
+  return recordCanonicalVerificationResult(db, input, {
+    label: 'governed executable verification',
+    obligationType: 'EXECUTABLE',
+    resultSource: 'GOVERNED_EXECUTION',
+    evidenceKind: 'verification_execution',
+    command: required(input.command, 'verification command'),
+    exitCode: Number(input.exitCode),
+    actor: 'control-spine-verifier',
+  }, now);
 }
 
 export function failAttempt(db, input, now) {
@@ -1298,15 +2061,20 @@ export async function runVerification(db, root, input, now) {
   }
   if (facts.dirtyPaths !== 0) throw new Error('verification requires a clean working tree so evidence is Git-specific');
 
-  const check = await runCheck({ id: 'control-spine-verification', command: required(input.command, 'verification command') }, root);
+  const obligation = obligationFor(db, attempt.id, required(input.obligationId, 'verification obligation ID'));
+  if (obligation.obligation_type !== 'EXECUTABLE' || !obligation.execution_command) {
+    throw new Error(`verification run accepts only executable obligations; ${obligation.id} is ${obligation.obligation_type}`);
+  }
+  const check = await runCheck({ id: obligation.id, command: obligation.execution_command }, root);
   const diagnosis = check.ok ? null : failureEvidence([check])[0];
   const summary = input.summary
     ? required(input.summary, 'verification summary')
     : check.ok
       ? `PASS: ${check.command}`
       : diagnosis?.text ?? `FAIL: ${check.command}`;
-  return recordVerification(db, {
+  return recordExecutableVerificationResult(db, {
     attemptId: attempt.id,
+    obligationId: obligation.id,
     outcome: check.ok ? 'PASS' : 'FAIL',
     gitSha: attempt.candidate_git_sha,
     command: check.command,
@@ -1326,8 +2094,18 @@ export function prepareAcceptance(db, root, input, now) {
     if (existing?.state === 'ACCEPTED') return existing;
     throw new Error(`task ${task.id} is already ACCEPTED by another attempt`);
   }
+  if (attempt.status !== 'VERIFIED' || task.status !== 'CANDIDATE') {
+    throw new Error(`Integration Gate rejects attempt ${attempt.id} in ${attempt.status}; a current VERIFIED candidate is required`);
+  }
   if (!attempt.candidate_git_sha) throw new Error('acceptance requires a submitted candidate commit');
   resolveCommit(root, attempt.candidate_git_sha);
+  if (!requiredPlanComplete(db, attempt.id)) {
+    throw new Error('Integration Gate requires one non-empty canonical verification plan with a durable PASS result for every mandatory obligation');
+  }
+  const incomplete = incompleteMandatoryObligations(db, attempt.id);
+  if (incomplete.length) {
+    throw new Error(`Integration Gate requires complete mandatory verification obligations: ${incomplete.map((item) => `${item.id}=${item.status}`).join(', ')}`);
+  }
   const verification = latestVerification(db, attempt.id);
   if (!verification || verification.outcome !== 'PASS' || verification.git_sha !== attempt.candidate_git_sha) {
     throw new Error('Integration Gate requires a PASS tied to the exact candidate commit');
@@ -1456,6 +2234,8 @@ export function reconcileAcceptance(db, root, input = {}, now) {
     const verification = latestVerification(db, attempt.id);
     const facts = liveGitFacts(root, operation.authority_ref);
     const blockers = [];
+    if (attempt.status !== 'ACCEPTANCE_PENDING') blockers.push(`attempt is ${attempt.status}, not ACCEPTANCE_PENDING`);
+    if (!requiredPlanComplete(db, attempt.id)) blockers.push('the canonical verification plan is missing, empty, incomplete, or has missing mandatory results');
     if (!facts.authoritySha) blockers.push(`authority ref ${operation.authority_ref} does not resolve to a commit`);
     else if (facts.authoritySha !== operation.candidate_git_sha) {
       blockers.push(`${operation.authority_ref} is ${facts.authoritySha}; expected ${operation.candidate_git_sha}`);

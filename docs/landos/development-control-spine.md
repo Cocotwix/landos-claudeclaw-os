@@ -33,6 +33,23 @@ rendered to the provider and referenced by the normalized Submission Bundle.
 Caller facts, mutable unrelated worktrees, arbitrary hashes, and another
 attempt's delivery cannot alter or substitute the pack.
 
+Repaired Slice 5 atomically derives every governed candidate's versioned plan
+from its canonical task contract and risk policy, persisted normalized
+Submission Bundle, internally observed base-to-candidate Git range, and the
+capability registry at the task's exact policy commit. Worker path and test
+claims remain review inputs only. Plans move from `DRAFT` to `SEALED`; their
+exact live mandatory identities and structural bindings become immutable.
+Executable obligations can receive results only when the Control Spine runs
+their command. Explicit `MANUAL_REVIEW` obligations have no executable command
+or resource and require a named reviewer plus review evidence. Every result is
+bound to the task, attempt, candidate SHA, plan, obligation, policy version,
+mechanism, and durable evidence. Database views and triggers derive eligibility
+from live sealed rows and refuse direct verified, acceptance, plan-deletion,
+result-fabrication, and acceptance-operation bypasses. Development-control paths are architecture-critical.
+The Acquisition Workspace V2 baseline covers Property Intelligence, Comps and
+Valuation, Land Use and official GIS, run-status, map/details, visible styles,
+and routes/contracts at their current component seams.
+
 ## Authority and files
 
 - Git `main` is the default accepted-source authority.
@@ -109,7 +126,8 @@ npm run landos:control -- workspace inspect --id workspace-id
 npm run landos:control -- workspace release --id workspace-id --task task-id --attempt attempt-id --writer codex-task-id
 npm run landos:control -- evidence add --attempt attempt-id --kind implementation_note --summary "What changed"
 npm run landos:control -- candidate submit --attempt attempt-id --commit <full-sha> --result "Candidate result"
-npm run landos:control -- verification run --attempt attempt-id --command "npm run landos:control:test"
+npm run landos:control -- verification run --attempt attempt-id --obligation obligation-id
+npm run landos:control -- verification review --attempt attempt-id --obligation manual-obligation-id --outcome PASS --reviewer reviewer-id --review-evidence evidence-reference --summary "Review result"
 npm run landos:control -- integration-gate prepare --attempt attempt-id
 # promote that exact commit to main through the normal local Git integration
 npm run landos:control -- integration-gate reconcile
@@ -124,10 +142,10 @@ open the shared database read-only; they never migrate, register resources, or
 rewrite canonical rows. The schema-version row is monotonic, so an older client
 cannot lower a newer shared database version.
 
-`verification run` requires a clean worktree at the submitted candidate commit,
-so its PASS is Git-specific. Existing deterministic worker checks may also be
-recorded with `verification record`, but they must name the same full candidate
-SHA before the gate will accept them.
+`verification run` requires a clean worktree at the submitted candidate commit
+and executes the sealed obligation itself, so its result is Git-specific. The
+manual review command rejects executable and resource-bearing obligations; no
+generic result-recording command exists.
 
 Failed verification and `attempt fail` both persist the attempted approach,
 result, available root cause or limitation, evidence, and useful next
