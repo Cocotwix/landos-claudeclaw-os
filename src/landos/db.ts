@@ -2740,6 +2740,72 @@ function createLandosSchema(db: Database.Database): void {
       BEGIN
         SELECT RAISE(ABORT, 'land use determinations are append-only');
       END;
+
+    -- Slice 7 runtime Capability ledger. A research session is deliberately not
+    -- a lead or Deal Card: Tools can resolve an external property without
+    -- manufacturing CRM work. Capability invocations and evidence are durable
+    -- LandOS state and retain the exact caller/subject/capability relationship.
+    CREATE TABLE IF NOT EXISTS landos_research_session (
+      id                       TEXT PRIMARY KEY,
+      capability_id            TEXT NOT NULL,
+      entity                    TEXT NOT NULL CHECK (entity IN ('LAND_ALLY','TY_LAND_BIZ')),
+      raw_input                 TEXT NOT NULL DEFAULT '',
+      status                    TEXT NOT NULL
+                                CHECK (status IN ('active','resolved','ambiguous','unresolved','error')),
+      canonical_subject_kind    TEXT,
+      canonical_subject_ref     TEXT,
+      canonical_subject_json    TEXT NOT NULL DEFAULT 'null',
+      latest_invocation_id       TEXT,
+      created_at                 TEXT NOT NULL,
+      updated_at                 TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_research_session_capability
+      ON landos_research_session(capability_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_capability_invocation (
+      id                       TEXT PRIMARY KEY,
+      capability_id            TEXT NOT NULL,
+      capability_version       TEXT NOT NULL,
+      caller_type               TEXT NOT NULL
+                                CHECK (caller_type IN ('tools','new_lead','deal_card','internal_workflow')),
+      caller_ref                TEXT,
+      subject_kind              TEXT NOT NULL,
+      subject_entity            TEXT NOT NULL CHECK (subject_entity IN ('LAND_ALLY','TY_LAND_BIZ')),
+      subject_ref               TEXT,
+      research_session_id       TEXT REFERENCES landos_research_session(id) ON DELETE SET NULL,
+      mode                      TEXT NOT NULL CHECK (mode IN ('reuse','refresh')),
+      parameters_json           TEXT NOT NULL DEFAULT '{}',
+      context_json              TEXT NOT NULL DEFAULT '{}',
+      idempotency_key           TEXT NOT NULL,
+      status                    TEXT NOT NULL
+                                CHECK (status IN ('running','succeeded','needs_input','failed')),
+      resolution_state          TEXT
+                                CHECK (resolution_state IS NULL OR resolution_state IN ('RESOLVED','AMBIGUOUS','UNRESOLVED','ERROR')),
+      result_json               TEXT NOT NULL DEFAULT 'null',
+      started_at                TEXT NOT NULL,
+      completed_at              TEXT,
+      created_at                TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_capability_invocation_idempotency
+      ON landos_capability_invocation(capability_id, idempotency_key);
+    CREATE INDEX IF NOT EXISTS idx_capability_invocation_subject
+      ON landos_capability_invocation(capability_id, subject_kind, subject_ref, completed_at DESC);
+
+    CREATE TABLE IF NOT EXISTS landos_capability_evidence (
+      id                       TEXT PRIMARY KEY,
+      invocation_id            TEXT NOT NULL REFERENCES landos_capability_invocation(id) ON DELETE CASCADE,
+      capability_id            TEXT NOT NULL,
+      subject_kind              TEXT NOT NULL,
+      subject_ref               TEXT NOT NULL,
+      source_label              TEXT NOT NULL,
+      source_url                TEXT,
+      source_type               TEXT,
+      retrieved_at              TEXT NOT NULL,
+      evidence_json             TEXT NOT NULL DEFAULT '{}',
+      created_at                TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_capability_evidence_invocation
+      ON landos_capability_evidence(invocation_id, created_at);
   `);
 
   db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
@@ -2844,6 +2910,13 @@ function createLandosSchema(db: Database.Database): void {
     '20260807_011_nationwide_land_use_subdivision',
     'sha256:8b41d6c2f0a95e73b1d84c6f2a07e59d3c81b46f0e29a7d5c3b18f60a94e27d1',
     'Add per-deal nationwide land use, zoning and by-right subdivision determinations (additive, append-only, cascades with the deal card).',
+  );
+
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260817_012_runtime_capability_contract',
+    'sha256:5d2ea360d884e324ff04de6b061599572225912b144decbff7808c3f828f7d44',
+    'Add LandOS-owned research sessions plus capability invocation and evidence ledgers for the Slice 7 runtime contract.',
   );
 
   // Additive legacy backfill. Every existing Deal Card gets exactly one lead

@@ -179,6 +179,8 @@ export interface IdentityLaneResult {
   fetchedDocuments?: OfficialPdfDocument[];
   /** Subject identifiers this lane learned, for anchoring the enrichment pass. */
   anchorHints?: { projectName?: string | null; address?: string | null };
+  /** Multiple credible parcel records survived the lane. None is selected. */
+  ambiguousCandidates?: ResolverIdentityPatch[];
 }
 
 export interface IdentityLaneRecord extends IdentityLaneResult {
@@ -246,12 +248,13 @@ export interface ResolvedSubjectHandle {
   lpPropertyId: string | null;
   acres: number | null;
   sourceEvidence: Array<{ lane: IdentityLaneId; label: string; url: string | null; officiality: SourceOfficiality }>;
+  observedSources: Array<{ lane: IdentityLaneId; label: string; url: string | null; officiality: SourceOfficiality }>;
 }
 
 export interface UniversalResolutionResult {
   dealCardId: number;
   propertyCardId: number | null;
-  status: 'resolved' | 'conflicted' | 'unresolved' | 'skipped';
+  status: 'resolved' | 'ambiguous' | 'conflicted' | 'unresolved' | 'skipped';
   identityState: DiscoveryIdentityDecision['state'];
   discoveryUsable: boolean;
   discoveryBasis: string;
@@ -265,6 +268,7 @@ export interface UniversalResolutionResult {
   lanes: IdentityLaneRecord[];
   pendingLanes: RaceableLaneId[];
   conflicts: string[];
+  ambiguousCandidates: ResolverIdentityPatch[];
   notes: string[];
   subject: ResolvedSubjectHandle;
   /**
@@ -399,6 +403,66 @@ export interface ApplyLaneEvidenceResult {
   warnings: string[];
 }
 
+export interface ReconciledResolverIdentityPatch extends ApplyLaneEvidenceResult {
+  subject: ResolverSubject;
+  fields: Partial<Pick<ResolverSubject, 'apn' | 'county' | 'state' | 'city' | 'zip' | 'owner' | 'fips' | 'lpPropertyId' | 'acres'>>;
+  verificationSource: string | null;
+}
+
+/** Pure identity reconciliation shared by Deal Cards and Tools sessions. */
+export function reconcileResolverIdentityPatch(
+  subject: ResolverSubject,
+  patch: ResolverIdentityPatch | null | undefined,
+  actor: string,
+): ReconciledResolverIdentityPatch {
+  const refusedFor: string[] = [];
+  if (!patch) return { applied: false, refusedFor, warnings: [], subject, fields: {}, verificationSource: null };
+  const apn = text(patch.apn);
+  const county = text(patch.county);
+  const state = text(patch.state);
+  if (apn && subject.apn && !apnIdentifiersCorroborate(subject.apn, apn)) {
+    const conflict = detectApnConflict({ apn: subject.apn }, [{ apn, source: actor }]);
+    refusedFor.push(conflict
+      ? `Parcel identifier conflict: this Deal Card carries ${conflict.requestedApn} and ${actor} returned ${conflict.resolvedApn}. They are not formatting variants, so nothing was written and the subject parcel stays unresolved until one is accepted.`
+      : `Parcel identifier conflict between the retained ${subject.apn} and ${apn} from ${actor}; nothing was written.`);
+  }
+  if (county && subject.county && !countyNamesAgree(bareCountyName(county) ?? county, bareCountyName(subject.county) ?? subject.county)) {
+    refusedFor.push(`County conflict: the retained record says ${subject.county} and ${actor} says ${county}; nothing was written.`);
+  }
+  if (state && subject.state && !stateNamesAgree(state, subject.state)) {
+    refusedFor.push(`State conflict: the retained record says ${subject.state} and ${actor} says ${state}; nothing was written.`);
+  }
+  if (refusedFor.length) return { applied: false, refusedFor, warnings: [], subject, fields: {}, verificationSource: null };
+
+  const acres = typeof patch.acres === 'number' && patch.acres > 0 ? patch.acres : null;
+  const fill = <T>(existing: unknown, incoming: T | null): T | null =>
+    (existing == null || existing === '' ? incoming : null);
+  const fields: ReconciledResolverIdentityPatch['fields'] = {
+    ...(fill(subject.apn, apn) ? { apn: apn! } : {}),
+    ...(fill(subject.county, county) ? { county: bareCountyName(county) ?? county! } : {}),
+    ...(fill(subject.state, state) ? { state: state! } : {}),
+    ...(fill(subject.city, text(patch.city)) ? { city: text(patch.city)! } : {}),
+    ...(fill(subject.zip, text(patch.zip)) ? { zip: text(patch.zip)! } : {}),
+    ...(fill(subject.owner, text(patch.owner)) ? { owner: text(patch.owner)! } : {}),
+    ...(fill(subject.fips, text(patch.fips)) ? { fips: text(patch.fips)! } : {}),
+    ...(fill(subject.lpPropertyId, text(patch.lpPropertyId)) ? { lpPropertyId: text(patch.lpPropertyId)! } : {}),
+    ...(fill(subject.acres, acres) == null ? {} : { acres: acres! }),
+  };
+  const merged = { ...subject, ...fields };
+  const verificationSource = patch.verified === true ? text(patch.verificationSource) : null;
+  const strongIdentity = (!!merged.apn && !!(merged.county || merged.state || merged.fips))
+    || (!!merged.lpPropertyId && !!merged.fips);
+  const upgradeVerification = !!verificationSource && strongIdentity && !subject.verified;
+  return {
+    applied: Object.keys(fields).length > 0 || upgradeVerification,
+    refusedFor,
+    warnings: [],
+    subject: upgradeVerification ? { ...merged, verified: true, verificationSource } : merged,
+    fields,
+    verificationSource: upgradeVerification ? verificationSource : null,
+  };
+}
+
 /**
  * Write a lane's facts onto the ONE shared property, or refuse them.
  *
@@ -413,31 +477,11 @@ export function applyLaneEvidence(
   patch: ResolverIdentityPatch | null | undefined,
   actor: string,
 ): ApplyLaneEvidenceResult {
-  const refusedFor: string[] = [];
-  if (!patch || subject.propertyCardId == null) return { applied: false, refusedFor, warnings: [] };
-
-  const apn = text(patch.apn);
-  const county = text(patch.county);
-  const state = text(patch.state);
-
-  if (apn && subject.apn && !apnIdentifiersCorroborate(subject.apn, apn)) {
-    const conflict = detectApnConflict(
-      { apn: subject.apn },
-      [{ apn, source: actor }],
-    );
-    refusedFor.push(
-      conflict
-        ? `Parcel identifier conflict: this Deal Card carries ${conflict.requestedApn} and ${actor} returned ${conflict.resolvedApn}. They are not formatting variants, so nothing was written and the subject parcel stays unresolved until one is accepted.`
-        : `Parcel identifier conflict between the retained ${subject.apn} and ${apn} from ${actor}; nothing was written.`,
-    );
+  const reconciled = reconcileResolverIdentityPatch(subject, patch, actor);
+  const refusedFor = reconciled.refusedFor;
+  if (subject.propertyCardId == null || refusedFor.length || !reconciled.applied) {
+    return { applied: false, refusedFor, warnings: [] };
   }
-  if (county && subject.county && !countyNamesAgree(bareCountyName(county) ?? county, bareCountyName(subject.county) ?? subject.county)) {
-    refusedFor.push(`County conflict: the retained record says ${subject.county} and ${actor} says ${county}; nothing was written.`);
-  }
-  if (state && subject.state && !stateNamesAgree(state, subject.state)) {
-    refusedFor.push(`State conflict: the retained record says ${subject.state} and ${actor} says ${state}; nothing was written.`);
-  }
-  if (refusedFor.length) return { applied: false, refusedFor, warnings: [] };
 
   // A lane FILLS a field the shared property does not carry. It never rewrites
   // one that is already accepted, even when it agrees: a corroborating source
@@ -446,35 +490,16 @@ export function applyLaneEvidence(
   // would quietly hand provenance to whichever lane happened to finish last.
   // Correcting an accepted value is `reconcileSubjectIdentity`'s decision,
   // where per-field precedence and supersession history live.
-  const acres = typeof patch.acres === 'number' && patch.acres > 0 ? patch.acres : null;
-  const fill = <T>(existing: unknown, incoming: T | null): T | null =>
-    (existing == null || existing === '' ? incoming : null);
-  const fields = {
-    ...(fill(subject.apn, apn) ? { apn: apn! } : {}),
-    ...(fill(subject.county, county) ? { county: bareCountyName(county) ?? county! } : {}),
-    ...(fill(subject.state, state) ? { state: state! } : {}),
-    ...(fill(subject.city, text(patch.city)) ? { city: text(patch.city)! } : {}),
-    ...(fill(subject.zip, text(patch.zip)) ? { zip: text(patch.zip)! } : {}),
-    ...(fill(subject.owner, text(patch.owner)) ? { owner: text(patch.owner)! } : {}),
-    ...(fill(subject.fips, text(patch.fips)) ? { fips: text(patch.fips)! } : {}),
-    ...(fill(subject.lpPropertyId, text(patch.lpPropertyId)) ? { lpPropertyId: text(patch.lpPropertyId)! } : {}),
-    ...(fill(subject.acres, acres) == null ? {} : { acres: acres! }),
-  };
-  // An official record may still upgrade an unverified card that already
-  // carries every fact, because the verification itself is new evidence.
-  const upgradesVerification = patch.verified === true && !!text(patch.verificationSource) && !subject.verified;
-  if (Object.keys(fields).length === 0 && !upgradesVerification) return { applied: false, refusedFor, warnings: [] };
-
   // Asking for verification requires the strong parcel identity to travel with
   // the request — `upsertPropertyCard` refuses `verified` without it. The values
   // restated here are the ones already on the card, so nothing is rewritten.
-  const verification = patch.verified === true && text(patch.verificationSource)
+  const verification = reconciled.verificationSource
     ? {
         verified: true,
-        verificationSource: text(patch.verificationSource)!,
-        apn: (fields as { apn?: string }).apn ?? subject.apn ?? undefined,
-        county: (fields as { county?: string }).county ?? subject.county ?? undefined,
-        state: (fields as { state?: string }).state ?? subject.state ?? undefined,
+        verificationSource: reconciled.verificationSource,
+        apn: reconciled.fields.apn ?? subject.apn ?? undefined,
+        county: reconciled.fields.county ?? subject.county ?? undefined,
+        state: reconciled.fields.state ?? subject.state ?? undefined,
       }
     : {};
 
@@ -483,7 +508,7 @@ export function applyLaneEvidence(
     cardId: subject.propertyCardId,
     // The operator's own input line is never rewritten by a research lane.
     activeInputAddress: subject.address ?? '',
-    ...fields,
+    ...reconciled.fields,
     ...verification,
     agentId: actor,
   } as Parameters<typeof upsertPropertyCard>[0]);
@@ -923,6 +948,28 @@ export function buildIndexedWebIdentityLane(
       };
     }
 
+    const distinctCandidates = candidates.filter((candidate, index, all) => candidate.apn
+      && all.findIndex((other) => other.apn && apnIdentifiersCorroborate(other.apn, candidate.apn!)) === index);
+    if (!subject.apn && distinctCandidates.length > 1) {
+      return {
+        lane: 'indexed_web',
+        status: 'evidence',
+        note: `${distinctCandidates.length} credible official parcel candidates remain for this input. No parcel was selected.`,
+        observedSources: namedSources,
+        ambiguousCandidates: distinctCandidates.map((candidate) => ({
+          apn: candidate.apn,
+          county: candidate.county,
+          state: candidate.state,
+          city: candidate.city,
+          address: candidate.address,
+          owner: candidate.owner,
+          acres: candidate.acres,
+          verified: false,
+          verificationSource: candidate.sourceLabel,
+        })),
+      };
+    }
+
     const best = candidates.sort((a, b) => candidateStrength(b) - candidateStrength(a))[0];
     // An OFFICIAL government record naming this parcel with its jurisdiction is
     // an official parcel record (permanent memory invariant 2). Anything weaker
@@ -1063,14 +1110,16 @@ export interface ResolveSubjectPropertyOptions {
 
 function handleFor(subject: ResolverSubject, lanes: IdentityLaneRecord[], winner: IdentityLaneId | null): ResolvedSubjectHandle {
   const sourceEvidence = lanes
-    .filter((lane) => lane.source)
+    .filter((lane) => lane.source && lane.refusedFor.length === 0 && (lane.applied || lane.won))
     .map((lane) => ({ lane: lane.lane as IdentityLaneId, label: lane.source!.label, url: lane.source!.url, officiality: lane.source!.officiality }));
+  const observedSources: ResolvedSubjectHandle['observedSources'] = [];
   // Government sources seen but not used for identity travel with the handle so
   // the Property Backstory sweep does not have to rediscover them.
   for (const lane of lanes) {
+    if (lane.refusedFor.length > 0) continue;
     for (const source of lane.observedSources ?? []) {
-      if (sourceEvidence.some((row) => row.url === source.url)) continue;
-      sourceEvidence.push({ lane: lane.lane as IdentityLaneId, label: source.label, url: source.url, officiality: source.officiality });
+      if (sourceEvidence.some((row) => row.url === source.url) || observedSources.some((row) => row.url === source.url)) continue;
+      observedSources.push({ lane: lane.lane as IdentityLaneId, label: source.label, url: source.url, officiality: source.officiality });
     }
   }
   if (winner === 'retained_identity') {
@@ -1096,6 +1145,7 @@ function handleFor(subject: ResolverSubject, lanes: IdentityLaneRecord[], winner
     lpPropertyId: subject.lpPropertyId,
     acres: subject.acres,
     sourceEvidence,
+    observedSources,
   };
 }
 
@@ -1138,11 +1188,13 @@ export async function resolveSubjectProperty(
       lanes: [],
       pendingLanes: [],
       conflicts: [],
+      ambiguousCandidates: [],
       notes: ['No subject property record exists for this Deal Card.'],
       subject: {
         dealCardId, propertyCardId: null, apn: null, parcelNotations: [], owner: null, address: null,
         city: null, county: null, state: null, zip: null, fips: null, lpPropertyId: null, acres: null,
         sourceEvidence: [],
+        observedSources: [],
       },
     };
   }
@@ -1194,6 +1246,7 @@ export async function resolveSubjectProperty(
       lanes: [...records.values()],
       pendingLanes: pending,
       conflicts: [...new Set(conflicts)],
+      ambiguousCandidates: [],
       notes,
       subject: handleFor(initial, [...records.values()], winner),
     };
@@ -1395,9 +1448,11 @@ export async function resolveSubjectProperty(
   function finish(evaluation: ResolverEvaluation, subject: ResolverSubject): UniversalResolutionResult {
     const lanes = [...records.values()];
     const pendingLanes = lanes.filter((lane) => lane.status === 'pending').map((lane) => lane.lane);
+    const ambiguousCandidates = lanes.flatMap((lane) => lane.ambiguousCandidates ?? []);
     const status: UniversalResolutionResult['status'] = evaluation.sufficient
       ? 'resolved'
-      : evaluation.decision.state === 'conflicted' || conflicts.length ? 'conflicted' : 'unresolved';
+      : ambiguousCandidates.length ? 'ambiguous'
+        : evaluation.decision.state === 'conflicted' || conflicts.length ? 'conflicted' : 'unresolved';
     return {
       dealCardId,
       propertyCardId: subject.propertyCardId,
@@ -1412,6 +1467,7 @@ export async function resolveSubjectProperty(
       lanes,
       pendingLanes,
       conflicts: [...new Set(conflicts)],
+      ambiguousCandidates,
       notes,
       subject: handleFor(subject, lanes, winner),
     };

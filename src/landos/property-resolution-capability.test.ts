@@ -1,0 +1,271 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import { listRuntimeCapabilities, invokeRuntimeCapability } from './capability-registry.js';
+import { CapabilityInvocationStore } from './capability-store.js';
+import { _initTestLandosDb, getLandosDb } from './db.js';
+import { createDealCard, linkPropertyToDeal } from './deal-card.js';
+import { upsertPropertyCard } from './property-card.js';
+import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
+import type { IdentityLaneResult } from './universal-property-resolution.js';
+
+beforeEach(() => { _initTestLandosDb(); });
+
+const official = (patch: IdentityLaneResult['patch']): IdentityLaneResult => ({
+  lane: 'official_parcel',
+  status: 'evidence',
+  note: 'Official county parcel record matched the requested parcel.',
+  source: { label: 'Williamson County Property Assessor', url: 'https://williamsoncounty-tn.gov/property/042-123', officiality: 'official' },
+  patch,
+});
+
+function rawRequest(
+  caller: 'tools' | 'new_lead' | 'deal_card' | 'internal_workflow' = 'tools',
+  entity: 'LAND_ALLY' | 'TY_LAND_BIZ' = 'TY_LAND_BIZ',
+) {
+  return {
+    capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+    caller: { type: caller, ref: `${caller}:test` },
+    subject: { kind: 'raw_property' as const, entity, rawInput: 'Map 042 Parcel 123, Fairview, Tennessee' },
+  };
+}
+
+describe('Slice 7 runtime capability contract', () => {
+  it('registers Property Resolution as the first callable LandOS capability', () => {
+    expect(listRuntimeCapabilities()).toEqual([expect.objectContaining({
+      id: 'property-resolution',
+      name: 'Property Resolution',
+      contractVersion: '1.0',
+    })]);
+  });
+
+  it('persists one normalized Tools result and evidence without creating a lead or Deal Card', async () => {
+    const before = {
+      leads: Number((getLandosDb().prepare('SELECT count(*) AS n FROM landos_lead').get() as { n: number }).n),
+      deals: Number((getLandosDb().prepare('SELECT count(*) AS n FROM landos_deal_card').get() as { n: number }).n),
+    };
+    const result = await invokeRuntimeCapability(rawRequest(), {
+      universalOptions: {
+        lanes: { official_parcel: async () => official({
+          apn: '042-123.00-000', county: 'Williamson', state: 'TN', city: 'Fairview', owner: 'LANDSOUTH LLC',
+          acres: 75.9, verified: true, verificationSource: 'Williamson County Property Assessor',
+        }) },
+      },
+    });
+
+    expect(result.status).toBe('SUCCEEDED');
+    expect(result.subjectResolution).toBe('RESOLVED');
+    expect(result.canonicalSubject).toMatchObject({ kind: 'research_session', temporary: true });
+    expect(result.facts.canonicalIdentity).toMatchObject({ apn: '042-123.00-000', county: 'Williamson', state: 'TN' });
+    expect(result.evidence).toEqual([expect.objectContaining({ source: 'Williamson County Property Assessor' })]);
+
+    const after = {
+      leads: Number((getLandosDb().prepare('SELECT count(*) AS n FROM landos_lead').get() as { n: number }).n),
+      deals: Number((getLandosDb().prepare('SELECT count(*) AS n FROM landos_deal_card').get() as { n: number }).n),
+    };
+    expect(after).toEqual(before);
+    const persisted = getLandosDb().prepare(`
+      SELECT e.invocation_id, e.capability_id, e.subject_kind, e.subject_ref, e.source_label
+      FROM landos_capability_evidence e
+    `).all();
+    expect(persisted).toEqual([expect.objectContaining({
+      invocation_id: result.invocationId,
+      capability_id: 'property-resolution',
+      subject_kind: 'research_session',
+      subject_ref: result.canonicalSubject?.id,
+      source_label: 'Williamson County Property Assessor',
+    })]);
+  });
+
+  it('reuses the same invocation unless an explicit refresh is requested', async () => {
+    let calls = 0;
+    const runtime = {
+      universalOptions: { lanes: { official_parcel: async () => {
+        calls += 1;
+        return official({ apn: '042-123.00-000', county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Assessor' });
+      } } },
+    };
+    const first = await invokeRuntimeCapability(rawRequest(), runtime);
+    const reused = await invokeRuntimeCapability(rawRequest(), runtime);
+    const refreshed = await invokeRuntimeCapability({ ...rawRequest(), mode: 'refresh' }, runtime);
+    expect(reused.invocationId).toBe(first.invocationId);
+    expect(reused.execution.reused).toBe(true);
+    expect(refreshed.invocationId).not.toBe(first.invocationId);
+    expect(refreshed.execution.mode).toBe('refresh');
+    expect(calls).toBe(2);
+  });
+
+  it('atomically reuses one in-flight invocation under concurrent callers', async () => {
+    let calls = 0;
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const runtime = {
+      universalOptions: { lanes: { official_parcel: async () => {
+        calls += 1;
+        entered();
+        await gate;
+        return official({ apn: '042-123.00-000', county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Assessor' });
+      } } },
+    };
+    const firstPromise = invokeRuntimeCapability(rawRequest(), runtime);
+    await started;
+    const secondPromise = invokeRuntimeCapability(rawRequest(), runtime);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    release();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(calls).toBe(1);
+    expect(second.invocationId).toBe(first.invocationId);
+    expect(second.execution.reused).toBe(true);
+    expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_capability_invocation').get() as { n: number }).n).toBe(1);
+    expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_research_session').get() as { n: number }).n).toBe(1);
+  });
+
+  it('allows a fresh atomic retry after a terminal failed reuse invocation', async () => {
+    let calls = 0;
+    const lane = async () => {
+      calls += 1;
+      return official({ apn: '042-123.00-000', county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Assessor' });
+    };
+    const failed = await invokeRuntimeCapability(rawRequest(), {
+      universalOptions: { lanes: { official_parcel: lane } },
+      onUniversalResult: () => { throw new Error('post-resolution persistence adapter failed'); },
+    });
+    const retried = await invokeRuntimeCapability(rawRequest(), {
+      universalOptions: { lanes: { official_parcel: lane } },
+    });
+    expect(failed.status).toBe('FAILED');
+    expect(retried.status).toBe('SUCCEEDED');
+    expect(retried.invocationId).not.toBe(failed.invocationId);
+    expect(calls).toBe(2);
+    expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_capability_invocation').get() as { n: number }).n).toBe(2);
+  });
+
+  it('returns honest ambiguity and never releases a selected parcel', async () => {
+    const result = await invokeRuntimeCapability(rawRequest(), {
+      universalOptions: {
+        lanes: { official_parcel: async () => ({
+          lane: 'official_parcel', status: 'evidence', note: 'Two official candidates remain.',
+          ambiguousCandidates: [
+            { apn: '042-123.00-000', county: 'Williamson', state: 'TN' },
+            { apn: '042-124.00-000', county: 'Williamson', state: 'TN' },
+          ],
+        }) },
+      },
+    });
+    expect(result.status).toBe('NEEDS_INPUT');
+    expect(result.subjectResolution).toBe('AMBIGUOUS');
+    expect(result.facts.released).toBe(false);
+    expect(result.facts.candidates).toHaveLength(2);
+  });
+
+  it('reuses an existing verified property identity instead of creating a duplicate', async () => {
+    const { card } = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'Kingwood Blvd, Fairview TN', apn: '042-123.00-000',
+      county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Williamson County Property Assessor',
+    });
+    const countBefore = Number((getLandosDb().prepare('SELECT count(*) AS n FROM landos_property_card').get() as { n: number }).n);
+    const result = await invokeRuntimeCapability(rawRequest(), {
+      universalOptions: { lanes: { official_parcel: async () => official({
+        apn: '042 123.00 000', county: 'Williamson County', state: 'TN', verified: true, verificationSource: 'Assessor',
+      }) } },
+    });
+    const countAfter = Number((getLandosDb().prepare('SELECT count(*) AS n FROM landos_property_card').get() as { n: number }).n);
+    expect(result.canonicalSubject).toMatchObject({ kind: 'property', propertyCardId: card.id, temporary: false });
+    expect(countAfter).toBe(countBefore);
+  });
+
+  it('keeps same-input reuse and evidence isolated by entity', async () => {
+    const { card: ally } = upsertPropertyCard({
+      entity: 'LAND_ALLY', activeInputAddress: 'Kingwood Blvd, Fairview TN', apn: '042-123.00-000',
+      county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Williamson County Property Assessor',
+    });
+    const { card: ty } = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'Kingwood Blvd, Fairview TN', apn: '042-123.00-000',
+      county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Williamson County Property Assessor',
+    });
+    const runtime = {
+      universalOptions: { lanes: { official_parcel: async () => official({
+        apn: '042-123.00-000', county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Assessor',
+      }) } },
+    };
+    const tyResult = await invokeRuntimeCapability(rawRequest('tools', 'TY_LAND_BIZ'), runtime);
+    const allyResult = await invokeRuntimeCapability(rawRequest('tools', 'LAND_ALLY'), runtime);
+    expect(tyResult.canonicalSubject).toMatchObject({ kind: 'property', propertyCardId: ty.id });
+    expect(allyResult.canonicalSubject).toMatchObject({ kind: 'property', propertyCardId: ally.id });
+    expect(tyResult.invocationId).not.toBe(allyResult.invocationId);
+    const evidence = getLandosDb().prepare(`
+      SELECT invocation_id, subject_ref FROM landos_capability_evidence ORDER BY invocation_id
+    `).all() as Array<{ invocation_id: string; subject_ref: string }>;
+    expect(evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ invocation_id: tyResult.invocationId, subject_ref: String(ty.id) }),
+      expect.objectContaining({ invocation_id: allyResult.invocationId, subject_ref: String(ally.id) }),
+    ]));
+  });
+
+  it('keeps merely observed no-result sources out of supporting capability evidence', async () => {
+    const result = await invokeRuntimeCapability(rawRequest(), {
+      universalOptions: { lanes: { official_parcel: async () => ({
+        lane: 'official_parcel', status: 'no_evidence', note: 'The portal was checked but no matching parcel record was found.',
+        observedSources: [{ label: 'County portal landing page', url: 'https://county.example.gov/search', officiality: 'official' }],
+      }) } },
+    });
+    expect(result.subjectResolution).toBe('UNRESOLVED');
+    expect(result.evidence).toEqual([]);
+    expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_capability_evidence').get() as { n: number }).n).toBe(0);
+  });
+
+  it('rejects fake canonical IDs and caller-supplied evidence or confidence', async () => {
+    const fake = await invokeRuntimeCapability({
+      capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: 'deal:404' },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: 404, dealCardId: 404 },
+      mode: 'refresh',
+    });
+    expect(fake.status).toBe('FAILED');
+    expect(fake.subjectResolution).toBe('ERROR');
+    expect(fake.warnings.join(' ')).toMatch(/not the subject|canonical property/i);
+    expect(new CapabilityInvocationStore().get(fake.invocationId)?.subjectResolution).toBe('ERROR');
+
+    await expect(invokeRuntimeCapability({
+      ...rawRequest(),
+      parameters: { confidence: 1, evidence: 'trust me' },
+    })).rejects.toThrow(/does not accept caller-supplied evidence/i);
+    await expect(invokeRuntimeCapability({
+      ...rawRequest(),
+      context: { workflow: 'tools', nested: { confidence: 1, evidence: 'trust me' } },
+    })).rejects.toThrow(/context cannot contain caller-supplied evidence/i);
+    expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_capability_invocation WHERE caller_type = ?').get('tools') as { n: number }).n).toBe(0);
+    expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_research_session').get() as { n: number }).n).toBe(0);
+  });
+
+  it('preserves an accepted canonical parcel when a refresh returns a conflicting APN', async () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Accepted parcel' });
+    const { card } = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'Kingwood Blvd, Fairview TN', apn: '042-123.00-000',
+      county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Williamson County Property Assessor',
+    });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
+    const result = await invokeRuntimeCapability({
+      capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+    }, {
+      universalOptions: {
+        retainedFastPath: false,
+        lanes: { official_parcel: async () => official({
+          apn: '042-999.00-000', county: 'Williamson', state: 'TN', verified: true, verificationSource: 'Conflicting source',
+        }) },
+      },
+    });
+    const row = getLandosDb().prepare('SELECT apn, verification_source FROM landos_property_card WHERE id = ?').get(card.id) as { apn: string; verification_source: string };
+    expect(row).toEqual({ apn: '042-123.00-000', verification_source: 'Williamson County Property Assessor' });
+    expect(result.warnings.join(' ')).toMatch(/conflict/i);
+    const evidence = getLandosDb().prepare(`
+      SELECT source_label FROM landos_capability_evidence WHERE invocation_id = ?
+    `).all(result.invocationId) as Array<{ source_label: string }>;
+    expect(evidence.map((item) => item.source_label)).not.toContain('Williamson County Property Assessor');
+    expect(evidence.map((item) => item.source_label)).not.toContain('Conflicting source');
+  });
+});
