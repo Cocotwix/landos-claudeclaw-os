@@ -19,6 +19,20 @@ claim, never changes acceptance state. The legacy `scripts/dev/task.mjs`
 entrypoint delegates only to this operation and refuses its former free-form
 lifecycle.
 
+Final repaired Slice 4 makes the Canonical Context Pack complete and mandatory.
+The canonical task contract persists objective, explicit non-goals, accepted
+and working bases, risk and acceptance policy, architecture/invariant
+references, owned scope/interfaces, verification obligations, constraints, and
+scoped relevance identities before generation. Generation accepts only an
+attempt id, retrieves its exact managed workspace, queries only the named
+relevant decisions/failures/evidence, and reads policy, architecture, and the
+capability registry from the contract's exact Git commit. The execution HEAD is
+read from the validated managed workspace, never the invoking worktree. Stable
+serialization and hashing create one attempt/workspace-bound delivery that is
+rendered to the provider and referenced by the normalized Submission Bundle.
+Caller facts, mutable unrelated worktrees, arbitrary hashes, and another
+attempt's delivery cannot alter or substitute the pack.
+
 ## Authority and files
 
 - Git `main` is the default accepted-source authority.

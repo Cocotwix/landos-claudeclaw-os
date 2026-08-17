@@ -2,7 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -20,12 +20,12 @@ import {
   openControlStateWriter,
   prepareAcceptance,
   reconcileAcceptance,
-  recordContextPackDelivery,
   renderStateMarkdown,
   resolveControlDatabasePath,
   releaseManagedWorkspace,
   runVerification,
   SCHEMA_VERSION,
+  setTaskContract,
   startAttempt,
   startManagedAttempt,
   supersedeAcceptance,
@@ -48,9 +48,13 @@ function tempRepo() {
   runGit(dir, 'init', '-q', '-b', 'main');
   runGit(dir, 'config', 'user.email', 'control@example.com');
   runGit(dir, 'config', 'user.name', 'Control Spine Test');
+  mkdirSync(path.join(dir, '.landos'), { recursive: true });
+  writeFileSync(path.join(dir, '.landos', 'CODING_SESSION_PROTOCOL.md'), 'canonical policy\n');
+  writeFileSync(path.join(dir, '.landos', 'PERMANENT_MEMORY.md'), 'canonical invariants\n');
+  writeFileSync(path.join(dir, '.landos', 'capabilities.json'), JSON.stringify({ schema: 1, capabilities: [] }));
   writeFileSync(path.join(dir, '.gitignore'), '*.db\n*.db-wal\n*.db-shm\n.landos/STATE.md\n');
   writeFileSync(path.join(dir, 'implementation.txt'), 'base\n');
-  runGit(dir, 'add', '.gitignore', 'implementation.txt');
+  runGit(dir, 'add', '.landos', '.gitignore', 'implementation.txt');
   runGit(dir, 'commit', '-q', '-m', 'base');
   const baseSha = runGit(dir, 'rev-parse', 'HEAD');
   return {
@@ -91,10 +95,25 @@ async function completeGovernedCandidate(state, repo, attemptId, result) {
   runGit(workspace.workspace_path, 'add', 'implementation.txt');
   runGit(workspace.workspace_path, 'commit', '-q', '-m', `${attemptId} candidate implementation`);
   const candidateSha = runGit(workspace.workspace_path, 'rev-parse', 'HEAD');
-  const delivery = recordContextPackDelivery(state.db, {
-    attemptId,
-    workspaceId: workspace.id,
-    canonicalJson: JSON.stringify({ taskId: attempt.task_id, attemptId }),
+  setTaskContract(state.db, repo.dir, {
+    taskId: attempt.task_id,
+    objective: state.db.prepare('SELECT outcome FROM development_task WHERE id = ?').get(attempt.task_id).outcome,
+    nonGoals: ['Do not alter unrelated behavior.'],
+    acceptedBaseGitSha: repo.baseSha,
+    workingBaseGitSha: attempt.base_git_sha,
+    riskPolicy: 'low',
+    acceptancePolicy: 'Exact-SHA Integration Gate only.',
+    architectureRefs: [],
+    invariantRefs: ['.landos/PERMANENT_MEMORY.md'],
+    ownedScope: ['implementation.txt'],
+    ownedInterfaces: [],
+    verificationObligations: ['Focused lifecycle command passes.'],
+    verificationPolicyRefs: ['.landos/CODING_SESSION_PROTOCOL.md'],
+    runtimeConstraints: [],
+    resourceConstraints: [],
+    relevantCapabilityIds: [],
+    relevantTaskIds: [],
+    policyGitSha: attempt.base_git_sha,
   });
   const submitted = await TEST_ONLY.runGovernedExecutionWithProvider(state.db, repo.dir, {
     taskId: attempt.task_id,
@@ -102,7 +121,6 @@ async function completeGovernedCandidate(state, repo, attemptId, result) {
     writerId: workspace.writer_id,
     cwd: workspace.workspace_path,
     provider: 'codex',
-    contextPackHash: delivery.context_pack_hash,
   }, async () => ({
       exitCode: 0,
       stdout: JSON.stringify({ result }),

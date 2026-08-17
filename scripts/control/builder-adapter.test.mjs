@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,7 +9,7 @@ import {
   createTask,
   initializeControlState,
   listFailures,
-  recordContextPackDelivery,
+  setTaskContract,
   startManagedAttempt,
   submitCandidate,
 } from './control-state.mjs';
@@ -26,6 +26,10 @@ function fixture() {
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'config', 'user.email', 'x@y.z');
   git(dir, 'config', 'user.name', 'x');
+  mkdirSync(path.join(dir, '.landos'), { recursive: true });
+  writeFileSync(path.join(dir, '.landos', 'CODING_SESSION_PROTOCOL.md'), 'canonical policy\n');
+  writeFileSync(path.join(dir, '.landos', 'PERMANENT_MEMORY.md'), 'canonical invariants\n');
+  writeFileSync(path.join(dir, '.landos', 'capabilities.json'), JSON.stringify({ capabilities: [] }));
   writeFileSync(path.join(dir, '.gitignore'), '*.db\n');
   writeFileSync(path.join(dir, 'base.txt'), 'base\n');
   git(dir, 'add', '.');
@@ -45,7 +49,7 @@ function fixture() {
   };
 }
 
-function allocate(state, repo, id, { deliver = true } = {}) {
+function allocate(state, repo, id, { contract = true } = {}) {
   createTask(state.db, { id: `task-${id}`, title: id, outcome: `Canonical ${id} objective`, nextAction: 'Execute.' });
   const workspacePath = `${repo.dir}-${id}`;
   repo.workspaces.push(workspacePath);
@@ -60,11 +64,26 @@ function allocate(state, repo, id, { deliver = true } = {}) {
     baseGitSha: repo.base,
     approach: 'Governed execution fixture.',
   });
-  if (deliver) {
-    allocation.delivery = recordContextPackDelivery(state.db, {
-      attemptId: allocation.attempt.id,
-      workspaceId: allocation.workspace.id,
-      canonicalJson: JSON.stringify({ taskId: allocation.attempt.task_id, attemptId: allocation.attempt.id }),
+  if (contract) {
+    allocation.contract = setTaskContract(state.db, repo.dir, {
+      taskId: allocation.attempt.task_id,
+      objective: `Canonical ${id} objective`,
+      nonGoals: ['Do not alter business runtime behavior.'],
+      acceptedBaseGitSha: repo.base,
+      workingBaseGitSha: repo.base,
+      riskPolicy: 'low',
+      acceptancePolicy: 'Exact-SHA Integration Gate only.',
+      architectureRefs: [],
+      invariantRefs: ['.landos/PERMANENT_MEMORY.md'],
+      ownedScope: ['base.txt'],
+      ownedInterfaces: [],
+      verificationObligations: ['Focused governed lifecycle tests must pass.'],
+      verificationPolicyRefs: ['.landos/CODING_SESSION_PROTOCOL.md'],
+      runtimeConstraints: [],
+      resourceConstraints: [],
+      relevantCapabilityIds: [],
+      relevantTaskIds: [],
+      policyGitSha: repo.base,
     });
   }
   return allocation;
@@ -77,7 +96,6 @@ function request(allocation, provider = 'codex') {
     writerId: allocation.workspace.writer_id,
     cwd: allocation.workspace.workspace_path,
     provider,
-    contextPackHash: allocation.delivery.context_pack_hash,
   };
 }
 
@@ -100,13 +118,17 @@ test('Claude, Codex, and Grok executions persist one bound bundle and internally
       state.db,
       repo.dir,
       request(allocation, provider),
-      async () => raws[provider],
+      async (plan) => {
+        assert.match(plan.stdin, /Context Pack/i);
+        return raws[provider];
+      },
     );
     assert.equal(result.state, 'SUBMITTED');
     assert.equal(result.bundle.provider, provider);
     assert.equal(result.bundle.attempt_id, allocation.attempt.id);
     assert.equal(result.bundle.execution_id, result.execution.id);
-    assert.equal(result.bundle.context_pack_hash, allocation.delivery.context_pack_hash);
+    const delivery = state.db.prepare('SELECT * FROM context_pack_delivery WHERE attempt_id = ?').get(allocation.attempt.id);
+    assert.equal(result.bundle.context_pack_hash, delivery.context_pack_hash);
     assert.equal(result.bundle.candidate_git_sha, git(allocation.workspace.workspace_path, 'rev-parse', 'HEAD'));
     assert.equal(result.attempt.status, 'CANDIDATE');
   }
@@ -143,7 +165,7 @@ test('manual candidate submission and candidate state without a bundle are mecha
   assert.match(listFailures(state.db, noBundle.attempt.task_id)[0].root_cause, /persisted normalized Submission Bundle/i);
 });
 
-test('wrong workspace and missing Context Pack fail durably before provider launch', async (t) => {
+test('wrong workspace and incomplete canonical Context Pack contract fail durably before provider launch', async (t) => {
   const repo = fixture();
   const state = initializeControlState(repo.dir);
   t.after(() => { state.close(); repo.cleanup(); });
@@ -158,18 +180,17 @@ test('wrong workspace and missing Context Pack fail durably before provider laun
   assert.equal(launched, false);
   assert.match(listFailures(state.db, wrongWorkspace.attempt.task_id)[0].root_cause, /working directory/i);
 
-  const missingPack = allocate(state, repo, 'missing-pack', { deliver: false });
+  const missingPack = allocate(state, repo, 'missing-pack', { contract: false });
   const missing = await runFixture(state.db, repo.dir, {
     taskId: missingPack.attempt.task_id,
     attemptId: missingPack.attempt.id,
     writerId: missingPack.workspace.writer_id,
     cwd: missingPack.workspace.workspace_path,
     provider: 'codex',
-    contextPackHash: '0'.repeat(64),
   }, async () => { launched = true; return { exitCode: 0 }; });
   assert.equal(missing.state, 'FAILED');
   assert.equal(launched, false);
-  assert.match(listFailures(state.db, missingPack.attempt.task_id)[0].root_cause, /was not delivered/i);
+  assert.match(listFailures(state.db, missingPack.attempt.task_id)[0].root_cause, /no complete canonical task contract/i);
 });
 
 test('every provider-return normalization, validation, mismatch, and persistence failure is durable', async (t) => {
@@ -280,4 +301,22 @@ test('provider terminal failure is durable and provider ACCEPTED prose has no au
   assert.equal(submitted.state, 'SUBMITTED');
   assert.equal(submitted.attempt.status, 'CANDIDATE');
   assert.equal(state.db.prepare('SELECT accepted_git_sha FROM development_task WHERE id = ?').get(accepted.attempt.task_id).accepted_git_sha, null);
+});
+
+test('a provider-supplied Context Pack hash cannot override the exact delivered attempt pack', async (t) => {
+  const repo = fixture(); const state = initializeControlState(repo.dir); t.after(() => { state.close(); repo.cleanup(); });
+  const allocation = allocate(state, repo, 'context-mismatch');
+  const refused = await runFixture(state.db, repo.dir, {
+    taskId: 'task-context-mismatch', attemptId: 'attempt-context-mismatch', writerId: 'writer-context-mismatch',
+    cwd: allocation.workspace.workspace_path, provider: 'codex',
+  }, async () => ({
+    exitCode: 0,
+    stdout: JSON.stringify({ result: 'provider claim' }),
+    contextPackHash: 'f'.repeat(64),
+  }));
+  assert.equal(refused.state, 'FAILED');
+  assert.equal(refused.execution.failure_classification, 'context_pack_hash_mismatch');
+  assert.match(refused.attempt.root_cause, /does not match the canonical delivery/i);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM submission_bundle WHERE attempt_id = 'attempt-context-mismatch'").get().count, 0);
+  assert.equal(state.db.prepare("SELECT COUNT(*) AS count FROM context_pack_delivery WHERE attempt_id = 'attempt-context-mismatch'").get().count, 1);
 });

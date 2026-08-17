@@ -47,7 +47,7 @@
     "landos:task": "node scripts/dev/task.mjs",
     "landos:task:test": "node --test scripts/dev/task.test.mjs scripts/dev/verify.test.mjs scripts/dev/env-guard.test.mjs",
     "landos:control": "node scripts/control/landos-control.mjs",
-    "landos:control:test": "node --test scripts/control/control-state.test.mjs scripts/control/builder-adapter.test.mjs",
+    "landos:control:test": "node --test scripts/control/*.test.mjs",
     "landos:build": "node scripts/devloop/build.mjs",
     "landos:build:watch": "node scripts/devloop/build.mjs watch",
     "landos:build:test": "node --test scripts/devloop/build.test.mjs",

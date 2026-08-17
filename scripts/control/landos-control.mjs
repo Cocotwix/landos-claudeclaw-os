@@ -18,9 +18,11 @@ import {
   openControlStateWriter,
   prepareAcceptance,
   reconcileAcceptance,
+  recordDecision,
   recordVerification,
   resolveCommit,
   runVerification,
+  setTaskContract,
   startManagedAttempt,
   submitCandidate,
   supersedeAcceptance,
@@ -63,6 +65,25 @@ function requireFlag(flags, name) {
 function optionalFlag(flags, name) {
   const value = flags[name];
   return value === undefined ? undefined : String(value);
+}
+
+function jsonListFlag(flags, name) {
+  const raw = requireFlag(flags, name);
+  let value;
+  try { value = JSON.parse(raw); }
+  catch {
+    // PowerShell may remove the quotes inside a native-command JSON argument.
+    // Accept the resulting bracketed comma list without changing the canonical
+    // storage format; callers needing commas inside an item must pass JSON.
+    if (raw.startsWith('[') && raw.endsWith(']')) {
+      const content = raw.slice(1, -1).trim();
+      value = content ? content.split(',').map((item) => item.trim()) : [];
+    } else {
+      throw new Error(`--${name} must be a JSON array`);
+    }
+  }
+  if (!Array.isArray(value)) throw new Error(`--${name} must be a JSON array`);
+  return value;
 }
 
 function output(value, json) {
@@ -113,6 +134,46 @@ export async function runCli(argv, { root: rootOverride } = {}) {
       return 0;
     }
 
+    if (group === 'task' && action === 'contract') {
+      const contract = setTaskContract(state.db, root, {
+        taskId: requireFlag(flags, 'task'),
+        objective: requireFlag(flags, 'objective'),
+        nonGoals: jsonListFlag(flags, 'non-goals'),
+        acceptedBaseGitSha: requireFlag(flags, 'accepted-base'),
+        workingBaseGitSha: requireFlag(flags, 'working-base'),
+        riskPolicy: requireFlag(flags, 'risk-policy'),
+        acceptancePolicy: requireFlag(flags, 'acceptance-policy'),
+        architectureRefs: jsonListFlag(flags, 'architecture-refs'),
+        invariantRefs: jsonListFlag(flags, 'invariant-refs'),
+        ownedScope: jsonListFlag(flags, 'owned-scope'),
+        ownedInterfaces: jsonListFlag(flags, 'owned-interfaces'),
+        verificationObligations: jsonListFlag(flags, 'verification-obligations'),
+        verificationPolicyRefs: jsonListFlag(flags, 'verification-policy-refs'),
+        runtimeConstraints: jsonListFlag(flags, 'runtime-constraints'),
+        resourceConstraints: jsonListFlag(flags, 'resource-constraints'),
+        relevantCapabilityIds: jsonListFlag(flags, 'relevant-capabilities'),
+        relevantTaskIds: jsonListFlag(flags, 'relevant-tasks'),
+        policyGitSha: requireFlag(flags, 'policy-commit'),
+      });
+      refresh();
+      output(contract, flags.json);
+      return 0;
+    }
+
+    if (group === 'decision' && action === 'add') {
+      const decision = recordDecision(state.db, {
+        id: optionalFlag(flags, 'id'),
+        taskId: optionalFlag(flags, 'task'),
+        capabilityId: optionalFlag(flags, 'capability'),
+        summary: requireFlag(flags, 'summary'),
+        rationale: requireFlag(flags, 'rationale'),
+        evidenceReference: optionalFlag(flags, 'evidence-reference'),
+      });
+      refresh();
+      output(decision, flags.json);
+      return 0;
+    }
+
     if (group === 'attempt' && action === 'start') {
       const base = optionalFlag(flags, 'base')
         ? resolveCommit(root, flags.base)
@@ -156,7 +217,7 @@ export async function runCli(argv, { root: rootOverride } = {}) {
         taskId: requireFlag(flags, 'task'), attemptId: requireFlag(flags, 'attempt'),
         writerId: requireFlag(flags, 'writer'), cwd: requireFlag(flags, 'cwd'),
         provider: requireFlag(flags, 'provider'), model: optionalFlag(flags, 'model'),
-        contextPackHash: requireFlag(flags, 'context-pack'),
+        contextPackHash: optionalFlag(flags, 'context-pack'),
         sessionId: optionalFlag(flags, 'session'), resume: action === 'resume', outputPath: optionalFlag(flags, 'output-path'),
       });
       refresh();
@@ -308,10 +369,12 @@ const USAGE = `LandOS Development Control Spine
 
   npm run landos:control -- init
   npm run landos:control -- task create --id <id> --title <text> --outcome <text> --next-action <text>
+  npm run landos:control -- task contract --task <id> --objective <text> --non-goals <json-array> --accepted-base <sha> --working-base <sha> --risk-policy <low|protected|architecture-critical> --acceptance-policy <text> --architecture-refs <json-array> --invariant-refs <json-array> --owned-scope <json-array> --owned-interfaces <json-array> --verification-obligations <json-array> --verification-policy-refs <json-array> --runtime-constraints <json-array> --resource-constraints <json-array> --relevant-capabilities <json-array> --relevant-tasks <json-array> --policy-commit <sha>
+  npm run landos:control -- decision add [--id <id>] [--task <id>] [--capability <id>] --summary <text> --rationale <text> [--evidence-reference <ref>]
   npm run landos:control -- attempt start --task <id> --worker <name> --writer <primary-writer> --path <new-worktree-path> --branch <task-branch> --approach <text> [--id <id>] [--base <sha>]
   npm run landos:control -- workspace inspect [--id <id>]
   npm run landos:control -- workspace release --id <id> --task <task-id> --attempt <attempt-id> --writer <primary-writer>
-  npm run landos:control -- execution run --task <task-id> --attempt <attempt-id> --writer <primary-writer> --cwd <managed-worktree> --provider claude|codex|grok --context-pack <delivered-sha256>
+  npm run landos:control -- execution run --task <task-id> --attempt <attempt-id> --writer <primary-writer> --cwd <managed-worktree> --provider claude|codex|grok [--context-pack <expected-sha256>]
   npm run landos:control -- evidence add --attempt <id> --kind <kind> --summary <text> [--path <path>]
   npm run landos:control -- candidate submit ... # always refused; governed execution owns submission
   npm run landos:control -- verification run --attempt <id> --command <command> [--next-direction <text>]

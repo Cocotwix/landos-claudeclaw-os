@@ -11,11 +11,11 @@ import {
   addEvidence,
   canonicalAttempt,
   canonicalTask,
-  deliveredContextPack,
   failAttempt,
   resolveCommit,
   validateManagedWorkspace,
 } from './control-state.mjs';
+import { deliverCanonicalContextPack, renderContextPack } from './context-pack.mjs';
 
 function required(value, label) {
   const text = String(value ?? '').trim();
@@ -56,7 +56,7 @@ function promptFor(request) {
     `Context Pack SHA-256: ${request.contextPackHash}`,
     `Objective: ${request.objective}`,
     '',
-    request.contextPackCanonicalJson,
+    request.contextPackText,
     '',
     'Return implementation claims only. LandOS persists a submission bundle and independently controls verification and acceptance.',
   ].join('\n');
@@ -352,6 +352,7 @@ async function executeGoverned(db, root, input, runProvider) {
   let workspace;
   let adapter;
   let delivery;
+  let pack;
   try {
     task = canonicalTask(db, required(input.taskId, 'task ID'));
     if (attempt.task_id !== task.id) throw new Error(`attempt ${attempt.id} does not belong to task ${task.id}`);
@@ -360,12 +361,11 @@ async function executeGoverned(db, root, input, runProvider) {
       cwd: path.resolve(required(input.cwd, 'executing working directory')),
     });
     adapter = builderAdapter(input.provider);
-    delivery = deliveredContextPack(db, {
-      taskId: task.id,
-      attemptId: attempt.id,
-      workspaceId: workspace.id,
-      contextPackHash: required(input.contextPackHash, 'delivered Context Pack hash'),
-    });
+    ({ pack, delivery } = deliverCanonicalContextPack(db, root, { attemptId: attempt.id }));
+    if (input.contextPackHash
+        && String(input.contextPackHash).trim().toLowerCase() !== delivery.context_pack_hash) {
+      throw new Error(`caller Context Pack hash does not match the canonical delivery for attempt ${attempt.id}`);
+    }
   } catch (error) {
     return failPreflight(db, attempt, input, error);
   }
@@ -381,7 +381,7 @@ async function executeGoverned(db, root, input, runProvider) {
     workingBaseCommit: attempt.base_git_sha,
     objective: task.outcome,
     contextPackHash: delivery.context_pack_hash,
-    contextPackCanonicalJson: delivery.canonical_json,
+    contextPackText: renderContextPack(pack),
   };
   let raw;
   try {
@@ -410,6 +410,12 @@ async function executeGoverned(db, root, input, runProvider) {
       });
     }
     const completion = normalizeRawCompletion(adapter.id, raw);
+    if (raw.contextPackHash
+        && String(raw.contextPackHash).trim().toLowerCase() !== delivery.context_pack_hash) {
+      throw Object.assign(new Error(`provider Context Pack hash does not match the canonical delivery for attempt ${attempt.id}`), {
+        classification: 'context_pack_hash_mismatch',
+      });
+    }
     validateManagedWorkspace(db, root, {
       taskId: task.id, attemptId: attempt.id, writerId: input.writerId, cwd: workspace.workspace_path,
     });

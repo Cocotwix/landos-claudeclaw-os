@@ -20,7 +20,7 @@ export function parseArgs(argv) {
     flags[key.slice(2)] = value;
     index += 1;
   }
-  for (const key of ['task', 'attempt', 'writer', 'cwd', 'provider', 'context-pack']) {
+  for (const key of ['task', 'attempt', 'writer', 'cwd', 'provider']) {
     if (!flags[key]) throw new Error(`legacy task runner delegates only with --${key}`);
   }
   return {

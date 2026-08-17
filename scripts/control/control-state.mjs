@@ -25,7 +25,7 @@ export const CONTROL_DB_PATH = 'landos/control/landos-control.db';
 export const LEGACY_CONTROL_DB_PATH = '.landos/control/landos-control.db';
 export const STATE_PATH = '.landos/STATE.md';
 export const DEFAULT_AUTHORITY_REF = 'main';
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 export const TASK_STATUSES = [
   'OPEN',
@@ -175,6 +175,42 @@ function migrate(db) {
       )
     );
 
+    CREATE TABLE IF NOT EXISTS development_task_contract (
+      task_id TEXT PRIMARY KEY REFERENCES development_task(id),
+      objective TEXT NOT NULL,
+      non_goals_json TEXT NOT NULL,
+      accepted_base_git_sha TEXT NOT NULL,
+      working_base_git_sha TEXT NOT NULL,
+      risk_policy TEXT NOT NULL,
+      acceptance_policy TEXT NOT NULL,
+      architecture_refs_json TEXT NOT NULL,
+      invariant_refs_json TEXT NOT NULL,
+      owned_scope_json TEXT NOT NULL,
+      owned_interfaces_json TEXT NOT NULL,
+      verification_obligations_json TEXT NOT NULL,
+      verification_policy_refs_json TEXT NOT NULL,
+      runtime_constraints_json TEXT NOT NULL,
+      resource_constraints_json TEXT NOT NULL,
+      relevant_capability_ids_json TEXT NOT NULL,
+      relevant_task_ids_json TEXT NOT NULL,
+      policy_git_sha TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (length(accepted_base_git_sha) = 40 AND accepted_base_git_sha NOT GLOB '*[^0-9a-f]*'),
+      CHECK (length(working_base_git_sha) = 40 AND working_base_git_sha NOT GLOB '*[^0-9a-f]*'),
+      CHECK (length(policy_git_sha) = 40 AND policy_git_sha NOT GLOB '*[^0-9a-f]*')
+    );
+
+    CREATE TABLE IF NOT EXISTS development_decision (
+      id TEXT PRIMARY KEY,
+      task_id TEXT REFERENCES development_task(id),
+      capability_id TEXT,
+      summary TEXT NOT NULL,
+      rationale TEXT NOT NULL,
+      evidence_reference TEXT,
+      recorded_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS development_attempt (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES development_task(id),
@@ -283,6 +319,18 @@ function migrate(db) {
       CHECK (candidate_git_sha IS NULL OR (length(candidate_git_sha) = 40 AND candidate_git_sha NOT GLOB '*[^0-9a-f]*'))
     );
 
+    -- A pack is a Control Spine delivery, not a provider-provided claim.  The
+    -- hash is repeated in the Submission Bundle only after this exact record
+    -- exists for the exact governed attempt.
+    CREATE TABLE IF NOT EXISTS context_pack_delivery (
+      attempt_id TEXT NOT NULL REFERENCES development_attempt(id),
+      context_pack_hash TEXT NOT NULL,
+      canonical_json TEXT NOT NULL,
+      delivered_at TEXT NOT NULL,
+      PRIMARY KEY (attempt_id, context_pack_hash),
+      CHECK (length(context_pack_hash) = 64 AND context_pack_hash NOT GLOB '*[^0-9a-f]*')
+    );
+
     CREATE TABLE IF NOT EXISTS development_evidence (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       attempt_id TEXT NOT NULL REFERENCES development_attempt(id),
@@ -336,6 +384,8 @@ function migrate(db) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_attempt_task ON development_attempt(task_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_decision_task ON development_decision(task_id, recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_decision_capability ON development_decision(capability_id, recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_evidence_attempt ON development_evidence(attempt_id, recorded_at);
     CREATE INDEX IF NOT EXISTS idx_verification_attempt ON development_verification(attempt_id, recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_acceptance_state ON acceptance_operation(state, prepared_at);
@@ -644,6 +694,178 @@ export function createTask(db, input, now) {
     VALUES (?, ?, ?, 'OPEN', ?, ?, ?, ?)
   `).run(task.id, task.title, task.outcome, task.blocker, task.nextAction, at, at);
   return taskFor(db, task.id);
+}
+
+function uniqueSorted(value, label) {
+  return [...new Set(requiredArray(value, label))].sort((left, right) => left.localeCompare(right));
+}
+
+function parsedArray(row, name) {
+  const value = JSON.parse(row[name]);
+  if (!Array.isArray(value)) throw new Error(`canonical task contract field ${name} is malformed`);
+  return value;
+}
+
+export function setTaskContract(db, root, input, now) {
+  const task = taskFor(db, input.taskId);
+  if (!['OPEN', 'IN_PROGRESS'].includes(task.status)) {
+    throw new Error(`task ${task.id} contract cannot change while ${task.status}`);
+  }
+  const delivered = db.prepare(`
+    SELECT 1
+    FROM context_pack_delivery delivery
+    JOIN development_attempt attempt ON attempt.id = delivery.attempt_id
+    WHERE attempt.task_id = ? LIMIT 1
+  `).get(task.id);
+  if (delivered) throw new Error(`task ${task.id} contract is immutable after Context Pack delivery`);
+  const objective = required(input.objective, 'task contract objective');
+  if (objective !== task.outcome) throw new Error('task contract objective must exactly match the canonical task outcome');
+  const acceptedBase = resolveCommit(root, required(input.acceptedBaseGitSha, 'accepted base Git SHA'));
+  const workingBase = resolveCommit(root, required(input.workingBaseGitSha, 'working base Git SHA'));
+  const policyGitSha = resolveCommit(root, required(input.policyGitSha ?? workingBase, 'policy Git SHA'));
+  const riskPolicy = required(input.riskPolicy, 'task risk policy');
+  if (!['low', 'protected', 'architecture-critical'].includes(riskPolicy)) {
+    throw new Error('task risk policy must be low, protected, or architecture-critical');
+  }
+  const contract = {
+    nonGoals: uniqueSorted(input.nonGoals, 'canonical non-goals'),
+    architectureRefs: uniqueSorted(input.architectureRefs, 'architecture references'),
+    invariantRefs: uniqueSorted(input.invariantRefs, 'invariant references'),
+    ownedScope: uniqueSorted(input.ownedScope, 'owned scope'),
+    ownedInterfaces: uniqueSorted(input.ownedInterfaces, 'owned interfaces'),
+    verificationObligations: uniqueSorted(input.verificationObligations, 'verification obligations'),
+    verificationPolicyRefs: uniqueSorted(input.verificationPolicyRefs, 'verification policy references'),
+    runtimeConstraints: uniqueSorted(input.runtimeConstraints, 'runtime constraints'),
+    resourceConstraints: uniqueSorted(input.resourceConstraints, 'resource constraints'),
+    relevantCapabilityIds: uniqueSorted(input.relevantCapabilityIds, 'relevant capability IDs'),
+    relevantTaskIds: uniqueSorted(input.relevantTaskIds, 'relevant task IDs'),
+  };
+  if (contract.verificationObligations.length === 0 || contract.verificationPolicyRefs.length === 0) {
+    throw new Error('governed task contract requires verification obligations and verification policy references');
+  }
+  const activeAttempt = db.prepare(`
+    SELECT id, base_git_sha FROM development_attempt
+    WHERE task_id = ? AND status = 'IN_PROGRESS'
+    ORDER BY started_at DESC LIMIT 1
+  `).get(task.id);
+  if (activeAttempt && activeAttempt.base_git_sha !== workingBase) {
+    throw new Error(`task contract working base ${workingBase} does not match active attempt ${activeAttempt.id}`);
+  }
+  const at = nowIso(now);
+  db.prepare(`
+    INSERT INTO development_task_contract(
+      task_id, objective, non_goals_json, accepted_base_git_sha, working_base_git_sha,
+      risk_policy, acceptance_policy, architecture_refs_json, invariant_refs_json,
+      owned_scope_json, owned_interfaces_json, verification_obligations_json,
+      verification_policy_refs_json, runtime_constraints_json, resource_constraints_json,
+      relevant_capability_ids_json, relevant_task_ids_json, policy_git_sha, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_id) DO UPDATE SET
+      objective = excluded.objective,
+      non_goals_json = excluded.non_goals_json,
+      accepted_base_git_sha = excluded.accepted_base_git_sha,
+      working_base_git_sha = excluded.working_base_git_sha,
+      risk_policy = excluded.risk_policy,
+      acceptance_policy = excluded.acceptance_policy,
+      architecture_refs_json = excluded.architecture_refs_json,
+      invariant_refs_json = excluded.invariant_refs_json,
+      owned_scope_json = excluded.owned_scope_json,
+      owned_interfaces_json = excluded.owned_interfaces_json,
+      verification_obligations_json = excluded.verification_obligations_json,
+      verification_policy_refs_json = excluded.verification_policy_refs_json,
+      runtime_constraints_json = excluded.runtime_constraints_json,
+      resource_constraints_json = excluded.resource_constraints_json,
+      relevant_capability_ids_json = excluded.relevant_capability_ids_json,
+      relevant_task_ids_json = excluded.relevant_task_ids_json,
+      policy_git_sha = excluded.policy_git_sha,
+      updated_at = excluded.updated_at
+  `).run(
+    task.id, objective, JSON.stringify(contract.nonGoals), acceptedBase, workingBase,
+    riskPolicy, required(input.acceptancePolicy, 'task acceptance policy'),
+    JSON.stringify(contract.architectureRefs), JSON.stringify(contract.invariantRefs),
+    JSON.stringify(contract.ownedScope), JSON.stringify(contract.ownedInterfaces),
+    JSON.stringify(contract.verificationObligations), JSON.stringify(contract.verificationPolicyRefs),
+    JSON.stringify(contract.runtimeConstraints), JSON.stringify(contract.resourceConstraints),
+    JSON.stringify(contract.relevantCapabilityIds), JSON.stringify(contract.relevantTaskIds),
+    policyGitSha, at, at,
+  );
+  return canonicalTaskContract(db, task.id);
+}
+
+export function canonicalTaskContract(db, taskId) {
+  taskFor(db, taskId);
+  const row = db.prepare('SELECT * FROM development_task_contract WHERE task_id = ?').get(taskId);
+  if (!row) throw new Error(`governed task ${taskId} has no complete canonical task contract`);
+  return {
+    taskId: row.task_id,
+    objective: row.objective,
+    nonGoals: parsedArray(row, 'non_goals_json'),
+    acceptedBaseGitSha: row.accepted_base_git_sha,
+    workingBaseGitSha: row.working_base_git_sha,
+    riskPolicy: row.risk_policy,
+    acceptancePolicy: row.acceptance_policy,
+    architectureRefs: parsedArray(row, 'architecture_refs_json'),
+    invariantRefs: parsedArray(row, 'invariant_refs_json'),
+    ownedScope: parsedArray(row, 'owned_scope_json'),
+    ownedInterfaces: parsedArray(row, 'owned_interfaces_json'),
+    verificationObligations: parsedArray(row, 'verification_obligations_json'),
+    verificationPolicyRefs: parsedArray(row, 'verification_policy_refs_json'),
+    runtimeConstraints: parsedArray(row, 'runtime_constraints_json'),
+    resourceConstraints: parsedArray(row, 'resource_constraints_json'),
+    relevantCapabilityIds: parsedArray(row, 'relevant_capability_ids_json'),
+    relevantTaskIds: parsedArray(row, 'relevant_task_ids_json'),
+    policyGitSha: row.policy_git_sha,
+  };
+}
+
+export function recordDecision(db, input, now) {
+  const taskId = input.taskId ? required(input.taskId, 'decision task ID') : null;
+  const capabilityId = input.capabilityId ? required(input.capabilityId, 'decision capability ID') : null;
+  if (!taskId && !capabilityId) throw new Error('canonical decision requires a task or capability scope');
+  if (taskId) taskFor(db, taskId);
+  const id = input.id ? required(input.id, 'decision ID') : `decision-${randomUUID()}`;
+  db.prepare(`
+    INSERT INTO development_decision(id, task_id, capability_id, summary, rationale, evidence_reference, recorded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, taskId, capabilityId,
+    required(input.summary, 'decision summary'), required(input.rationale, 'decision rationale'),
+    input.evidenceReference ? String(input.evidenceReference).trim() : null,
+    nowIso(now),
+  );
+  return db.prepare('SELECT * FROM development_decision WHERE id = ?').get(id);
+}
+
+export function relevantTaskKnowledge(db, contract) {
+  const taskIds = [...new Set([contract.taskId, ...contract.relevantTaskIds])].sort();
+  const capabilityIds = [...new Set(contract.relevantCapabilityIds)].sort();
+  const taskPlaceholders = taskIds.map(() => '?').join(',');
+  const failures = db.prepare(`
+    SELECT id, task_id, base_git_sha, candidate_git_sha, result, root_cause,
+           limitation, next_direction, completed_at
+    FROM development_attempt
+    WHERE status = 'FAILED' AND task_id IN (${taskPlaceholders})
+    ORDER BY completed_at, id
+  `).all(...taskIds).map((failure) => ({
+    ...failure,
+    evidence: db.prepare(`
+      SELECT id, kind, summary, artifact_path, command, exit_code, recorded_at
+      FROM development_evidence WHERE attempt_id = ? ORDER BY id
+    `).all(failure.id),
+  }));
+  const clauses = [`task_id IN (${taskPlaceholders})`];
+  const values = [...taskIds];
+  if (capabilityIds.length) {
+    clauses.push(`capability_id IN (${capabilityIds.map(() => '?').join(',')})`);
+    values.push(...capabilityIds);
+  }
+  const decisions = db.prepare(`
+    SELECT id, task_id, capability_id, summary, rationale, evidence_reference, recorded_at
+    FROM development_decision
+    WHERE ${clauses.join(' OR ')}
+    ORDER BY recorded_at, id
+  `).all(...values);
+  return { relevance: { taskIds, capabilityIds }, decisions, failures };
 }
 
 export function startAttempt(db, input, now) {
