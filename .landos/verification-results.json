@@ -1,40 +1,21 @@
 {
   "schema": 1,
-  "recordedAt": "2026-08-16T15:58:00.0000000Z",
-  "headUnderReview": "57b7d9f",
-  "commitState": "Committed and pushed to main at 57b7d9f: five files staged individually by path (ordinance-text.ts, ordinance-text.test.ts, subdivision-regulations.ts, zoning-standards-research.ts, property-backstory-zoning-subdivision.test.ts). The three pre-existing browser-pairing files were left unstaged and untouched, as were the five untracked paths.",
+  "recordedAt": "2026-08-17T03:28:24.6816328Z",
+  "headUnderReview": "candidate commit pending from base 76e2cd4f847323b414883c07616e89614a07709b",
+  "commitState": "Vertical Slice 1 is implemented and verified in the isolated build/control-spine working tree. Exact candidate commit and Integration Gate preparation remain after final handoff verification.",
   "tests": {
-    "status": "PASS on the focused suites",
-    "timestamp": "2026-08-16T15:47:00.0000000Z",
-    "summary": "287 focused across seven suites: property-backstory-zoning-subdivision 57 (2 new), subdivision-regulation-retention 12, land-use-source-racing 39, ordinance-text 22 (8 new), land-use 114, landos 22 (schema), jurisdiction-and-pdf-identity 21. No full-suite run, by instruction"
+    "status": "PASS on focused control and reused-helper suites",
+    "timestamp": "2026-08-17T03:27:46.670Z",
+    "summary": "3 Control Spine end-to-end tests and 44 existing landos:task, deterministic verification, and secret-guard tests pass"
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-08-16T15:47:00.0000000Z",
-    "summary": "tsc --noEmit reports zero errors"
+    "timestamp": "2026-08-17T03:25:00.000Z",
+    "summary": "tsc --noEmit completed with zero errors"
   },
   "build": {
-    "status": "PASS on both halves",
-    "timestamp": "2026-08-16T15:36:00.0000000Z",
-    "summary": "vite build and tsc both clean; dist rebuilt and the managed runtime restarted onto it"
-  },
-  "runtime": {
-    "status": "RUNNING and healthy on port 3141, HTTP 200, rebuilt and restarted",
-    "timestamp": "2026-08-16T15:37:00.0000000Z",
-    "pid": 59228,
-    "url": "http://localhost:3141"
-  },
-  "operatorAcceptance": {
     "status": "PASS",
-    "workflow": "Tier 2. Re-ran the subdivision lane for Fairview / Deal Card 89 through the live capability against the real retained document set, then opened the Deal Card and read the Subdivision rules & feasibility section in the browser.",
-    "url": "http://localhost:3141/dept/acquisitions/v2?deal=89&section=property-market",
-    "evidence": {
-      "bareHeadingCited": "The delegated lot-area rule now reads 'CONFIRMED § 4 - 110.2' on the card, the bare numbered heading it is printed under. It previously cited Section 4-102.2, a cross-reference about critical lots printed in the sentence before it.",
-      "footersGone": "Five rules previously cited PDF running footers (Article 1 - Page, Article 2 - Page, Article 4 - Page, Article 8 - Page). None remains; every rule on the card now cites a real section or none.",
-      "splitDigitsRejoined": "Fairview prints 2-101.203 and the text layer renders it '2 - 10 1.203', which was being cited as '1.203'. The max-lots rule now cites 2 - 101.203. Found by reading the adopted PDF, not by test fixture.",
-      "coverageImproved": "Eight rules that carried no section now carry one; easement_or_access_requirement no longer cites Tennessee Code 13-4-308 as though it were a Fairview section. Changed citations were spot-verified against the PDF text itself.",
-      "noRegression": "Protected read unchanged: 27 rules, statedMaxMinorLots 2, theoretical lot count still Not calculated with the delegation quoted as its reason. Normal headed sections still cite verbatim, including the PDF spacing form SECTION 1 - 112.",
-      "note": "No paid API, no credential, no LandPortal action. One browser tab opened and closed. Screenshot plus page read taken on the operator's own workspace."
-    }
+    "timestamp": "2026-08-17T03:27:00.000Z",
+    "summary": "vite build and tsc completed; only the existing large-chunk advisory was emitted"
   }
 }

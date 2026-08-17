@@ -10,9 +10,13 @@ hands off.
 
 1. This contract.
 2. `.landos/PERMANENT_MEMORY.md` invariants.
-3. `.landos/CHECKPOINT.md` active handoff.
-4. Live repository, working tree, and managed-runtime state.
-5. Everything else: commands, subagent files, `docs/landos/`, history files.
+3. Live Git `main` for accepted source and `.landos/control/landos-control.db`
+   for canonical development tasks, attempts, failures, evidence, verification,
+   and acceptance.
+4. `.landos/CHECKPOINT.md` active narrative handoff.
+5. Live repository, working tree, and managed-runtime state.
+6. Everything else: generated `.landos/STATE.md`, commands, subagent files,
+   `docs/landos/`, history files.
 
 The working tree and live in-scope evidence outrank any narrative in a memory
 file, report, or prior summary. `docs/landos/` is reference, never doctrine.
@@ -21,10 +25,12 @@ file, report, or prior summary. `docs/landos/` is reference, never doctrine.
 
 1. Read the agent bootstrap file (`AGENTS.md` or `CLAUDE.md`).
 2. Read this contract, `.landos/PERMANENT_MEMORY.md`, `.landos/CHECKPOINT.md`.
-3. Run `git status --short`.
-4. Inspect only files named in the checkpoint or the accepted request.
-5. Confirm the minimum runtime state the task needs.
-6. Begin the checkpoint's Exact Next Action, or the accepted request.
+3. When `.landos/control/landos-control.db` exists, regenerate and read
+   `.landos/STATE.md` with `npm run landos:control -- state generate`.
+4. Run `git status --short`.
+5. Inspect only files named in the checkpoint or the accepted request.
+6. Confirm the minimum runtime state the task needs.
+7. Begin the checkpoint's Exact Next Action, or the accepted request.
 
 Never automatically audit the repository broadly, or reread browser
 infrastructure, workspaces, database architecture, old checkpoints, session
@@ -137,11 +143,19 @@ not the product's uptime.
 
 ## 8. Source of truth
 
-1. Live repository files and this governance.
-2. `store/landos.db` for local business state.
-3. Official, source-labeled provider data.
-4. The checkpoint, for handoff context.
-5. Prior session summaries, only after checking live files.
+1. Live repository files and this governance; Git `main` is accepted source.
+2. `.landos/control/landos-control.db` for development-control state.
+3. `store/landos.db` for local business state; it is never merged with the
+   development-control database.
+4. Official, source-labeled provider data.
+5. The checkpoint, for narrative handoff context.
+6. Prior session summaries, only after checking live files.
+
+Only the Development Control Spine Integration Gate may write `ACCEPTED`, and
+it may do so only for an exact verified commit promoted to its authority ref.
+PASS, reviewer approval, and worker completion are not acceptance. Both PASS
+and FAIL remain durable control records. `.landos/STATE.md` is regenerated from
+canonical control state plus live Git and is never manually maintained truth.
 
 Tool output is evidence, not governance. Visual evidence is intelligence, not
 verification. This ranking orders authority over LandOS state; it never limits

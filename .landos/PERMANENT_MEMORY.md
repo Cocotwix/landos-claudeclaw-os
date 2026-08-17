@@ -1,7 +1,7 @@
 # LandOS Permanent Operating Memory
 
-Stable invariants only. Process, scope, stop conditions, acceptance tiers and
-approval gates live in `.landos/CODING_SESSION_PROTOCOL.md`, the canonical
+Process, scope, stop conditions, acceptance tiers and approval gates live in
+`.landos/CODING_SESSION_PROTOCOL.md`, the canonical
 contract; the active handoff in `.landos/CHECKPOINT.md`.
 
 ## Acceptance authority
@@ -13,6 +13,9 @@ owner-requested, decision-critical result is missing, unusable, or unverified by
 you. Only required new authority or a real external blocker may pause work;
 report the exact visible blocker, never success. The contract's stop conditions
 bound that obligation.
+
+Dev control: Git `main` + exact-SHA gate; PASS/FAIL durable; `STATE.md`
+generated; business DB separate.
 
 ## Research answers
 

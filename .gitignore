@@ -179,6 +179,9 @@ agents/*/.claude/claudex/
 # Generated build-runner traces; the durable runner design lives in docs.
 /docs/landos/LANDOS_RUNNER_TRACE_*.md
 /docs/landos/runner-trace-*/
+# Reproducible projection of the local canonical development-control database.
+# Generate with `npm run landos:control -- state generate`; never author it.
+/.landos/STATE.md
 # One-off card/property-specific probe and repair scripts. Canonical LandOS
 # tooling lives in scripts/runtime/, scripts/sprint/, scripts/memory/.
 /scripts/qa-inspect-*.mjs

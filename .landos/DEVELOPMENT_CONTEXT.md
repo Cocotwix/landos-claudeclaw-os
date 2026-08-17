@@ -29,6 +29,12 @@ without answering the operator's question has not shipped.
   `web/src/pages/` holds one component per operator surface.
 - `scripts/` — operational tooling by area (`runtime/`, `memory/`, `data/`,
   `knowledge/`, `dev/`). Not product code.
+- `scripts/control/` — the thin development Control Spine: canonical tasks,
+  attempts, evidence, verification, durable failures, and Integration Gate.
+- `.landos/control/landos-control.db` — local canonical development-control
+  state, deliberately separate from business data.
+- `.landos/STATE.md` — reproducible generated next-builder projection from the
+  control database plus live Git; never edit it as truth.
 - `store/landos.db` — real local business state. Never a test fixture.
 - `.runtime/` — local runtime and tool state, gitignored.
 
@@ -56,6 +62,11 @@ without answering the operator's question has not shipped.
     npm run landos:start|stop|restart runtime control
     npm run landos:health             health probe
     npm run landos:logs               runtime logs
+
+    npm run landos:control -- status  development state plus live Git
+    npm run landos:control -- state generate
+                                      regenerate .landos/STATE.md
+    npm run landos:control:test       focused Control Spine lifecycle proof
 
 Runtime control is only those commands. Do not run `node dist/index.js` in the
 foreground, kill Node processes by name, or improvise a restart. The dashboard
