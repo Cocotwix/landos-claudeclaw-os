@@ -20,16 +20,18 @@ import {
   openControlStateWriter,
   prepareAcceptance,
   reconcileAcceptance,
+  recordContextPackDelivery,
   renderStateMarkdown,
   resolveControlDatabasePath,
   releaseManagedWorkspace,
   runVerification,
+  SCHEMA_VERSION,
   startAttempt,
   startManagedAttempt,
-  submitCandidate,
   supersedeAcceptance,
   validateManagedWorkspace,
 } from './control-state.mjs';
+import { TEST_ONLY } from './builder-adapter.mjs';
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'landos-control.mjs');
 const at = (value) => () => value;
@@ -78,6 +80,43 @@ function startOwnedAttempt(state, repo, input, now) {
   }, now);
   repo.managedWorkspaces.add(workspacePath);
   return allocation;
+}
+
+async function completeGovernedCandidate(state, repo, attemptId, result) {
+  const attempt = state.db.prepare('SELECT * FROM development_attempt WHERE id = ?').get(attemptId);
+  const workspace = state.db.prepare(`
+    SELECT * FROM managed_workspace WHERE attempt_id = ? AND status = 'ACTIVE'
+  `).get(attemptId);
+  writeFileSync(path.join(workspace.workspace_path, 'implementation.txt'), `${attemptId} candidate\n`);
+  runGit(workspace.workspace_path, 'add', 'implementation.txt');
+  runGit(workspace.workspace_path, 'commit', '-q', '-m', `${attemptId} candidate implementation`);
+  const candidateSha = runGit(workspace.workspace_path, 'rev-parse', 'HEAD');
+  const delivery = recordContextPackDelivery(state.db, {
+    attemptId,
+    workspaceId: workspace.id,
+    canonicalJson: JSON.stringify({ taskId: attempt.task_id, attemptId }),
+  });
+  const submitted = await TEST_ONLY.runGovernedExecutionWithProvider(state.db, repo.dir, {
+    taskId: attempt.task_id,
+    attemptId,
+    writerId: workspace.writer_id,
+    cwd: workspace.workspace_path,
+    provider: 'codex',
+    contextPackHash: delivery.context_pack_hash,
+  }, async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ result }),
+      candidateCommit: candidateSha,
+      changedPaths: ['implementation.txt'],
+    }));
+  assert.equal(submitted.state, 'SUBMITTED');
+  return candidateSha;
+}
+
+function activeWorkspacePath(state, attemptId) {
+  return state.db.prepare(`
+    SELECT workspace_path FROM managed_workspace WHERE attempt_id = ? AND status = 'ACTIVE'
+  `).get(attemptId).workspace_path;
 }
 
 test('separate Git worktrees resolve and operate on one shared canonical database', (t) => {
@@ -132,12 +171,12 @@ test('schema version is monotonic and writers require explicit current-client in
   const repo = tempRepo();
   const state = initializeControlState(repo.dir);
   t.after(() => { state.close(); repo.cleanup(); });
-  assert.equal(state.db.prepare("SELECT value FROM control_meta WHERE key = 'schema_version'").get().value, '4');
+  assert.equal(state.db.prepare("SELECT value FROM control_meta WHERE key = 'schema_version'").get().value, String(SCHEMA_VERSION));
   assert.throws(
-    () => state.db.prepare("UPDATE control_meta SET value = '3' WHERE key = 'schema_version'").run(),
+    () => state.db.prepare('UPDATE control_meta SET value = ? WHERE key = \'schema_version\'').run(String(SCHEMA_VERSION - 1)),
     /cannot be downgraded/i,
   );
-  assert.equal(state.db.prepare("SELECT value FROM control_meta WHERE key = 'schema_version'").get().value, '4');
+  assert.equal(state.db.prepare("SELECT value FROM control_meta WHERE key = 'schema_version'").get().value, String(SCHEMA_VERSION));
 });
 
 test('managed allocation is the only writable attempt path and validates exact owner identity', (t) => {
@@ -220,18 +259,9 @@ test('managed allocation is the only writable attempt path and validates exact o
   }), /not actively owned/i);
 });
 
-function makeCandidate(repo) {
-  runGit(repo.dir, 'checkout', '-q', '-b', 'candidate');
-  writeFileSync(path.join(repo.dir, 'implementation.txt'), 'candidate\n');
-  runGit(repo.dir, 'add', 'implementation.txt');
-  runGit(repo.dir, 'commit', '-q', '-m', 'candidate implementation');
-  return runGit(repo.dir, 'rev-parse', 'HEAD');
-}
-
 test('PASS is durable evidence but only the Integration Gate can produce ACCEPTED', async (t) => {
   const repo = tempRepo();
   t.after(repo.cleanup);
-  const candidateSha = makeCandidate(repo);
   const state = initializeControlState(repo.dir);
   t.after(() => {
     try { state.close(); } catch { /* already closed for fresh-process proof */ }
@@ -256,13 +286,11 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
     summary: 'Candidate contains the complete vertical slice.',
     path: 'implementation.txt',
   }, at('2026-08-16T20:02:00.000Z'));
-  submitCandidate(state.db, repo.dir, {
-    attemptId: 'attempt-pass',
-    gitSha: candidateSha,
-    result: 'Candidate lifecycle implemented.',
-  }, at('2026-08-16T20:03:00.000Z'));
+  const candidateSha = await completeGovernedCandidate(
+    state, repo, 'attempt-pass', 'Candidate lifecycle implemented.',
+  );
 
-  const verification = await runVerification(state.db, repo.dir, {
+  const verification = await runVerification(state.db, activeWorkspacePath(state, 'attempt-pass'), {
     attemptId: 'attempt-pass',
     command: 'node -e "process.exit(0)"',
     summary: 'Focused candidate verification passed.',
@@ -298,7 +326,7 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
   // while the original control process is gone.
   state.close();
   runGit(repo.dir, 'checkout', '-q', 'main');
-  runGit(repo.dir, 'merge', '--ff-only', '-q', 'candidate');
+  runGit(repo.dir, 'merge', '--ff-only', '-q', candidateSha);
   assert.equal(runGit(repo.dir, 'rev-parse', 'main'), candidateSha);
 
   const recovered = openControlStateWriter(repo.dir);
@@ -340,7 +368,6 @@ test('PASS is durable evidence but only the Integration Gate can produce ACCEPTE
 test('failed verification survives process loss with evidence and a useful next direction', async (t) => {
   const repo = tempRepo();
   t.after(repo.cleanup);
-  const candidateSha = makeCandidate(repo);
   const state = initializeControlState(repo.dir);
 
   createTask(state.db, {
@@ -356,12 +383,10 @@ test('failed verification survives process loss with evidence and a useful next 
     approach: 'Use a candidate with a deliberately failing verification command.',
     baseGitSha: repo.baseSha,
   }, at('2026-08-16T21:01:00.000Z'));
-  submitCandidate(state.db, repo.dir, {
-    attemptId: 'attempt-fail',
-    gitSha: candidateSha,
-    result: 'Candidate ready for the failure-path proof.',
-  }, at('2026-08-16T21:02:00.000Z'));
-  const verification = await runVerification(state.db, repo.dir, {
+  const candidateSha = await completeGovernedCandidate(
+    state, repo, 'attempt-fail', 'Candidate ready for the failure-path proof.',
+  );
+  const verification = await runVerification(state.db, activeWorkspacePath(state, 'attempt-fail'), {
     attemptId: 'attempt-fail',
     command: 'node -e "process.exit(9)"',
     rootCause: 'The candidate violates the focused verification invariant.',
@@ -390,7 +415,6 @@ test('failed verification survives process loss with evidence and a useful next 
 test('a pending acceptance never follows main to a different commit', async (t) => {
   const repo = tempRepo();
   t.after(repo.cleanup);
-  const candidateSha = makeCandidate(repo);
   const state = initializeControlState(repo.dir);
   createTask(state.db, {
     id: 'slice-mismatch',
@@ -405,12 +429,8 @@ test('a pending acceptance never follows main to a different commit', async (t) 
     approach: 'Prepare one commit, then move main to a different commit.',
     baseGitSha: repo.baseSha,
   });
-  submitCandidate(state.db, repo.dir, {
-    attemptId: 'attempt-mismatch',
-    gitSha: candidateSha,
-    result: 'Exact candidate submitted.',
-  });
-  await runVerification(state.db, repo.dir, {
+  const candidateSha = await completeGovernedCandidate(state, repo, 'attempt-mismatch', 'Exact candidate submitted.');
+  await runVerification(state.db, activeWorkspacePath(state, 'attempt-mismatch'), {
     attemptId: 'attempt-mismatch',
     command: 'node -e "process.exit(0)"',
   });
@@ -437,7 +457,6 @@ test('a pending acceptance never follows main to a different commit', async (t) 
 test('an invalidated pending candidate becomes durable failure knowledge before a replacement attempt', async (t) => {
   const repo = tempRepo();
   t.after(repo.cleanup);
-  const candidateSha = makeCandidate(repo);
   const state = initializeControlState(repo.dir);
   createTask(state.db, {
     id: 'slice-supersession',
@@ -452,12 +471,8 @@ test('an invalidated pending candidate becomes durable failure knowledge before 
     approach: 'Prepare a candidate that is invalidated before integration.',
     baseGitSha: repo.baseSha,
   });
-  submitCandidate(state.db, repo.dir, {
-    attemptId: 'attempt-superseded',
-    gitSha: candidateSha,
-    result: 'Candidate submitted.',
-  });
-  await runVerification(state.db, repo.dir, {
+  const candidateSha = await completeGovernedCandidate(state, repo, 'attempt-superseded', 'Candidate submitted.');
+  await runVerification(state.db, activeWorkspacePath(state, 'attempt-superseded'), {
     attemptId: 'attempt-superseded',
     command: 'node -e "process.exit(0)"',
   });

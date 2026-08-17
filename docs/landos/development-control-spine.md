@@ -2,8 +2,22 @@
 
 Repaired Slice 2 adds a mandatory managed-workspace boundary to the local,
 SQLite-backed authority for development tasks, attempts, evidence,
-verification, failure knowledge, and exact Git acceptance. It does not replace
-`store/landos.db`, run coding providers, or alter the business runtime.
+verification, failure knowledge, governed coding-provider execution, and exact
+Git acceptance. It does not replace `store/landos.db` or alter the business
+runtime.
+
+Final repaired Slice 3 makes the provider-neutral execution operation the only
+candidate-submission path. It validates canonical task, attempt, primary
+writer, actual managed cwd, and an attempt-bound Context Pack delivery before
+launch or resume. A governed execution row is recorded before the provider is
+called. Claude, Codex, and Grok raw completion formats are normalized only
+behind their adapters; LandOS observes the clean managed-workspace HEAD itself,
+persists exactly one execution-bound Submission Bundle, and only then creates
+candidate state. Every provider terminal or post-return validation failure is
+durable and ends the writable attempt. Provider prose, including an `ACCEPTED`
+claim, never changes acceptance state. The legacy `scripts/dev/task.mjs`
+entrypoint delegates only to this operation and refuses its former free-form
+lifecycle.
 
 ## Authority and files
 

@@ -5,7 +5,7 @@
 // exact Git acceptance, or durable failure knowledge. It is deliberately
 // separate from store/landos.db and from provider session/runtime artifacts.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   constants as fsConstants,
   copyFileSync,
@@ -25,7 +25,7 @@ export const CONTROL_DB_PATH = 'landos/control/landos-control.db';
 export const LEGACY_CONTROL_DB_PATH = '.landos/control/landos-control.db';
 export const STATE_PATH = '.landos/STATE.md';
 export const DEFAULT_AUTHORITY_REF = 'main';
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 8;
 
 export const TASK_STATUSES = [
   'OPEN',
@@ -222,6 +222,67 @@ function migrate(db) {
       CHECK ((status = 'RELEASED' AND released_at IS NOT NULL) OR status <> 'RELEASED')
     );
 
+    CREATE TABLE IF NOT EXISTS context_pack_delivery (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT REFERENCES development_task(id),
+      attempt_id TEXT NOT NULL REFERENCES development_attempt(id),
+      workspace_id TEXT REFERENCES managed_workspace(id),
+      context_pack_hash TEXT NOT NULL,
+      canonical_json TEXT NOT NULL,
+      delivered_at TEXT NOT NULL,
+      UNIQUE (attempt_id, context_pack_hash),
+      CHECK (length(context_pack_hash) = 64 AND context_pack_hash NOT GLOB '*[^0-9a-f]*')
+    );
+
+    CREATE TABLE IF NOT EXISTS governed_execution (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES development_task(id),
+      attempt_id TEXT NOT NULL REFERENCES development_attempt(id),
+      workspace_id TEXT NOT NULL REFERENCES managed_workspace(id),
+      writer_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT,
+      working_directory TEXT NOT NULL,
+      attempted_action TEXT NOT NULL CHECK (attempted_action IN ('run','resume')),
+      context_pack_hash TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('RUNNING','PROVIDER_RETURNED','COMPLETED','FAILED')),
+      provider_exit_code INTEGER,
+      provider_session_id TEXT,
+      observed_candidate_git_sha TEXT,
+      failure_classification TEXT,
+      failure_reason TEXT,
+      started_at TEXT NOT NULL,
+      provider_returned_at TEXT,
+      completed_at TEXT,
+      CHECK (length(context_pack_hash) = 64 AND context_pack_hash NOT GLOB '*[^0-9a-f]*'),
+      CHECK (observed_candidate_git_sha IS NULL OR (
+        length(observed_candidate_git_sha) = 40 AND observed_candidate_git_sha NOT GLOB '*[^0-9a-f]*'
+      ))
+    );
+
+    CREATE TABLE IF NOT EXISTS submission_bundle (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      execution_id TEXT REFERENCES governed_execution(id),
+      task_id TEXT REFERENCES development_task(id),
+      attempt_id TEXT NOT NULL REFERENCES development_attempt(id),
+      workspace_id TEXT REFERENCES managed_workspace(id),
+      writer_id TEXT,
+      provider TEXT NOT NULL,
+      model TEXT,
+      working_base_git_sha TEXT NOT NULL,
+      candidate_git_sha TEXT,
+      changed_paths_json TEXT NOT NULL,
+      implementation_claims_json TEXT NOT NULL,
+      worker_tests_json TEXT NOT NULL,
+      worker_test_results_json TEXT NOT NULL,
+      limitations_json TEXT NOT NULL,
+      evidence_references_json TEXT NOT NULL,
+      context_pack_hash TEXT,
+      recorded_at TEXT NOT NULL,
+      CHECK (length(working_base_git_sha) = 40 AND working_base_git_sha NOT GLOB '*[^0-9a-f]*'),
+      CHECK (candidate_git_sha IS NULL OR (length(candidate_git_sha) = 40 AND candidate_git_sha NOT GLOB '*[^0-9a-f]*'))
+    );
+
     CREATE TABLE IF NOT EXISTS development_evidence (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       attempt_id TEXT NOT NULL REFERENCES development_attempt(id),
@@ -287,6 +348,9 @@ function migrate(db) {
       ON managed_workspace(writer_id) WHERE status = 'ACTIVE';
     CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_branch
       ON managed_workspace(branch) WHERE status = 'ACTIVE';
+    CREATE INDEX IF NOT EXISTS idx_submission_attempt ON submission_bundle(attempt_id, recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_execution_attempt ON governed_execution(attempt_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_context_delivery_attempt ON context_pack_delivery(attempt_id, delivered_at DESC);
 
     CREATE TRIGGER IF NOT EXISTS task_acceptance_requires_gate
     BEFORE UPDATE OF status ON development_task
@@ -320,6 +384,28 @@ function migrate(db) {
   if (!columns.some((column) => column.name === 'primary_writer_id')) {
     db.exec('ALTER TABLE development_attempt ADD COLUMN primary_writer_id TEXT');
   }
+  const deliveryColumns = db.prepare('PRAGMA table_info(context_pack_delivery)').all();
+  // Historical Slice 4 variants used either an attempt/hash composite key or
+  // a numeric id, but neither variant bound delivery to task and workspace.
+  // Retain every historical row while preventing an unbound row from
+  // authorizing a new governed execution.
+  if (!deliveryColumns.some((column) => column.name === 'task_id')) {
+    db.exec('ALTER TABLE context_pack_delivery ADD COLUMN task_id TEXT');
+  }
+  if (!deliveryColumns.some((column) => column.name === 'workspace_id')) {
+    db.exec('ALTER TABLE context_pack_delivery ADD COLUMN workspace_id TEXT');
+  }
+  const bundleColumns = db.prepare('PRAGMA table_info(submission_bundle)').all();
+  for (const [name, definition] of [
+    ['execution_id', 'TEXT'],
+    ['task_id', 'TEXT'],
+    ['workspace_id', 'TEXT'],
+    ['writer_id', 'TEXT'],
+  ]) {
+    if (!bundleColumns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE submission_bundle ADD COLUMN ${name} ${definition}`);
+    }
+  }
   // The rejected chain accidentally created this index over attempt_id.  The
   // repaired schema makes writer uniqueness explicit while retaining a second
   // attempt uniqueness index above.
@@ -327,6 +413,37 @@ function migrate(db) {
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_writer
       ON managed_workspace(writer_id) WHERE status = 'ACTIVE';
+    CREATE UNIQUE INDEX IF NOT EXISTS one_submission_bundle_per_execution
+      ON submission_bundle(execution_id) WHERE execution_id IS NOT NULL;
+
+    CREATE TRIGGER IF NOT EXISTS governed_candidate_requires_execution_bundle
+    BEFORE UPDATE OF status, candidate_git_sha ON development_attempt
+    WHEN NEW.status IN ('CANDIDATE','VERIFIED','ACCEPTANCE_PENDING','ACCEPTED') AND NOT EXISTS (
+      SELECT 1
+      FROM governed_execution execution
+      JOIN submission_bundle bundle ON bundle.execution_id = execution.id
+      WHERE execution.attempt_id = NEW.id
+        AND execution.task_id = NEW.task_id
+        AND execution.state = 'COMPLETED'
+        AND execution.observed_candidate_git_sha = NEW.candidate_git_sha
+        AND bundle.attempt_id = NEW.id
+        AND bundle.task_id = NEW.task_id
+        AND bundle.workspace_id = execution.workspace_id
+        AND bundle.writer_id = execution.writer_id
+        AND bundle.provider = execution.provider
+        AND bundle.context_pack_hash = execution.context_pack_hash
+        AND bundle.candidate_git_sha = NEW.candidate_git_sha
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'candidate state requires a completed governed execution and its normalized Submission Bundle');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS governed_candidate_insert_requires_execution_bundle
+    BEFORE INSERT ON development_attempt
+    WHEN NEW.status IN ('CANDIDATE','VERIFIED','ACCEPTANCE_PENDING','ACCEPTED')
+    BEGIN
+      SELECT RAISE(ABORT, 'candidate attempt insertion is disabled; candidate state requires a completed governed execution');
+    END;
 
     CREATE TRIGGER IF NOT EXISTS writable_attempt_requires_workspace_insert
     BEFORE INSERT ON development_attempt
@@ -541,6 +658,14 @@ export function startAttempt(db, input, now) {
   throw new Error('startAttempt cannot create a writable attempt without an atomic managed workspace allocation; use startManagedAttempt');
 }
 
+export function canonicalTask(db, taskId) {
+  return taskFor(db, taskId);
+}
+
+export function canonicalAttempt(db, attemptId) {
+  return attemptFor(db, attemptId);
+}
+
 function gitWorktrees(root) {
   const result = git(['worktree', 'list', '--porcelain'], root);
   if (result.status !== 0) throw new Error('cannot enumerate registered Git worktrees');
@@ -736,6 +861,56 @@ export function addEvidence(db, input, now) {
   return db.prepare('SELECT * FROM development_evidence WHERE id = ?').get(result.lastInsertRowid);
 }
 
+function requiredArray(value, label) {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function contextPackHash(value, label = 'Context Pack hash') {
+  const hash = required(value, label).toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error(`${label} must be a 64-character SHA-256 hash`);
+  return hash;
+}
+
+export function recordContextPackDelivery(db, input, now) {
+  const attempt = attemptFor(db, input.attemptId);
+  if (attempt.status !== 'IN_PROGRESS') throw new Error(`Context Pack delivery requires writable attempt ${attempt.id}`);
+  const workspace = workspaceFor(db, required(input.workspaceId, 'managed workspace ID'));
+  if (workspace.task_id !== attempt.task_id || workspace.attempt_id !== attempt.id
+      || workspace.writer_id !== attempt.primary_writer_id || workspace.status !== 'ACTIVE') {
+    throw new Error(`Context Pack delivery does not match active workspace ownership for attempt ${attempt.id}`);
+  }
+  const canonicalJson = required(input.canonicalJson, 'canonical Context Pack JSON');
+  const hash = createHash('sha256').update(canonicalJson).digest('hex');
+  if (input.contextPackHash && contextPackHash(input.contextPackHash) !== hash) {
+    throw new Error('caller-supplied Context Pack hash does not match the canonical payload');
+  }
+  db.prepare(`
+    INSERT OR IGNORE INTO context_pack_delivery(
+      task_id, attempt_id, workspace_id, context_pack_hash, canonical_json, delivered_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(attempt.task_id, attempt.id, workspace.id, hash, canonicalJson, nowIso(now));
+  return db.prepare(`
+    SELECT * FROM context_pack_delivery WHERE attempt_id = ? AND context_pack_hash = ?
+  `).get(attempt.id, hash);
+}
+
+export function deliveredContextPack(db, input) {
+  const attemptId = required(input.attemptId, 'attempt ID');
+  const workspaceId = required(input.workspaceId, 'managed workspace ID');
+  const hash = contextPackHash(input.contextPackHash);
+  const delivery = db.prepare(`
+    SELECT * FROM context_pack_delivery
+    WHERE task_id = ? AND attempt_id = ? AND workspace_id = ? AND context_pack_hash = ?
+  `).get(required(input.taskId, 'task ID'), attemptId, workspaceId, hash);
+  if (!delivery) throw new Error(`Context Pack ${hash} was not delivered to attempt ${attemptId} in workspace ${workspaceId}`);
+  const actualHash = createHash('sha256').update(delivery.canonical_json).digest('hex');
+  if (actualHash !== delivery.context_pack_hash) {
+    throw new Error(`recorded Context Pack ${delivery.context_pack_hash} has an invalid canonical payload hash`);
+  }
+  return delivery;
+}
+
 export function resolveCommit(root, revision) {
   const result = git(['rev-parse', '--verify', `${revision}^{commit}`], root);
   if (result.status !== 0) throw new Error(`Git revision ${revision} is not an existing commit`);
@@ -758,27 +933,17 @@ export function liveGitFacts(root, authorityRef = DEFAULT_AUTHORITY_REF) {
 
 export function submitCandidate(db, root, input, now) {
   const attempt = attemptFor(db, input.attemptId);
-  if (attempt.status === 'ACCEPTED') throw new Error(`attempt ${attempt.id} is already ACCEPTED`);
-  if (attempt.status === 'ACCEPTANCE_PENDING') {
-    throw new Error(`attempt ${attempt.id} is ACCEPTANCE_PENDING and may only be reconciled by the Integration Gate`);
+  if (attempt.status === 'IN_PROGRESS') {
+    failAttempt(db, {
+      attemptId: attempt.id,
+      kind: 'candidate_submission_bypass_refused',
+      result: 'Manual candidate submission was refused by the governed execution boundary.',
+      rootCause: 'A candidate requires a completed governed execution and its persisted normalized Submission Bundle.',
+      evidence: 'Caller-supplied task, attempt, and Git SHA values have no candidate-submission authority.',
+      nextDirection: 'Start a new attempt and use the governed execution operation with an attempt-bound delivered Context Pack.',
+    }, now);
   }
-  const sha = resolveCommit(root, input.gitSha);
-  const at = nowIso(now);
-  const transaction = db.transaction(() => {
-    db.prepare(`
-      UPDATE development_attempt
-      SET status = 'CANDIDATE', candidate_git_sha = ?, result = ?, completed_at = ?, updated_at = ?
-      WHERE id = ?
-    `).run(sha, required(input.result, 'candidate result'), at, at, attempt.id);
-    db.prepare(`
-      UPDATE development_task
-      SET status = 'CANDIDATE', blocker = NULL,
-          next_action = 'Run deterministic verification against the exact candidate commit.', updated_at = ?
-      WHERE id = ?
-    `).run(at, attempt.task_id);
-  });
-  transaction();
-  return attemptFor(db, attempt.id);
+  throw new Error('manual candidate submission is disabled; only a completed governed execution may create candidate state');
 }
 
 function latestVerification(db, attemptId) {

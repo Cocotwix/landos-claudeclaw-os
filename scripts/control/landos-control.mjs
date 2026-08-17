@@ -27,6 +27,7 @@ import {
   inspectManagedWorkspace,
   releaseManagedWorkspace,
 } from './control-state.mjs';
+import { runGovernedExecution } from './builder-adapter.mjs';
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -148,6 +149,19 @@ export async function runCli(argv, { root: rootOverride } = {}) {
       refresh();
       output(workspace, flags.json);
       return 0;
+    }
+
+    if (group === 'execution' && (action === 'run' || action === 'resume')) {
+      const execution = await runGovernedExecution(state.db, root, {
+        taskId: requireFlag(flags, 'task'), attemptId: requireFlag(flags, 'attempt'),
+        writerId: requireFlag(flags, 'writer'), cwd: requireFlag(flags, 'cwd'),
+        provider: requireFlag(flags, 'provider'), model: optionalFlag(flags, 'model'),
+        contextPackHash: requireFlag(flags, 'context-pack'),
+        sessionId: optionalFlag(flags, 'session'), resume: action === 'resume', outputPath: optionalFlag(flags, 'output-path'),
+      });
+      refresh();
+      output(execution, flags.json);
+      return execution.state === 'SUBMITTED' ? 0 : 1;
     }
 
     if (group === 'attempt' && action === 'fail') {
@@ -297,8 +311,9 @@ const USAGE = `LandOS Development Control Spine
   npm run landos:control -- attempt start --task <id> --worker <name> --writer <primary-writer> --path <new-worktree-path> --branch <task-branch> --approach <text> [--id <id>] [--base <sha>]
   npm run landos:control -- workspace inspect [--id <id>]
   npm run landos:control -- workspace release --id <id> --task <task-id> --attempt <attempt-id> --writer <primary-writer>
+  npm run landos:control -- execution run --task <task-id> --attempt <attempt-id> --writer <primary-writer> --cwd <managed-worktree> --provider claude|codex|grok --context-pack <delivered-sha256>
   npm run landos:control -- evidence add --attempt <id> --kind <kind> --summary <text> [--path <path>]
-  npm run landos:control -- candidate submit --attempt <id> --commit <sha> --result <text>
+  npm run landos:control -- candidate submit ... # always refused; governed execution owns submission
   npm run landos:control -- verification run --attempt <id> --command <command> [--next-direction <text>]
   npm run landos:control -- verification record --attempt <id> --outcome PASS|FAIL --command <command> --summary <text> [--commit <sha>]
   npm run landos:control -- attempt fail --attempt <id> --result <text> [--root-cause <text>] [--next-direction <text>]
