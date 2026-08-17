@@ -247,6 +247,8 @@ export interface ResolvedSubjectHandle {
   fips: string | null;
   lpPropertyId: string | null;
   acres: number | null;
+  verified: boolean;
+  verificationSource: string | null;
   sourceEvidence: Array<{ lane: IdentityLaneId; label: string; url: string | null; officiality: SourceOfficiality }>;
   observedSources: Array<{ lane: IdentityLaneId; label: string; url: string | null; officiality: SourceOfficiality }>;
 }
@@ -1144,6 +1146,8 @@ function handleFor(subject: ResolverSubject, lanes: IdentityLaneRecord[], winner
     fips: subject.fips,
     lpPropertyId: subject.lpPropertyId,
     acres: subject.acres,
+    verified: subject.verified,
+    verificationSource: subject.verificationSource,
     sourceEvidence,
     observedSources,
   };
@@ -1193,6 +1197,7 @@ export async function resolveSubjectProperty(
       subject: {
         dealCardId, propertyCardId: null, apn: null, parcelNotations: [], owner: null, address: null,
         city: null, county: null, state: null, zip: null, fips: null, lpPropertyId: null, acres: null,
+        verified: false, verificationSource: null,
         sourceEvidence: [],
         observedSources: [],
       },

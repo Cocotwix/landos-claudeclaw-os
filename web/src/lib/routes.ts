@@ -2,7 +2,7 @@ import {
   LayoutGrid, ListTodo, Users, MessageSquare,
   Brain, Network, Activity, ShieldCheck,
   Swords, Landmark, Hammer,
-  Settings,
+  Settings, Wrench,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 import { DEPARTMENTS } from './departments';
@@ -26,6 +26,7 @@ export interface RouteDef {
 const COMPANY_ROUTES: RouteDef[] = [
   { path: '/mission', label: 'Mission Control', section: 'company', icon: LayoutGrid,    shortcut: 'g m' },
   { path: '/chat',    label: 'Max',             section: 'company', icon: MessageSquare, shortcut: 'g c' },
+  { path: '/tools',   label: 'Tools',           section: 'company', icon: Wrench,        shortcut: 'g t' },
 ];
 
 // The eleven business departments, derived from the single department model

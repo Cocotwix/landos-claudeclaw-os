@@ -12,6 +12,7 @@ import { classifySmartIntake } from './intake-router.js';
 import { extractParcelNotations } from './parcel-notation.js';
 import { apnIdentifiersCorroborate } from './property-resolution-engine.js';
 import {
+  applyLaneEvidence,
   evaluateResolverIdentity,
   readResolverSubject,
   reconcileResolverIdentityPatch,
@@ -21,6 +22,7 @@ import {
   type ResolverSubject,
   type UniversalResolutionResult,
 } from './universal-property-resolution.js';
+import { reconcileSubjectIdentity } from './subject-identity-reconciliation.js';
 
 export const PROPERTY_RESOLUTION_CAPABILITY_ID = 'property-resolution';
 
@@ -201,6 +203,7 @@ export const PROPERTY_RESOLUTION_CAPABILITY: LandosCapability<PropertyResolution
     let universal: UniversalResolutionResult;
     let dealCardId: number | undefined;
     let propertyCardId: number | undefined;
+    const transitionWarnings: string[] = [];
     if (request.subject.kind === 'canonical_property') {
       propertyCardId = request.subject.propertyCardId;
       dealCardId = request.subject.dealCardId ?? getDealCardIdForPropertyCard(propertyCardId);
@@ -212,12 +215,51 @@ export const PROPERTY_RESOLUTION_CAPABILITY: LandosCapability<PropertyResolution
       universal = await resolveSubjectProperty(dealCardId, runtime.universalOptions ?? {});
     } else {
       universal = await resolveRaw(request.subject.rawInput, request.subject.entity, runtime);
+      if (request.subject.target) {
+        dealCardId = request.subject.target.dealCardId;
+        propertyCardId = request.subject.target.propertyCardId;
+        const retained = readResolverSubject(dealCardId);
+        if (!retained || retained.propertyCardId !== propertyCardId || retained.entity !== request.subject.entity) {
+          throw new Error(`canonical property ${propertyCardId} is not the subject of Deal Card ${dealCardId}`);
+        }
+        if (universal.status === 'resolved' && universal.released) {
+          const applied = applyLaneEvidence(retained, {
+            apn: universal.subject.apn,
+            county: universal.subject.county,
+            state: universal.subject.state,
+            city: universal.subject.city,
+            zip: universal.subject.zip,
+            owner: universal.subject.owner,
+            acres: universal.subject.acres,
+            fips: universal.subject.fips,
+            lpPropertyId: universal.subject.lpPropertyId,
+            verified: universal.subject.verified,
+            verificationSource: universal.subject.verificationSource,
+          }, `capability:property-resolution:raw-target:${environment.invocationId}`);
+          if (applied.refusedFor.length) {
+            transitionWarnings.push(...applied.refusedFor);
+            const retainedEvaluation = evaluateResolverIdentity(retained);
+            universal = retainedEvaluation.sufficient
+              ? await resolveSubjectProperty(dealCardId, { actor: `capability:property-resolution:retained:${environment.invocationId}`, documentEnrichment: false })
+              : { ...universal, status: 'conflicted', released: false, conflicts: [...universal.conflicts, ...applied.refusedFor] };
+          } else {
+            await reconcileSubjectIdentity(dealCardId, {
+              actor: `capability:property-resolution:${environment.invocationId}`,
+              censusGeography: null,
+            });
+            universal = await resolveSubjectProperty(dealCardId, {
+              actor: `capability:property-resolution:canonical:${environment.invocationId}`,
+              documentEnrichment: false,
+            });
+          }
+        }
+      }
     }
     runtime.onUniversalResult?.(universal);
 
     const subjectResolution = statusOf(universal);
     const existingPropertyId = request.subject.kind === 'raw_property'
-      ? resolveExistingProperty(universal.subject, request.subject.entity)
+      ? request.subject.target?.propertyCardId ?? resolveExistingProperty(universal.subject, request.subject.entity)
       : propertyCardId ?? null;
     const canonicalSubject = existingPropertyId
       ? {
@@ -244,7 +286,7 @@ export const PROPERTY_RESOLUTION_CAPABILITY: LandosCapability<PropertyResolution
       canonicalSubject,
       facts: factsOf(universal, subjectResolution),
       evidence,
-      warnings: [...universal.conflicts, ...universal.notes],
+      warnings: [...transitionWarnings, ...universal.conflicts, ...universal.notes],
       missingInformation: missingInformation(universal),
     };
   },

@@ -29,11 +29,15 @@ import { distinctApnIdentities, type SnapshotDueDiligenceItem, type SnapshotEvid
 import { governmentFactsFromPublicRecordOutcomes, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
 import type { GovernmentRecordArtifactView } from './government-records-types.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
+import { invokeRuntimeCapability } from './capability-registry.js';
+import { CapabilityInvocationStore } from './capability-store.js';
+import type { CapabilityCallerType, CapabilityInvocationMode } from './capability-contract.js';
+import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import {
-  resolveSubjectProperty,
   type IdentityLaneResult,
   type IndexedWebLaneOptions,
   type JurisdictionLaneOptions,
+  type UniversalResolutionResult,
 } from './universal-property-resolution.js';
 import type { LandPortalSearchPackage } from './landportal-subject-upgrade.js';
 import {
@@ -141,6 +145,10 @@ export interface ExactAddressWebResult {
 }
 
 export interface LiveCollectorDeps {
+  /** Workflow identity only; it never changes resolver logic. */
+  resolutionCaller?: CapabilityCallerType;
+  /** Deal Card refreshes are explicit; automatic/internal callers normally reuse. */
+  resolutionMode?: CapabilityInvocationMode;
   /**
    * Runs the canonical public property intelligence lane (official parcel
    * lookup + the free public screening adapters) and persists its run.
@@ -332,7 +340,7 @@ async function persistProviderResult<TExecution>(
 
 // ── Parcel identity ─────────────────────────────────────────────────────────
 
-export async function collectParcelIdentity(
+async function collectParcelIdentityUnlocked(
   ctx: MissionContext,
   deps: LiveCollectorDeps,
 ): Promise<SpecialistOutcome<IdentityContribution>> {
@@ -565,18 +573,36 @@ export async function collectParcelIdentity(
   // capture is still in flight. Two concurrent LandPortal agents for one
   // subject is the failure that separation prevents.
   const landPortalUpgrade: { offered: LandPortalSearchPackage | null } = { offered: null };
-  const resolution = await resolveSubjectProperty(ctx.dealCardId, {
-    actor: `universal-resolver:${ctx.runId}`,
-    promote: promoteSubjectIdentity,
-    onLandPortalUpgrade: ({ package: offered }) => { landPortalUpgrade.offered = offered; },
-    deadlineMs: Math.max(landPortalCaptureWaitMs, publicRefreshWaitMs) + 1_000,
-    lanes: {
-      official_parcel: officialLane,
-      ...(capturePromise ? { landportal: () => captureLane } : {}),
+  if (!initialCardId) throw new Error(`Deal Card ${ctx.dealCardId} has no canonical subject Property Card.`);
+  let capturedResolution: UniversalResolutionResult | null = null;
+  const capabilityResult = await invokeRuntimeCapability({
+    capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+    caller: { type: deps.resolutionCaller ?? 'internal_workflow', ref: `deal:${ctx.dealCardId}` },
+    subject: {
+      kind: 'canonical_property',
+      entity: initialDeal.entity as 'LAND_ALLY' | 'TY_LAND_BIZ',
+      propertyCardId: initialCardId,
+      dealCardId: ctx.dealCardId,
     },
-    ...(deps.indexedWebIdentity ? { indexedWeb: deps.indexedWebIdentity } : {}),
-    ...(deps.jurisdictionEnrichment ? { jurisdiction: deps.jurisdictionEnrichment } : {}),
+    mode: deps.resolutionMode ?? 'reuse',
+    context: { workflow: 'deal_intelligence', runId: ctx.runId },
+  }, {
+    universalOptions: {
+      actor: `universal-resolver:${ctx.runId}`,
+      promote: promoteSubjectIdentity,
+      onLandPortalUpgrade: ({ package: offered }) => { landPortalUpgrade.offered = offered; },
+      deadlineMs: Math.max(landPortalCaptureWaitMs, publicRefreshWaitMs) + 1_000,
+      lanes: {
+        official_parcel: officialLane,
+        ...(capturePromise ? { landportal: () => captureLane } : {}),
+      },
+      ...(deps.indexedWebIdentity ? { indexedWeb: deps.indexedWebIdentity } : {}),
+      ...(deps.jurisdictionEnrichment ? { jurisdiction: deps.jurisdictionEnrichment } : {}),
+    },
+    onUniversalResult: (result) => { capturedResolution = result; },
   });
+  const resolution = capturedResolution as UniversalResolutionResult | null;
+  if (!resolution) throw new Error(`Property Resolution Capability ${capabilityResult.invocationId} returned no resolver handback.`);
   const capture = waits.capture ?? { result: null, error: null, timedOut: false as const };
   const live = waits.live ?? { result: null, error: null, timedOut: false as const };
   // The resolver released while a lane was still working. That is the point of
@@ -956,7 +982,9 @@ export async function collectParcelIdentity(
     });
   }
 
-  const status: SpecialistOutcome<IdentityContribution>['status'] = state === 'confirmed'
+  const status: SpecialistOutcome<IdentityContribution>['status'] = capabilityResult.subjectResolution !== 'RESOLVED'
+    ? 'blocked'
+    : state === 'confirmed'
     ? 'completed'
     : state === 'unresolved' || state === 'conflicted'
       ? 'blocked'
@@ -967,6 +995,8 @@ export async function collectParcelIdentity(
     summary: identity.explanation,
     data: {
       identity,
+      capabilityResolution: capabilityResult.subjectResolution,
+      capabilityInvocationId: capabilityResult.invocationId,
       discoveryUsable: identity.discoveryUsable ?? false,
       discoveryBasis: identity.discoveryBasis ?? null,
       facts,
@@ -981,6 +1011,28 @@ export async function collectParcelIdentity(
       acreageConflict: record.identity.acreageConflict,
     },
   };
+}
+
+/** The one lock boundary every caller crosses before any resolver provider. */
+export async function collectParcelIdentity(
+  ctx: MissionContext,
+  deps: LiveCollectorDeps,
+): Promise<SpecialistOutcome<IdentityContribution>> {
+  const store = new CapabilityInvocationStore();
+  const subjectRef = `deal:${ctx.dealCardId}`;
+  const lock = store.acquireExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, subjectRef, ctx.runId);
+  if (!lock.acquired) {
+    return {
+      status: 'blocked',
+      summary: `Property Resolution is already running for this Deal Card (${lock.ownerId}); no second provider workflow was started.`,
+      data: null,
+    };
+  }
+  try {
+    return await collectParcelIdentityUnlocked(ctx, deps);
+  } finally {
+    if (!lock.reentrant) store.releaseExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, subjectRef, ctx.runId);
+  }
 }
 
 // ── Government records ──────────────────────────────────────────────────────
@@ -2528,9 +2580,9 @@ export function makeLivePropertyIntelligenceCollectors(deps: LiveCollectorDeps):
   };
   return {
     parcel_identity: (ctx) => {
-      // Standing independent lane: launch before the identity collector waits
-      // on LandPortal/public GIS. Its contained failure cannot abort either.
-      void exactAddressFor(ctx);
+      // Property Resolution is the hard root gate. Exact-address discovery is
+      // downstream research and starts only from a dependent lane after this
+      // collector releases one canonical subject.
       return collectParcelIdentity(ctx, deps);
     },
     government_records: (ctx) => collectGovernmentRecords(ctx),

@@ -19,7 +19,12 @@ export interface CapabilityMetadata {
 export type CapabilityEntity = 'LAND_ALLY' | 'TY_LAND_BIZ';
 
 export type CapabilitySubjectInput =
-  | { kind: 'raw_property'; entity: CapabilityEntity; rawInput: string }
+  | {
+      kind: 'raw_property';
+      entity: CapabilityEntity;
+      rawInput: string;
+      target?: { propertyCardId: number; dealCardId: number };
+    }
   | { kind: 'canonical_property'; entity: CapabilityEntity; propertyCardId: number; dealCardId?: number };
 
 export interface CapabilityInvocationRequest {
@@ -134,6 +139,11 @@ function validateInvocationEnvelope(request: CapabilityInvocationRequest): void 
   }
   if (request.subject.kind === 'raw_property' && !request.subject.rawInput.trim()) {
     throw new Error('raw property input is required');
+  }
+  if (request.subject.kind === 'raw_property' && request.subject.target
+      && (!Number.isInteger(request.subject.target.propertyCardId) || request.subject.target.propertyCardId < 1
+        || !Number.isInteger(request.subject.target.dealCardId) || request.subject.target.dealCardId < 1)) {
+    throw new Error('raw property target IDs must be positive integers');
   }
   if (request.subject.kind === 'canonical_property'
       && (!Number.isInteger(request.subject.propertyCardId) || request.subject.propertyCardId < 1)) {

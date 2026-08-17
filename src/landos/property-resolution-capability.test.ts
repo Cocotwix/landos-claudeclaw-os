@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { listRuntimeCapabilities, invokeRuntimeCapability } from './capability-registry.js';
 import { CapabilityInvocationStore } from './capability-store.js';
-import { _initTestLandosDb, getLandosDb } from './db.js';
+import { _initTestLandosDb, _refreshTestLandosSchema, getLandosDb } from './db.js';
 import { createDealCard, linkPropertyToDeal } from './deal-card.js';
 import { upsertPropertyCard } from './property-card.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
@@ -30,6 +30,35 @@ function rawRequest(
 }
 
 describe('Slice 7 runtime capability contract', () => {
+  it('upgrades the Boundary 1 ledger without losing retained invocation rows', () => {
+    const db = getLandosDb();
+    db.exec(`
+      DROP INDEX IF EXISTS idx_capability_invocation_subject_deal;
+      ALTER TABLE landos_capability_invocation DROP COLUMN subject_deal_card_id;
+      CREATE INDEX idx_capability_invocation_subject
+        ON landos_capability_invocation(capability_id, subject_kind, subject_ref, completed_at DESC);
+    `);
+    db.prepare(`
+      INSERT INTO landos_capability_invocation (
+        id, capability_id, capability_version, caller_type, caller_ref, subject_kind, subject_entity,
+        subject_ref, research_session_id, mode, parameters_json, context_json, idempotency_key,
+        status, resolution_state, result_json, started_at, completed_at, created_at
+      ) VALUES ('cap-boundary-1', 'property-resolution', '1.0', 'deal_card', 'deal:7',
+        'canonical_property', 'TY_LAND_BIZ', '11', NULL, 'reuse', '{}', '{}', 'boundary-1-key',
+        'succeeded', 'RESOLVED', '{"invocationId":"cap-boundary-1"}', ?, ?, ?)
+    `).run('2026-08-17T00:00:00.000Z', '2026-08-17T00:00:01.000Z', '2026-08-17T00:00:00.000Z');
+
+    _refreshTestLandosSchema();
+    _refreshTestLandosSchema();
+    const columns = db.prepare('PRAGMA table_info(landos_capability_invocation)').all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain('subject_deal_card_id');
+    expect(db.prepare('SELECT id, subject_deal_card_id FROM landos_capability_invocation WHERE id = ?').get('cap-boundary-1'))
+      .toEqual({ id: 'cap-boundary-1', subject_deal_card_id: null });
+    const indexes = db.prepare('PRAGMA index_list(landos_capability_invocation)').all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toContain('idx_capability_invocation_subject_deal');
+    expect(indexes.map((index) => index.name)).not.toContain('idx_capability_invocation_subject');
+  });
+
   it('registers Property Resolution as the first callable LandOS capability', () => {
     expect(listRuntimeCapabilities()).toEqual([expect.objectContaining({
       id: 'property-resolution',
@@ -213,6 +242,33 @@ describe('Slice 7 runtime capability contract', () => {
     expect(result.subjectResolution).toBe('UNRESOLVED');
     expect(result.evidence).toEqual([]);
     expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_capability_evidence').get() as { n: number }).n).toBe(0);
+  });
+
+  it('resolves raw New Lead input into its existing canonical container without a second engine', async () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Map 042 Parcel 123' });
+    const { card } = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'Map 042 Parcel 123', state: 'TN', agentId: 'test',
+    });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
+    const result = await invokeRuntimeCapability({
+      capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+      caller: { type: 'new_lead', ref: `deal:${deal.id}` },
+      subject: {
+        kind: 'raw_property', entity: 'TY_LAND_BIZ', rawInput: 'Map 042 Parcel 123, Fairview, Tennessee',
+        target: { dealCardId: deal.id, propertyCardId: card.id },
+      },
+      mode: 'refresh',
+    }, {
+      universalOptions: { lanes: { official_parcel: async () => official({
+        apn: '042-123.00-000', county: 'Williamson', state: 'TN', city: 'Fairview', owner: 'LANDSOUTH LLC',
+        verified: true, verificationSource: 'Williamson County Property Assessor',
+      }) } },
+    });
+    expect(result.subjectResolution).toBe('RESOLVED');
+    expect(result.canonicalSubject).toMatchObject({ kind: 'property', propertyCardId: card.id, dealCardId: deal.id, temporary: false });
+    const persisted = getLandosDb().prepare('SELECT apn, county, verification_status FROM landos_property_card WHERE id = ?').get(card.id);
+    expect(persisted).toMatchObject({ apn: '042-123.00-000', county: 'Williamson', verification_status: 'verified_property' });
+    expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_research_session').get() as { n: number }).n).toBe(0);
   });
 
   it('rejects fake canonical IDs and caller-supplied evidence or confidence', async () => {

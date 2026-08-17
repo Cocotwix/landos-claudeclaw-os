@@ -156,6 +156,8 @@ export const FORBIDDEN_COMP_SOURCE_PATTERNS = [/assessor/i, /recorder/i, /\bdeed
 
 export interface SubjectResearchHandback {
   dealCardId: number;
+  capabilityResolution: 'RESOLVED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'ERROR';
+  capabilityInvocationId: string;
   identityState: SnapshotIdentity['state'];
   address: string | null;
   apn: string | null;
@@ -420,9 +422,23 @@ export const DEAL_INTELLIGENCE_CHILDREN: MissionChildSpec[] = [
     contributionSlot: 'identity',
     provider: DETERMINISTIC('The reconciled subject parcel identity'),
     acceptance: {
-      requiredFields: ['identityState', 'identity.state', 'identity.explanation'],
+      requiredFields: ['capabilityResolution', 'capabilityInvocationId', 'identityState', 'identity.state', 'identity.explanation'],
       checks: [
         SCOPE,
+        {
+          id: 'capability_subject_resolved',
+          requirement: 'The Property Resolution Capability released one canonical subject.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const status = (handback as Partial<SubjectResearchHandback>).capabilityResolution;
+            return {
+              passed: status === 'RESOLVED',
+              detail: status === 'RESOLVED'
+                ? 'Property Resolution released one canonical subject.'
+                : `Property Resolution returned ${status ?? 'no status'}; downstream property research is blocked.`,
+            };
+          },
+        },
         {
           id: 'parcel_named',
           requirement: 'The identity names the subject parcel by address or APN.',
@@ -1227,12 +1243,14 @@ export function dealIntelligenceExecutors(
     parcel_identity: async (ctx) => {
       const outcome = await collectors.parcel_identity(dealScoped(ctx));
       const data = outcome.data;
-      if (!data) {
+      if (!data || data.capabilityResolution !== 'RESOLVED') {
         return { status: 'blocked', summary: outcome.summary };
       }
       const identity = data.identity;
       const handback: SubjectResearchHandback = {
         dealCardId: ctx.scopeId,
+        capabilityResolution: data.capabilityResolution,
+        capabilityInvocationId: data.capabilityInvocationId,
         identityState: identity.state,
         address: identity.normalizedAddress ?? identity.situs,
         apn: identity.apn,
@@ -1546,6 +1564,8 @@ export function dealIntelligenceExecutors(
         ...dealScoped(ctx),
         identity: identity
           ? {
+              capabilityResolution: identity.capabilityResolution,
+              capabilityInvocationId: identity.capabilityInvocationId,
               identity: identity.identity,
               facts: identity.facts,
               subjectMarket: identity.subjectMarket,

@@ -60,6 +60,18 @@ interface ProgressResp {
   snapshotStatus?: string | null;
 }
 
+interface PropertyResolutionView {
+  invocationId: string;
+  subjectResolution: 'RESOLVED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'ERROR';
+  facts?: { canonicalIdentity?: { apn?: string | null; address?: string | null; county?: string | null; state?: string | null }; identityBasis?: string };
+  evidence?: Array<{ source: string }>;
+  timestamps?: { completedAt?: string };
+}
+
+interface PropertyResolutionResp {
+  result?: PropertyResolutionView | null;
+}
+
 /** Lane status → the dot class that carries its colour. */
 const DOT_CLASS: Record<RunSpecialistStatus, string> = {
   running: 'run', queued: 'queued', completed: 'ok', partial: 'partial',
@@ -100,6 +112,8 @@ export function PropertyIntelligenceRunStatus(props: {
   const [run, setRun] = useState<RunView | null>(null);
   const [lanes, setLanes] = useState<RunSpecialistView[]>([]);
   const [starting, setStarting] = useState(false);
+  const [refreshingResolution, setRefreshingResolution] = useState(false);
+  const [resolution, setResolution] = useState<PropertyResolutionView | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   // Drives the elapsed clock while a run is in flight without refetching.
@@ -112,10 +126,14 @@ export function PropertyIntelligenceRunStatus(props: {
 
   const poll = useCallback(async (): Promise<boolean> => {
     try {
-      const data = await apiGet<ProgressResp>(`/api/landos/deal-cards/${dealId}/property-intelligence/progress`);
+      const [data, propertyResolution] = await Promise.all([
+        apiGet<ProgressResp>(`/api/landos/deal-cards/${dealId}/property-intelligence/progress`),
+        apiGet<PropertyResolutionResp>(`/api/landos/deal-cards/${dealId}/property-resolution`).catch(() => ({ result: null })),
+      ]);
       if (dead.current) return false;
       setRun(data?.run ?? null);
       setLanes(Array.isArray(data?.specialists) ? data.specialists : []);
+      setResolution(propertyResolution.result ?? null);
       const running = data?.run?.status === 'running';
       // The transition out of `running` is the moment the run's writes are on
       // the record, so that is when the workspace is told to reload.
@@ -167,6 +185,20 @@ export function PropertyIntelligenceRunStatus(props: {
     }
   }, [dealId, poll]);
 
+  const refreshResolution = useCallback(async () => {
+    setRefreshingResolution(true);
+    setActionError(null);
+    try {
+      const response = await apiPost<PropertyResolutionResp>(`/api/landos/deal-cards/${dealId}/property-resolution/run`, { actor: 'operator' });
+      setResolution(response.result ?? null);
+      settledCb.current?.();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (!dead.current) setRefreshingResolution(false);
+    }
+  }, [dealId]);
+
   const running = run?.status === 'running';
   // Nothing has ever run for this lead and nothing is running now: the panel
   // still appears, because "no research has been run" is itself the status the
@@ -197,6 +229,12 @@ export function PropertyIntelligenceRunStatus(props: {
               {settledCount} of {lanes.length} lanes reported by this research run
             </div>
           )}
+          <div class="awv2-runstatus-current" data-testid="deal-card-property-resolution">
+            Property Resolution: <b>{resolution?.subjectResolution ?? 'NOT RUN'}</b>
+            {resolution?.facts?.canonicalIdentity?.apn ? ` · APN ${resolution.facts.canonicalIdentity.apn}` : ''}
+            {resolution?.evidence?.length ? ` · ${resolution.evidence.length} source${resolution.evidence.length === 1 ? '' : 's'}` : ''}
+          </div>
+          {resolution?.facts?.identityBasis && <div class="awv2-runstatus-current">{resolution.facts.identityBasis}</div>}
           {!running && run?.error && <div class="awv2-runstatus-error">{run.error}</div>}
           {actionError && <div class="awv2-runstatus-error">Could not start the run: {actionError}</div>}
         </div>
@@ -214,9 +252,20 @@ export function PropertyIntelligenceRunStatus(props: {
           )}
           <button
             type="button"
+            class="awv2-runstatus-toggle"
+            data-testid="deal-card-property-resolution-refresh"
+            onClick={() => void refreshResolution()}
+            disabled={running || starting || refreshingResolution}
+            title="Run the canonical Property Resolution Capability again without changing an accepted subject"
+          >
+            <RefreshCw size={13} class={refreshingResolution ? 'spin' : undefined} />
+            {refreshingResolution ? 'Resolvingâ€¦' : 'Refresh resolution'}
+          </button>
+          <button
+            type="button"
             class="awv2-runstatus-run"
             onClick={() => void startRun()}
-            disabled={running || starting}
+            disabled={running || starting || refreshingResolution}
             title={running
               ? 'A research run is already in flight for this lead'
               : 'Run Property Intelligence for this lead again'}

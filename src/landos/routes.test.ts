@@ -343,8 +343,8 @@ describe('LandOS routes - Phase 1 manual opportunity workflow', () => {
     expect(body.researchStatus).toBe('queued');
     const dealRead = (await (await get(`/api/landos/deal-cards/${body.dealCardId}`)).json()) as any;
     expect(dealRead.opportunity.id).toBe(body.opportunityId);
-    expect(dealRead.researchMission.opportunityId).toBe(body.opportunityId);
-    expect(['queued', 'running', 'partial', 'complete']).toContain(dealRead.researchMission.status);
+    const propertyResolution = (await (await get(`/api/landos/deal-cards/${body.dealCardId}/property-resolution`)).json()) as any;
+    expect(propertyResolution.result).toMatchObject({ capability: { id: 'property-resolution' }, subjectResolution: 'UNRESOLVED' });
 
     const thinRaw = 'Caller inherited land but did not know the parcel number or address yet.';
     const thin = await post('/api/landos/leads/manual', { rawInput: thinRaw });
@@ -370,7 +370,7 @@ describe('LandOS routes - Phase 1 manual opportunity workflow', () => {
     const workspace = (await (await get(`/api/landos/lead-workspace/${body.dealCardId}`)).json()) as any;
     expect(workspace.opportunity.id).toBe(body.opportunityId);
     expect(workspace.opportunity.lifecycleStatus).toBe('lead');
-    expect(['running', 'partial']).toContain(workspace.opportunity.researchStatus);
+    expect(['queued', 'running', 'partial']).toContain(workspace.opportunity.researchStatus);
     expect(workspace.lead.id).toBe(body.dealCardId);
     expect(workspace.discoveryPackage.callPrep.ready).toBe(false);
     expect(workspace.discoveryPackage.callPrep.status).toBe('incomplete');

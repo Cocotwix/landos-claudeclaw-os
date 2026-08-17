@@ -41,6 +41,7 @@ function context(dealCardId: number): MissionContext {
     dealCardId,
     runId: 'pi_test',
     identity: {
+      capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test',
       identity: {
         state: 'confirmed', normalizedAddress: 'OLD RIDGE RD', county: 'Roane', state_: 'TN',
         apn: '073090 04200', apnVariants: ['073090 04200'], owner: 'SACHAN DILEEP S', ownerMailing: null,

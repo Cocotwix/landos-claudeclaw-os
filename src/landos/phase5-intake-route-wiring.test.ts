@@ -5,7 +5,8 @@
 // phase5-intake-autolaunch.test.ts against the real helper. This file pins the
 // routing decision in POST /api/landos/leads/manual: an operating profile
 // outside the vitest env auto-launches the Deal Intelligence mission for the
-// created Deal Card, while the test/QA env keeps the Phase-1 research path.
+// created Deal Card, while the test env invokes the same Property Resolution
+// capability synchronously without external lanes.
 // The launcher is mocked so no real mission (and no real capability work) ever
 // runs from this file — a fire-and-forget mission with real capabilities would
 // outlive the per-test DB reset and contaminate sibling tests.
@@ -32,7 +33,7 @@ vi.mock('./deal-intelligence-intake.js', async (importOriginal) => {
 
 import { buildDashboardApp } from '../dashboard.js';
 import { _initTestDatabase } from '../db.js';
-import { _initTestLandosDb } from './db.js';
+import { _initTestLandosDb, getLandosDb } from './db.js';
 
 const TOKEN = 'test-contract-token';
 const launcher = vi.mocked(autoLaunchDealIntelligenceForIntake);
@@ -82,11 +83,16 @@ describe('POST /api/landos/leads/manual auto-launch wiring', () => {
     expect(launcher).toHaveBeenCalledTimes(1);
   });
 
-  it('vitest env: intake keeps the Phase-1 research path and never auto-launches', async () => {
+  it('vitest env: intake invokes Property Resolution and never starts a stray background writer', async () => {
     const res = await postLead({ sellerName: 'Test Env Seller', address: '3 Wiring Way', state: 'TN' });
     expect(res.status).toBe(201);
     const body = (await res.json()) as { researchStatus: string };
     expect(body.researchStatus).toBe('queued');
     expect(launcher).not.toHaveBeenCalled();
+    const invocation = getLandosDb().prepare(`
+      SELECT capability_id, caller_type, subject_ref, status
+      FROM landos_capability_invocation ORDER BY created_at DESC LIMIT 1
+    `).get() as Record<string, unknown>;
+    expect(invocation).toMatchObject({ capability_id: 'property-resolution', caller_type: 'new_lead', status: 'needs_input' });
   });
 });

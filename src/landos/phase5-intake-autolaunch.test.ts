@@ -38,6 +38,7 @@ function ok<T>(data: T): SpecialistOutcome<T> {
 function collectors(overrides: Partial<PropertyIntelligenceCollectors> = {}): PropertyIntelligenceCollectors {
   return {
     parcel_identity: async () => ok({
+      capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test',
       identity: CONFIRMED,
       facts: [], subjectMarket: { state: 'TN', county: 'Roane', acres: 12.28 }, subjectAcres: 12.28, acreageConflict: false,
     }),
@@ -134,7 +135,7 @@ describe('intake auto-launch: one lead, one mission', () => {
         collectors: collectors({
           parcel_identity: async () => {
             await gate;
-            return ok({ identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false });
+            return ok({ capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test', identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false });
           },
         }),
       }),
@@ -162,7 +163,7 @@ describe('intake auto-launch: one lead, one mission', () => {
         collectors: collectors({
           parcel_identity: async () => {
             await gate;
-            return ok({ identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false });
+            return ok({ capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test', identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false });
           },
         }),
       }),

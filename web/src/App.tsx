@@ -32,6 +32,7 @@ import { WORKSPACE_V2_PATH } from '@/lib/workspace-v2-nav';
 import { BrowserConnect } from '@/pages/BrowserConnect';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 import { MaxDock } from '@/components/MaxDock';
+import { Tools } from '@/pages/Tools';
 
 export function App() {
   const open = sidebarOpen.value;
@@ -88,6 +89,7 @@ export function App() {
           <Route path="/agents"><Agents /></Route>
           <Route path="/agents/:id/files"><AgentFiles /></Route>
           <Route path="/chat"><Chat /></Route>
+          <Route path="/tools"><Tools /></Route>
           <Route path="/memories"><Memories /></Route>
           <Route path="/hive"><HiveMind /></Route>
           <Route path="/usage"><Usage /></Route>

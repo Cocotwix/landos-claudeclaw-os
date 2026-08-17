@@ -138,7 +138,10 @@ import { buildLeadCardTitle, streetReferenceFrom, unresolvedLeadStorageLabel, is
 import { planResolver, smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
 import { apnSearchVariants, ownerSearchVariants } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
-import { resolveProperty, apnIdentifiersCorroborate, type ResolutionDeps, type PropertyResolution } from './property-resolution-engine.js';
+import { apnIdentifiersCorroborate, type ResolutionDeps, type PropertyResolution } from './property-resolution-engine.js';
+import { invokeRuntimeCapability, listRuntimeCapabilities } from './capability-registry.js';
+import { CapabilityInvocationStore } from './capability-store.js';
+import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
 import { browserLaneStatus } from './browser-retrieval.js';
 import { makeLandPortalBrowser } from './landportal-browser.js';
@@ -876,6 +879,40 @@ function queuePhase1Research(opportunity: OpportunityRecord, trigger = 'automati
   const constraints = researchConstraintsFor(opportunity, property);
   const mission = createResearchMission(opportunity, constraints, trigger);
   scheduleResearchMission(mission.id);
+}
+
+/**
+ * Legacy Phase-1 missions predate the runtime Capability contract. They cannot
+ * be safely resumed because doing so would start a second authoritative parcel
+ * resolver beside Deal Intelligence. Startup closes them durably with an exact
+ * operator next action; the Deal Card remains intact and its normal refresh
+ * control starts the capability-rooted path.
+ */
+export function supersedeRecoverableLegacyResearchMissions(): number[] {
+  const superseded: number[] = [];
+  for (const missionId of recoverableResearchMissionIds()) {
+    const mission = getResearchMission(missionId);
+    if (!mission) continue;
+    failResearchMission(missionId, 'Superseded by the Property Resolution Capability root; legacy provider fanout was not resumed.');
+    getLandosDb().prepare(`
+      UPDATE landos_opportunity_research_mission
+      SET summary = ?, safe_next_action = ?, updated_at = unixepoch()
+      WHERE id = ?
+    `).run(
+      'Legacy research was safely superseded without running its resolver or providers.',
+      'Open the Deal Card and refresh Property Resolution to start the canonical capability-rooted workflow.',
+      missionId,
+    );
+    const opportunity = getOpportunity(mission.opportunityId);
+    if (opportunity && opportunity.researchStatus !== 'complete') {
+      updateOpportunityResearchStatus(mission.opportunityId, 'partial', {
+        actor: 'property-resolution-capability-migration',
+        note: 'A recoverable legacy research mission was superseded without provider fanout. Use the Deal Card Property Resolution refresh.',
+      });
+    }
+    superseded.push(missionId);
+  }
+  return superseded;
 }
 /** A persisted public-intelligence run is the stronger full-parcel screening source.
  * Project it deterministically at read time so older report snapshots cannot revive
@@ -1762,7 +1799,7 @@ export function registerLandosRoutes(app: Hono): void {
   if (!researchMissionRecoveryScheduled) {
     researchMissionRecoveryScheduled = true;
     setTimeout(() => {
-      for (const missionId of recoverableResearchMissionIds()) scheduleResearchMission(missionId);
+      supersedeRecoverableLegacyResearchMissions();
       // Startup reconciliation: a Deal Card confirmed by an older code path may
       // have an accepted parcel identity with no versioned Property Summary,
       // which made one panel say "confirmed 1.00" while another said the parcel
@@ -1963,22 +2000,31 @@ export function registerLandosRoutes(app: Hono): void {
     // opportunity lifecycle is preserved. Duplicate submissions hit the
     // existing activeMission/activeRun guards and get the run in flight back.
     //
-    // Synthetic/QA profiles and the vitest env keep the Phase-1 path, whose
-    // worker already takes its fast synthetic branch. In tests this matters
-    // beyond speed: a fire-and-forget mission with REAL capabilities outlives
-    // the per-test DB reset and writes its handbacks into the next test's
-    // world, where numeric ids have been reassigned. (Same NODE_ENV gate the
-    // intake model analyzers above use; route wiring for the operating branch
-    // is covered with an injected launcher in phase5-intake-route-wiring.)
-    // Every other intake/retry path (owner retry, from-verification, ...)
-    // still calls queuePhase1Research unchanged.
-    if (profile.syntheticOnly || process.env.NODE_ENV === 'test') {
-      queuePhase1Research(opportunity, 'automatic_manual_intake');
+    // Vitest invokes the same Property Resolution capability synchronously and
+    // without external lanes, because a fire-and-forget real mission would
+    // outlive the per-test DB reset. Runtime profiles, including synthetic QA,
+    // all use the governed Deal Intelligence graph whose root is this capability.
+    if (process.env.NODE_ENV === 'test') {
+      // Test processes cannot leave a real fire-and-forget mission writing into
+      // the next test's reset database. They still invoke the SAME capability
+      // root synchronously; only the external resolver lanes are omitted.
+      await invokeRuntimeCapability({
+        capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+        caller: { type: 'new_lead', ref: `deal:${deal.id}` },
+        subject: {
+          kind: 'raw_property',
+          entity,
+          rawInput,
+          target: { dealCardId: deal.id, propertyCardId: property.id },
+        },
+        mode: 'reuse',
+        context: { workflow: 'automatic_new_lead_test_boundary' },
+      });
     } else {
       autoLaunchDealIntelligenceForIntake({
         dealCardId: deal.id,
         opportunityId: opportunity.id,
-        capabilities: dealIntelligenceCapabilities(deal.id),
+        capabilities: dealIntelligenceCapabilities(deal.id, 'new_lead', 'reuse'),
         missionStore: missionGraphStore,
         snapshotStore: propertyIntelligenceStore,
         browserCleanup: () => closeSurplusSessionPages(),
@@ -2005,8 +2051,16 @@ export function registerLandosRoutes(app: Hono): void {
     const opportunity = Number.isInteger(id) ? getOpportunity(id) : undefined;
     if (!opportunity) return c.json({ error: 'opportunity not found' }, 404);
     const queued = updateOpportunityResearchStatus(id, 'queued', { actor: 'owner', note: 'Owner requested research run/retry.' });
-    queuePhase1Research(queued, 'owner_retry');
-    return c.json({ opportunity: queued, mission: latestResearchMission(id) }, 202);
+    if (!queued.legacyDealCardId) return c.json({ error: 'opportunity has no Deal Card' }, 409);
+    const launch = autoLaunchDealIntelligenceForIntake({
+      dealCardId: queued.legacyDealCardId,
+      opportunityId: queued.id,
+      capabilities: dealIntelligenceCapabilities(queued.legacyDealCardId, 'deal_card', 'refresh'),
+      missionStore: missionGraphStore,
+      snapshotStore: propertyIntelligenceStore,
+      browserCleanup: () => closeSurplusSessionPages(),
+    });
+    return c.json({ opportunity: queued, launch }, 202);
   });
 
   app.post('/api/landos/opportunities/:id/decision', async (c) => {
@@ -3430,48 +3484,55 @@ export function registerLandosRoutes(app: Hono): void {
       fields.owner ? `Screenshot owner candidate: ${fields.owner}` : '',
     ].filter(Boolean).join('\n');
     try {
-      await ensureBrowserSession();
-      // Best-effort LandPortal sign-in so the approved parcel-level browser
-      // lane can actually search; an unauthenticated session degrades honestly.
-      try { await ensureLandPortalAuthenticated(); } catch { /* lane parks honestly */ }
-      const resolution = await withBrowserMissionGate(() => resolveProperty(
-        { rawText: resolutionText, fields },
-        liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
-      ));
-      writeResolutionSnapshot(dealCardId, buildResolutionSnapshot(resolutionText, fields, resolution));
+      const deal = getDealCard(dealCardId);
+      const targetCardId = deal ? subjectCardId(deal) : null;
+      if (!deal || !targetCardId) throw new Error('Deal Card has no canonical subject Property Card.');
+      const resolution = await invokeRuntimeCapability({
+        capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+        caller: { type: 'new_lead', ref: `intake-submission:${submissionId}` },
+        subject: {
+          kind: 'raw_property',
+          entity: deal.entity as LandosEntity,
+          rawInput: resolutionText,
+          target: { dealCardId, propertyCardId: targetCardId },
+        },
+        mode: 'reuse',
+        context: { workflow: 'smart_intake', submissionId },
+      }, {
+        universalOptions: {
+          indexedWeb: { search: createHermesFreeSearch(), fetchText: defaultGovFetchText, maxQueries: 3, maxPages: 3, timeoutMs: 20_000 },
+          jurisdiction: { timeoutMs: 15_000 },
+          deadlineMs: 65_000,
+        },
+      });
+      const capabilityFacts = resolution.facts as Record<string, unknown>;
+      const canonicalIdentity = (capabilityFacts.canonicalIdentity ?? {}) as Record<string, unknown>;
+      const capabilityLanes = Array.isArray(capabilityFacts.lanes) ? capabilityFacts.lanes as Array<Record<string, unknown>> : [];
       // Source-by-source outcomes: exact facts each source returned, never a
       // bare count. Operator candidate input is excluded (it is the input).
-      const sources = resolution.candidates
-        .filter((entry) => entry.lane !== 'operator_input')
-        .map((entry) => ({
-          source: entry.source,
-          lane: entry.lane,
-          sourceUrl: entry.sourceUrl ?? null,
-          confidence: entry.confidence,
-          facts: Object.fromEntries(Object.entries({
-            apn: entry.apn, owner: entry.owner, address: entry.address, county: entry.county,
-            state: entry.state, zip: entry.zip, acres: entry.acres, propertyId: entry.propertyId,
-            coordinates: entry.coordinates ? `${entry.coordinates.lat}, ${entry.coordinates.lng}` : undefined,
-          }).filter(([, value]) => value !== undefined && value !== null && value !== '')),
-        }));
-      const laneOutcomes = resolution.lanesAttempted.map((lane) => ({
-        lane: lane.lane,
-        ran: lane.ran,
-        status: lane.status,
-        verdict: lane.contributed ? 'accepted' : lane.ran ? 'not accepted' : 'not run',
-        reason: lane.note,
+      const sources = resolution.evidence.map((entry) => ({
+        source: entry.source,
+        lane: String(entry.details?.lane ?? 'property_resolution'),
+        sourceUrl: entry.sourceUrl ?? null,
+        confidence: entry.sourceType === 'official' ? 1 : 0.7,
+        facts: canonicalIdentity,
       }));
-      const rejected = resolution.lanesAttempted
-        .filter((lane) => lane.ran && !lane.contributed)
-        .map((lane) => ({ lane: lane.lane, status: lane.status, reason: lane.note }));
+      const laneOutcomes = capabilityLanes.map((lane) => ({
+        lane: str(lane.id) ?? 'property_resolution',
+        ran: str(lane.status) !== 'pending',
+        status: str(lane.status) ?? 'unknown',
+        verdict: lane.won === true || lane.applied === true ? 'accepted' : 'not accepted',
+        reason: str(lane.note) ?? '',
+      }));
+      const rejected = laneOutcomes.filter((lane) => lane.ran && lane.verdict !== 'accepted');
       const nextIdentifier = smallestNextIdentifier({
         address: fields.address, city: fields.city, state: fields.state, zip: fields.zip,
         county: fields.county, fips: fields.fips, apn: fields.apn, owner: fields.owner, propertyId: fields.propertyId,
       });
-      const confirmed = resolution.resolutionStatus === 'confirmed' && resolution.identityEstablished && !resolution.identityConflict;
+      const confirmed = resolution.subjectResolution === 'RESOLVED';
       const promotion = confirmed
-        ? promoteConfirmedIntakeResolution(dealCardId, resolution)
-        : { canonicalPromotionApplied: false, note: 'No canonical promotion: the parcel is not yet confirmed by an approved parcel-level source. Screenshot candidates remain non-canonical.' };
+        ? { canonicalPromotionApplied: true, note: 'The Property Resolution Capability promoted only source-established identity through the shared canonical transition.' }
+        : { canonicalPromotionApplied: false, note: 'No canonical promotion: Property Resolution did not release one exact parcel. Screenshot candidates remain non-canonical.' };
       // ── Reconcile THIS attempt with the ACCEPTED canonical identity ─────────
       // A confirmed Deal Card keeps its accepted parcel regardless of a later
       // attempt. A contradicting attempt is an operator-review flag, never a
@@ -3490,13 +3551,13 @@ export function registerLandosRoutes(app: Hono): void {
           acceptedCanonicalApn = String(acceptedCard.apn);
         }
       }
-      const attemptApn = resolution.property.apn ?? resolution.verifiedData?.identity?.apn ?? null;
+      const attemptApn = str(canonicalIdentity.apn);
       const reconciliation = reconcileAttemptWithAcceptedIdentity({
         acceptedState: acceptedIdentity?.state ?? null,
         acceptedCanonicalApn,
         attemptApn,
-        attemptHasConflict: !!resolution.identityConflict,
-        attemptEstablished: resolution.identityEstablished,
+        attemptHasConflict: resolution.subjectResolution === 'AMBIGUOUS',
+        attemptEstablished: confirmed,
       });
       const { attemptReconciliation, reconciliationMessage } = reconciliation;
       const handoff = {
@@ -3506,15 +3567,17 @@ export function registerLandosRoutes(app: Hono): void {
         apnVariantsTried: [fields.apn, ...apnAlternates].filter(Boolean),
         ownerVariants,
         lookupOrder,
-        resolutionStatus: resolution.resolutionStatus,
-        confidence: resolution.confidence,
-        matchedReason: resolution.matchedReason,
+        capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+        capabilityInvocationId: resolution.invocationId,
+        resolutionStatus: resolution.subjectResolution.toLowerCase(),
+        confidence: confirmed ? 1 : resolution.subjectResolution === 'AMBIGUOUS' ? 0.5 : 0,
+        matchedReason: str(capabilityFacts.identityBasis) ?? 'No exact parcel was established.',
         // A confirmed Deal Card is established by an approved source regardless of
         // whether THIS attempt independently re-established it (req: a confirmed
         // card must never read "identity not yet established").
         identityEstablishedByApprovedSource: reconciliation.identityEstablishedByApprovedSource,
-        identityBasis: resolution.identityBasis,
-        identityConflict: resolution.identityConflict ?? null,
+        identityBasis: str(capabilityFacts.identityBasis) ?? '',
+        identityConflict: resolution.subjectResolution === 'AMBIGUOUS' ? capabilityFacts.candidates ?? [] : null,
         // Accepted-canonical reconciliation for the panel: the latest attempt is
         // history relative to the accepted identity, never an override of it.
         acceptedIdentityState: acceptedIdentity?.state ?? null,
@@ -3522,21 +3585,21 @@ export function registerLandosRoutes(app: Hono): void {
         acceptedCanonicalApn,
         attemptReconciliation,
         reconciliationMessage,
-        agreement: resolution.agreement.explanation,
-        missing: resolution.missing,
-        lanesAttempted: resolution.lanesAttempted,
+        agreement: resolution.warnings.join(' '),
+        missing: resolution.missingInformation,
+        lanesAttempted: capabilityLanes,
         laneOutcomes,
         rejected,
         sources,
-        browser: (resolution.browserEvidence ?? []).map((ev) => redactEvidence(ev)),
+        browser: [],
         smallestNextIdentifier: nextIdentifier,
-        guidance: resolution.guidance ?? null,
+        guidance: resolution.missingInformation.join('; ') || null,
         canonicalPromotionApplied: promotion.canonicalPromotionApplied,
         promotion,
         ownerContactMatchRequired: false,
         message: confirmed
-          ? `Parcel confirmed. ${resolution.identityBasis} ${promotion.note}`
-          : `Screenshot candidates went through multi-path resolution (${lookupOrder.length} lookup path${lookupOrder.length === 1 ? '' : 's'}). ${resolution.matchedReason} No screenshot field was promoted to canonical identity.`,
+          ? `Parcel confirmed. ${str(capabilityFacts.identityBasis) ?? ''} ${promotion.note}`
+          : `Screenshot candidates went through the canonical Property Resolution Capability. ${str(capabilityFacts.identityBasis) ?? 'No exact parcel was established.'} No screenshot field was promoted to canonical identity.`,
       };
       updateLeadCardIntakeResolution(dealCardId, submissionId, handoff);
       return handoff;
@@ -6200,18 +6263,44 @@ export function registerLandosRoutes(app: Hono): void {
   // Matched | Needs Clarification with the canonical NormalizedProperty + the
   // lane-by-lane trace. Free Census/Photon + budgeted Realie exact resolve;
   // browser lanes parked. Never opens an empty shell.
+  const runToolsPropertyResolution = async (body: Record<string, unknown>) => {
+    const rawInput = str(body.rawInput) ?? str(body.text);
+    if (!rawInput?.trim()) throw new Error('rawInput is required');
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    return invokeRuntimeCapability({
+      capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+      caller: { type: 'tools', ref: 'tools:property-resolver' },
+      subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+      mode: body.refresh === true ? 'refresh' : 'reuse',
+      context: { surface: 'tools', tool: 'property-resolver' },
+    }, {
+      universalOptions: {
+        indexedWeb: {
+          search: createHermesFreeSearch(),
+          fetchText: defaultGovFetchText,
+          maxQueries: 3,
+          maxPages: 3,
+          timeoutMs: 20_000,
+        },
+        jurisdiction: { timeoutMs: 15_000 },
+        deadlineMs: 65_000,
+      },
+    });
+  };
+
+  app.get('/api/landos/capabilities', (c) => c.json({ capabilities: listRuntimeCapabilities() }));
+
+  app.post('/api/landos/capabilities/property-resolution/invoke', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    try { return c.json({ result: await runToolsPropertyResolution(body) }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : String(error) }, 400); }
+  });
+
+  // Compatibility URL. It is now only an adapter over the canonical Capability.
   app.post('/api/landos/property/resolve', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    const text = str(body.text);
-    if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
-    const cls = classifySmartIntake(text.trim());
-    await ensureBrowserSession();
-    const resolution = await withBrowserMissionGate(() => resolveProperty(
-      { rawText: text.trim(), fields: cls.parsedFields },
-      liveResolutionDeps(LANDPORTAL_VERIFICATION_TIMEOUT_MS),
-    ));
-    const session = await browserSessionHealth();
-    return c.json({ classification: cls, resolution, browserLanes: browserLaneStatus(), session });
+    try { return c.json({ resolution: await runToolsPropertyResolution(body) }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : String(error) }, 400); }
   });
 
   // Persistent browser session status/health. Reports live / disabled /
@@ -7043,7 +7132,13 @@ export function registerLandosRoutes(app: Hono): void {
   // runPropertyInspection shares this budget across LandPortal + county work.
   const SUBJECT_INSPECTION_TIMEOUT_MS = 120_000;
 
-  const propertyIntelligenceCollectors = (dealCardId: number) => makeLivePropertyIntelligenceCollectors({
+  const propertyIntelligenceCollectors = (
+    dealCardId: number,
+    resolutionCaller: 'new_lead' | 'deal_card' | 'internal_workflow' = 'internal_workflow',
+    resolutionMode: 'reuse' | 'refresh' = 'reuse',
+  ) => makeLivePropertyIntelligenceCollectors({
+    resolutionCaller,
+    resolutionMode,
     persistProviderResult: (result) => propertyResearchStore.persistProviderResult(result),
     captureHermesLandPortal: (input) => runHermesLandPortalLane(input),
     runPublicIntelligence: async (id) => {
@@ -7891,8 +7986,12 @@ export function registerLandosRoutes(app: Hono): void {
     };
   };
 
-  const dealIntelligenceCapabilities = (dealCardId: number): DealIntelligenceCapabilities => ({
-    collectors: propertyIntelligenceCollectors(dealCardId),
+  const dealIntelligenceCapabilities = (
+    dealCardId: number,
+    resolutionCaller: 'new_lead' | 'deal_card' | 'internal_workflow' = 'internal_workflow',
+    resolutionMode: 'reuse' | 'refresh' = 'reuse',
+  ): DealIntelligenceCapabilities => ({
+    collectors: propertyIntelligenceCollectors(dealCardId, resolutionCaller, resolutionMode),
     // Post-resolution intelligence: property backstory, controlling land-use
     // authority, current zoning, and subdivision rules + feasibility. Keyless,
     // browserless, no paid provider. Each lane runs beside the existing ones.
@@ -9470,6 +9569,69 @@ export function registerLandosRoutes(app: Hono): void {
   });
 
   // Progress-only read for polling while a mission runs.
+  app.get('/api/landos/deal-cards/:id/property-resolution', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const cardId = subjectCardId(deal);
+    if (!cardId) return c.json({ capability: PROPERTY_RESOLUTION_CAPABILITY_ID, result: null, error: 'canonical subject Property Card is missing' }, 409);
+    return c.json({
+      capability: PROPERTY_RESOLUTION_CAPABILITY_ID,
+      propertyCardId: cardId,
+      result: new CapabilityInvocationStore().latestForProperty(cardId, id),
+    });
+  });
+
+  app.post('/api/landos/deal-cards/:id/property-resolution/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const terminal = terminalParcelStatus(deal);
+    if (terminal) return c.json(terminalParcelError(terminal), 409);
+    const cardIdBeforeRun = subjectCardId(deal);
+    const activeMission = missionGraphStore.activeMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, id);
+    const activeRun = propertyIntelligenceStore.activeRun(id);
+    if (activeMission || activeRun) {
+      return c.json({
+        capability: PROPERTY_RESOLUTION_CAPABILITY_ID,
+        reusedActiveRun: true,
+        active: {
+          missionId: activeMission?.missionId ?? null,
+          runId: activeRun?.runId ?? activeMission?.missionId ?? null,
+        },
+        result: cardIdBeforeRun ? new CapabilityInvocationStore().latestForProperty(cardIdBeforeRun, id) : null,
+      }, 202);
+    }
+    const runId = `property-resolution-${id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const capabilityStore = new CapabilityInvocationStore();
+    const lockSubject = `deal:${id}`;
+    const lock = capabilityStore.acquireExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, lockSubject, runId);
+    if (!lock.acquired) {
+      return c.json({
+        capability: PROPERTY_RESOLUTION_CAPABILITY_ID,
+        reusedActiveRun: true,
+        active: { missionId: null, runId: lock.ownerId },
+        result: cardIdBeforeRun ? capabilityStore.latestForProperty(cardIdBeforeRun, id) : null,
+      }, 202);
+    }
+    try {
+      await adoptAutomationControlPage();
+      const outcome = await propertyIntelligenceCollectors(id, 'deal_card', 'refresh').parcel_identity({
+        dealCardId: id,
+        runId,
+        identity: null,
+        comparables: null,
+      });
+      const cardId = subjectCardId(getDealCard(id));
+      const result = cardId ? capabilityStore.latestForProperty(cardId, id) : null;
+      return c.json({ capability: PROPERTY_RESOLUTION_CAPABILITY_ID, outcome: { status: outcome.status, summary: outcome.summary }, result });
+    } finally {
+      capabilityStore.releaseExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, lockSubject, runId);
+    }
+  });
+
   app.get('/api/landos/deal-cards/:id/property-intelligence/progress', (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
@@ -9487,6 +9649,24 @@ export function registerLandosRoutes(app: Hono): void {
     if (terminal) return c.json(terminalParcelError(terminal), 409);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const wait = body.wait === true;
+    const fullRunId = `deal-intelligence-${id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const fullRunCapabilityStore = new CapabilityInvocationStore();
+    const fullRunLockSubject = `deal:${id}`;
+    const fullRunLock = fullRunCapabilityStore.acquireExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, fullRunLockSubject, fullRunId);
+    if (!fullRunLock.acquired) {
+      return c.json({
+        launch: { runId: fullRunLock.ownerId, missionId: fullRunLock.ownerId, dealCardId: id, alreadyRunning: true },
+        reusedActiveRun: true,
+        propertyIntelligence: propertyIntelligenceView(id),
+      }, 202);
+    }
+    let fullRunLockHeld = true;
+    const releaseFullRunLock = () => {
+      if (!fullRunLockHeld) return;
+      fullRunLockHeld = false;
+      fullRunCapabilityStore.releaseExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, fullRunLockSubject, fullRunId);
+    };
+    try {
 
     // ── Reconcile WHO the subject is before asking anyone to research it ────
     // Intake is evidence, not truth. A lead feed routinely carries a mixture of
@@ -9515,8 +9695,9 @@ export function registerLandosRoutes(app: Hono): void {
     // ONE operator action → ONE parent mission on the native mission graph.
     const { launch, completion } = launchDealIntelligenceMission({
       dealCardId: id,
+      runIdFactory: () => fullRunId,
       trigger: str(body.actor) ?? 'operator',
-      capabilities: dealIntelligenceCapabilities(id),
+      capabilities: dealIntelligenceCapabilities(id, 'deal_card', 'refresh'),
       missionStore: missionGraphStore,
       snapshotStore: propertyIntelligenceStore,
       // The operator's Chrome belongs to the operator: cleanup closes only the
@@ -9524,6 +9705,7 @@ export function registerLandosRoutes(app: Hono): void {
       browserCleanup: () => closeSurplusSessionPages(),
     });
     if (launch.alreadyRunning) {
+      releaseFullRunLock();
       logger.info({ dealCardId: id, runId: launch.runId, missionId: launch.missionId }, 'deal_intelligence_already_running');
       return c.json({ launch, identityReconciliation, propertyIntelligence: propertyIntelligenceView(id) });
     }
@@ -9582,10 +9764,16 @@ export function registerLandosRoutes(app: Hono): void {
           }, 'deal_intelligence_post_run_tab_reap');
         } catch (err) {
           logger.warn({ err, dealCardId: id, runId: launch.runId }, 'deal_intelligence_post_run_tab_reap_skipped');
+        } finally {
+          releaseFullRunLock();
         }
       });
     if (wait) await completion;
     return c.json({ launch, identityReconciliation, propertyIntelligence: propertyIntelligenceView(id) });
+    } catch (error) {
+      releaseFullRunLock();
+      throw error;
+    }
   });
 
   // ── Native mission graph: parent mission → child missions → join ───────────

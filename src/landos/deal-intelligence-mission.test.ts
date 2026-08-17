@@ -58,6 +58,7 @@ function outcome<T>(status: SpecialistOutcome<T>['status'], data: T, summary = '
 function collectors(overrides: Partial<PropertyIntelligenceCollectors> = {}): PropertyIntelligenceCollectors {
   return {
     parcel_identity: async () => outcome('completed', {
+      capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test',
       identity: CONFIRMED_IDENTITY,
       facts: [],
       subjectMarket: { state: 'TN', county: 'Roane', acres: 12.28 },
@@ -343,6 +344,22 @@ describe('Deal Intelligence executors', () => {
     const handback = result.result as SubjectResearchHandback;
     expect(handback.apn).toBe('073090 04200');
     expect(handback.dealCardId).toBe(32);
+  });
+
+  it.each(['AMBIGUOUS', 'UNRESOLVED', 'ERROR'] as const)('blocks the root handback when Property Resolution returns %s', async (capabilityResolution) => {
+    const blockedCollectors = collectors({
+      parcel_identity: async () => outcome('partial', {
+        capabilityResolution,
+        capabilityInvocationId: `cap-${capabilityResolution.toLowerCase()}`,
+        // Even a caller that tries to dress the handback up as confirmed cannot
+        // bypass the canonical Capability result.
+        identity: CONFIRMED_IDENTITY,
+        facts: [], subjectMarket: { state: 'TN', county: 'Roane' }, subjectAcres: 12.28, acreageConflict: false,
+      }),
+    });
+    const result = await dealIntelligenceExecutors({ collectors: blockedCollectors }).parcel_identity(ctx());
+    expect(result.status).toBe('blocked');
+    expect(result.result).toBeUndefined();
   });
 
   it('keeps government attempts supporting so they cannot block comps or market intelligence', () => {

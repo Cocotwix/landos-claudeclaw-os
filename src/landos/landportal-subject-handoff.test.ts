@@ -58,6 +58,7 @@ function context(dealCardId: number): MissionContext {
     dealCardId,
     runId: 'pi_subject_handoff',
     identity: {
+      capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test',
       identity: {
         state: 'confirmed', normalizedAddress: '5170 highway 60', county: 'Hamilton', state_: 'TN',
         apn: '023 003.02', apnVariants: ['023 003.02'], owner: 'CAMERON NATHANIEL JOSEPH', ownerMailing: null,
@@ -127,7 +128,10 @@ describe('LandPortal subject handoff', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(settled).toBe(false);
     releaseCapture();
-    await expect(pending).resolves.toMatchObject({ status: 'partial' });
+    // A completed provider capture is not enough: without one released
+    // canonical subject the capability root stays blocked and no dependent
+    // property lane may fan out.
+    await expect(pending).resolves.toMatchObject({ status: 'blocked' });
     expect(captureFinished).toBe(true);
   });
 

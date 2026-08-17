@@ -21,6 +21,8 @@ export interface SpecialistOutcome<T> {
 }
 
 export interface IdentityContribution {
+  capabilityResolution: 'RESOLVED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'ERROR';
+  capabilityInvocationId: string;
   identity: SnapshotIdentity;
   discoveryUsable?: boolean;
   discoveryBasis?: string | null;

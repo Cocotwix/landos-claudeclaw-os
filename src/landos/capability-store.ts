@@ -16,7 +16,13 @@ interface InvocationRow {
 function subjectRef(request: CapabilityInvocationRequest): string | null {
   return request.subject.kind === 'canonical_property'
     ? String(request.subject.propertyCardId)
-    : null;
+    : request.subject.target ? String(request.subject.target.propertyCardId) : null;
+}
+
+function subjectDealCardId(request: CapabilityInvocationRequest): number | null {
+  return request.subject.kind === 'canonical_property'
+    ? request.subject.dealCardId ?? null
+    : request.subject.target?.dealCardId ?? null;
 }
 
 function resultStatus(result: CapabilityResult): 'succeeded' | 'needs_input' | 'failed' {
@@ -39,6 +45,41 @@ function parsedResult(row: InvocationRow | undefined): CapabilityResult | null {
 }
 
 export class CapabilityInvocationStore implements CapabilityInvocationPersistence {
+  acquireExecutionLock(capabilityId: string, subjectRefValue: string, ownerId: string): { acquired: boolean; ownerId: string; reentrant?: boolean } {
+    const db = getLandosDb();
+    return db.transaction(() => {
+      const staleBefore = new Date(Date.now() - 15 * 60_000).toISOString();
+      db.prepare(`
+        DELETE FROM landos_capability_execution_lock
+        WHERE capability_id = ? AND subject_ref = ? AND acquired_at < ?
+      `).run(capabilityId, subjectRefValue, staleBefore);
+      try {
+        db.prepare(`
+          INSERT INTO landos_capability_execution_lock (capability_id, subject_ref, owner_id, acquired_at)
+          VALUES (?, ?, ?, ?)
+        `).run(capabilityId, subjectRefValue, ownerId, new Date().toISOString());
+        return { acquired: true, ownerId };
+      } catch (error) {
+        const code = String((error as { code?: string }).code ?? '');
+        if (!/SQLITE_CONSTRAINT/.test(code)) throw error;
+        const existing = db.prepare(`
+          SELECT owner_id FROM landos_capability_execution_lock
+          WHERE capability_id = ? AND subject_ref = ?
+        `).get(capabilityId, subjectRefValue) as { owner_id: string } | undefined;
+        if (!existing) throw error;
+        if (existing.owner_id === ownerId) return { acquired: true, ownerId, reentrant: true };
+        return { acquired: false, ownerId: existing.owner_id };
+      }
+    })();
+  }
+
+  releaseExecutionLock(capabilityId: string, subjectRefValue: string, ownerId: string): void {
+    getLandosDb().prepare(`
+      DELETE FROM landos_capability_execution_lock
+      WHERE capability_id = ? AND subject_ref = ? AND owner_id = ?
+    `).run(capabilityId, subjectRefValue, ownerId);
+  }
+
   findReusable(capabilityId: string, idempotencyKey: string): CapabilityResult | null {
     const row = getLandosDb().prepare(`
       SELECT id, result_json
@@ -59,7 +100,7 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
     startedAt: string;
   }): { started: true; researchSessionId: string | null } | { started: false; existingInvocationId: string } {
     const db = getLandosDb();
-    const researchSessionId = input.request.subject.kind === 'raw_property'
+    const researchSessionId = input.request.subject.kind === 'raw_property' && !input.request.subject.target
       ? `research_${randomUUID()}`
       : null;
     const insertRows = () => {
@@ -81,9 +122,9 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
       db.prepare(`
         INSERT INTO landos_capability_invocation (
           id, capability_id, capability_version, caller_type, caller_ref,
-          subject_kind, subject_entity, subject_ref, research_session_id, mode,
+          subject_kind, subject_entity, subject_ref, subject_deal_card_id, research_session_id, mode,
           parameters_json, context_json, idempotency_key, status, started_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
       `).run(
         input.invocationId,
         input.metadata.id,
@@ -93,6 +134,7 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
         input.request.subject.kind,
         input.request.subject.entity,
         subjectRef(input.request),
+        subjectDealCardId(input.request),
         researchSessionId,
         input.request.mode ?? 'reuse',
         JSON.stringify(input.request.parameters ?? {}),
@@ -216,16 +258,18 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
     return persisted;
   }
 
-  latestForProperty(propertyCardId: number): CapabilityResult | null {
+  latestForProperty(propertyCardId: number, dealCardId?: number): CapabilityResult | null {
+    const dealClause = dealCardId == null ? '' : 'AND subject_deal_card_id = ?';
     const row = getLandosDb().prepare(`
       SELECT id, result_json
       FROM landos_capability_invocation
       WHERE capability_id = 'property-resolution'
-        AND subject_kind = 'canonical_property' AND subject_ref = ?
+        AND subject_kind IN ('canonical_property','raw_property') AND subject_ref = ?
+        ${dealClause}
         AND status <> 'running' AND result_json <> 'null'
       ORDER BY completed_at DESC, created_at DESC
       LIMIT 1
-    `).get(String(propertyCardId)) as InvocationRow | undefined;
+    `).get(...(dealCardId == null ? [String(propertyCardId)] : [String(propertyCardId), dealCardId])) as InvocationRow | undefined;
     return parsedResult(row);
   }
 

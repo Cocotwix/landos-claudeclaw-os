@@ -2772,6 +2772,9 @@ function createLandosSchema(db: Database.Database): void {
       subject_kind              TEXT NOT NULL,
       subject_entity            TEXT NOT NULL CHECK (subject_entity IN ('LAND_ALLY','TY_LAND_BIZ')),
       subject_ref               TEXT,
+      -- Not a foreign key: rejected fake IDs must still produce a durable ERROR
+      -- invocation proving what the caller attempted.
+      subject_deal_card_id       INTEGER,
       research_session_id       TEXT REFERENCES landos_research_session(id) ON DELETE SET NULL,
       mode                      TEXT NOT NULL CHECK (mode IN ('reuse','refresh')),
       parameters_json           TEXT NOT NULL DEFAULT '{}',
@@ -2788,9 +2791,6 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_capability_invocation_idempotency
       ON landos_capability_invocation(capability_id, idempotency_key);
-    CREATE INDEX IF NOT EXISTS idx_capability_invocation_subject
-      ON landos_capability_invocation(capability_id, subject_kind, subject_ref, completed_at DESC);
-
     CREATE TABLE IF NOT EXISTS landos_capability_evidence (
       id                       TEXT PRIMARY KEY,
       invocation_id            TEXT NOT NULL REFERENCES landos_capability_invocation(id) ON DELETE CASCADE,
@@ -2806,6 +2806,31 @@ function createLandosSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_capability_evidence_invocation
       ON landos_capability_evidence(invocation_id, created_at);
+
+    -- Short-lived single-flight ownership for capability work that allocates
+    -- providers before the normalized invocation row can be opened.
+    CREATE TABLE IF NOT EXISTS landos_capability_execution_lock (
+      capability_id TEXT NOT NULL,
+      subject_ref TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      acquired_at TEXT NOT NULL,
+      PRIMARY KEY (capability_id, subject_ref)
+    );
+  `);
+
+  // Boundary 1 shipped the invocation ledger before Deal Card-scoped reads
+  // were added. CREATE TABLE IF NOT EXISTS does not add later columns, so this
+  // must run before any index references subject_deal_card_id. Retained rows are
+  // preserved with NULL scope and become visible only to explicit property-wide
+  // reads; new Deal Card invocations always write the scope.
+  const capabilityInvocationColumns = db.prepare(`PRAGMA table_info(landos_capability_invocation)`).all() as Array<{ name: string }>;
+  if (!capabilityInvocationColumns.some((column) => column.name === 'subject_deal_card_id')) {
+    db.exec(`ALTER TABLE landos_capability_invocation ADD COLUMN subject_deal_card_id INTEGER`);
+  }
+  db.exec(`
+    DROP INDEX IF EXISTS idx_capability_invocation_subject;
+    CREATE INDEX IF NOT EXISTS idx_capability_invocation_subject_deal
+      ON landos_capability_invocation(capability_id, subject_kind, subject_ref, subject_deal_card_id, completed_at DESC);
   `);
 
   db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
@@ -2918,6 +2943,18 @@ function createLandosSchema(db: Database.Database): void {
     'sha256:5d2ea360d884e324ff04de6b061599572225912b144decbff7808c3f828f7d44',
     'Add LandOS-owned research sessions plus capability invocation and evidence ledgers for the Slice 7 runtime contract.',
   );
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260817_013_capability_deal_scope',
+    'sha256:f5f9d844aa1454e2eaa6fca4c0130d4c7088b03b1ae2dcb02fdb3aec97390b9a',
+    'Add Deal Card scope to retained capability invocations and replace the property-only lookup index without losing Boundary 1 rows.',
+  );
+  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
+              VALUES (?, ?, ?)`).run(
+    '20260817_014_capability_single_flight',
+    'sha256:acff074ad04c49830eea449f8eaef3d674ee9896f3fb17f20a3cb554f05e0f79',
+    'Add a durable per-subject single-flight lock for standalone capability provider workflows.',
+  );
 
   // Additive legacy backfill. Every existing Deal Card gets exactly one lead
   // opportunity, including soft-deleted/research cards. We deliberately retain
@@ -3020,6 +3057,12 @@ export function isLandosDbOpen(): boolean {
 /** @internal — tests only. Fresh in-memory LandOS database. */
 export function _initTestLandosDb(): void {
   landosDb = new Database(':memory:');
+  createLandosSchema(landosDb);
+}
+
+/** @internal — tests only. Re-run additive schema migration on the open DB. */
+export function _refreshTestLandosSchema(): void {
+  if (!landosDb) throw new Error('test LandOS database is not open');
   createLandosSchema(landosDb);
 }
 

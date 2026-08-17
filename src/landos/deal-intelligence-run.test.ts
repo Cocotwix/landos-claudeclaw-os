@@ -23,6 +23,7 @@ function ok<T>(data: T, status: SpecialistOutcome<T>['status'] = 'completed', su
 function collectors(overrides: Partial<PropertyIntelligenceCollectors> = {}): PropertyIntelligenceCollectors {
   return {
     parcel_identity: async () => ok({
+      capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test',
       identity: CONFIRMED,
       facts: [{ key: 'apn', label: 'Parcel number (APN)', value: '073090 04200', grade: 'confirmed_fact' as const, source: 'TN Comptroller', sourceUrl: null, retrievedAt: null, note: null }],
       subjectMarket: { state: 'TN', county: 'Roane', acres: 12.28 },
@@ -109,7 +110,11 @@ describe('Deal Intelligence run lifecycle', () => {
     expect(mission!.scopeId).toBe(32);
     const children = missionStore.listChildren(mission!.missionId);
     expect(children).toHaveLength(DEAL_INTELLIGENCE_CHILDREN.length);
-    expect(children.every((child) => ['completed', 'partial'].includes(child.status))).toBe(true);
+    expect(children.every((child) => ['completed', 'partial', 'blocked'].includes(child.status))).toBe(true);
+    expect(children.filter((child) => child.status === 'blocked').map((child) => child.key).sort()).toEqual([
+      'property_backstory',
+      'subdivision_feasibility',
+    ]);
     // The mission id and the snapshot run id are the SAME id.
     expect(snapshot!.runId).toBe(mission!.missionId);
     expect(snapshot!.missionId).toBe(mission!.missionId);
@@ -142,7 +147,7 @@ describe('Deal Intelligence run lifecycle', () => {
     const first = launchDealIntelligenceMission({
       dealCardId: 32,
       capabilities: caps({
-        collectors: collectors({ parcel_identity: async () => { await gate; return ok({ identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false }); } }),
+        collectors: collectors({ parcel_identity: async () => { await gate; return ok({ capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test', identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false }); } }),
       }),
       ...RUN_OPTS,
     });
@@ -265,6 +270,7 @@ describe('Deal Intelligence run lifecycle', () => {
       capabilities: caps({
         collectors: collectors({
           parcel_identity: async () => ok({
+            capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test',
             identity: { ...CONFIRMED, apn: '999 111', county: 'Fayette', normalizedAddress: 'OTHER RD' },
             facts: [], subjectMarket: { state: 'TN', county: 'Fayette' }, subjectAcres: 5, acreageConflict: false,
           }),
@@ -516,7 +522,7 @@ describe('Automatic launch from New Lead intake', () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const gatedCaps = caps({
       collectors: collectors({
-        parcel_identity: async () => { await gate; return ok({ identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false }); },
+        parcel_identity: async () => { await gate; return ok({ capabilityResolution: 'RESOLVED', capabilityInvocationId: 'cap-test', identity: CONFIRMED, facts: [], subjectMarket: {}, subjectAcres: 12.28, acreageConflict: false }); },
       }),
     });
 
