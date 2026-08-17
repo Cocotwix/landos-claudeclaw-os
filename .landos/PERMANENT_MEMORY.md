@@ -14,8 +14,8 @@ you. Only required new authority or a real external blocker may pause work;
 report the exact visible blocker, never success. The contract's stop conditions
 bound that obligation.
 
-Dev control: Git `main` + exact-SHA gate; PASS/FAIL durable; `STATE.md`
-generated; business DB separate.
+Dev: `main` + exact-SHA gate; durable PASS/FAIL; generated `STATE.md`;
+one Git-common DB; business DB separate.
 
 ## Research answers
 

@@ -2,7 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,9 +18,11 @@ import {
   prepareAcceptance,
   reconcileAcceptance,
   renderStateMarkdown,
+  resolveControlDatabasePath,
   runVerification,
   startAttempt,
   submitCandidate,
+  supersedeAcceptance,
 } from './control-state.mjs';
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'landos-control.mjs');
@@ -45,10 +47,57 @@ function tempRepo() {
   return {
     dir,
     baseSha,
-    dbPath: path.join(dir, '.landos', 'control', 'landos-control.db'),
+    dbPath: path.join(dir, '.git', 'landos', 'control', 'landos-control.db'),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
+
+test('separate Git worktrees resolve and operate on one shared canonical database', (t) => {
+  const repo = tempRepo();
+  const second = `${repo.dir}-second-worktree`;
+  t.after(() => {
+    rmSync(second, { recursive: true, force: true });
+    repo.cleanup();
+  });
+  runGit(repo.dir, 'worktree', 'add', '-q', '-b', 'second-worktree', second);
+
+  const legacyPath = path.join(repo.dir, '.landos', 'control', 'landos-control.db');
+  const legacy = openControlState(repo.dir, { dbPath: legacyPath });
+  createTask(legacy.db, {
+    id: 'shared-control-state',
+    title: 'Share canonical state across worktrees',
+    outcome: 'Every worktree observes one development-control universe.',
+    nextAction: 'Start the shared attempt from another worktree.',
+  });
+  legacy.close();
+
+  const firstPath = resolveControlDatabasePath(repo.dir);
+  const secondPath = resolveControlDatabasePath(second);
+  assert.equal(secondPath, firstPath);
+  assert.equal(firstPath, repo.dbPath);
+
+  const fromSecond = openControlState(second);
+  assert.equal(existsSync(firstPath), true);
+  assert.equal(existsSync(legacyPath), true);
+  assert.equal(existsSync(path.join(second, '.landos', 'control', 'landos-control.db')), false);
+  assert.equal(controlSnapshot(fromSecond.db).activeTask.id, 'shared-control-state');
+  startAttempt(fromSecond.db, {
+    id: 'shared-attempt',
+    taskId: 'shared-control-state',
+    worker: 'second-worktree',
+    approach: 'Open the shared database through the second worktree.',
+    baseGitSha: repo.baseSha,
+  });
+  fromSecond.close();
+
+  const fromFirst = openControlState(repo.dir);
+  assert.equal(fromFirst.file, fromSecond.file);
+  assert.equal(
+    fromFirst.db.prepare('SELECT worker FROM development_attempt WHERE id = ?').get('shared-attempt').worker,
+    'second-worktree',
+  );
+  fromFirst.close();
+});
 
 function makeCandidate(repo) {
   runGit(repo.dir, 'checkout', '-q', '-b', 'candidate');
@@ -256,5 +305,62 @@ test('a pending acceptance never follows main to a different commit', async (t) 
   assert.match(result[0].blocker, new RegExp(`main is ${differentSha}`));
   assert.equal(controlSnapshot(state.db).latestAccepted, null);
   assert.equal(controlSnapshot(state.db).activeTask.status, 'ACCEPTANCE_PENDING');
+  state.close();
+});
+
+test('an invalidated pending candidate becomes durable failure knowledge before a replacement attempt', async (t) => {
+  const repo = tempRepo();
+  t.after(repo.cleanup);
+  const candidateSha = makeCandidate(repo);
+  const state = openControlState(repo.dir);
+  createTask(state.db, {
+    id: 'slice-supersession',
+    title: 'Replace an invalid pending candidate',
+    outcome: 'The invalid candidate remains durable failure knowledge.',
+    nextAction: 'Build candidate.',
+  });
+  startAttempt(state.db, {
+    id: 'attempt-superseded',
+    taskId: 'slice-supersession',
+    worker: 'codex',
+    approach: 'Prepare a candidate that is invalidated before integration.',
+    baseGitSha: repo.baseSha,
+  });
+  submitCandidate(state.db, repo.dir, {
+    attemptId: 'attempt-superseded',
+    gitSha: candidateSha,
+    result: 'Candidate submitted.',
+  });
+  await runVerification(state.db, repo.dir, {
+    attemptId: 'attempt-superseded',
+    command: 'node -e "process.exit(0)"',
+  });
+  prepareAcceptance(state.db, repo.dir, {
+    id: 'gate-superseded',
+    attemptId: 'attempt-superseded',
+  });
+
+  const superseded = supersedeAcceptance(state.db, {
+    id: 'gate-superseded',
+    reason: 'A pre-promotion invariant invalidated this candidate.',
+    nextDirection: 'Create a corrected replacement candidate.',
+  });
+  assert.equal(superseded.state, 'SUPERSEDED');
+  assert.equal(controlSnapshot(state.db).pendingAcceptances.length, 0);
+  assert.equal(
+    listFailures(state.db, 'slice-supersession')[0].root_cause,
+    'A pre-promotion invariant invalidated this candidate.',
+  );
+  const replacement = startAttempt(state.db, {
+    id: 'attempt-replacement',
+    taskId: 'slice-supersession',
+    worker: 'codex',
+    approach: 'Repair the invalidated invariant.',
+    baseGitSha: candidateSha,
+  });
+  assert.equal(replacement.status, 'IN_PROGRESS');
+  const reconciliation = reconcileAcceptance(state.db, repo.dir, { id: 'gate-superseded' });
+  assert.equal(reconciliation[0].superseded, true);
+  assert.equal(controlSnapshot(state.db).latestAccepted, null);
   state.close();
 });

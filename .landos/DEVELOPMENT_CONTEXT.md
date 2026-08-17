@@ -31,8 +31,9 @@ without answering the operator's question has not shipped.
   `knowledge/`, `dev/`). Not product code.
 - `scripts/control/` — the thin development Control Spine: canonical tasks,
   attempts, evidence, verification, durable failures, and Integration Gate.
-- `.landos/control/landos-control.db` — local canonical development-control
-  state, deliberately separate from business data.
+- `<Git common dir>/landos/control/landos-control.db` — the one local canonical
+  development-control database shared by every worktree, deliberately separate
+  from business data.
 - `.landos/STATE.md` — reproducible generated next-builder projection from the
   control database plus live Git; never edit it as truth.
 - `store/landos.db` — real local business state. Never a test fixture.

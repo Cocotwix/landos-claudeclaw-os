@@ -6,7 +6,6 @@ import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
-  CONTROL_DB_PATH,
   addEvidence,
   controlSnapshot,
   createTask,
@@ -22,6 +21,7 @@ import {
   runVerification,
   startAttempt,
   submitCandidate,
+  supersedeAcceptance,
 } from './control-state.mjs';
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -80,7 +80,7 @@ export async function runCli(argv, { root: rootOverride } = {}) {
   try {
     if (group === 'init') {
       const generated = refresh();
-      output({ database: path.relative(root, state.file).replace(/\\/g, '/'), state: generated.path }, flags.json);
+      output({ database: state.file, state: generated.path }, flags.json);
       return 0;
     }
 
@@ -205,6 +205,17 @@ export async function runCli(argv, { root: rootOverride } = {}) {
       return reconciled.every((item) => item.reconciled) ? 0 : 1;
     }
 
+    if (group === 'integration-gate' && action === 'supersede') {
+      const superseded = supersedeAcceptance(state.db, {
+        id: requireFlag(flags, 'id'),
+        reason: requireFlag(flags, 'reason'),
+        nextDirection: optionalFlag(flags, 'next-direction'),
+      });
+      refresh();
+      output(superseded, flags.json);
+      return 0;
+    }
+
     if (group === 'failures') {
       const failures = listFailures(state.db, optionalFlag(flags, 'task') ?? null);
       output(failures, flags.json);
@@ -221,9 +232,9 @@ export async function runCli(argv, { root: rootOverride } = {}) {
       const snapshot = controlSnapshot(state.db);
       const facts = liveGitFacts(root);
       refresh();
-      if (flags.json) output({ ...snapshot, git: facts, database: CONTROL_DB_PATH }, true);
+      if (flags.json) output({ ...snapshot, git: facts, database: state.file }, true);
       else {
-        console.log(`Control DB: ${CONTROL_DB_PATH}`);
+        console.log(`Control DB: ${state.file}`);
         console.log(`Git: ${facts.branch} HEAD ${facts.head ?? 'unresolved'}; main ${facts.authoritySha ?? 'unresolved'}`);
         console.log(snapshot.activeTask ? taskSummary(snapshot.activeTask) : 'No active development task.');
         console.log(`Pending acceptances: ${snapshot.pendingAcceptances.length}`);
@@ -255,6 +266,7 @@ const USAGE = `LandOS Development Control Spine
   npm run landos:control -- attempt fail --attempt <id> --result <text> [--root-cause <text>] [--next-direction <text>]
   npm run landos:control -- integration-gate prepare --attempt <id> [--authority-ref main]
   npm run landos:control -- integration-gate reconcile [--id <acceptance-id>]
+  npm run landos:control -- integration-gate supersede --id <acceptance-id> --reason <text> [--next-direction <text>]
   npm run landos:control -- failures [--task <id>] [--json]
   npm run landos:control -- state generate
   npm run landos:control -- status [--json]

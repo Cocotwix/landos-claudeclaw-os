@@ -10,9 +10,10 @@ hands off.
 
 1. This contract.
 2. `.landos/PERMANENT_MEMORY.md` invariants.
-3. Live Git `main` for accepted source and `.landos/control/landos-control.db`
-   for canonical development tasks, attempts, failures, evidence, verification,
-   and acceptance.
+3. Live Git `main` for accepted source and
+   `<Git common dir>/landos/control/landos-control.db` for canonical development
+   tasks, attempts, failures, evidence, verification, and acceptance. The Git
+   common directory makes this one physical database across all worktrees.
 4. `.landos/CHECKPOINT.md` active narrative handoff.
 5. Live repository, working tree, and managed-runtime state.
 6. Everything else: generated `.landos/STATE.md`, commands, subagent files,
@@ -25,8 +26,9 @@ file, report, or prior summary. `docs/landos/` is reference, never doctrine.
 
 1. Read the agent bootstrap file (`AGENTS.md` or `CLAUDE.md`).
 2. Read this contract, `.landos/PERMANENT_MEMORY.md`, `.landos/CHECKPOINT.md`.
-3. When `.landos/control/landos-control.db` exists, regenerate and read
-   `.landos/STATE.md` with `npm run landos:control -- state generate`.
+3. Regenerate and read `.landos/STATE.md` with
+   `npm run landos:control -- state generate` when Development Control has been
+   initialized for the repository.
 4. Run `git status --short`.
 5. Inspect only files named in the checkpoint or the accepted request.
 6. Confirm the minimum runtime state the task needs.
@@ -144,7 +146,8 @@ not the product's uptime.
 ## 8. Source of truth
 
 1. Live repository files and this governance; Git `main` is accepted source.
-2. `.landos/control/landos-control.db` for development-control state.
+2. `<Git common dir>/landos/control/landos-control.db` for the one shared
+   development-control state across every worktree and provider.
 3. `store/landos.db` for local business state; it is never merged with the
    development-control database.
 4. Official, source-labeled provider data.

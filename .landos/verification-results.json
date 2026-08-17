@@ -1,21 +1,21 @@
 {
   "schema": 1,
-  "recordedAt": "2026-08-17T03:28:24.6816328Z",
-  "headUnderReview": "candidate commit pending from base 76e2cd4f847323b414883c07616e89614a07709b",
-  "commitState": "Vertical Slice 1 is implemented and verified in the isolated build/control-spine working tree. Exact candidate commit and Integration Gate preparation remain after final handoff verification.",
+  "recordedAt": "2026-08-17T04:10:01.5477324Z",
+  "headUnderReview": "replacement candidate pending from superseded candidate d2ab777ea01599c34776291fa1a01cac07398aae",
+  "commitState": "The Vertical Slice 1 shared-database invariant repair is implemented and verified in the isolated build/control-spine working tree. Exact replacement commit and Integration Gate preparation remain.",
   "tests": {
     "status": "PASS on focused control and reused-helper suites",
-    "timestamp": "2026-08-17T03:27:46.670Z",
-    "summary": "3 Control Spine end-to-end tests and 44 existing landos:task, deterministic verification, and secret-guard tests pass"
+    "timestamp": "2026-08-17T04:07:54.000Z",
+    "summary": "5 Control Spine tests, 44 existing landos:task/deterministic verification/secret-guard tests, and 63 memory/checkpoint/sprint governance tests pass"
   },
   "typecheck": {
     "status": "PASS",
-    "timestamp": "2026-08-17T03:25:00.000Z",
+    "timestamp": "2026-08-17T04:08:00.000Z",
     "summary": "tsc --noEmit completed with zero errors"
   },
   "build": {
     "status": "PASS",
-    "timestamp": "2026-08-17T03:27:00.000Z",
+    "timestamp": "2026-08-17T04:08:00.000Z",
     "summary": "vite build and tsc completed; only the existing large-chunk advisory was emitted"
   }
 }

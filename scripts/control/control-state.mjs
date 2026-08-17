@@ -6,17 +6,26 @@
 // separate from store/landos.db and from provider session/runtime artifacts.
 
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  constants as fsConstants,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
 import { git, gitStatusText, runCheck, failureEvidence } from '../dev/verify.mjs';
 
-export const CONTROL_DB_PATH = '.landos/control/landos-control.db';
+export const CONTROL_DB_PATH = 'landos/control/landos-control.db';
+export const LEGACY_CONTROL_DB_PATH = '.landos/control/landos-control.db';
 export const STATE_PATH = '.landos/STATE.md';
 export const DEFAULT_AUTHORITY_REF = 'main';
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const TASK_STATUSES = [
   'OPEN',
@@ -53,8 +62,48 @@ function normalizedSha(value, label = 'Git SHA') {
   return sha;
 }
 
-function databasePath(root, override) {
-  return override ? path.resolve(override) : path.join(path.resolve(root), CONTROL_DB_PATH);
+export function resolveControlDatabasePath(root, override) {
+  if (override) return path.resolve(override);
+  const commonDir = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], root);
+  if (commonDir.status !== 0) {
+    throw new Error(`cannot resolve the Git common directory for ${path.resolve(root)}`);
+  }
+  return path.join(path.resolve(commonDir.stdout.trim()), CONTROL_DB_PATH);
+}
+
+function registeredWorktrees(root) {
+  const result = git(['worktree', 'list', '--porcelain'], root);
+  if (result.status !== 0) throw new Error('cannot enumerate registered Git worktrees');
+  return result.stdout
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => path.resolve(line.slice('worktree '.length)));
+}
+
+function adoptLegacyDatabase(root, file) {
+  if (existsSync(file)) return;
+  const legacyFiles = registeredWorktrees(root)
+    .map((worktree) => path.join(worktree, LEGACY_CONTROL_DB_PATH))
+    .filter((candidate) => existsSync(candidate));
+  if (legacyFiles.length > 1) {
+    throw new Error(
+      `multiple legacy Development Control databases exist; resolve them before continuing: ${legacyFiles.join(', ')}`,
+    );
+  }
+  if (legacyFiles.length === 0) return;
+  const source = legacyFiles[0];
+  const sidecars = [`${source}-wal`, `${source}-shm`].filter((candidate) => existsSync(candidate));
+  if (sidecars.length) {
+    throw new Error(
+      `legacy Development Control database has live SQLite sidecars; close its writer before adoption: ${sidecars.join(', ')}`,
+    );
+  }
+  mkdirSync(path.dirname(file), { recursive: true });
+  try {
+    copyFileSync(source, file, fsConstants.COPYFILE_EXCL);
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
 }
 
 function migrate(db) {
@@ -159,6 +208,13 @@ function migrate(db) {
       CHECK ((state = 'ACCEPTED' AND finalized_at IS NOT NULL) OR state = 'ACCEPTANCE_PENDING')
     );
 
+    CREATE TABLE IF NOT EXISTS acceptance_supersession (
+      operation_id TEXT PRIMARY KEY REFERENCES acceptance_operation(id),
+      reason TEXT NOT NULL,
+      next_direction TEXT NOT NULL,
+      superseded_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_attempt_task ON development_attempt(task_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_evidence_attempt ON development_evidence(attempt_id, recorded_at);
     CREATE INDEX IF NOT EXISTS idx_verification_attempt ON development_verification(attempt_id, recorded_at DESC);
@@ -197,8 +253,11 @@ function migrate(db) {
 }
 
 export function openControlState(root, { dbPath, readonly = false } = {}) {
-  const file = databasePath(root, dbPath);
-  if (!readonly) mkdirSync(path.dirname(file), { recursive: true });
+  const file = resolveControlDatabasePath(root, dbPath);
+  if (!readonly) {
+    if (!dbPath) adoptLegacyDatabase(root, file);
+    mkdirSync(path.dirname(file), { recursive: true });
+  }
   const db = new Database(file, readonly ? { readonly: true, fileMustExist: true } : undefined);
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
@@ -499,10 +558,17 @@ export function prepareAcceptance(db, root, input, now) {
     throw new Error('Integration Gate requires a PASS tied to the exact candidate commit');
   }
   const existing = db.prepare('SELECT * FROM acceptance_operation WHERE attempt_id = ?').get(attempt.id);
-  if (existing) return existing;
+  if (existing) {
+    if (supersessionFor(db, existing.id)) {
+      throw new Error(`candidate for attempt ${attempt.id} was superseded; start a replacement attempt`);
+    }
+    return existing;
+  }
   const taskPending = db.prepare(`
-    SELECT id FROM acceptance_operation
-    WHERE task_id = ? AND state = 'ACCEPTANCE_PENDING'
+    SELECT operation.id FROM acceptance_operation operation
+    LEFT JOIN acceptance_supersession supersession ON supersession.operation_id = operation.id
+    WHERE operation.task_id = ? AND operation.state = 'ACCEPTANCE_PENDING'
+      AND supersession.operation_id IS NULL
   `).get(task.id);
   if (taskPending) throw new Error(`task ${task.id} already has pending acceptance ${taskPending.id}`);
   const at = nowIso(now);
@@ -539,16 +605,73 @@ function acceptanceFor(db, acceptanceId) {
   return operation;
 }
 
+function supersessionFor(db, acceptanceId) {
+  return db.prepare('SELECT * FROM acceptance_supersession WHERE operation_id = ?').get(acceptanceId) ?? null;
+}
+
+export function supersedeAcceptance(db, input, now) {
+  const operation = acceptanceFor(db, input.id);
+  if (operation.state === 'ACCEPTED') throw new Error(`acceptance operation ${operation.id} is already ACCEPTED`);
+  const existing = supersessionFor(db, operation.id);
+  if (existing) return { ...operation, ...existing, state: 'SUPERSEDED' };
+  const reason = required(input.reason, 'supersession reason');
+  const nextDirection = input.nextDirection
+    ? required(input.nextDirection, 'supersession next direction')
+    : 'Start a new attempt using the durable supersession evidence.';
+  const at = nowIso(now);
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO acceptance_supersession(operation_id, reason, next_direction, superseded_at)
+      VALUES (?, ?, ?, ?)
+    `).run(operation.id, reason, nextDirection, at);
+    db.prepare('UPDATE acceptance_operation SET blocker = ? WHERE id = ?').run(reason, operation.id);
+    addEvidence(db, {
+      attemptId: operation.attempt_id,
+      kind: 'acceptance_superseded',
+      summary: reason,
+    }, () => at);
+    db.prepare(`
+      UPDATE development_attempt
+      SET status = 'FAILED', result = ?, root_cause = ?, limitation = ?, next_direction = ?,
+          completed_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run('Candidate was superseded before integration.', reason, reason, nextDirection, at, at, operation.attempt_id);
+    db.prepare(`
+      UPDATE development_task
+      SET status = 'FAILED', blocker = ?, next_action = ?, updated_at = ?
+      WHERE id = ?
+    `).run(reason, nextDirection, at, operation.task_id);
+  });
+  transaction();
+  return { ...acceptanceFor(db, operation.id), ...supersessionFor(db, operation.id), state: 'SUPERSEDED' };
+}
+
 export function reconcileAcceptance(db, root, input = {}, now) {
   const pending = input.id
     ? [acceptanceFor(db, input.id)]
     : db.prepare(`
         SELECT * FROM acceptance_operation
         WHERE state = 'ACCEPTANCE_PENDING'
+          AND NOT EXISTS (
+            SELECT 1 FROM acceptance_supersession
+            WHERE acceptance_supersession.operation_id = acceptance_operation.id
+          )
         ORDER BY prepared_at, id
       `).all();
   const results = [];
   for (const original of pending) {
+    const supersession = supersessionFor(db, original.id);
+    if (supersession) {
+      results.push({
+        ...original,
+        ...supersession,
+        state: 'SUPERSEDED',
+        reconciled: false,
+        superseded: true,
+        blockers: [],
+      });
+      continue;
+    }
     if (original.state === 'ACCEPTED') {
       results.push({ ...original, reconciled: true, blockers: [] });
       continue;
@@ -641,6 +764,10 @@ export function controlSnapshot(db) {
     FROM acceptance_operation operation
     JOIN development_task task ON task.id = operation.task_id
     WHERE operation.state = 'ACCEPTANCE_PENDING'
+      AND NOT EXISTS (
+        SELECT 1 FROM acceptance_supersession
+        WHERE acceptance_supersession.operation_id = operation.id
+      )
     ORDER BY operation.prepared_at, operation.id
   `).all();
   return { activeTask, latestAccepted, latestFailure, pendingAcceptances: pending };
@@ -668,7 +795,7 @@ export function renderStateMarkdown(db, root, { authorityRef = DEFAULT_AUTHORITY
   const lines = [
     '# LandOS Development State',
     '',
-    '> Generated from `.landos/control/landos-control.db` plus live Git. Do not edit this file as project truth.',
+    '> Generated from the Git-common Development Control database plus live Git. Do not edit this file as project truth.',
     '',
     '## Git authority',
     '',

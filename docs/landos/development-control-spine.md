@@ -8,8 +8,14 @@ or alter the business runtime.
 ## Authority and files
 
 - Git `main` is the default accepted-source authority.
-- `.landos/control/landos-control.db` is canonical development-control state.
-  It is local and ignored by the repository's existing database policy.
+- `<Git common dir>/landos/control/landos-control.db` is canonical
+  development-control state. Every registered worktree resolves this same
+  physical file through `git rev-parse --git-common-dir`; no worktree owns a
+  separate control-state universe.
+- On first use after this change, exactly one legacy worktree-local database is
+  copied into the shared location without deleting the legacy copy. Multiple
+  legacy databases or live SQLite sidecars stop adoption rather than silently
+  choosing state.
 - `.landos/STATE.md` is regenerated from that database plus live Git. It is
   ignored because it is a projection, not manually maintained truth.
 - `.runtime/dev/` and `.runtime/devloop/` remain worker traces. Useful results
@@ -40,6 +46,11 @@ only when `main` equals the pending SHA exactly. A crash before reconciliation
 therefore leaves a visible, idempotently recoverable pending operation. If
 `main` points anywhere else, the operation stays pending with a blocker.
 
+If a pre-promotion check invalidates a pending candidate, `integration-gate
+supersede` durably records the reason as failed attempt knowledge before a
+replacement attempt begins. A superseded operation can never reconcile to
+`ACCEPTED`.
+
 ## Commands
 
 ```powershell
@@ -52,6 +63,7 @@ npm run landos:control -- verification run --attempt attempt-id --command "npm r
 npm run landos:control -- integration-gate prepare --attempt attempt-id
 # promote that exact commit to main through the normal local Git integration
 npm run landos:control -- integration-gate reconcile
+npm run landos:control -- integration-gate supersede --id <gate-id> --reason "Why the pending candidate is invalid"
 npm run landos:control -- state generate
 ```
 
