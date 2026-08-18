@@ -104,6 +104,14 @@ describe('one Assessor & Tax implementation serves Tools, New Lead and the Deal 
     expect(tools).not.toContain('/api/landos/deal-cards');
     expect(tools).not.toContain('intake');
 
+    // The live Deal Card is Acquisition Workspace V2.
+    const workspace = read('web/src/components/AcquisitionWorkspaceV2PropertyIntelligence.tsx');
+    expect(workspace).toContain('data-testid="awv2-assessor-tax-run"');
+    expect(workspace).toContain('data-testid="awv2-assessor-tax-result"');
+    expect(workspace).toContain('/api/landos/deal-cards/${dealId}/assessor-tax');
+    expect(workspace).toContain('<AssessorTaxRun dealId={dealId} />');
+
+    // The hidden legacy Deal Card reaches the same capability route.
     const panel = read('web/src/components/PropertyIntelligencePanel.tsx');
     expect(panel).toContain('data-testid="assessor-tax-rerun"');
     expect(panel).toContain('/assessor-tax`');

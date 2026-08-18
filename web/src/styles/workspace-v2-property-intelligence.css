@@ -25,7 +25,8 @@
   background: linear-gradient(135deg, rgba(185, 138, 74, .09), transparent 48%);
 }
 
-.awv2-opg-actions button {
+.awv2-opg-actions button,
+.awv2-assessor-tax > button {
   border: 1px solid rgba(255, 255, 255, .16);
   border-radius: 6px;
   background: rgba(255, 255, 255, .05);
@@ -33,6 +34,17 @@
   padding: 6px 10px;
   cursor: pointer;
 }
+
+/* Assessor & Tax runs the shared capability; the control has to read as a
+   control, not as a sentence, or the operator never finds it. */
+.awv2-assessor-tax > button {
+  margin-right: 8px;
+  font-weight: 600;
+}
+
+.awv2-assessor-tax > button:disabled { opacity: .55; cursor: default; }
+
+.awv2-assessor-tax-result { margin-top: 10px; }
 
 .awv2-listing-status {
   display: flex;
