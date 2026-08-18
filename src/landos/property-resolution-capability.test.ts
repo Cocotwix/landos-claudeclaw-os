@@ -1,7 +1,12 @@
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { listRuntimeCapabilities, invokeRuntimeCapability } from './capability-registry.js';
-import { CapabilityInvocationStore } from './capability-store.js';
+import { CapabilityInvocationStore, SharedCapabilityExecutionLock, sharedCapabilityLockRoot } from './capability-store.js';
 import { _initTestLandosDb, _refreshTestLandosSchema, getLandosDb } from './db.js';
 import { createDealCard, linkPropertyToDeal } from './deal-card.js';
 import { upsertPropertyCard } from './property-card.js';
@@ -30,6 +35,56 @@ function rawRequest(
 }
 
 describe('Slice 7 runtime capability contract', () => {
+  it('keeps a live renewable lock authoritative beyond fifteen minutes and across processes', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'landos-capability-lock-'));
+    let now = 0;
+    const first = new SharedCapabilityExecutionLock({ root, now: () => now, currentPid: 101, pidAlive: (pid) => pid === 101, heartbeatMs: 0 });
+    const second = new SharedCapabilityExecutionLock({ root, now: () => now, currentPid: 202, pidAlive: (pid) => pid === 101, heartbeatMs: 0 });
+    try {
+      expect(first.acquire('property-resolution', 'deal:7', 'run-a')).toMatchObject({ acquired: true });
+      now += 16 * 60_000;
+      expect(second.acquire('property-resolution', 'deal:7', 'run-b')).toEqual({ acquired: false, ownerId: 'run-a' });
+      first.release('property-resolution', 'deal:7', 'run-a');
+      expect(second.acquire('property-resolution', 'deal:7', 'run-b')).toMatchObject({ acquired: true });
+      second.release('property-resolution', 'deal:7', 'run-b');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('derives the same lock authority root for linked Git worktrees', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'landos-git-common-'));
+    const primary = path.join(root, 'primary');
+    const worktree = path.join(root, 'worktree');
+    const gitCommon = path.join(primary, '.git');
+    const worktreeGit = path.join(gitCommon, 'worktrees', 'candidate');
+    fs.mkdirSync(worktreeGit, { recursive: true });
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${worktreeGit}`);
+    fs.writeFileSync(path.join(worktreeGit, 'commondir'), '../..');
+    try {
+      expect(sharedCapabilityLockRoot(worktree)).toBe(sharedCapabilityLockRoot(primary));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims only old malformed lock files and never steals a recent unreadable lock', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'landos-malformed-lock-'));
+    const authority = new SharedCapabilityExecutionLock({ root, currentPid: 303, pidAlive: () => false, heartbeatMs: 0, staleMs: 1_000 });
+    const file = path.join(root, `${createHash('sha256').update('property-resolution\0deal:9').digest('hex')}.json`);
+    fs.writeFileSync(file, '{');
+    try {
+      expect(authority.acquire('property-resolution', 'deal:9', 'new-owner')).toEqual({ acquired: false, ownerId: 'unknown-owner' });
+      const old = new Date(Date.now() - 5_000);
+      fs.utimesSync(file, old, old);
+      expect(authority.acquire('property-resolution', 'deal:9', 'new-owner')).toMatchObject({ acquired: true, ownerId: 'new-owner' });
+      authority.release('property-resolution', 'deal:9', 'new-owner');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('upgrades the Boundary 1 ledger without losing retained invocation rows', () => {
     const db = getLandosDb();
     db.exec(`
@@ -269,6 +324,31 @@ describe('Slice 7 runtime capability contract', () => {
     const persisted = getLandosDb().prepare('SELECT apn, county, verification_status FROM landos_property_card WHERE id = ?').get(card.id);
     expect(persisted).toMatchObject({ apn: '042-123.00-000', county: 'Williamson', verification_status: 'verified_property' });
     expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_research_session').get() as { n: number }).n).toBe(0);
+  });
+
+  it('owns retained-evidence reconciliation before releasing the canonical subject', async () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Capability preflight' });
+    const { card } = upsertPropertyCard({ entity: 'TY_LAND_BIZ', activeInputAddress: 'Capability preflight parcel', state: 'TN' });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
+    const order: string[] = [];
+    const result = await invokeRuntimeCapability({
+      capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+    }, {
+      beforeResolve: async () => {
+        order.push('capability-before-resolve');
+        upsertPropertyCard({
+          entity: 'TY_LAND_BIZ', cardId: card.id, activeInputAddress: 'Capability preflight parcel',
+          apn: '042-123.00-000', county: 'Williamson', state: 'TN', verified: true,
+          verificationSource: 'Williamson County Property Assessor', agentId: 'capability-test',
+        });
+      },
+      onUniversalResult: () => { order.push('resolver-release'); },
+    });
+    expect(result.subjectResolution).toBe('RESOLVED');
+    expect(order).toEqual(['capability-before-resolve', 'resolver-release']);
   });
 
   it('rejects fake canonical IDs and caller-supplied evidence or confidence', async () => {

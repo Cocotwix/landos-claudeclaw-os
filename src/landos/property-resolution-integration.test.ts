@@ -24,10 +24,21 @@ describe('one Property Resolution implementation serves every caller', () => {
   it('makes the capability result the root fanout gate', () => {
     const live = read('src/landos/property-intelligence-live.ts');
     const mission = read('src/landos/deal-intelligence-mission.ts');
+    const routes = read('src/landos/routes.ts');
     expect(live).toContain('invokeRuntimeCapability({');
     expect(live).toContain("capabilityResult.subjectResolution !== 'RESOLVED'");
     expect(mission).toContain("data.capabilityResolution !== 'RESOLVED'");
     expect(mission).toContain("id: 'capability_subject_resolved'");
+    expect(live).toContain('beforeResolve: promoteSubjectIdentity');
+    expect(live).toContain('enrichAfterRelease: false');
+    expect(live).not.toContain("promoteSubjectIdentity(ctx.dealCardId, 'landportal-late-capture')");
+    expect(live).not.toContain("promoteSubjectIdentity(ctx.dealCardId, 'landportal-subject-upgrade')");
+    expect(live).not.toMatch(/\bstartHermesWhenUsable\s*\(/);
+    const fullRerun = routes.slice(
+      routes.indexOf("app.post('/api/landos/deal-cards/:id/property-intelligence/run'"),
+      routes.indexOf('// ── Native mission graph'),
+    );
+    expect(fullRerun).not.toContain('reconcileSubjectIdentity(');
 
     const rootFactory = live.slice(live.indexOf('parcel_identity: (ctx)'), live.indexOf('government_records: (ctx)'));
     expect(rootFactory).not.toContain('exactAddressFor(ctx)');

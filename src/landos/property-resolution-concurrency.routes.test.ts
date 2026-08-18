@@ -84,7 +84,6 @@ describe('standalone Deal Card Property Resolution single-flight', () => {
     expect(first.status).toBe(200);
     expect(CONTROL.calls).toBe(1);
     expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_capability_invocation').get() as { n: number }).n).toBe(1);
-    expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_capability_execution_lock').get() as { n: number }).n).toBe(0);
   });
 
   it('prevents a full Deal Intelligence launch while standalone resolution owns the subject', async () => {

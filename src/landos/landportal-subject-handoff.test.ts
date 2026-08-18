@@ -31,9 +31,12 @@ vi.mock('./comps.js', () => ({
 
 import { _initTestLandosDb } from './db.js';
 import { createDealCard, linkPropertyToDeal } from './deal-card.js';
-import { upsertPropertyCard } from './property-card.js';
+import { loadPropertyInspection, promoteRetainedLandPortalParcelUrl, upsertPropertyCard } from './property-card.js';
+import { persistPropertyInspection } from './property-inspection.js';
 import { collectParcelIdentity } from './property-intelligence-live.js';
 import type { MissionContext } from './property-intelligence-collector-types.js';
+import { invokeRuntimeCapability } from './capability-registry.js';
+import { landPortalSubjectFactsHandoff } from './routes.js';
 
 function seedCard(resolved = true): number {
   const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'LandPortal subject handoff' });
@@ -77,6 +80,33 @@ function context(dealCardId: number): MissionContext {
 beforeEach(() => { _initTestLandosDb(); });
 
 describe('LandPortal subject handoff', () => {
+  it('retains a late parcel URL without associating it until the next capability invocation', async () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Late URL association' });
+    const { card } = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ', activeInputAddress: 'KINGWOOD BLVD', apn: '042-123.00-000', county: 'Williamson', state: 'TN',
+      fips: '47187', agentId: 'test',
+    } as Parameters<typeof upsertPropertyCard>[0]);
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
+    const url = `https://landportal.com/?property=${Buffer.from('fips=47187&apn=042-123.00-000&propertyid=987654').toString('base64')}`;
+    persistPropertyInspection(card.id, { parcelUrl: url, comparablesUrl: null, parcelFacts: {}, assets: [], overlays: [], visualObservations: [], comparables: [] });
+    let handedOff = false;
+    const handoff = landPortalSubjectFactsHandoff({ cardId: card.id, dealCardId: deal.id, retainedUrl: url, onSubjectReady: () => { handedOff = true; } });
+    handoff?.({ url, fields: { APN: '042-123.00-000', County: 'Williamson', State: 'TN' } });
+    expect(handedOff).toBe(true);
+    expect(loadPropertyInspection(card.id)?.parcelUrlRecord ?? null).toBeNull();
+
+    const result = await invokeRuntimeCapability({
+      capabilityId: 'property-resolution',
+      caller: { type: 'internal_workflow', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+    }, {
+      beforeResolve: async () => { promoteRetainedLandPortalParcelUrl(card.id, deal.id); },
+    });
+    expect(result.subjectResolution).toBe('RESOLVED');
+    expect(loadPropertyInspection(card.id)?.parcelUrlRecord).toMatchObject({ verifiedSubject: true, dealCardId: deal.id, propertyCardId: card.id });
+  });
+
   it('settles the identity lane on the early subject facts while the capture is still running', async () => {
     const dealCardId = seedCard();
     let releaseCapture!: () => void;
@@ -141,6 +171,7 @@ describe('LandPortal subject handoff', () => {
     // still runs for its visuals and comp anchor, but nothing gates on it.
     const dealCardId = seedCard();
     let captureFinished = false;
+    let capabilityPromotions = 0;
     const outcome = await collectParcelIdentity(context(dealCardId), {
       landPortalCaptureWaitMs: 300_000,
       captureLandPortalInspection: async () => {
@@ -149,7 +180,7 @@ describe('LandPortal subject handoff', () => {
         return { ok: true, note: 'full capture complete', comparableCount: 7 };
       },
       runPublicIntelligence: async () => ({ ok: true }),
-      promoteSubjectIdentity: async () => undefined,
+      promoteSubjectIdentity: async () => { capabilityPromotions += 1; },
     });
 
     expect(captureFinished).toBe(false);
@@ -158,5 +189,8 @@ describe('LandPortal subject handoff', () => {
     // The capture is still running and lands its evidence afterwards.
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(captureFinished).toBe(true);
+    // The one promotion is beforeResolve inside the capability. Late completion
+    // is retained for a later invocation and never mutates this released run.
+    expect(capabilityPromotions).toBe(1);
   });
 });

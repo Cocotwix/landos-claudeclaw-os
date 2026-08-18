@@ -104,7 +104,6 @@ import {
   getPropertyCardRow,
   getCardActivity,
   upsertPropertyCard,
-  promoteRetainedLandPortalParcelUrl,
 } from './property-card.js';
 import { isVerifiedLandPortalSubjectUrl, landPortalIdentityFromUrl, sameLandPortalParcel } from './landportal-operating-rules.js';
 import { isAcceptedLandPortalVisualForProperty } from './landportal-evidence-validation.js';
@@ -1565,13 +1564,12 @@ async function runParallelParcelResolution(
  * read and tells the lane; the inspection itself is untouched and still persists
  * everything it produces when it finishes.
  *
- * IDENTITY GATE: this fires ONLY when the capture read the parcel this card is
- * already bound to. `promoteRetainedLandPortalParcelUrl` returns a verified
- * canonical record, and the read URL must decode to the same parcel. A capture
- * of any other parcel is never promoted early — the ordinary end-of-run path,
- * with its APN cross-check, stays the only way such a record enters the card.
+ * IDENTITY GATE: this fires ONLY when the capture read the retained URL it was
+ * aimed at. It retains facts and wakes the capability lane, but never binds or
+ * promotes the URL; the next capability-owned beforeResolve transition does so
+ * under the shared subject lock.
  */
-function landPortalSubjectFactsHandoff(input: {
+export function landPortalSubjectFactsHandoff(input: {
   cardId: number;
   dealCardId: number | null;
   retainedUrl: string | null;
@@ -1598,7 +1596,6 @@ function landPortalSubjectFactsHandoff(input: {
       parcelFacts: fields,
       assets: [], overlays: [], visualObservations: [], comparables: [],
     });
-    promoteRetainedLandPortalParcelUrl(cardId, dealCardId);
     logger.info({ event: 'landportal_subject_facts_handed_off', cardId, factCount }, 'landportal_subject_facts_handed_off');
     onSubjectReady({
       ok: true,
@@ -7478,7 +7475,10 @@ export function registerLandosRoutes(app: Hono): void {
       // A subject that already carries a verified canonical parcel URL is not
       // searched for again: the workflow opens that record directly (it still
       // verifies it, and still falls back to searching without one).
-      const retainedParcel = promoteRetainedLandPortalParcelUrl(cardId, dealCardId);
+      const retainedInspection = loadPropertyInspection(cardId);
+      const retainedParcel = retainedInspection?.parcelUrl
+        ? { url: retainedInspection.parcelUrl, source: retainedInspection.parcelUrlRecord?.source ?? 'retained:property_inspection.parcelUrl' }
+        : null;
       if (retainedParcel?.url) {
         logger.info({
           event: 'landportal_capture_direct_entry',
@@ -7519,11 +7519,9 @@ export function registerLandosRoutes(app: Hono): void {
         googleVisualConfigured: googleVisualConfiguredResolved(),
       }));
       persistPropertyInspection(cardId, result.inspection);
-      // runPropertyInspection reaches this point only after the deterministic
-      // LandPortal parcel checkpoint. Bind the exact URL to this Property Card
-      // immediately so later lanes classify its facts and visuals as subject
-      // evidence instead of trusting a generic retained parcel URL.
-      promoteRetainedLandPortalParcelUrl(cardId, dealCardId);
+      // The capture retains its URL and facts without binding them to the
+      // released subject. The next capability-owned beforeResolve transition
+      // performs that association under the shared subject lock.
       const landPortalRoute = result.routes.find((route) => route.provider === 'LandPortal');
       const count = result.inspection.comparables?.length ?? 0;
       return {
@@ -9668,24 +9666,11 @@ export function registerLandosRoutes(app: Hono): void {
     };
     try {
 
-    // ── Reconcile WHO the subject is before asking anyone to research it ────
-    // Intake is evidence, not truth. A lead feed routinely carries a mixture of
-    // correct and incorrect fields, and one wrong field (deal 83's Indiana ZIP
-    // on a Michigan parcel) is enough to leave the property record with no
-    // jurisdiction at all. Every research lane reads its input from that record,
-    // so a rerun that starts before reconciliation just repeats the first run's
-    // failure — which is exactly what twelve consecutive reruns did.
-    //
-    // Reconciliation is bounded and never blocks the run: if it cannot resolve
-    // anything, the run proceeds on the identity already retained.
-    let identityReconciliation: Awaited<ReturnType<typeof reconcileSubjectIdentity>> | null = null;
-    try {
-      identityReconciliation = await reconcileSubjectIdentity(id, {
-        actor: `operator-rerun:${str(body.actor) ?? 'operator'}`,
-      });
-    } catch (err) {
-      logger.warn({ err, dealCardId: id }, 'property_intelligence_preflight_identity_failed');
-    }
+    // The capability root reconciles WHO the subject is before any dependent
+    // research lane receives it. Intake remains evidence, never identity truth.
+    // Identity reconciliation belongs to the Property Resolution Capability.
+    // The root collector invokes its beforeResolve transition while holding the
+    // shared subject lock; this route never mutates identity before the mission.
 
     // Know the control page BEFORE any lane can allocate a tab. A session that
     // is already connected does not re-adopt on its own, and the previous run's
@@ -9707,7 +9692,7 @@ export function registerLandosRoutes(app: Hono): void {
     if (launch.alreadyRunning) {
       releaseFullRunLock();
       logger.info({ dealCardId: id, runId: launch.runId, missionId: launch.missionId }, 'deal_intelligence_already_running');
-      return c.json({ launch, identityReconciliation, propertyIntelligence: propertyIntelligenceView(id) });
+      return c.json({ launch, identityReconciliation: null, propertyIntelligence: propertyIntelligenceView(id) });
     }
     completion
       .then(async (snapshot) => {
@@ -9769,7 +9754,7 @@ export function registerLandosRoutes(app: Hono): void {
         }
       });
     if (wait) await completion;
-    return c.json({ launch, identityReconciliation, propertyIntelligence: propertyIntelligenceView(id) });
+    return c.json({ launch, identityReconciliation: null, propertyIntelligence: propertyIntelligenceView(id) });
     } catch (error) {
       releaseFullRunLock();
       throw error;

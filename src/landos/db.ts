@@ -2807,15 +2807,6 @@ function createLandosSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_capability_evidence_invocation
       ON landos_capability_evidence(invocation_id, created_at);
 
-    -- Short-lived single-flight ownership for capability work that allocates
-    -- providers before the normalized invocation row can be opened.
-    CREATE TABLE IF NOT EXISTS landos_capability_execution_lock (
-      capability_id TEXT NOT NULL,
-      subject_ref TEXT NOT NULL,
-      owner_id TEXT NOT NULL,
-      acquired_at TEXT NOT NULL,
-      PRIMARY KEY (capability_id, subject_ref)
-    );
   `);
 
   // Boundary 1 shipped the invocation ledger before Deal Card-scoped reads
@@ -2948,12 +2939,6 @@ function createLandosSchema(db: Database.Database): void {
     '20260817_013_capability_deal_scope',
     'sha256:f5f9d844aa1454e2eaa6fca4c0130d4c7088b03b1ae2dcb02fdb3aec97390b9a',
     'Add Deal Card scope to retained capability invocations and replace the property-only lookup index without losing Boundary 1 rows.',
-  );
-  db.prepare(`INSERT OR IGNORE INTO landos_schema_migration (migration_id, checksum, description)
-              VALUES (?, ?, ?)`).run(
-    '20260817_014_capability_single_flight',
-    'sha256:acff074ad04c49830eea449f8eaef3d674ee9896f3fb17f20a3cb554f05e0f79',
-    'Add a durable per-subject single-flight lock for standalone capability provider workflows.',
   );
 
   // Additive legacy backfill. Every existing Deal Card gets exactly one lead

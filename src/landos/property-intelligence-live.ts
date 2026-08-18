@@ -13,7 +13,7 @@ import fs from 'node:fs';
 
 import { logger } from '../logger.js';
 import { reconcileSubjectIdentity } from './subject-identity-reconciliation.js';
-import { currentComparables, getPropertyCard, loadPropertyInspection } from './property-card.js';
+import { currentComparables, getPropertyCard, loadPropertyInspection, promoteRetainedLandPortalParcelUrl } from './property-card.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
 import { PublicIntelligenceStore } from './public-intelligence-store.js';
 import { buildOperatorPropertyRecord, type OperatorPropertyRecord } from './operator-property-record.js';
@@ -545,7 +545,12 @@ async function collectParcelIdentityUnlocked(
     };
   });
   const promoteSubjectIdentity = deps.promoteSubjectIdentity
-    ?? ((id: number, who: string) => reconcileSubjectIdentity(id, { actor: who }));
+    ?? (async (id: number, who: string) => {
+      const deal = getDealCard(id);
+      const cardId = deal ? resolveSubjectPropertyCard(deal).cardId : null;
+      if (cardId) promoteRetainedLandPortalParcelUrl(cardId, id);
+      return reconcileSubjectIdentity(id, { actor: who });
+    });
   // The official lane must be RE-RUNNABLE. The first call hands back the
   // already-started public refresh; a re-aim — after the jurisdiction lane
   // establishes the county every official parcel source is selected by — runs
@@ -587,6 +592,7 @@ async function collectParcelIdentityUnlocked(
     mode: deps.resolutionMode ?? 'reuse',
     context: { workflow: 'deal_intelligence', runId: ctx.runId },
   }, {
+    beforeResolve: promoteSubjectIdentity,
     universalOptions: {
       actor: `universal-resolver:${ctx.runId}`,
       promote: promoteSubjectIdentity,
@@ -598,6 +604,7 @@ async function collectParcelIdentityUnlocked(
       },
       ...(deps.indexedWebIdentity ? { indexedWeb: deps.indexedWebIdentity } : {}),
       ...(deps.jurisdictionEnrichment ? { jurisdiction: deps.jurisdictionEnrichment } : {}),
+      enrichAfterRelease: false,
     },
     onUniversalResult: (result) => { capturedResolution = result; },
   });
@@ -625,35 +632,15 @@ async function collectParcelIdentityUnlocked(
     inspectionNote = ` LandPortal subject capture was limited (${capture.result.note}).`;
   }
 
-  // ── THE LATE-CAPTURE PROMOTION ────────────────────────────────────────────
-  // "It continues independently" was already true; nothing consumed what it
-  // eventually produced. The run's own identity promotion has long gone by the
-  // time an overrunning capture lands, so its APN, FIPS, county and acreage sat
-  // in retained evidence while the property card every research lane reads from
-  // stayed empty. Card 77 is the measured case: a complete and correct parcel
-  // record, retrieved 130 seconds too late to be used by anything.
-  //
-  // This waits on the RAW capture, not the provider wrapper, so it runs when the
-  // browser work actually finished. Reconciliation is the same step the run
-  // performs itself: idempotent, and it never blanks a retained value.
-  // An early subject handoff leaves the capture running for exactly the same
-  // reason an overrun does, so it needs the same promotion when it lands.
-  // A capture still running when the resolver released is the SAME situation as
-  // an overrun — the lane answered without it — so it gets the same promotion.
+  // ── LATE-CAPTURE RETENTION ───────────────────────────────────────────────
+  // Late evidence may be retained, but it cannot mutate the subject already
+  // handed to downstream lanes. The next capability invocation promotes it
+  // inside the shared lock and before a new subject is released.
+  // A late completion is evidence for a later invocation, not this run's subject.
   if ((captureOverran || subjectHandedOffEarly || capturePending) && rawCapturePromise) {
     void (rawCapturePromise as Promise<unknown>)
-      .then(() => promoteSubjectIdentity(ctx.dealCardId, 'landportal-late-capture') as Promise<Awaited<ReturnType<typeof reconcileSubjectIdentity>>>)
-      .then((reconciled) => {
-        if (!reconciled?.changes?.length && !reconciled?.conflicts?.length) return;
-        logger.info({
-          dealCardId: ctx.dealCardId,
-          runId: ctx.runId,
-          status: reconciled.status,
-          changed: reconciled.changes.map((change) => change.field),
-          conflicts: reconciled.conflicts.length,
-        }, 'landportal_late_capture_identity_promoted');
-      })
-      .catch((err) => logger.warn({ err, dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_late_capture_identity_promotion_failed'));
+      .then(() => logger.info({ dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_late_capture_retained_for_next_resolution'))
+      .catch((err) => logger.warn({ err, dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_late_capture_retention_failed'));
   }
   // ── ONE BOUNDED LANDPORTAL SUBJECT UPGRADE ────────────────────────────────
   //
@@ -663,8 +650,8 @@ async function collectParcelIdentityUnlocked(
   // after its first attempt has finished, so there is never a second agent on
   // the browser at the same time, and only when it did not already land on the
   // right parcel. It stays non-blocking throughout: the subject was released
-  // long before this runs, and whatever it finds is reconciled through the
-  // canonical path, which refuses a conflicting parcel.
+  // long before this runs, so whatever it finds is retained without changing
+  // this run. A later Property Resolution invocation owns reconciliation.
   const upgradePackage = landPortalUpgrade.offered;
   if (upgradePackage?.strongerThanIntake && rawCapturePromise && deps.captureLandPortalInspection && initialCardId) {
     const capture = deps.captureLandPortalInspection;
@@ -710,14 +697,13 @@ async function collectParcelIdentityUnlocked(
             owner: upgradePackage.owner,
           },
         });
-        await promoteSubjectIdentity(ctx.dealCardId, 'landportal-subject-upgrade');
-        logger.info({ dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_subject_upgrade_reconciled');
+        logger.info({ dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_subject_upgrade_retained_for_next_resolution');
       })
       .catch((err) => logger.warn({ err, dealCardId: ctx.dealCardId, runId: ctx.runId }, 'landportal_subject_upgrade_failed'));
   }
 
   if (publicPending) {
-    liveNote = ` The subject was established before the independent public-source refresh finished; that refresh continues and reconciles into the same property when it lands.`;
+    liveNote = ` The subject was established before the independent public-source refresh finished; late evidence is retained for the next Property Resolution invocation and cannot change this run's subject.`;
   } else if (live.timedOut) {
     liveNote = ` Live public-source refresh exceeded the ${Math.round(publicRefreshWaitMs / 1000)}-second identity handoff window; it continues independently and retained public evidence is used for this handback.`;
   } else if (live.error) {
@@ -726,26 +712,9 @@ async function collectParcelIdentityUnlocked(
     liveNote = ` Live parcel lookup did not confirm a new match (${live.result.error ?? 'no match'}).`;
   }
 
-  // Address-only intake may have gained APN/property-id identity from either
-  // existing lane above. Start Hermes now without awaiting it; downstream
-  // Zillow, Redfin, market, public-record, and screening specialists continue.
-  startHermesWhenUsable(
-    canonicalPropertyInputForDeal(ctx.dealCardId),
-    (resolveSubjectPropertyCard(getDealCard(ctx.dealCardId)).card ?? {}) as Record<string, unknown>,
-  );
-  // Hermes still waits for the DETERMINISTIC CAPTURE ITSELF, not for this lane's
-  // handback. With the early handoff those are no longer the same moment, and
-  // starting an agent loop on the one dedicated browser while the capture is
-  // still using it would only queue behind it.
-  const captureSettled = rawCapturePromise ?? capturePromise;
-  if (!hermesStarted && captureSettled) {
-    void captureSettled.then(() => {
-      startHermesWhenUsable(
-        canonicalPropertyInputForDeal(ctx.dealCardId),
-        (resolveSubjectPropertyCard(getDealCard(ctx.dealCardId)).card ?? {}) as Record<string, unknown>,
-      );
-    });
-  }
+  // No provider or agent may mutate identity after the capability releases it.
+  // Hermes remains available as an implementation mechanism for a future
+  // capability invocation; it is not launched as a detached post-release writer.
 
   // ── THE DOCUMENTS THIS RUN ALREADY PAID FOR ───────────────────────────────
   //

@@ -22,6 +22,8 @@
 //     recorded on the snapshot rather than assumed.
 
 import { logger } from '../logger.js';
+import { CapabilityInvocationStore } from './capability-store.js';
+import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { classifyExecution } from '../failure-classification.js';
 import {
   awaitScopedBrowserWorkDrained,
@@ -198,20 +200,35 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
 
   // ONE id for the parent mission AND the versioned snapshot run.
   const runId = (options.runIdFactory ?? defaultRunId)();
+  const capabilityStore = new CapabilityInvocationStore();
+  const lockSubject = `deal:${dealCardId}`;
+  const resolutionLock = capabilityStore.acquireExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, lockSubject, runId);
+  if (!resolutionLock.acquired) {
+    return {
+      launch: {
+        runId: resolutionLock.ownerId,
+        missionId: resolutionLock.ownerId,
+        dealCardId,
+        sequence: 0,
+        childCount: DEAL_INTELLIGENCE_CHILDREN.length,
+        alreadyRunning: true,
+      },
+      completion: Promise.resolve(null),
+    };
+  }
   const browserScope = createBrowserWorkflowScope(runId);
   const startedAt = now();
-  const created = snapshotStore.createRun({
-    runId,
-    dealCardId,
-    trigger: options.trigger ?? 'operator',
-    startedAt,
-    specialists: initialDealIntelligenceSpecialists(),
-  });
-
-  const definition = dealIntelligenceMissionDefinition(options.capabilities);
-
+  let created: ReturnType<PropertyIntelligenceStore['createRun']> | null = null;
   let launched: ReturnType<typeof launchFanOutMission>;
   try {
+    created = snapshotStore.createRun({
+      runId,
+      dealCardId,
+      trigger: options.trigger ?? 'operator',
+      startedAt,
+      specialists: initialDealIntelligenceSpecialists(),
+    });
+    const definition = dealIntelligenceMissionDefinition(options.capabilities);
     launched = runInBrowserWorkflowScope(browserScope, () => launchFanOutMission({
         definition,
         scopeId: dealCardId,
@@ -255,7 +272,7 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
             const progress = assembleProgressiveDealIntelligence({
               dealCardId,
               runId,
-              sequence: created.sequence,
+              sequence: created!.sequence,
               startedAt,
               children: missionStore.listChildren(runId),
               now,
@@ -272,20 +289,25 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
     // The definition could not even be laid out. The run is closed as failed so
     // the operator never sees a run stuck at "running" with no mission behind it.
     const failure = classifyFailure(error);
-    snapshotStore.completeRun({
-      runId,
-      dealCardId,
-      status: 'failed',
-      completedAt: now(),
-      snapshot: null,
-      error: failure.message,
-      failureCategory: failure.category as never,
-    });
+    if (created) {
+      snapshotStore.completeRun({
+        runId,
+        dealCardId,
+        status: 'failed',
+        completedAt: now(),
+        snapshot: null,
+        error: failure.message,
+        failureCategory: failure.category as never,
+      });
+    }
+    if (!resolutionLock.reentrant) capabilityStore.releaseExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, lockSubject, runId);
     return {
-      launch: { runId, missionId: runId, dealCardId, sequence: created.sequence, childCount: DEAL_INTELLIGENCE_CHILDREN.length, alreadyRunning: false },
+      launch: { runId, missionId: runId, dealCardId, sequence: created?.sequence ?? 0, childCount: DEAL_INTELLIGENCE_CHILDREN.length, alreadyRunning: false },
       completion: Promise.resolve(null),
     };
   }
+
+  if (!created) throw new Error('Deal Intelligence run setup completed without a run record.');
 
   const completion = finishDealIntelligenceRun({
     options,
@@ -297,6 +319,8 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
     startedAt,
     browserScope,
     missionCompletion: launched.completion,
+  }).finally(() => {
+    if (!resolutionLock.reentrant) capabilityStore.releaseExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, lockSubject, runId);
   });
 
   return {

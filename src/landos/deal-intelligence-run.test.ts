@@ -8,6 +8,7 @@ import { MissionGraphStore, resetMissionGraphStoreCache } from './mission-graph-
 import { PropertyIntelligenceStore, resetPropertyIntelligenceStoreCache } from './property-intelligence-store.js';
 import type { PropertyIntelligenceCollectors, SpecialistOutcome } from './property-intelligence-collector-types.js';
 import type { SnapshotIdentity } from './property-intelligence-snapshot.js';
+import { CapabilityInvocationStore } from './capability-store.js';
 
 const CONFIRMED: SnapshotIdentity = {
   state: 'confirmed', normalizedAddress: 'OLD RIDGE RD', county: 'Roane', state_: 'TN',
@@ -101,6 +102,33 @@ beforeEach(() => {
 });
 
 describe('Deal Intelligence run lifecycle', () => {
+  it('releases shared resolution ownership when run creation or definition setup fails', async () => {
+    const assertImmediatelyReacquirable = (owner: string) => {
+      const locks = new CapabilityInvocationStore();
+      const acquired = locks.acquireExecutionLock('property-resolution', 'deal:32', `${owner}-next`);
+      expect(acquired.acquired).toBe(true);
+      locks.releaseExecutionLock('property-resolution', 'deal:32', `${owner}-next`);
+    };
+
+    const createFailureStore = new PropertyIntelligenceStore();
+    createFailureStore.createRun = (() => { throw new Error('createRun failed'); }) as typeof createFailureStore.createRun;
+    const createFailure = launchDealIntelligenceMission({
+      dealCardId: 32, capabilities: caps(), snapshotStore: createFailureStore,
+      runIdFactory: () => 'lock-leak-create', ...RUN_OPTS,
+    });
+    expect(await createFailure.completion).toBeNull();
+    assertImmediatelyReacquirable('lock-leak-create');
+
+    const brokenCapabilities = {} as DealIntelligenceCapabilities;
+    Object.defineProperty(brokenCapabilities, 'collectors', { get: () => { throw new Error('definition failed'); } });
+    const definitionFailure = launchDealIntelligenceMission({
+      dealCardId: 32, capabilities: brokenCapabilities,
+      runIdFactory: () => 'lock-leak-definition', ...RUN_OPTS,
+    });
+    expect(await definitionFailure.completion).toBeNull();
+    assertImmediatelyReacquirable('lock-leak-definition');
+  });
+
   it('one operator action creates ONE parent mission with every specialist child', async () => {
     const missionStore = new MissionGraphStore();
     const snapshot = await runDealIntelligenceMission({ dealCardId: 32, capabilities: caps(), missionStore, ...RUN_OPTS });

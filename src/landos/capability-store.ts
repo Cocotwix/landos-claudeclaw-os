@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { getLandosDb } from './db.js';
 import type {
@@ -44,40 +47,166 @@ function parsedResult(row: InvocationRow | undefined): CapabilityResult | null {
   catch { return null; }
 }
 
-export class CapabilityInvocationStore implements CapabilityInvocationPersistence {
-  acquireExecutionLock(capabilityId: string, subjectRefValue: string, ownerId: string): { acquired: boolean; ownerId: string; reentrant?: boolean } {
-    const db = getLandosDb();
-    return db.transaction(() => {
-      const staleBefore = new Date(Date.now() - 15 * 60_000).toISOString();
-      db.prepare(`
-        DELETE FROM landos_capability_execution_lock
-        WHERE capability_id = ? AND subject_ref = ? AND acquired_at < ?
-      `).run(capabilityId, subjectRefValue, staleBefore);
+interface SharedLockRecord {
+  capabilityId: string;
+  subjectRef: string;
+  ownerId: string;
+  pid: number;
+  acquiredAt: string;
+  heartbeatAt: string;
+}
+
+function gitCommonDirectory(cwd = process.cwd()): string | null {
+  const dotGit = path.join(cwd, '.git');
+  try {
+    if (fs.statSync(dotGit).isDirectory()) return dotGit;
+    const pointer = fs.readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+)$/im)?.[1]?.trim();
+    if (!pointer) return null;
+    const gitDir = path.resolve(cwd, pointer);
+    const commonRef = path.join(gitDir, 'commondir');
+    return fs.existsSync(commonRef)
+      ? path.resolve(gitDir, fs.readFileSync(commonRef, 'utf8').trim())
+      : gitDir;
+  } catch {
+    return null;
+  }
+}
+
+export function sharedCapabilityLockRoot(cwd = process.cwd()): string {
+  const common = gitCommonDirectory(cwd);
+  return common
+    ? path.join(common, 'landos', 'runtime', 'capability-locks')
+    : path.join(os.tmpdir(), 'landos-runtime-capability-locks');
+}
+
+export function defaultCapabilityLockRoot(cwd = process.cwd()): string {
+  if (process.env.NODE_ENV === 'test') return path.join(os.tmpdir(), `landos-capability-locks-test-${process.pid}`);
+  return sharedCapabilityLockRoot(cwd);
+}
+
+export class SharedCapabilityExecutionLock {
+  private readonly held = new Map<string, { ownerId: string; timer: ReturnType<typeof setInterval> | null }>();
+
+  constructor(private readonly options: {
+    root?: string;
+    now?: () => number;
+    currentPid?: number;
+    pidAlive?: (pid: number) => boolean;
+    heartbeatMs?: number;
+    staleMs?: number;
+  } = {}) {}
+
+  private key(capabilityId: string, subjectRefValue: string): string {
+    return createHash('sha256').update(`${capabilityId}\0${subjectRefValue}`).digest('hex');
+  }
+
+  private file(capabilityId: string, subjectRefValue: string): string {
+    return path.join(this.options.root ?? defaultCapabilityLockRoot(), `${this.key(capabilityId, subjectRefValue)}.json`);
+  }
+
+  private now(): number { return (this.options.now ?? Date.now)(); }
+  private pid(): number { return this.options.currentPid ?? process.pid; }
+  private alive(pid: number): boolean {
+    if (this.options.pidAlive) return this.options.pidAlive(pid);
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  private read(file: string): SharedLockRecord | null {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')) as SharedLockRecord; }
+    catch { return null; }
+  }
+
+  private write(file: string, record: SharedLockRecord, exclusive: boolean): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(record), { encoding: 'utf8', flag: exclusive ? 'wx' : 'w' });
+  }
+
+  private writeAtomic(file: string, record: SharedLockRecord): void {
+    const temporary = `${file}.${this.pid()}.${randomUUID()}.tmp`;
+    let descriptor: number | null = null;
+    try {
+      descriptor = fs.openSync(temporary, 'wx');
+      fs.writeFileSync(descriptor, JSON.stringify(record), 'utf8');
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = null;
+      fs.renameSync(temporary, file);
+    } finally {
+      if (descriptor != null) try { fs.closeSync(descriptor); } catch { /* already closed */ }
+      if (fs.existsSync(temporary)) try { fs.unlinkSync(temporary); } catch { /* harmless orphan temp */ }
+    }
+  }
+
+  acquire(capabilityId: string, subjectRefValue: string, ownerId: string): { acquired: boolean; ownerId: string; reentrant?: boolean } {
+    const key = this.key(capabilityId, subjectRefValue);
+    const local = this.held.get(key);
+    if (local?.ownerId === ownerId) return { acquired: true, ownerId, reentrant: true };
+    const file = this.file(capabilityId, subjectRefValue);
+    const attempt = (): { acquired: boolean; ownerId: string; reentrant?: boolean } => {
+      const at = new Date(this.now()).toISOString();
+      const record: SharedLockRecord = { capabilityId, subjectRef: subjectRefValue, ownerId, pid: this.pid(), acquiredAt: at, heartbeatAt: at };
       try {
-        db.prepare(`
-          INSERT INTO landos_capability_execution_lock (capability_id, subject_ref, owner_id, acquired_at)
-          VALUES (?, ?, ?, ?)
-        `).run(capabilityId, subjectRefValue, ownerId, new Date().toISOString());
+        this.write(file, record, true);
+        const heartbeatMs = this.options.heartbeatMs ?? 30_000;
+        const timer = heartbeatMs > 0 ? setInterval(() => {
+          const current = this.read(file);
+          if (!current || current.ownerId !== ownerId || current.pid !== this.pid()) return;
+          current.heartbeatAt = new Date(this.now()).toISOString();
+          try { this.writeAtomic(file, current); } catch { /* the prior readable heartbeat remains authoritative */ }
+        }, heartbeatMs) : null;
+        timer?.unref?.();
+        this.held.set(key, { ownerId, timer });
         return { acquired: true, ownerId };
       } catch (error) {
-        const code = String((error as { code?: string }).code ?? '');
-        if (!/SQLITE_CONSTRAINT/.test(code)) throw error;
-        const existing = db.prepare(`
-          SELECT owner_id FROM landos_capability_execution_lock
-          WHERE capability_id = ? AND subject_ref = ?
-        `).get(capabilityId, subjectRefValue) as { owner_id: string } | undefined;
-        if (!existing) throw error;
-        if (existing.owner_id === ownerId) return { acquired: true, ownerId, reentrant: true };
-        return { acquired: false, ownerId: existing.owner_id };
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const existing = this.read(file);
+        if (!existing) {
+          let age = 0;
+          try { age = this.now() - fs.statSync(file).mtimeMs; } catch { return attempt(); }
+          if (age > (this.options.staleMs ?? 120_000)) {
+            try { fs.unlinkSync(file); } catch { return { acquired: false, ownerId: 'unknown-owner' }; }
+            return attempt();
+          }
+          return { acquired: false, ownerId: 'unknown-owner' };
+        }
+        if (existing.ownerId === ownerId && existing.pid === this.pid()) return { acquired: true, ownerId, reentrant: true };
+        const heartbeat = Date.parse(existing.heartbeatAt || existing.acquiredAt);
+        const stale = Number.isFinite(heartbeat) && this.now() - heartbeat > (this.options.staleMs ?? 120_000);
+        if (stale && !this.alive(existing.pid)) {
+          try { fs.unlinkSync(file); } catch { return { acquired: false, ownerId: existing.ownerId }; }
+          return attempt();
+        }
+        return { acquired: false, ownerId: existing.ownerId };
       }
-    })();
+    };
+    return attempt();
+  }
+
+  release(capabilityId: string, subjectRefValue: string, ownerId: string): void {
+    const key = this.key(capabilityId, subjectRefValue);
+    const local = this.held.get(key);
+    if (local?.ownerId === ownerId) {
+      if (local.timer) clearInterval(local.timer);
+      this.held.delete(key);
+    }
+    const file = this.file(capabilityId, subjectRefValue);
+    const current = this.read(file);
+    if (!current || current.ownerId !== ownerId || current.pid !== this.pid()) return;
+    try { fs.unlinkSync(file); } catch { /* stale ownership is reclaimed only after heartbeat + PID proof */ }
+  }
+}
+
+const SHARED_CAPABILITY_LOCK = new SharedCapabilityExecutionLock();
+
+export class CapabilityInvocationStore implements CapabilityInvocationPersistence {
+  constructor(private readonly executionLock: SharedCapabilityExecutionLock = SHARED_CAPABILITY_LOCK) {}
+
+  acquireExecutionLock(capabilityId: string, subjectRefValue: string, ownerId: string): { acquired: boolean; ownerId: string; reentrant?: boolean } {
+    return this.executionLock.acquire(capabilityId, subjectRefValue, ownerId);
   }
 
   releaseExecutionLock(capabilityId: string, subjectRefValue: string, ownerId: string): void {
-    getLandosDb().prepare(`
-      DELETE FROM landos_capability_execution_lock
-      WHERE capability_id = ? AND subject_ref = ? AND owner_id = ?
-    `).run(capabilityId, subjectRefValue, ownerId);
+    this.executionLock.release(capabilityId, subjectRefValue, ownerId);
   }
 
   findReusable(capabilityId: string, idempotencyKey: string): CapabilityResult | null {

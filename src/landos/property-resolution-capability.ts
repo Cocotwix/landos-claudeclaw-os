@@ -39,6 +39,8 @@ export type PropertyResolutionFacts = JsonObject & {
 };
 
 export interface PropertyResolutionRuntime {
+  /** Capability-owned transition from retained provider evidence into the subject. */
+  beforeResolve?: (dealCardId: number, actor: string) => Promise<unknown>;
   universalOptions?: ResolveSubjectPropertyOptions;
   onUniversalResult?: (result: UniversalResolutionResult) => void;
 }
@@ -208,9 +210,16 @@ export const PROPERTY_RESOLUTION_CAPABILITY: LandosCapability<PropertyResolution
       propertyCardId = request.subject.propertyCardId;
       dealCardId = request.subject.dealCardId ?? getDealCardIdForPropertyCard(propertyCardId);
       if (!dealCardId) throw new Error(`canonical property ${propertyCardId} is not linked to a Deal Card`);
-      const retained = readResolverSubject(dealCardId);
+      let retained = readResolverSubject(dealCardId);
       if (!retained || retained.propertyCardId !== propertyCardId || retained.entity !== request.subject.entity) {
         throw new Error(`canonical property ${propertyCardId} is not the subject of Deal Card ${dealCardId}`);
+      }
+      if (runtime.beforeResolve) {
+        await runtime.beforeResolve(dealCardId, `capability:property-resolution:preflight:${environment.invocationId}`);
+        retained = readResolverSubject(dealCardId);
+        if (!retained || retained.propertyCardId !== propertyCardId || retained.entity !== request.subject.entity) {
+          throw new Error(`canonical property ${propertyCardId} changed during capability preflight`);
+        }
       }
       universal = await resolveSubjectProperty(dealCardId, runtime.universalOptions ?? {});
     } else {
