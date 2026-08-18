@@ -136,6 +136,11 @@ import { apnSearchVariants, ownerSearchVariants, lpResolveForPreflight, type LpR
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
 import { invokeRuntimeCapability, listRuntimeCapabilities } from './capability-registry.js';
 import { ASSESSOR_TAX_CAPABILITY_ID } from './assessor-tax-capability.js';
+import {
+  LANDPORTAL_RESEARCH_CAPABILITY_ID,
+  type LandPortalAgenticOutcome,
+  type LandPortalInspectionOutcome,
+} from './landportal-research-capability.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
@@ -164,7 +169,12 @@ import { makeZoningLandUseAdapter } from './land-use-intelligence-adapter.js';
 import { PublicIntelligenceStore, type StoredPublicIntelligenceRun } from './public-intelligence-store.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { PropertyResearchStore } from './property-research-store.js';
-import { getHermesLandPortalLaneProgress, runHermesLandPortalLane } from './hermes-landportal-auto.js';
+import {
+  getHermesLandPortalLaneProgress,
+  hermesLandPortalPropertyLabel,
+  runHermesLandPortalLane,
+  type HermesLandPortalLaneOutcome,
+} from './hermes-landportal-auto.js';
 import { loadVisualBuyerAnalysis } from './visual-buyer-analysis.js';
 import { buildVisualBuyerNarrative } from './visual-buyer-narrative.js';
 import { reconcileMissingDiligence } from './missing-diligence-reconciliation.js';
@@ -6082,6 +6092,32 @@ export function registerLandosRoutes(app: Hono): void {
     }
   });
 
+  // Tools → LandPortal Research. Property Resolution establishes the subject
+  // first; the LandPortal Research Capability is then handed that exact
+  // canonical subject rather than resolving anything of its own. A Tools run is
+  // research: it never creates a Deal Card, a Property Card, or a CRM lead.
+  app.post('/api/landos/capabilities/landportal-research/invoke', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const rawInput = str(body.rawInput) ?? str(body.text);
+    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    const refresh = body.refresh === true;
+    try {
+      const resolution = await runToolsPropertyResolution(body);
+      const result = await invokeRuntimeCapability({
+        capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+        caller: { type: 'tools', ref: 'tools:landportal-research' },
+        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        mode: refresh ? 'refresh' : 'reuse',
+        parameters: { lane: 'parcel_facts' },
+        context: { surface: 'tools', tool: 'landportal-research' },
+      }, { resolveSubject: async () => resolution });
+      return c.json({ resolution, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
   // Compatibility URL. It is now only an adapter over the canonical Capability.
   app.post('/api/landos/property/resolve', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -6918,6 +6954,87 @@ export function registerLandosRoutes(app: Hono): void {
   // runPropertyInspection shares this budget across LandPortal + county work.
   const SUBJECT_INSPECTION_TIMEOUT_MS = 120_000;
 
+  // ── New Lead reaches LandPortal through the shared Capability ─────────────
+  //
+  // The browser factories, the authenticated LandPortal session and the Hermes
+  // launcher stay exactly where they are; what changed is WHO invokes them.
+  // Both New Lead LandPortal lanes now execute INSIDE the LandPortal Research
+  // Capability, so Tools, New Lead and the Deal Card share one implementation,
+  // one subject contract and one invocation record, and no caller keeps its own
+  // authoritative LandPortal execution path.
+  const landPortalResearchEntity = (dealCardId: number): LandosEntity =>
+    (getDealCard(dealCardId)?.entity as LandosEntity | undefined) ?? 'TY_LAND_BIZ';
+
+  const throughLandPortalParcelInspection = async (
+    dealCardId: number,
+    caller: 'new_lead' | 'deal_card' | 'internal_workflow',
+    cardId: number,
+    execute: () => Promise<LandPortalInspectionOutcome>,
+  ): Promise<LandPortalInspectionOutcome> => {
+    let executed: LandPortalInspectionOutcome | null = null;
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+        caller: { type: caller, ref: `deal:${dealCardId}` },
+        subject: { kind: 'canonical_property', entity: landPortalResearchEntity(dealCardId), propertyCardId: cardId, dealCardId },
+        mode: 'refresh',
+        parameters: { lane: 'parcel_inspection' },
+        context: { surface: 'new_lead', dealCardId },
+      }, { runParcelInspection: async () => { executed = await execute(); return executed; } });
+      if (executed) return executed;
+      return {
+        ok: false,
+        comparableCount: 0,
+        note: result.warnings[0] ?? 'The LandPortal Research Capability did not release the authenticated parcel read for this subject.',
+      };
+    } catch (error) {
+      // An invocation that never ran reports why; it never falls back to a
+      // second LandPortal path outside the capability.
+      return { ok: false, comparableCount: 0, note: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
+  const throughLandPortalAgenticSpecialists = async (
+    dealCardId: number,
+    caller: 'new_lead' | 'deal_card' | 'internal_workflow',
+    input: Parameters<typeof runHermesLandPortalLane>[0],
+  ): Promise<HermesLandPortalLaneOutcome> => {
+    let executed: HermesLandPortalLaneOutcome | null = null;
+    const refused = (note: string): HermesLandPortalLaneOutcome => {
+      const stamp = new Date().toISOString();
+      return {
+        status: 'failed', runId: input.runId, dealCardId: input.dealCardId, propertyCardId: input.propertyCardId,
+        propertyLabel: hermesLandPortalPropertyLabel(input), outputFile: '',
+        startedAt: stamp, completedAt: stamp, runtimeMs: 0, note,
+        importResult: null, importResults: [], persistedCategories: [], workUnits: [],
+      };
+    };
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+        caller: { type: caller, ref: `deal:${dealCardId}` },
+        subject: { kind: 'canonical_property', entity: landPortalResearchEntity(dealCardId), propertyCardId: input.propertyCardId, dealCardId },
+        mode: 'refresh',
+        parameters: { lane: 'agentic_specialists', runId: input.runId },
+        context: { surface: 'new_lead', dealCardId },
+      }, {
+        runAgenticSpecialists: async (): Promise<LandPortalAgenticOutcome> => {
+          executed = await runHermesLandPortalLane(input);
+          return {
+            status: executed.status,
+            runId: executed.runId,
+            note: executed.note,
+            persistedCategories: executed.persistedCategories.map((category) => category.category),
+            workUnits: executed.workUnits.map((unit) => ({ specialist: unit.specialist, status: unit.status, note: unit.note })),
+          };
+        },
+      });
+      return executed ?? refused(result.warnings[0] ?? 'The LandPortal Research Capability did not release the specialist lane for this subject.');
+    } catch (error) {
+      return refused(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const propertyIntelligenceCollectors = (
     dealCardId: number,
     resolutionCaller: 'new_lead' | 'deal_card' | 'internal_workflow' = 'internal_workflow',
@@ -6926,7 +7043,7 @@ export function registerLandosRoutes(app: Hono): void {
     resolutionCaller,
     resolutionMode,
     persistProviderResult: (result) => propertyResearchStore.persistProviderResult(result),
-    captureHermesLandPortal: (input) => runHermesLandPortalLane(input),
+    captureHermesLandPortal: (input) => throughLandPortalAgenticSpecialists(dealCardId, resolutionCaller, input),
     runPublicIntelligence: async (id) => {
       const deal = getDealCard(id);
       const property = deal ? resolveSubjectPropertyCard(deal).card ?? {} : {};
@@ -7258,7 +7375,13 @@ export function registerLandosRoutes(app: Hono): void {
     // the single-tab browser mission gate and persists the inspection with the
     // existing cumulative (non-destructive) merge, so retained evidence and
     // assets survive. Free visible rows only — no paid comp report is requested.
-    captureLandPortalInspection: async ({ cardId, searchKey, onSubjectReady }) => {
+    //
+    // The read itself is unchanged; it now runs INSIDE the LandPortal Research
+    // Capability, which owns the canonical subject, the invocation record and
+    // the result. The browser work stays here because the browser factories and
+    // the LandPortal auth path do.
+    captureLandPortalInspection: async ({ cardId, searchKey, onSubjectReady }) =>
+      throughLandPortalParcelInspection(dealCardId, resolutionCaller, cardId, async () => {
       const readiness = await ensureLandPortalAuthenticated()
         .then((value) => ({ authenticated: value.authenticated, phase: String(value.phase), detail: value.note || value.reason || '' }))
         .catch((err) => ({ authenticated: false, phase: 'attach_failed', detail: (err as Error)?.message ?? String(err) }));
@@ -7335,7 +7458,7 @@ export function registerLandosRoutes(app: Hono): void {
         comparableCount: count,
         note: landPortalRoute?.note ?? 'LandPortal parcel read completed.',
       };
-    },
+    }),
     captureMarketContext: async (id) => {
       const deal = getDealCard(id);
       const matrix = deal ? marketMatrixFor(deal) : null;
@@ -9479,6 +9602,48 @@ export function registerLandosRoutes(app: Hono): void {
         context: { surface: 'deal_card', dealCardId: id },
       });
       return c.json({ capability: ASSESSOR_TAX_CAPABILITY_ID, propertyCardId: subject.cardId, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  // Deal Card → LandPortal Research. The subject is this card's existing
+  // canonical Property Card; the capability reads it and never replaces it, so
+  // a rerun can refresh the LandPortal record without touching property
+  // identity. It is the SAME capability Tools and New Lead invoke.
+  app.get('/api/landos/deal-cards/:id/landportal-research', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    return c.json({
+      capability: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+      propertyCardId: subject.cardId,
+      result: new CapabilityInvocationStore().latestForProperty(subject.cardId, id, LANDPORTAL_RESEARCH_CAPABILITY_ID),
+    });
+  });
+
+  app.post('/api/landos/deal-cards/:id/landportal-research', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+        caller: { type: 'deal_card', ref: `deal:${id}` },
+        subject: {
+          kind: 'canonical_property',
+          entity: subject.deal.entity as LandosEntity,
+          propertyCardId: subject.cardId,
+          dealCardId: id,
+        },
+        mode: body.refresh === false ? 'reuse' : 'refresh',
+        parameters: { lane: 'parcel_facts' },
+        context: { surface: 'deal_card', dealCardId: id },
+      });
+      return c.json({ capability: LANDPORTAL_RESEARCH_CAPABILITY_ID, propertyCardId: subject.cardId, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }

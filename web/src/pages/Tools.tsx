@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { Landmark, Search, Wrench } from 'lucide-preact';
+import { Landmark, Map, Search, Wrench } from 'lucide-preact';
 
 import { apiPost } from '@/lib/api';
 
@@ -50,6 +50,34 @@ interface AssessorTaxResult {
   execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
 }
 
+interface LandPortalResearchResult {
+  invocationId: string;
+  status: 'SUCCEEDED' | 'NEEDS_INPUT' | 'FAILED';
+  subjectResolution: 'RESOLVED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'ERROR';
+  canonicalSubject: { kind: 'property' | 'research_session'; id: string; temporary: boolean; propertyCardId?: number } | null;
+  facts: {
+    lane: string;
+    executed: boolean;
+    outcome: 'record_returned' | 'lane_completed' | 'retained_only' | 'not_available';
+    parcel: Record<string, unknown> | null;
+    comparables: Array<{ saleYear: string | null; salePrice: number | null; acres: number | null; pricePerAcre: number | null; apn: string | null; location: string | null }>;
+    retained: { parcelUrl: string | null; parcelFactCount: number; assetCount: number; comparableCount: number };
+    sourceAttempts: Array<{ source: string; status: string; note: string }>;
+    summary: string;
+  };
+  evidence: Array<{ id?: string; source: string; sourceUrl?: string | null; sourceType?: string | null; retrievedAt: string }>;
+  warnings: string[];
+  missingInformation: string[];
+  execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
+}
+
+const LANDPORTAL_OUTCOME_LABEL: Record<LandPortalResearchResult['facts']['outcome'], string> = {
+  record_returned: 'LandPortal record returned',
+  lane_completed: 'LandPortal lane completed',
+  retained_only: 'Retained LandPortal evidence only',
+  not_available: 'No LandPortal record retrieved',
+};
+
 const RECORD_STATUS_LABEL: Record<AssessorTaxResult['facts']['recordStatus'], string> = {
   official_record_retrieved: 'Official record retrieved',
   retained_record_only: 'Retained record only',
@@ -70,6 +98,9 @@ export function Tools() {
   const [assessor, setAssessor] = useState<AssessorTaxResult | null>(null);
   const [assessorRunning, setAssessorRunning] = useState(false);
   const [assessorError, setAssessorError] = useState<string | null>(null);
+  const [landPortal, setLandPortal] = useState<LandPortalResearchResult | null>(null);
+  const [landPortalRunning, setLandPortalRunning] = useState(false);
+  const [landPortalError, setLandPortalError] = useState<string | null>(null);
 
   const run = async (refresh = false) => {
     if (!rawInput.trim() || running) return;
@@ -109,7 +140,28 @@ export function Tools() {
     }
   };
 
+  // LandPortal Research runs the shared LandOS Capability. Property Resolution
+  // establishes the subject first; this never creates a lead or a Deal Card.
+  const runLandPortalResearch = async (refresh = false) => {
+    if (!rawInput.trim() || landPortalRunning) return;
+    setLandPortalRunning(true);
+    setLandPortalError(null);
+    try {
+      const response = await apiPost<{ resolution: ResolutionResult; result: LandPortalResearchResult }>(
+        '/api/landos/capabilities/landportal-research/invoke',
+        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh },
+      );
+      setResult(response.resolution);
+      setLandPortal(response.result);
+    } catch (caught) {
+      setLandPortalError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLandPortalRunning(false);
+    }
+  };
+
   const identity = result?.facts.canonicalIdentity ?? {};
+  const parcel = (landPortal?.facts.parcel ?? {}) as Record<string, unknown>;
   return (
     <div class="h-full overflow-y-auto bg-[var(--color-bg)] px-5 py-6 md:px-8" data-testid="tools-page">
       <div class="mx-auto max-w-5xl space-y-5">
@@ -145,9 +197,14 @@ export function Tools() {
             <button type="button" data-testid="assessor-tax-run" disabled={assessorRunning || !rawInput.trim()} onClick={() => void runAssessorTax(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {assessorRunning ? 'Reading assessor record…' : 'Run Assessor & Tax'}
             </button>
+            <button type="button" data-testid="landportal-research-run" disabled={landPortalRunning || !rawInput.trim()} onClick={() => void runLandPortalResearch(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {landPortalRunning ? 'Reading LandPortal record…' : 'Run LandPortal Research'}
+            </button>
           </div>
           <p class="mt-2 text-xs text-[var(--color-text-muted)]">
-            Assessor &amp; Tax resolves the subject first, then reads the assessor and taxing-jurisdiction record. Nothing here creates a lead or a Deal Card.
+            Assessor &amp; Tax resolves the subject first, then reads the assessor and taxing-jurisdiction record.
+            LandPortal Research resolves the subject first, then reads the LandPortal record for that exact parcel.
+            Nothing here creates a lead or a Deal Card.
           </p>
           {error && <div class="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{error}</div>}
         </section>
@@ -277,6 +334,82 @@ export function Tools() {
             )}
 
             <div class="mt-4 text-xs text-[var(--color-text-muted)]">Subject: {assessor.canonicalSubject?.id ?? 'not established'} · Invocation: {assessor.invocationId}</div>
+          </section>
+        )}
+
+        {landPortalError && <div class="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{landPortalError}</div>}
+
+        {landPortal && (
+          <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="landportal-research-result">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                  <Map size={14} /> LandPortal Research
+                </div>
+                <div class="mt-1 text-2xl font-semibold" data-testid="landportal-research-status">{LANDPORTAL_OUTCOME_LABEL[landPortal.facts.outcome]}</div>
+                <div class="mt-1 text-sm text-[var(--color-text-muted)]">Subject {landPortal.subjectResolution}</div>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="rounded-full border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-text-muted)]">
+                  {landPortal.execution.reused ? 'Reused persisted result' : `${landPortal.execution.mode} · ${landPortal.execution.durationMs} ms`}
+                </div>
+                <button type="button" data-testid="landportal-research-refresh" disabled={landPortalRunning} onClick={() => void runLandPortalResearch(true)} class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Refresh record</button>
+              </div>
+            </div>
+
+            <p class="mt-3 text-sm leading-6 text-[var(--color-text-muted)]">{landPortal.facts.summary}</p>
+
+            <dl class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                ['APN / Parcel', parcel.apn], ['Situs address', parcel.situsAddress], ['Owner', parcel.owner],
+                ['Acres', parcel.acres], ['Road frontage (ft)', parcel.roadFrontageFeet], ['Land locked', parcel.landLocked],
+                ['Wetlands %', parcel.wetlandsPct], ['FEMA flood %', parcel.femaPct], ['Buildable acres', parcel.buildabilityAcres],
+                ['Average slope (deg)', parcel.slopeAvgDegrees], ['Average elevation (ft)', parcel.elevationAvgFeet], ['Building area (sqft)', parcel.buildingAreaSqft],
+                ['Land use', parcel.landUse], ['Assessed total', parcel.assessedTotal], ['Market total', parcel.marketTotal],
+              ].map(([label, item]) => (
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+                  <dt class="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{label}</dt>
+                  <dd class="mt-1 break-words text-sm">{value(item)}</dd>
+                </div>
+              ))}
+            </dl>
+
+            {landPortal.facts.comparables.length > 0 && (
+              <div class="mt-5" data-testid="landportal-research-comps">
+                <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">LandPortal comparable sales</div>
+                <ul class="mt-2 space-y-1">
+                  {landPortal.facts.comparables.map((comp) => (
+                    <li class="text-sm">
+                      {value(comp.location)} · {value(comp.saleYear)} · {value(comp.acres)} ac
+                      {comp.pricePerAcre != null && <span class="text-[var(--color-text-muted)]"> · ${comp.pricePerAcre}/ac</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div class="mt-4 text-sm" data-testid="landportal-research-retained">
+              <b>Retained LandPortal evidence:</b> {landPortal.facts.retained.parcelFactCount} parcel fact(s),{' '}
+              {landPortal.facts.retained.assetCount} visual(s), {landPortal.facts.retained.comparableCount} comparable(s)
+            </div>
+
+            {landPortal.warnings.length > 0 && <div class="mt-4 text-sm"><b>Reported:</b> {landPortal.warnings.join('; ')}</div>}
+            {landPortal.missingInformation.length > 0 && <div class="mt-4 text-sm"><b>Not established:</b> {landPortal.missingInformation.join('; ')}</div>}
+
+            <div class="mt-5">
+              <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Evidence and provenance</div>
+              {landPortal.evidence.length === 0
+                ? <div class="mt-2 text-sm text-[var(--color-text-muted)]">No LandPortal source has been retrieved for this subject.</div>
+                : <ul class="mt-2 space-y-2">{landPortal.evidence.map((item) => <li class="text-sm"><b>{item.source}</b>{item.sourceType ? ` · ${item.sourceType.replace(/_/g, ' ')}` : ''}<span class="text-[var(--color-text-muted)]"> · {item.retrievedAt}</span></li>)}</ul>}
+            </div>
+
+            {landPortal.facts.sourceAttempts.length > 0 && (
+              <div class="mt-4 text-xs text-[var(--color-text-muted)]" data-testid="landportal-research-attempts">
+                <b>Sources attempted:</b> {landPortal.facts.sourceAttempts.map((attempt) => `${attempt.source} — ${attempt.status}`).join('; ')}
+              </div>
+            )}
+
+            <div class="mt-4 text-xs text-[var(--color-text-muted)]">Subject: {landPortal.canonicalSubject?.id ?? 'not established'} · Invocation: {landPortal.invocationId}</div>
           </section>
         )}
       </div>

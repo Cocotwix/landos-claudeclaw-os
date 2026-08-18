@@ -13,17 +13,23 @@ import {
 } from './assessor-tax-capability.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import {
+  LANDPORTAL_RESEARCH_CAPABILITY,
+  LANDPORTAL_RESEARCH_CAPABILITY_ID,
+  type LandPortalResearchRuntime,
+} from './landportal-research-capability.js';
+import {
   PROPERTY_RESOLUTION_CAPABILITY,
   PROPERTY_RESOLUTION_CAPABILITY_ID,
   type PropertyResolutionRuntime,
 } from './property-resolution-capability.js';
 
 /** Every runtime a registered LandOS capability accepts. */
-export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRuntime;
+export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRuntime & LandPortalResearchRuntime;
 
 const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   [ASSESSOR_TAX_CAPABILITY_ID, ASSESSOR_TAX_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
+  [LANDPORTAL_RESEARCH_CAPABILITY_ID, LANDPORTAL_RESEARCH_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
 ]);
 
 export function listRuntimeCapabilities(): CapabilityMetadata[] {

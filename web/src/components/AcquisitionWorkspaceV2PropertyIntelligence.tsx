@@ -12,6 +12,7 @@ import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide
 import { dashboardToken } from '@/lib/api';
 import { AcquisitionWorkspaceV2CompPhotoGallery, type CvCompPhoto } from './AcquisitionWorkspaceV2CompPhotoGallery';
 import { AssessorTaxRun } from './AcquisitionWorkspaceV2AssessorTax';
+import { LandPortalResearchRun } from './AcquisitionWorkspaceV2LandPortalResearch';
 import { OfficialParcelGisPanel, type OfficialParcelGisView } from './AcquisitionWorkspaceV2OfficialParcelGis';
 import { LandUsePanel, type LandUseView, type RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
 import type { CvSummary } from './AcquisitionWorkspaceV2CompsValuation';
@@ -1221,6 +1222,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           remain the stronger official sources, and payment status is only ever stated from one
           of them.
         </div>
+        <LandPortalResearchRun dealId={dealId} />
       </section>
 
       {/* ── Zoning and deed provenance (LandPortal sidebar) ── */}
