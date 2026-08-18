@@ -77,7 +77,7 @@ const VERIFIED: LpResolveResult = {
 };
 
 /** A canonical subject the way Property Resolution leaves it on a Deal Card. */
-function canonicalSubject(overrides: { apn?: string | null } = {}) {
+function canonicalSubject(overrides: { apn?: string | null; verified?: boolean } = {}) {
   const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Kingwood Blvd' });
   const { card } = upsertPropertyCard({
     entity: 'TY_LAND_BIZ',
@@ -85,12 +85,15 @@ function canonicalSubject(overrides: { apn?: string | null } = {}) {
     apn: overrides.apn === undefined ? '042-123.00-000' : overrides.apn ?? undefined,
     county: 'Williamson',
     state: 'TN',
-    verified: true,
+    verified: overrides.verified ?? true,
     verificationSource: 'Williamson County Property Assessor',
   });
   linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
   return { deal, card };
 }
+
+/** A fresh New Lead: intake has run, nothing has released an exact parcel yet. */
+const freshLead = () => canonicalSubject({ apn: null, verified: false });
 
 /** Retained authenticated-parcel evidence this Property Card already holds. */
 function retainedInspection(): PropertyInspectionRecord {
@@ -297,6 +300,72 @@ describe('LandPortal Research Capability', () => {
     expect(asked[0]).toMatchObject({ runId: 'run-9', dealCardId: deal.id, propertyCardId: card.id });
     expect(facts(result).agentic?.status).toBe('exact_match');
     expect(facts(result).agentic?.persistedCategories).toEqual(['subject']);
+  });
+
+  it('still runs both New Lead execution lanes before an exact parcel has been released', async () => {
+    // These two lanes are what SUPPLY the parcel URL, APN and jurisdiction that
+    // Property Resolution then releases. Gating them on a released resolution
+    // would be circular and would kill the primary New Lead LandPortal lane.
+    const { deal, card } = freshLead();
+    const base = {
+      caller: { type: 'new_lead' as const, ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property' as const, entity: 'TY_LAND_BIZ' as const, propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh' as const,
+    };
+
+    let inspected = false;
+    const inspection = await invokeRuntimeCapability({
+      ...base,
+      capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+      parameters: { lane: 'parcel_inspection' },
+    }, {
+      loadInspection: () => null,
+      runParcelInspection: async () => {
+        inspected = true;
+        return { ok: true, comparableCount: 4, note: 'LandPortal parcel read completed.' };
+      },
+    });
+    expect(inspected).toBe(true);
+    expect(inspection.status).toBe('SUCCEEDED');
+    // The unreleased resolution is reported honestly rather than hidden.
+    expect(inspection.subjectResolution).toBe('UNRESOLVED');
+    expect(facts(inspection).inspection?.comparableCount).toBe(4);
+
+    let laneRan = false;
+    const agentic = await invokeRuntimeCapability({
+      ...base,
+      capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+      parameters: { lane: 'agentic_specialists', runId: 'run-fresh' },
+    }, {
+      loadInspection: () => null,
+      runAgenticSpecialists: async (input) => {
+        laneRan = true;
+        return { status: 'exact_match', runId: input.runId, note: 'Subject verified.', persistedCategories: ['subject'], workUnits: [] };
+      },
+    });
+    expect(laneRan).toBe(true);
+    expect(agentic.status).toBe('SUCCEEDED');
+    expect(facts(agentic).agentic?.status).toBe('exact_match');
+  });
+
+  it('still refuses to adopt a LandPortal record before an exact parcel has been released', async () => {
+    const { deal, card } = freshLead();
+    const result = await invokeRuntimeCapability({
+      capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+    }, {
+      ...available,
+      loadInspection: () => null,
+      lpResolve: async () => { throw new Error('no record may be adopted without a released parcel'); },
+    });
+
+    expect(result.status).toBe('NEEDS_INPUT');
+    expect(result.subjectResolution).toBe('UNRESOLVED');
+    expect(facts(result).executed).toBe(false);
+    expect(facts(result).parcel).toBeNull();
+    expect(result.missingInformation).toContain('One exact parcel released by Property Resolution');
   });
 
   it('delegates raw Tools input to Property Resolution and never resolves identity itself', async () => {

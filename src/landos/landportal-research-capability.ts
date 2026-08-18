@@ -565,19 +565,14 @@ export const LANDPORTAL_RESEARCH_CAPABILITY: LandosCapability<LandPortalResearch
       });
     }
 
-    if (subjectResolution !== 'RESOLVED') {
-      warnings.push('Property Resolution has not released one exact parcel for this Deal Card, so no LandPortal research was requested.');
-      return {
-        status: 'NEEDS_INPUT',
-        subjectResolution,
-        canonicalSubject,
-        facts: emptyFacts(lane, subject, retained,
-          'LandPortal research did not run: this Deal Card has no released exact parcel.'),
-        evidence,
-        warnings,
-        missingInformation: ['One exact parcel released by Property Resolution'],
-      };
-    }
+    // A released exact parcel is required to ADOPT provider facts, and that
+    // gate lives on the `parcel_facts` lane below. It deliberately does NOT
+    // gate the two execution lanes: on a new lead the authenticated parcel read
+    // and the specialist lane are what SUPPLY the parcel URL, APN and
+    // jurisdiction that Property Resolution then releases. Gating them on a
+    // released resolution would be circular and would silently kill the primary
+    // New Lead LandPortal lane. Both lanes report `subjectResolution` honestly
+    // in their result, and neither writes canonical property identity.
 
     // ── The authenticated parcel-page inspection lane ────────────────────────
     if (lane === 'parcel_inspection') {
@@ -697,6 +692,23 @@ export const LANDPORTAL_RESEARCH_CAPABILITY: LandosCapability<LandPortalResearch
     }
 
     // ── The deterministic property-record lane (default) ─────────────────────
+    //
+    // This lane ADOPTS provider facts as this subject's LandPortal record, so
+    // it runs only against a parcel Property Resolution has actually released.
+    if (subjectResolution !== 'RESOLVED') {
+      warnings.push('Property Resolution has not released one exact parcel for this Deal Card, so no LandPortal record was requested.');
+      return {
+        status: 'NEEDS_INPUT',
+        subjectResolution,
+        canonicalSubject,
+        facts: emptyFacts(lane, subject, retained,
+          'The LandPortal record was not read: this Deal Card has no released exact parcel.'),
+        evidence,
+        warnings,
+        missingInformation: ['One exact parcel released by Property Resolution'],
+      };
+    }
+
     const available = (runtime.landPortalAvailable ?? landPortalConfigured)();
     if (!available) {
       warnings.push('LandPortal is not configured in this environment, so no property record could be requested.');
