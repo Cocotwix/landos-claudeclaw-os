@@ -78,6 +78,8 @@ function determination(overrides: {
   zoningCode?: string | null;
   nonZoning?: LandUseDetermination['zoning']['nonZoningClassification'];
   minimumLotArea?: string | null;
+  uses?: LandUseDetermination['uses'];
+  extraDimensionalStandards?: LandUseDetermination['dimensionalStandards'];
 } = {}): LandUseDetermination {
   const empty = evidenced<string>(null);
   return {
@@ -113,7 +115,7 @@ function determination(overrides: {
       effectiveDate: null,
       nonZoningClassification: overrides.nonZoning ?? null,
     } as LandUseDetermination['zoning'],
-    uses: [],
+    uses: overrides.uses ?? [],
     privateRestrictions: [],
     dimensionalStandards: [{
       kind: 'minimum_lot_area',
@@ -123,7 +125,7 @@ function determination(overrides: {
       unit: 'acres',
       citation: citation(ORDINANCE_URL, 'Fairview Zoning Ordinance', 'Sec. 14-402'),
       qualifier: 'where public sewer is unavailable',
-    }] as LandUseDetermination['dimensionalStandards'],
+    }, ...(overrides.extraDimensionalStandards ?? [])] as LandUseDetermination['dimensionalStandards'],
     subdivision: {
       governingBody: 'City of Fairview',
       ordinanceLabel: 'Fairview Subdivision Regulations',
@@ -270,6 +272,20 @@ function subdivisionRead(overrides: { path?: string; caveats?: string[]; theoret
     limitations: [],
     generatedAt: NOW,
   } as PropertySubdivisionRead;
+}
+
+/** One use determination, the shape the nationwide engine's PART 5/6 evaluation produces. */
+function use(overrides: Partial<LandUseDetermination['uses'][number]> & { structureType: LandUseDetermination['uses'][number]['structureType'] }): LandUseDetermination['uses'][number] {
+  return {
+    status: 'unverified',
+    quality: 'unverified',
+    citations: [],
+    conditions: [],
+    reasoning: 'No provision addressing this structure type was located in the adopted law LandOS read.',
+    unresolvedReason: 'No provision establishing the legal status of this structure type was located in the adopted law LandOS read.',
+    statePreemption: null,
+    ...overrides,
+  };
 }
 
 /** Runtime readers, all injected so a unit test needs no research run. */
@@ -563,5 +579,174 @@ describe('Zoning & Subdivision Capability', () => {
       subject: { kind: 'raw_property', entity: 'TY_LAND_BIZ', rawInput: 'x' },
       parameters: { maximumLots: 40 },
     })).toThrow(/does not accept caller-supplied maximumLots/);
+  });
+
+  it('reports manufactured-home eligibility from the SAME zoning review, preserving the code\'s own terminology', async () => {
+    const { deal, card } = canonicalSubject();
+
+    // Nothing established for any manufactured/modular type: the honest
+    // fallback, not a blocker.
+    const unestablished = facts(await run(deal, card, retained()));
+    expect(unestablished.manufacturedHousing.established).toBe(false);
+    expect(unestablished.manufacturedHousing.overallStatement)
+      .toBe('Manufactured-home eligibility was not established from the initial zoning review. Confirm with Planning/Zoning if this strategy becomes relevant.');
+    expect(unestablished.manufacturedHousing.byType).toEqual([]);
+
+    // A code that distinguishes single-wide (conditional) from double-wide
+    // (by right, with objective conditions) is reported per type, never
+    // collapsed into one answer.
+    const mixed = facts(await run(deal, card, retained({
+      readDetermination: () => ({
+        determination: determination({
+          uses: [
+            use({
+              structureType: 'manufactured_single_wide',
+              status: 'conditional_or_special_approval_required',
+              quality: 'verified_official',
+              citations: [citation(ORDINANCE_URL, 'Fairview Zoning Ordinance', 'Sec. 14-508')],
+              reasoning: 'Single-wide manufactured homes require special-use approval outside a manufactured-home park.',
+              unresolvedReason: null,
+            }),
+            use({
+              structureType: 'manufactured_double_wide',
+              status: 'allowed_by_right_with_objective_conditions',
+              quality: 'verified_official',
+              citations: [citation(ORDINANCE_URL, 'Fairview Zoning Ordinance', 'Sec. 14-509')],
+              reasoning: 'Double-wide manufactured homes are permitted subject to the objective standards below.',
+              unresolvedReason: null,
+              conditions: [{
+                kind: 'permanent_affixation',
+                requirement: 'Must be affixed to a permanent foundation.',
+                citation: citation(ORDINANCE_URL, 'Fairview Zoning Ordinance', 'Sec. 14-509(a)'),
+              }, {
+                kind: 'hud_label',
+                requirement: 'Must carry a HUD certification label.',
+                citation: citation(ORDINANCE_URL, 'Fairview Zoning Ordinance', 'Sec. 14-509(b)'),
+              }],
+            }),
+            use({ structureType: 'pre_hud_mobile_home', status: 'prohibited', quality: 'verified_official', citations: [citation(ORDINANCE_URL, 'Fairview Zoning Ordinance', 'Sec. 14-510')], reasoning: 'Pre-HUD mobile homes are prohibited.', unresolvedReason: null }),
+          ],
+        }),
+        determinedAt: NOW,
+      }),
+    })));
+
+    expect(mixed.manufacturedHousing.established).toBe(true);
+    // Statuses differ across types, so there is no single overall status —
+    // only the honest per-type breakdown.
+    expect(mixed.manufacturedHousing.overallStatus).toBeNull();
+    expect(mixed.manufacturedHousing.overallStatement).toContain('varies by type');
+    const byType = mixed.manufacturedHousing.byType;
+    expect(byType.find((row) => row.structureType === 'manufactured_single_wide')?.statusLabel).toBe('Special / conditional approval required');
+    expect(byType.find((row) => row.structureType === 'manufactured_double_wide')?.statusLabel).toBe('Allowed by right with objective conditions');
+    expect(byType.find((row) => row.structureType === 'pre_hud_mobile_home')?.statusLabel).toBe('Prohibited');
+    // Terminology is preserved: single-wide, double-wide and pre-HUD mobile
+    // home are three distinct rows, never merged into one "manufactured home".
+    expect(byType.map((row) => row.structureType)).toEqual([
+      'manufactured_single_wide', 'manufactured_double_wide', 'pre_hud_mobile_home',
+    ]);
+    const doubleWide = byType.find((row) => row.structureType === 'manufactured_double_wide')!;
+    expect(doubleWide.conditions.map((c) => c.kind)).toEqual(['permanent_affixation', 'hud_label']);
+    expect(doubleWide.conditions[0].requirement).toBe('Must be affixed to a permanent foundation.');
+  });
+
+  it('screens existing road frontage FIRST and raises private-road/private-drive only as secondary upside', async () => {
+    const { deal, card } = canonicalSubject();
+    const frontageStandard = {
+      kind: 'minimum_road_frontage', originalTerm: 'Minimum road frontage', statedValue: '150 feet',
+      numericValue: 150, unit: 'feet',
+      citation: citation(ORDINANCE_URL, 'Fairview Subdivision Regulations', 'Art. IV Sec. 4.3'),
+    } as LandUseDetermination['dimensionalStandards'][number];
+
+    // Existing frontage (480 ft ÷ 150 ft minimum = 3 direct-frontage lots)
+    // supports fewer lots than the apparent by-right maximum (61): frontage
+    // IS the limiting factor here.
+    const limiting = facts(await run(deal, card, retained({
+      readDetermination: () => ({ determination: determination({ extraDimensionalStandards: [frontageStandard] }), determinedAt: NOW }),
+      readSubjectFrontage: () => ({ valueFt: 480, source: 'LandPortal parcel record' }),
+    })));
+    expect(limiting.frontageScreening).toMatchObject({
+      status: 'evaluated', subjectFrontageFt: 480, minimumFrontageFt: 150, directFrontageLots: 3, legalMaximumLots: 61, frontageIsLimiting: true,
+    });
+    expect(limiting.privateRoadScreening.applicable).toBe(true);
+
+    // Existing frontage supports MORE lots than the legal maximum: frontage is
+    // not the limiting factor, and no private-road section is raised.
+    const supportive = facts(await run(deal, card, retained({
+      readDetermination: () => ({ determination: determination({ extraDimensionalStandards: [frontageStandard] }), determinedAt: NOW }),
+      readSubjectFrontage: () => ({ valueFt: 12000, source: 'LandPortal parcel record' }),
+    })));
+    expect(supportive.frontageScreening).toMatchObject({ directFrontageLots: 80, legalMaximumLots: 61, frontageIsLimiting: false });
+    expect(supportive.privateRoadScreening.applicable).toBe(false);
+    expect(supportive.privateRoadScreening.rules).toEqual([]);
+
+    // Frontage IS the limiting factor, and the subdivision framework carries a
+    // private-roads rule: it is surfaced as secondary upside.
+    const withPrivateRoadRule = facts(await run(deal, card, retained({
+      readDetermination: () => {
+        const det = determination({ extraDimensionalStandards: [frontageStandard] });
+        det.subdivision.privateRoads = evidenced(
+          'Permitted to serve up to 4 lots with an approved maintenance agreement',
+          [citation(ORDINANCE_URL, 'Fairview Subdivision Regulations', 'Art. IV Sec. 4.9')],
+        );
+        return { determination: det, determinedAt: NOW };
+      },
+      readSubjectFrontage: () => ({ valueFt: 480, source: 'LandPortal parcel record' }),
+    })));
+    expect(withPrivateRoadRule.privateRoadScreening.applicable).toBe(true);
+    expect(withPrivateRoadRule.privateRoadScreening.rules.map((rule) => rule.key)).toContain('private_roads');
+    expect(withPrivateRoadRule.privateRoadScreening.statement).toContain('private or shared access');
+
+    // Frontage IS the limiting factor but no private-road provision was
+    // readily established: the bounded county follow-up, not a search.
+    const noPrivateRoadRule = facts(await run(deal, card, retained({
+      readDetermination: () => ({ determination: determination({ extraDimensionalStandards: [frontageStandard] }), determinedAt: NOW }),
+      readSubjectFrontage: () => ({ valueFt: 480, source: 'LandPortal parcel record' }),
+    })));
+    expect(noPrivateRoadRule.privateRoadScreening.rules).toEqual([]);
+    expect(noPrivateRoadRule.privateRoadScreening.statement).toContain('Confirm with Planning/Zoning only if pursuing the higher-yield concept');
+
+    // Minimum frontage not established: an honest abstention, not a guess.
+    const unscreened = facts(await run(deal, card, retained({
+      readSubjectFrontage: () => ({ valueFt: 480, source: 'LandPortal parcel record' }),
+    })));
+    expect(unscreened.frontageScreening.status).toBe('insufficient_information');
+    expect(unscreened.frontageScreening.directFrontageLots).toBeNull();
+    expect(unscreened.privateRoadScreening.applicable).toBe(false);
+  });
+
+  it('reports what current zoning allows and its material restrictions from the SAME uses determination', async () => {
+    const { deal, card } = canonicalSubject();
+    const projected = facts(await run(deal, card, retained({
+      readDetermination: () => ({
+        determination: determination({
+          uses: [
+            use({
+              structureType: 'site_built_single_family', status: 'allowed_by_right', quality: 'verified_official',
+              citations: [citation(ORDINANCE_URL, 'Fairview Zoning Ordinance', 'Sec. 14-401')],
+              reasoning: 'Single-family detached dwellings are a permitted principal use in this district.', unresolvedReason: null,
+            }),
+            use({
+              structureType: 'multifamily', status: 'prohibited', quality: 'verified_official',
+              citations: [citation(ORDINANCE_URL, 'Fairview Zoning Ordinance', 'Sec. 14-403')],
+              reasoning: 'Multifamily dwellings are not a permitted use in this district.', unresolvedReason: null,
+            }),
+            // Manufactured homes are excluded from this section — they get their own.
+            use({ structureType: 'manufactured_single_wide', status: 'prohibited', quality: 'verified_official', citations: [citation(ORDINANCE_URL, 'x')], reasoning: 'Prohibited outside a manufactured-home park.', unresolvedReason: null }),
+          ],
+        }),
+        determinedAt: NOW,
+      }),
+    })));
+
+    expect(projected.zoningAllowances).toEqual([
+      { label: 'Site-built single-family home', detail: 'Single-family detached dwellings are a permitted principal use in this district.', sourceUrl: ORDINANCE_URL },
+    ]);
+    expect(projected.zoningRestrictions).toEqual([
+      { label: 'Multifamily', detail: 'Prohibited — Multifamily dwellings are not a permitted use in this district.', sourceUrl: ORDINANCE_URL },
+    ]);
+    // Manufactured homes never appear in the generic allow/restrict lists.
+    expect(projected.zoningAllowances.some((row) => row.label.includes('Manufactured'))).toBe(false);
+    expect(projected.zoningRestrictions.some((row) => row.label.includes('Manufactured'))).toBe(false);
   });
 });

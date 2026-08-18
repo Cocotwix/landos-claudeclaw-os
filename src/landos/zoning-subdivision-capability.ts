@@ -67,7 +67,19 @@ import {
 import { readRegulationDocuments, type RegulationJurisdiction } from './regulation-document-store.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { evaluateResolverIdentity, readResolverSubject } from './universal-property-resolution.js';
-import type { EvidencedValue, LandUseDetermination, LegalSourceCitation } from './land-use-types.js';
+import { loadLandPortalInspection } from './property-card.js';
+import { buildParcelFactSheet } from './landportal-facts.js';
+import {
+  isByRight,
+  MANUFACTURED_STRUCTURE_TYPES,
+  objectiveConditionLabel,
+  structureTypeLabel,
+  useLegalStatusLabel,
+  type EvidencedValue,
+  type LandUseDetermination,
+  type LegalSourceCitation,
+  type UseLegalStatus,
+} from './land-use-types.js';
 import type { ControllingLandUseAuthority } from './controlling-land-use-authority.js';
 import type { CurrentZoningDetermination } from './current-zoning-determination.js';
 import type { SubdivisionRegulations } from './subdivision-regulations.js';
@@ -138,6 +150,12 @@ export interface ZoningSubdivisionRuntime {
   readSubdivisionRead?: (dealCardId: number) => PropertySubdivisionRead | null;
   /** The jurisdiction-scoped retained regulation set, reusable across parcels. */
   readJurisdictionDocuments?: (jurisdiction: RegulationJurisdiction) => Array<{ url: string; label: string }>;
+  /**
+   * The subject's own existing road frontage, when LandOS already retains it —
+   * a screening figure, never a survey. Used only to compare against the
+   * jurisdiction's minimum-frontage rule; it establishes nothing about the law.
+   */
+  readSubjectFrontage?: (propertyCardId: number) => { valueFt: number | null; source: string | null };
 }
 
 /** One land-use rule, with the official source that carried it. */
@@ -224,6 +242,74 @@ export type SubdivisionByRightFacts = {
   reason: string;
 };
 
+/** One objective requirement a code attaches to a manufactured-home type. */
+export type ManufacturedHousingConditionFact = {
+  kind: string;
+  label: string;
+  requirement: string;
+  sourceUrl: string | null;
+  section: string | null;
+};
+
+/**
+ * One structure type's manufactured-housing determination, in the code's OWN
+ * terminology. `manufactured_single_wide` and `pre_hud_mobile_home` are never
+ * collapsed into one row: a code that distinguishes them is reported as
+ * distinguishing them.
+ */
+export type ManufacturedHousingTypeFact = {
+  structureType: string;
+  label: string;
+  status: UseLegalStatus;
+  statusLabel: string;
+  established: boolean;
+  reasoning: string;
+  unresolvedReason: string | null;
+  conditions: ManufacturedHousingConditionFact[];
+  statePreemption: { effect: string; statement: string; interaction: string } | null;
+  sourceUrl: string | null;
+};
+
+export type ManufacturedHousingFacts = {
+  established: boolean;
+  /** Only set when every established type shares one status. */
+  overallStatus: UseLegalStatus | null;
+  overallStatement: string;
+  byType: ManufacturedHousingTypeFact[];
+};
+
+/** One permitted use or one material restriction, in plain operator language. */
+export type ZoningUseFact = {
+  label: string;
+  detail: string;
+  sourceUrl: string | null;
+};
+
+export type FrontageScreeningFacts = {
+  status: 'evaluated' | 'insufficient_information';
+  subjectFrontageFt: number | null;
+  subjectFrontageSource: string | null;
+  minimumFrontageFt: number | null;
+  minimumFrontageSource: string | null;
+  /** Existing road frontage ÷ minimum frontage, floored. Planning-level screening only. */
+  directFrontageLots: number | null;
+  legalMaximumLots: number | null;
+  /** True only when a legal maximum is established AND existing frontage supports fewer lots than it. */
+  frontageIsLimiting: boolean;
+  statement: string;
+};
+
+/**
+ * Secondary upside only. Populated only when frontage is actually the
+ * limiting factor on the apparent by-right potential — never volunteered
+ * ahead of the existing-frontage screen.
+ */
+export type PrivateRoadScreeningFacts = {
+  applicable: boolean;
+  statement: string;
+  rules: LandUseRuleFact[];
+};
+
 export type ZoningSubdivisionFacts = JsonObject & {
   lane: ZoningSubdivisionLane;
   executed: boolean;
@@ -247,6 +333,13 @@ export type ZoningSubdivisionFacts = JsonObject & {
     package: LandUseRuleFact[];
   };
   subdivisionByRight: SubdivisionByRightFacts;
+  /** What the current zoning permits, beyond the raw rule dump: dimensional headroom plus by-right uses. */
+  zoningAllowances: ZoningUseFact[];
+  /** Readily apparent restrictions from the same current zoning review: prohibited, conditional or nonconforming-only uses. */
+  zoningRestrictions: ZoningUseFact[];
+  manufacturedHousing: ManufacturedHousingFacts;
+  frontageScreening: FrontageScreeningFacts;
+  privateRoadScreening: PrivateRoadScreeningFacts;
   sources: ZoningSubdivisionSourceFact[];
   research: LandUseResearchOutcome | null;
   limitations: string[];
@@ -575,6 +668,169 @@ function subdivisionByRight(
   };
 }
 
+const NOT_ESTABLISHED_MANUFACTURED_STATEMENT =
+  'Manufactured-home eligibility was not established from the initial zoning review. Confirm with Planning/Zoning if this strategy becomes relevant.';
+
+/**
+ * Manufactured-home screening, read from the SAME zoning review that already
+ * ran — never a separate research mission. The nationwide engine evaluates
+ * every manufactured/modular structure type as its own use determination
+ * (PART 5/6), so this only projects that existing result; it decides nothing
+ * new about the parcel.
+ */
+function manufacturedHousingFacts(determination: LandUseDetermination | null): ManufacturedHousingFacts {
+  const relevant = (determination?.uses ?? [])
+    .filter((use) => MANUFACTURED_STRUCTURE_TYPES.includes(use.structureType));
+
+  const byType: ManufacturedHousingTypeFact[] = relevant.map((use) => ({
+    structureType: use.structureType,
+    label: structureTypeLabel(use.structureType),
+    status: use.status,
+    statusLabel: useLegalStatusLabel(use.status),
+    established: use.status !== 'unverified',
+    reasoning: use.reasoning,
+    unresolvedReason: use.unresolvedReason,
+    conditions: use.conditions.map((condition) => ({
+      kind: condition.kind,
+      label: objectiveConditionLabel(condition.kind),
+      requirement: condition.requirement,
+      sourceUrl: condition.citation?.url ?? null,
+      section: condition.citation?.citation ?? null,
+    })),
+    statePreemption: use.statePreemption
+      ? { effect: use.statePreemption.effect, statement: use.statePreemption.statement, interaction: use.statePreemption.interaction }
+      : null,
+    sourceUrl: use.citations[0]?.url ?? null,
+  }));
+
+  const establishedTypes = byType.filter((row) => row.established);
+  const established = establishedTypes.length > 0;
+  const distinctStatuses = new Set(establishedTypes.map((row) => row.status));
+  const overallStatus: UseLegalStatus | null = established && distinctStatuses.size === 1 ? establishedTypes[0].status : null;
+
+  const overallStatement = !established
+    ? NOT_ESTABLISHED_MANUFACTURED_STATEMENT
+    : overallStatus
+      ? `Manufactured homes are ${useLegalStatusLabel(overallStatus).toLowerCase()} under the reviewed code (${establishedTypes.map((row) => row.label).join(', ')}).`
+      : `Manufactured-home treatment varies by type under the reviewed code: ${establishedTypes.map((row) => `${row.label} — ${row.statusLabel.toLowerCase()}`).join('; ')}.`;
+
+  return { established, overallStatus, overallStatement, byType };
+}
+
+/**
+ * What the current zoning permits and materially restricts, beyond the raw
+ * rule dump — read from the SAME `uses` determination the nationwide engine
+ * already computed. Manufactured/modular structure types are excluded here;
+ * they get their own dedicated section rather than being buried in a list.
+ */
+function zoningAllowancesAndRestrictions(
+  determination: LandUseDetermination | null,
+): { allowances: ZoningUseFact[]; restrictions: ZoningUseFact[] } {
+  const allowances: ZoningUseFact[] = [];
+  const restrictions: ZoningUseFact[] = [];
+  for (const use of determination?.uses ?? []) {
+    if (MANUFACTURED_STRUCTURE_TYPES.includes(use.structureType)) continue;
+    if (use.status === 'unverified') continue;
+    const label = structureTypeLabel(use.structureType);
+    const sourceUrl = use.citations[0]?.url ?? null;
+    if (isByRight(use.status)) {
+      allowances.push({ label, detail: use.reasoning, sourceUrl });
+    } else {
+      restrictions.push({ label, detail: `${useLegalStatusLabel(use.status)} — ${use.reasoning}`, sourceUrl });
+    }
+  }
+  return { allowances, restrictions };
+}
+
+/**
+ * EXISTING road frontage, evaluated first. `computeLegalYield` already
+ * decided the by-right lot maximum; this compares that maximum against what
+ * the subject's OWN retained frontage can directly support, so an operator
+ * sees whether frontage is actually the limiting factor before any private-
+ * road concept is ever raised.
+ */
+function frontageScreening(
+  subjectFrontage: { valueFt: number | null; source: string | null },
+  determination: LandUseDetermination | null,
+  byRight: SubdivisionByRightFacts,
+): FrontageScreeningFacts {
+  const standard = (determination?.dimensionalStandards ?? []).find(
+    (row) => row.kind === 'minimum_road_frontage' && row.numericValue != null && row.unit === 'feet',
+  ) ?? null;
+  const minimumFrontageFt = standard?.numericValue ?? null;
+  const minimumFrontageSource = standard?.citation.url ?? null;
+  const legalMaximumLots = byRight.maximumLots;
+
+  if (subjectFrontage.valueFt == null || minimumFrontageFt == null || minimumFrontageFt <= 0) {
+    return {
+      status: 'insufficient_information',
+      subjectFrontageFt: subjectFrontage.valueFt,
+      subjectFrontageSource: subjectFrontage.source,
+      minimumFrontageFt,
+      minimumFrontageSource,
+      directFrontageLots: null,
+      legalMaximumLots,
+      frontageIsLimiting: false,
+      statement: subjectFrontage.valueFt == null
+        ? 'The subject\'s existing road frontage is not established in LandOS yet, so a direct-frontage lot screen was not run.'
+        : 'The current minimum road-frontage requirement is not established, so a direct-frontage lot screen was not run.',
+    };
+  }
+
+  const directFrontageLots = Math.floor(subjectFrontage.valueFt / minimumFrontageFt);
+  const frontageIsLimiting = legalMaximumLots != null && directFrontageLots < legalMaximumLots;
+
+  const statement = legalMaximumLots == null
+    ? `Existing frontage of approximately ${subjectFrontage.valueFt} ft against a ${minimumFrontageFt} ft minimum-frontage requirement appears capable of supporting approximately ${directFrontageLots} direct-frontage lot(s), subject to final survey geometry, setbacks, utilities and other site-specific constraints. The current by-right lot maximum is not established, so whether frontage limits it is unresolved.`
+    : frontageIsLimiting
+      ? `Current rules appear to allow up to ${legalMaximumLots} lot(s). Existing frontage of approximately ${subjectFrontage.valueFt} ft against a ${minimumFrontageFt} ft minimum-frontage requirement appears capable of supporting only approximately ${directFrontageLots} direct-frontage lot(s), before final survey geometry, setbacks, utilities or other site-specific constraints. Frontage therefore appears to be the limiting factor on the apparent by-right potential.`
+      : `Existing frontage of approximately ${subjectFrontage.valueFt} ft against a ${minimumFrontageFt} ft minimum-frontage requirement appears capable of supporting approximately ${directFrontageLots} direct-frontage lot(s), which meets or exceeds the current apparent by-right maximum of ${legalMaximumLots} lot(s). Frontage does not appear to limit the apparent by-right potential.`;
+
+  return {
+    status: 'evaluated',
+    subjectFrontageFt: subjectFrontage.valueFt,
+    subjectFrontageSource: subjectFrontage.source,
+    minimumFrontageFt,
+    minimumFrontageSource,
+    directFrontageLots,
+    legalMaximumLots,
+    frontageIsLimiting,
+    statement,
+  };
+}
+
+/**
+ * Secondary upside only — never volunteered ahead of the existing-frontage
+ * screen. Reads ONLY the private-road / shared-driveway / flag-lot rows the
+ * subdivision framework already carries; when none are readily established
+ * this reports the bounded county follow-up instead of searching further.
+ */
+function privateRoadScreening(
+  frontage: FrontageScreeningFacts,
+  rulePackageRows: readonly LandUseRuleFact[],
+): PrivateRoadScreeningFacts {
+  if (!frontage.frontageIsLimiting) {
+    return { applicable: false, statement: '', rules: [] };
+  }
+  const relevantKeys = new Set(['private_roads', 'shared_driveways', 'flag_lots']);
+  const rules = rulePackageRows.filter((rule) => relevantKeys.has(rule.key) && rule.value != null);
+  const statement = rules.length
+    ? `Existing frontage appears to support approximately ${frontage.directFrontageLots} direct-frontage lot(s) against an apparent by-right maximum of ${frontage.legalMaximumLots}. The reviewed subdivision material speaks to private or shared access, reported below.`
+    : `Existing frontage appears to support approximately ${frontage.directFrontageLots} direct-frontage lot(s) against an apparent by-right maximum of ${frontage.legalMaximumLots}. The current subdivision framework may allow additional lots, but private-road/private-drive standards were not readily established in the initial review. Confirm with Planning/Zoning only if pursuing the higher-yield concept.`;
+  return { applicable: true, statement, rules };
+}
+
+/** LandOS retains the subject's own frontage as SCREENING evidence only — never a survey. */
+function defaultSubjectFrontage(propertyCardId: number): { valueFt: number | null; source: string | null } {
+  const inspection = loadLandPortalInspection(propertyCardId);
+  if (!inspection) return { valueFt: null, source: null };
+  const ft = buildParcelFactSheet(inspection.parcelFacts).access.roadFrontageFt;
+  return {
+    valueFt: ft,
+    source: ft != null ? 'LandPortal parcel record (screening; legal frontage not established)' : null,
+  };
+}
+
 function emptyFacts(
   lane: ZoningSubdivisionLane,
   subject: ZoningSubdivisionSubject,
@@ -618,6 +874,11 @@ function emptyFacts(
     },
     rules: { count: 0, documentCount: 0, ordinanceLabel: null, ordinanceUrl: null, package: [] },
     subdivisionByRight: subdivisionByRight(null, null),
+    zoningAllowances: [],
+    zoningRestrictions: [],
+    manufacturedHousing: manufacturedHousingFacts(null),
+    frontageScreening: frontageScreening({ valueFt: null, source: null }, null, subdivisionByRight(null, null)),
+    privateRoadScreening: { applicable: false, statement: '', rules: [] },
     sources: [],
     research: null,
     limitations: [],
@@ -750,6 +1011,14 @@ function retainedFacts(
   const sources = sourceFacts(determination, regulations, zoning, authority, jurisdictionLabel);
   const byRight = subdivisionByRight(determination, read);
 
+  const manufacturedHousing = manufacturedHousingFacts(determination);
+  const { allowances: zoningAllowances, restrictions: zoningRestrictions } = zoningAllowancesAndRestrictions(determination);
+  const subjectFrontage = subject.propertyCardId != null
+    ? (runtime.readSubjectFrontage ?? defaultSubjectFrontage)(subject.propertyCardId)
+    : { valueFt: null, source: null };
+  const frontage = frontageScreening(subjectFrontage, determination, byRight);
+  const privateRoad = privateRoadScreening(frontage, rules);
+
   const limitations = [
     ...(determination?.unresolved ?? []),
     ...(regulations?.limitations ?? []),
@@ -809,6 +1078,11 @@ function retainedFacts(
       package: rules,
     },
     subdivisionByRight: byRight,
+    zoningAllowances,
+    zoningRestrictions,
+    manufacturedHousing,
+    frontageScreening: frontage,
+    privateRoadScreening: privateRoad,
     sources,
     research,
     limitations,

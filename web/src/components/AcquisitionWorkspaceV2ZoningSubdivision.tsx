@@ -49,6 +49,31 @@ interface ZoningSubdivisionRunResult {
       missingInputs?: string[];
       approvedYield?: boolean;
     };
+    zoningAllowances?: Array<{ label: string; detail: string; sourceUrl: string | null }>;
+    zoningRestrictions?: Array<{ label: string; detail: string; sourceUrl: string | null }>;
+    manufacturedHousing?: {
+      established?: boolean;
+      overallStatus?: string | null;
+      overallStatement?: string;
+      byType?: Array<{
+        structureType: string; label: string; status: string; statusLabel: string; established: boolean;
+        reasoning: string; unresolvedReason: string | null;
+        conditions: Array<{ kind: string; label: string; requirement: string; sourceUrl: string | null; section: string | null }>;
+        statePreemption: { effect: string; statement: string; interaction: string } | null;
+        sourceUrl: string | null;
+      }>;
+    };
+    frontageScreening?: {
+      status?: string;
+      subjectFrontageFt?: number | null; subjectFrontageSource?: string | null;
+      minimumFrontageFt?: number | null; minimumFrontageSource?: string | null;
+      directFrontageLots?: number | null; legalMaximumLots?: number | null;
+      frontageIsLimiting?: boolean; statement?: string;
+    };
+    privateRoadScreening?: {
+      applicable?: boolean; statement?: string;
+      rules?: Array<{ key: string; label: string; value: string | null; unresolved: string | null; sourceUrl: string | null }>;
+    };
     sources?: Array<{ title: string; sourceType: string; url: string | null; jurisdiction: string | null; date: string | null; section: string | null }>;
     limitations?: string[];
   };
@@ -102,6 +127,11 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
   const zoning = facts.zoning ?? {};
   const rules = facts.rules ?? {};
   const byRight = facts.subdivisionByRight ?? {};
+  const allowances = facts.zoningAllowances ?? [];
+  const restrictions = facts.zoningRestrictions ?? [];
+  const manufactured = facts.manufacturedHousing ?? {};
+  const frontage = facts.frontageScreening ?? {};
+  const privateRoad = facts.privateRoadScreening ?? {};
 
   return (
     <div class="awv2-pi-note awv2-zoning-subdivision-run" data-testid="awv2-zoning-subdivision-run">
@@ -149,6 +179,87 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
               </div>
             )}
           </div>
+          {/* Existing frontage is evaluated BEFORE any private-road concept. */}
+          {frontage.status && (
+            <div data-testid="awv2-zoning-subdivision-run-frontage">
+              <b>Direct-frontage lot potential:</b>{' '}
+              {frontage.status === 'evaluated'
+                ? `${frontage.directFrontageLots} lot(s) from ${frontage.subjectFrontageFt} ft of existing frontage ÷ ${frontage.minimumFrontageFt} ft minimum`
+                : 'Not screened'}
+              <div>{frontage.statement}</div>
+            </div>
+          )}
+          {/* Private road / private drive is secondary upside only, and only
+              rendered when frontage is actually the limiting factor. */}
+          {privateRoad.applicable && (
+            <div data-testid="awv2-zoning-subdivision-run-private-road">
+              <b>Private road / private drive (secondary upside only):</b>
+              <div>{privateRoad.statement}</div>
+              {!!privateRoad.rules?.length && (
+                <ul>
+                  {privateRoad.rules.map((rule) => (
+                    <li>
+                      {rule.label}: {rule.value ?? rule.unresolved ?? 'Not established'}
+                      {rule.sourceUrl && <> — <a href={rule.sourceUrl} target="_blank" rel="noreferrer">open source ↗</a></>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {/* Manufactured homes, read from the same zoning review — never a
+              separate research mission. */}
+          <div data-testid="awv2-zoning-subdivision-run-manufactured">
+            <b>Manufactured homes:</b> {manufactured.overallStatement ?? 'Not screened.'}
+            {!!manufactured.byType?.length && manufactured.established && (
+              <ul>
+                {manufactured.byType.filter((row) => row.established).map((row) => (
+                  <li>
+                    {row.label}: {row.statusLabel}
+                    {row.sourceUrl && <> — <a href={row.sourceUrl} target="_blank" rel="noreferrer">open source ↗</a></>}
+                    {!!row.conditions.length && (
+                      <ul>
+                        {row.conditions.map((condition) => (
+                          <li>
+                            {condition.label}: {condition.requirement}
+                            {condition.sourceUrl && <> — <a href={condition.sourceUrl} target="_blank" rel="noreferrer">open source ↗</a></>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {/* What the current zoning allows and its material restrictions,
+              distinct sections so neither reads as the other. */}
+          {!!allowances.length && (
+            <div data-testid="awv2-zoning-subdivision-run-allowances">
+              <b>What current zoning allows:</b>
+              <ul>
+                {allowances.map((row) => (
+                  <li>
+                    {row.label}: {row.detail}
+                    {row.sourceUrl && <> — <a href={row.sourceUrl} target="_blank" rel="noreferrer">open source ↗</a></>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!!restrictions.length && (
+            <div data-testid="awv2-zoning-subdivision-run-restrictions">
+              <b>Material zoning restrictions:</b>
+              <ul>
+                {restrictions.map((row) => (
+                  <li>
+                    {row.label}: {row.detail}
+                    {row.sourceUrl && <> — <a href={row.sourceUrl} target="_blank" rel="noreferrer">open source ↗</a></>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {/* A classification that is not adopted zoning is shown and labelled,
               never promoted into the zoning slot. */}
           {zoning.nonZoningClassification && (
