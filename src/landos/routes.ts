@@ -5791,7 +5791,18 @@ export function registerLandosRoutes(app: Hono): void {
     });
     const verification = capability.subjectResolution === 'RESOLVED'
       ? exactVerification.parcelVerified ? exactVerification : capabilityVerification
-      : exactVerification;
+      : {
+        ...capabilityVerification,
+        sourceAttempts: exactVerification.sourceAttempts.map((attempt) => ({
+          ...attempt,
+          status: attempt.status === 'verified' ? 'not_verified' as const : attempt.status,
+          reason: attempt.status === 'verified' ? capabilityVerification.summary : attempt.reason,
+          truthLabel: 'attempted_lookup' as const,
+        })),
+        dataGaps: exactVerification.dataGaps.length ? exactVerification.dataGaps : capabilityVerification.dataGaps,
+        nextAction: exactVerification.nextAction ?? capabilityVerification.nextAction,
+        marketPulseEligible: exactVerification.marketPulseEligible,
+      };
     // Duke first-pass analysis (flags + strategy candidates/readiness) from the
     // verified property data. Unverified -> blocked, no fabricated offers.
     const dukeAnalysis = buildDukeAnalysis({
