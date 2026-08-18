@@ -137,7 +137,6 @@ import { buildLeadCardTitle, streetReferenceFrom, unresolvedLeadStorageLabel, is
 import { planResolver, smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
 import { apnSearchVariants, ownerSearchVariants } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
-import { apnIdentifiersCorroborate, type ResolutionDeps, type PropertyResolution } from './property-resolution-engine.js';
 import { invokeRuntimeCapability, listRuntimeCapabilities } from './capability-registry.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
@@ -271,9 +270,7 @@ import { resolveGovernmentRecordArtifactPage } from './government-records-operat
 import { readZoningLandUseForDeal, synchronizeZoningLandUseForDeal } from './zoning-legacy-adapter.js';
 import { resolveZoningArtifactPage } from './zoning-operator.js';
 import { assembleBusinessObjects, whatBlocksThisDeal } from './business-object-spine.js';
-import { persistParcelIdentityFromResolution, confirmParcelForDeal, readParcelIdentity, writeParcelIdentity } from './parcel-identity.js';
-import { resolveParcelParallel, type ParallelResolution } from './parallel-resolution.js';
-import { officialResolutionLane, landPortalResolutionLane } from './parallel-resolution-lanes.js';
+import { confirmParcelForDeal, readParcelIdentity, writeParcelIdentity } from './parcel-identity.js';
 import { buildCompMapView } from './comp-map.js';
 import {
   buildRetainedLocationIndex, compAddressKey, reconcileCompAddress,
@@ -1452,35 +1449,6 @@ function suppressWeakerDuplicatePropertyCards<T extends { id: number; address_ke
   });
 }
 
-// ── Property Resolution Engine: live lane adapters ──────────────────────────
-// The engine is pure; these wire the existing tested providers (Realie/LandPortal
-// exact resolve, free US Census county derivation, free Photon/Census address
-// suggest). Browser lanes are parked (visual stack not installed) but recorded.
-function pifToIntakeFields(f: ParsedIntakeFields): IntakeFields {
-  return { address: f.address, city: f.city, state: f.state, zip: f.zip, county: f.county, fips: f.fips, apn: f.apn, owner: f.owner, propertyId: f.propertyId };
-}
-function pifToText(f: ParsedIntakeFields): string {
-  return [f.lpUrl, f.address, f.city, f.county ? `${f.county} County` : undefined, f.state, f.zip,
-    f.apn ? `APN: ${f.apn}` : undefined, f.owner ? `Owner: ${f.owner}` : undefined].filter(Boolean).join('\n');
-}
-
-/** Named-source verification built from parsed fields (so the engine can retry
- *  with a derived county). Reuses the canonical resolver-planner → exact resolve
- *  → mapResolveToVerification path. Never a comp credit. */
-async function verifyFromFields(fields: ParsedIntakeFields, timeoutMs: number): Promise<DukeVerificationResult> {
-  const text = pifToText(fields);
-  const plan = planResolver(pifToIntakeFields(fields));
-  if (plan.path === 'none') {
-    return mapResolveToVerification({ text, hasIdentifierInput: false, resolve: null, unavailable: false });
-  }
-  try {
-    const resolve = await resolveParcelIdentityResult(plan.args, timeoutMs);
-    return mapResolveToVerification({ text, hasIdentifierInput: true, resolve, unavailable: false });
-  } catch {
-    return mapResolveToVerification({ text, hasIdentifierInput: true, resolve: null, unavailable: true });
-  }
-}
-
 /** Operator-facing browser evidence: status, provenance-labeled facts, the
  *  official sources routed, and a clean note — never a raw log/field dump. */
 function redactEvidence(ev: { service: string; mode: string; status: string; facts: unknown[]; sourcesUsed: unknown[]; screenshots: unknown[]; blocked: unknown[]; note: string }): Record<string, unknown> {
@@ -1488,36 +1456,6 @@ function redactEvidence(ev: { service: string; mode: string; status: string; fac
     service: ev.service, mode: ev.mode, status: ev.status,
     facts: ev.facts, sourcesUsed: ev.sourcesUsed,
     screenshotCount: ev.screenshots.length, blocked: ev.blocked, note: ev.note,
-  };
-}
-
-/** Live deps for the Property Resolution Engine. Free providers (Census/Photon)
- *  and the budgeted Realie exact resolve only; browser lanes parked. */
-function liveResolutionDeps(timeoutMs: number): ResolutionDeps {
-  return {
-    verify: async () => ({ status: 'unverified', parcelVerified: false, sourceAttempts: [{ source: 'Optional parcel provider', status: 'skipped', reason: 'Public-first resolution defers optional provider lookup.', truthLabel: 'attempted_lookup' }], dataGaps: ['needs_county_or_fips'], marketPulseEligible: false, strategyUnderwritingBlocked: true, summary: 'Public county and government sources are being attempted before optional parcel providers.', executionMode: 'duke_verification_read_only' }),
-    officialParcel: async (fields, lookupTimeoutMs) => {
-      const result = await lookupOfficialParcel(fields, Math.min(lookupTimeoutMs, 25_000));
-      const parcel = result.parcel;
-      return {
-        patch: parcel ? officialParcelPatch(parcel) : null,
-        source: parcel?.provider ?? 'Official public parcel lookup',
-        sourceUrl: parcel?.sourceUrl,
-        note: result.attempted.map((attempt) => `${attempt.source}: ${attempt.note}`).join(' ') || 'No official public parcel result.',
-      };
-    },
-    deriveCounty: (f) => deriveCounty({ address: f.address, city: f.city, state: f.state, zip: f.zip }),
-    suggest: (q) => suggestAddresses(q),
-    // Browser Intelligence: LandPortal-first, then County gap-fill, backed by the
-    // live persistent-session driver. configured() is true only when the operator's
-    // Chrome session is connected; otherwise the services report parked (honest).
-    // Never stores a credential; never prints cookies/tokens.
-    // LandPortal is the approved parcel-level browser path: it searches by
-    // county/state + APN (and owner), and DISCOVERS the LandPortal property id
-    // + FIPS from the result — they are never required as input.
-    landPortalBrowser: makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') }),
-    countyRecordsBrowser: makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') }),
-    timeoutMs,
   };
 }
 
@@ -1545,13 +1483,6 @@ function withBrowserMissionGate<T>(run: () => Promise<T>): Promise<T> {
   const result = parallelResolutionGate.then(run, run);
   parallelResolutionGate = result.catch(() => undefined);
   return result;
-}
-
-async function runParallelParcelResolution(
-  fields: ParsedIntakeFields,
-  timeoutMs: number,
-): Promise<ParallelResolution> {
-  return withBrowserMissionGate(() => runParallelParcelResolutionInner(fields, timeoutMs));
 }
 
 /**
@@ -1605,32 +1536,6 @@ export function landPortalSubjectFactsHandoff(input: {
   };
 }
 
-async function runParallelParcelResolutionInner(
-  fields: ParsedIntakeFields,
-  timeoutMs: number,
-): Promise<ParallelResolution> {
-  // "No live session" must attempt the supported persistent Chrome/CDP
-  // attachment + automatic LandPortal login BEFORE parking Lane B. Best-effort:
-  // an unavailable browser degrades the lane honestly, never throws.
-  try {
-    const readiness = await ensureLandPortalAuthenticated();
-    logger.info({ event: 'parallel_lane_b_readiness', phase: readiness.phase, authenticated: readiness.authenticated, hasReason: !!readiness.reason }, 'parallel_lane_b_readiness');
-  } catch (err) { logger.warn({ err }, 'parallel_lane_b_attach_failed'); }
-  const lp = makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') });
-  const searchKey = {
-    address: fields.address, apn: fields.apn, owner: fields.owner,
-    city: fields.city, county: fields.county, state: fields.state, zip: fields.zip,
-  };
-  return resolveParcelParallel({ fields }, {
-    officialLane: (input) => officialResolutionLane(input.fields, Math.min(timeoutMs, 25_000)),
-    landPortalLane: () => landPortalResolutionLane(lp, searchKey, timeoutMs),
-    // Hard stop slightly above the lane's own timeout so a browser workflow
-    // that ignores its budget cannot hold the verdict (or an operator HTTP
-    // request) hostage.
-    laneTimeoutMs: timeoutMs + 30_000,
-  });
-}
-
 /**
  * Apply a parallel-resolution verdict to a card: record the attempt + every
  * hard reconciliation issue, and either PROMOTE a previously unresolved lead to
@@ -1639,92 +1544,6 @@ async function runParallelParcelResolutionInner(
  * Tyler (operator-confirmation rule). Shared by the manual endpoint and the
  * autonomous acquire/run escalation so both behave identically.
  */
-function applyParallelResolution(args: {
-  dealCardId: number;
-  cardId: number;
-  entity: LandosEntity;
-  resolution: ParallelResolution;
-  acceptedApn: string | null;
-  alreadyVerified: boolean;
-  activeInputAddress: string | null;
-  city: string | null;
-}): { promoted: boolean; operatorConfirmationRequired: boolean } {
-  const { dealCardId, cardId, resolution } = args;
-  try {
-    attachCardActivity({
-      cardId, agentId: 'parallel-resolution', kind: 'parcel_resolution',
-      summary: `Parallel parcel resolution — ${resolution.lanes.map((l) => `${l.lane}:${l.status}`).join(', ')}. ${resolution.confirmationBasis}`,
-      ref: JSON.stringify({
-        confirmed: resolution.confirmed, laneAgreement: resolution.laneAgreement,
-        reconciliation: resolution.reconciliation, identityConflict: resolution.identityConflict ?? null,
-        lanes: resolution.lanes.map((l) => ({ lane: l.lane, status: l.status, note: l.note })),
-      }),
-    });
-  } catch { /* activity history is best-effort */ }
-
-  for (const issue of resolution.reconciliation) {
-    if (issue.severity !== 'conflict') continue;
-    try { addCardNextAction({ cardId, action: `Reconcile ${issue.field}: ${issue.values.map((v) => `${v.value} (${v.source})`).join(' vs ')}. ${issue.note}`, createdBy: 'parallel-resolution' }); } catch { /* best-effort */ }
-  }
-
-  let promoted = false;
-  let operatorConfirmationRequired = false;
-  const parcel = resolution.confirmedParcel;
-  if (resolution.confirmed && parcel && !resolution.identityConflict) {
-    const resolvedApnKey = String(parcel.apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
-    const acceptedApnKey = String(args.acceptedApn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
-    const contradictsAccepted = args.alreadyVerified && acceptedApnKey && resolvedApnKey && acceptedApnKey !== resolvedApnKey;
-    if (contradictsAccepted) {
-      operatorConfirmationRequired = true;
-      try {
-        attachCardActivity({
-          cardId, agentId: 'parallel-resolution', kind: 'reconciliation_contradiction',
-          summary: `Parallel lanes resolved APN ${parcel.apn} but this card's ACCEPTED APN is ${args.acceptedApn}. Accepted record preserved; awaiting Tyler's confirmation before any change.`,
-          ref: JSON.stringify({ acceptedApn: args.acceptedApn, resolvedApn: parcel.apn, source: parcel.source }),
-        });
-      } catch { /* best-effort */ }
-      try { addCardNextAction({ cardId, action: `⚠ Parallel resolution disagrees with the accepted APN (accepted ${args.acceptedApn} vs resolved ${parcel.apn} from ${parcel.source}). Accepted record kept unchanged — confirm with Tyler before changing.`, createdBy: 'parallel-resolution' }); } catch { /* best-effort */ }
-    } else if (!args.alreadyVerified) {
-      try {
-        writeParcelIdentity(dealCardId, {
-          subjectCardId: cardId, state: 'confirmed', confidence: resolution.laneAgreement === 'agree' ? 1 : 0.9,
-          basis: resolution.confirmationBasis, confirmedBy: 'parallel-resolution',
-          evidenceRefs: resolution.lanes.filter((l) => l.parcel?.sourceUrl).map((l) => l.parcel!.sourceUrl!),
-        }, 'parallel-resolution');
-        const subjectAddress = args.activeInputAddress ?? parcel.address ?? '';
-        // LandOS convention stores the bare county name ("Pickens", not
-        // "Pickens County") — providers echo the suffixed form and the UI
-        // appends "County" itself (live QA caught "Pickens County County").
-        const countyName = parcel.county ? parcel.county.replace(/\s+county$/i, '').trim() : undefined;
-        upsertCardFromDukeRun({
-          entity: args.entity, agentId: 'parallel-resolution', cardId,
-          activeInputAddress: subjectAddress,
-          city: parcel.county ? args.city ?? undefined : undefined,
-          state: parcel.state ?? undefined, county: countyName,
-          apn: parcel.apn ?? undefined, owner: parcel.owner ?? undefined,
-          acres: typeof parcel.acres === 'number' ? parcel.acres : undefined,
-          lat: parcel.coordinates?.lat ?? null, lng: parcel.coordinates?.lng ?? null,
-          verified: true, verificationSource: parcel.source,
-          summary: 'Parcel confirmed via parallel resolution (official public + LandPortal).',
-        });
-        if (parcel.sourceUrl) {
-          try {
-            attachCardSourceEvidence({
-              cardId, fact: 'Parcel identity', value: parcel.apn ?? undefined,
-              sourceUrl: parcel.sourceUrl, sourceLabel: parcel.source,
-              note: 'Parcel-level identity confirmed by a parallel resolution lane. Public/GIS records are screening evidence, not a deed, title commitment, survey, or legal-boundary determination.',
-              parcelVerified: true,
-            });
-          } catch { /* evidence attach is best-effort */ }
-        }
-        try { addCardNextAction({ cardId, action: 'Parcel confirmed via parallel resolution — run the Deal Card report to continue Property Intelligence, comps, and Market Pulse.', createdBy: 'parallel-resolution' }); } catch { /* best-effort */ }
-        promoted = true;
-      } catch (err) { logger.warn({ err, cardId }, 'parallel_resolve_promote_failed'); }
-    }
-  }
-  return { promoted, operatorConfirmationRequired };
-}
-
 function hasCriticalParcelGaps(p: {
   parcelVerified?: boolean;
   owner?: string;
@@ -3364,55 +3183,6 @@ export function registerLandosRoutes(app: Hono): void {
   const configuredIntakeAnalyzer = async (prompt: string): Promise<unknown> => {
     const response = await generateContent(prompt, process.env.GEMINI_INTAKE_MODEL || 'gemini-2.0-flash');
     return parseJsonResponse<Record<string, unknown>>(response) ?? {};
-  };
-
-  /** Promote a CONFIRMED intake resolution through the existing approved path:
-   *  the property card is written from the APPROVED SOURCE's returned record
-   *  (never from screenshot candidate text), the deal keeps/gains its subject
-   *  card link, and the parcel-identity verdict is persisted so downstream
-   *  eligibility follows the standard confirmed-parcel gate. A deal that
-   *  already has an ACCEPTED verified parcel with a different APN is NEVER
-   *  changed — the contradiction is recorded for Tyler instead. */
-  const promoteConfirmedIntakeResolution = (
-    dealCardId: number,
-    resolution: PropertyResolution,
-  ): { canonicalPromotionApplied: boolean; note: string; cardId?: number } => {
-    try {
-      const deal = getDealCard(dealCardId);
-      if (!deal) return { canonicalPromotionApplied: false, note: 'No canonical promotion: deal card not found.' };
-      const existingCard = (deal.propertyCards as Array<Record<string, unknown>> | undefined)?.[0];
-      const p = resolution.property;
-      const resolvedApnKey = String(p.apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
-      const acceptedApnKey = String(existingCard?.apn ?? '').replace(/[^0-9a-z]/gi, '').toLowerCase();
-      // A jurisdiction format variant of the SAME parcel (TN short vs full APN) is
-      // never a mismatch; only a genuinely different parcel is flagged for review.
-      const sameAcceptedParcel = acceptedApnKey && resolvedApnKey
-        && apnIdentifiersCorroborate(String(existingCard?.apn ?? ''), String(p.apn ?? ''));
-      if (existingCard && existingCard.verification_status === 'verified_property' && acceptedApnKey && resolvedApnKey && !sameAcceptedParcel) {
-        try { addCardNextAction({ cardId: Number(existingCard.id), action: `⚠ Smart Intake resolution confirmed APN ${p.apn} (${p.verificationSource ?? 'approved source'}), but this card's ACCEPTED APN is ${existingCard.apn}. Accepted record kept unchanged — confirm with Tyler before changing.`, createdBy: 'landos/intake-resolution' }); } catch { /* best-effort */ }
-        return { canonicalPromotionApplied: false, note: `No promotion: this deal already has an accepted verified parcel (APN ${existingCard.apn}); the newly confirmed APN ${p.apn} was recorded for operator review instead.` };
-      }
-      const { card } = upsertCardFromDukeRun({
-        entity: deal.entity as LandosEntity,
-        agentId: 'landos/intake-resolution',
-        cardId: existingCard ? Number(existingCard.id) : undefined,
-        activeInputAddress: p.normalizedAddress || p.address || `APN ${p.apn}`,
-        city: p.city, state: p.state, county: p.county,
-        apn: p.apn, lpPropertyId: p.propertyId, fips: p.fips, lpUrl: p.lpUrl, owner: p.owner, acres: p.acres,
-        lat: p.coordinates?.lat ?? null, lng: p.coordinates?.lng ?? null,
-        verified: true,
-        verificationSource: p.verificationSource ?? resolution.identityBasis,
-        summary: 'Smart Intake resolution — parcel confirmed by an approved parcel-level source.',
-      });
-      if (!existingCard) {
-        try { linkPropertyToDeal({ dealCardId, cardId: card.id, role: 'subject' }); } catch { /* link is idempotent-best-effort */ }
-      }
-      try { persistParcelIdentityFromResolution(dealCardId, resolution, { subjectCardId: card.id }); } catch { /* verdict persistence never blocks */ } try { reconcileCanonicalIdentity({ dealCardId, actor: 'parcel-confirmation', changeReason: 'Canonical parcel identity confirmed; versioned Property Summary built from the accepted identity.' }); } catch { /* reconciliation never blocks confirmation */ }
-      try { attachCardActivity({ cardId: card.id, agentId: 'landos/intake-resolution', kind: 'parcel_resolution', summary: `Parcel confirmed from Smart Intake candidates via ${p.verificationSource ?? 'an approved parcel-level source'}; canonical identity promoted through the standard resolution path. Screenshot candidates themselves remain non-canonical evidence.`, ref: `intake-resolution:${dealCardId}` }); } catch { /* history is best-effort */ }
-      return { canonicalPromotionApplied: true, cardId: card.id, note: `Canonical identity was promoted through the standard approved path from the ${p.verificationSource ?? 'approved parcel-level source'} record (never from screenshot text). Downstream research eligibility now follows the standard confirmed-parcel gate.` };
-    } catch (error) {
-      return { canonicalPromotionApplied: false, note: `Promotion attempt failed and was skipped: ${(error as Error).message}` };
-    }
   };
 
   const beginIntakeCandidateResolution = async (
@@ -9783,34 +9553,31 @@ export function registerLandosRoutes(app: Hono): void {
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const cardId = subjectCardId(deal);
     if (!cardId) return c.json({ error: 'no subject property card' }, 409);
-    const property = getPropertyCard(cardId);
-    if (!property) return c.json({ error: 'property card not found' }, 404);
-    const alreadyVerified = property.verification_status === 'verified_property';
-    const acceptedApn = str(property.apn) ?? null;
-    const fields: ParsedIntakeFields = {
-      address: str(property.active_input_address) ?? undefined,
-      apn: acceptedApn ?? undefined,
-      county: str(property.county) ?? undefined,
-      state: str(property.state) ?? undefined,
-      city: str(property.city) ?? undefined,
-      owner: str(property.owner) ?? undefined,
-      zip: undefined,
-    };
-    const resolution = await runParallelParcelResolution(fields, LANDPORTAL_VERIFICATION_TIMEOUT_MS);
-    const { promoted, operatorConfirmationRequired } = applyParallelResolution({
-      dealCardId: id, cardId, entity: deal.entity as LandosEntity, resolution,
-      acceptedApn, alreadyVerified,
-      activeInputAddress: str(property.active_input_address) ?? null,
-      city: str(property.city) ?? null,
+    const runId = `property-resolution-compat-${id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const outcome = await propertyIntelligenceCollectors(id, 'deal_card', 'refresh').parcel_identity({
+      dealCardId: id, runId, identity: null, comparables: null,
     });
-
-    logger.info({ event: 'parallel_resolve', dealCardId: id, confirmed: resolution.confirmed, laneAgreement: resolution.laneAgreement, promoted, operatorConfirmationRequired }, 'parallel_resolve');
+    const currentDeal = getDealCard(id);
+    const currentCardId = currentDeal ? subjectCardId(currentDeal) : null;
+    if (currentCardId !== cardId) {
+      return c.json({
+        error: 'Deal Card subject changed while Property Resolution was running; the prior subject result was not returned.',
+        expectedPropertyCardId: cardId,
+        currentPropertyCardId: currentCardId,
+      }, 409);
+    }
+    const result = new CapabilityInvocationStore().latestForProperty(cardId, id);
+    const promoted = result?.subjectResolution === 'RESOLVED';
+    const operatorConfirmationRequired = result?.subjectResolution === 'AMBIGUOUS';
+    logger.info({ event: 'parallel_resolve_compatibility', dealCardId: id, capabilityInvocationId: result?.invocationId ?? null, subjectResolution: result?.subjectResolution ?? null }, 'parallel_resolve_compatibility');
     return c.json({
       dealCardId: id,
-      parallelResolution: resolution,
+      capability: PROPERTY_RESOLUTION_CAPABILITY_ID,
+      propertyResolution: result,
+      outcome: { status: outcome.status, summary: outcome.summary },
+      parallelResolution: null,
       promoted,
       operatorConfirmationRequired,
-      alreadyVerified,
     });
   });
 

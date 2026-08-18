@@ -53,7 +53,6 @@ import {
   type MissionJoin,
 } from './mission-graph.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
-import { reconcileSubjectIdentity } from './subject-identity-reconciliation.js';
 import { reconcilePropertyIntelligenceSnapshot, type PropertyIntelligenceSnapshot, type SnapshotSpecialistRecord } from './property-intelligence-snapshot.js';
 import type { SpecialistId } from './property-intelligence-specialists.js';
 import type { MissionProviderDeps } from './mission-provider-routing.js';
@@ -509,34 +508,9 @@ async function finishDealIntelligenceRun(input: {
     return null;
   }
 
-  // ── Promote whatever this run proved about WHO the subject is ────────────
-  // The lanes have settled, so any parcel identity they retrieved is now on the
-  // record. Reconcile and persist it BEFORE the package is assembled, so this
-  // run's own snapshot is built from the corrected subject rather than from the
-  // identity the run started with — and so the NEXT run fans out with it.
   //
-  // This is the step whose absence stranded 9490 Elk Lake Rd: LandPortal
-  // resolved the parcel on run 1 and every run after it, but nothing ever wrote
-  // the answer back, so twelve operator reruns each began from the same empty
-  // card. Identity promotion never blocks the run; a failure here leaves the
-  // retained identity exactly as it was.
-  try {
-    const reconciled = await reconcileSubjectIdentity(dealCardId, {
-      actor: `deal-intelligence:${options.trigger ?? 'operator'}`,
-    });
-    if (reconciled.changes.length || reconciled.conflicts.length) {
-      logger.info({
-        dealCardId,
-        runId,
-        status: reconciled.status,
-        changed: reconciled.changes.map((change) => change.field),
-        conflicts: reconciled.conflicts.length,
-      }, 'deal_intelligence_identity_promoted');
-    }
-  } catch (err) {
-    logger.warn({ err, dealCardId, runId }, 'deal_intelligence_identity_promotion_failed');
-  }
-
+  // Snapshot assembly never changes the capability root's subject. Late
+  // evidence waits for a later Property Resolution invocation.
   try {
     // ── Operator: assemble the exact input package ────────────────────────
     const pkg = assembleDealIntelligencePackage({

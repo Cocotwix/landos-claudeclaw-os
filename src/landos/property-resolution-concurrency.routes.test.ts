@@ -7,6 +7,8 @@ const CONTROL = vi.hoisted(() => ({
   release: (() => undefined) as () => void,
   started: Promise.resolve(),
   signalStarted: (() => undefined) as () => void,
+  skipCapability: false,
+  mockStatus: 'blocked' as 'completed' | 'blocked',
 }));
 
 vi.mock('./property-intelligence-live.js', async (importOriginal) => {
@@ -18,6 +20,7 @@ vi.mock('./property-intelligence-live.js', async (importOriginal) => {
         CONTROL.calls += 1;
         CONTROL.signalStarted();
         await CONTROL.gate;
+        if (CONTROL.skipCapability) return { status: CONTROL.mockStatus, summary: 'pre-seeded capability result', data: null };
         const { getDealCard, resolveSubjectPropertyCard } = await import('./deal-card.js');
         const { invokeRuntimeCapability } = await import('./capability-registry.js');
         const deal = getDealCard(ctx.dealCardId)!;
@@ -43,8 +46,9 @@ vi.mock('./browser-session.js', async (importOriginal) => {
 import { buildDashboardApp } from '../dashboard.js';
 import { _initTestDatabase } from '../db.js';
 import { _initTestLandosDb, getLandosDb } from './db.js';
-import { createDealCard, linkPropertyToDeal } from './deal-card.js';
+import { createDealCard, linkPropertyToDeal, unlinkPropertyFromDeal } from './deal-card.js';
 import { upsertPropertyCard } from './property-card.js';
+import { invokeRuntimeCapability } from './capability-registry.js';
 
 const TOKEN = 'test-contract-token';
 let app: Hono;
@@ -56,6 +60,8 @@ beforeEach(() => {
   CONTROL.calls = 0;
   CONTROL.gate = new Promise<void>((resolve) => { CONTROL.release = resolve; });
   CONTROL.started = new Promise<void>((resolve) => { CONTROL.signalStarted = resolve; });
+  CONTROL.skipCapability = false;
+  CONTROL.mockStatus = 'blocked';
 });
 
 const post = (url: string) => app.request(`${url}?token=${TOKEN}`, {
@@ -63,6 +69,57 @@ const post = (url: string) => app.request(`${url}?token=${TOKEN}`, {
 });
 
 describe('standalone Deal Card Property Resolution single-flight', () => {
+  it('never returns the prior subject result when the Deal Card subject changes mid-run', async () => {
+    const { card: original } = upsertPropertyCard({ entity: 'TY_LAND_BIZ', activeInputAddress: 'Original subject', state: 'TN' });
+    const { card: replacement } = upsertPropertyCard({ entity: 'TY_LAND_BIZ', activeInputAddress: 'Replacement subject', state: 'TN' });
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Subject transition deal' });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: original.id, role: 'subject' });
+    const pending = post(`/api/landos/deal-cards/${deal.id}/parallel-resolve`);
+    await CONTROL.started;
+    expect(unlinkPropertyFromDeal(deal.id, original.id)).toBe(true);
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: replacement.id, role: 'subject' });
+    CONTROL.release();
+    const response = await pending;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ expectedPropertyCardId: original.id, currentPropertyCardId: replacement.id });
+  });
+
+  it.each(['RESOLVED', 'AMBIGUOUS', 'UNRESOLVED'] as const)('parallel-resolve compatibility returns normalized %s gating from the canonical capability', async (subjectResolution) => {
+    const { card } = upsertPropertyCard({ entity: 'TY_LAND_BIZ', activeInputAddress: 'Compatibility parcel', state: 'TN' });
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Compatibility deal' });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
+    const lanes = subjectResolution === 'RESOLVED'
+      ? { official_parcel: async () => ({
+          lane: 'official_parcel' as const, status: 'evidence' as const, note: 'official match',
+          source: { label: 'County Assessor', url: 'https://county.example.gov/parcel', officiality: 'official' as const },
+          patch: { apn: '042-123.00-000', county: 'Williamson', state: 'TN', verified: true, verificationSource: 'County Assessor' },
+        }) }
+      : subjectResolution === 'AMBIGUOUS'
+        ? { official_parcel: async () => ({
+            lane: 'official_parcel' as const, status: 'evidence' as const, note: 'two candidates',
+            ambiguousCandidates: [
+              { apn: '042-123.00-000', county: 'Williamson', state: 'TN' },
+              { apn: '042-124.00-000', county: 'Williamson', state: 'TN' },
+            ],
+          }) }
+        : {};
+    const seeded = await invokeRuntimeCapability({
+      capabilityId: 'property-resolution', caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'raw_property', entity: 'TY_LAND_BIZ', rawInput: 'Map 042 Parcel 123, Fairview TN', target: { dealCardId: deal.id, propertyCardId: card.id } },
+      mode: 'refresh',
+    }, { universalOptions: { lanes } });
+    expect(seeded.subjectResolution).toBe(subjectResolution);
+    CONTROL.skipCapability = true;
+    CONTROL.mockStatus = subjectResolution === 'RESOLVED' ? 'completed' : 'blocked';
+    CONTROL.gate = Promise.resolve();
+    const response = await post(`/api/landos/deal-cards/${deal.id}/parallel-resolve`);
+    expect(response.status).toBe(200);
+    const body = await response.json() as any;
+    expect(body.propertyResolution.subjectResolution).toBe(subjectResolution);
+    expect(body.promoted).toBe(subjectResolution === 'RESOLVED');
+    expect(body.operatorConfirmationRequired).toBe(subjectResolution === 'AMBIGUOUS');
+  });
+
   it('reuses the durable in-flight lock before any second provider workflow starts', async () => {
     const { card } = upsertPropertyCard({
       entity: 'TY_LAND_BIZ', activeInputAddress: 'Concurrency parcel', apn: '042-123.00-000', county: 'Williamson', state: 'TN',

@@ -15,7 +15,14 @@ describe('one Property Resolution implementation serves every caller', () => {
     expect(directCallers).toEqual(['property-resolution-capability.ts']);
 
     const routes = read('src/landos/routes.ts');
+    const dealRun = read('src/landos/deal-intelligence-run.ts');
     expect(routes).not.toMatch(/\bresolveProperty\s*\(/);
+    expect(routes).not.toContain('runParallelParcelResolution(');
+    expect(routes).not.toContain('applyParallelResolution(');
+    expect(routes).not.toContain('resolveParcelParallel(');
+    expect(routes).not.toContain('promoteConfirmedIntakeResolution');
+    expect(routes).not.toContain('persistParcelIdentityFromResolution');
+    expect(dealRun).not.toContain('reconcileSubjectIdentity(');
     expect(routes).toContain("caller: { type: 'tools'");
     expect(routes).toContain("dealIntelligenceCapabilities(deal.id, 'new_lead', 'reuse')");
     expect(routes).toContain("propertyIntelligenceCollectors(id, 'deal_card', 'refresh')");
@@ -55,5 +62,27 @@ describe('one Property Resolution implementation serves every caller', () => {
     expect(tools).toContain('without creating a lead');
     expect(deal).toContain('/property-resolution/run');
     expect(deal).toContain('deal-card-property-resolution-refresh');
+  });
+
+  it('keeps the legacy parallel-resolve URL as a normalized capability adapter only', () => {
+    const routes = read('src/landos/routes.ts');
+    const block = routes.slice(
+      routes.indexOf("app.post('/api/landos/deal-cards/:id/parallel-resolve'"),
+      routes.indexOf('// Parcel overlay evidence maps'),
+    );
+    expect(block).toContain("propertyIntelligenceCollectors(id, 'deal_card', 'refresh').parcel_identity");
+    expect(block).toContain('latestForProperty(cardId, id)');
+    expect(block).not.toMatch(/writeParcelIdentity|upsertCardFromDukeRun|attachCardSourceEvidence|resolveParcelParallel/);
+  });
+
+  it('keeps Smart Intake promotion inside the capability-owned raw-target transition', () => {
+    const routes = read('src/landos/routes.ts');
+    const block = routes.slice(
+      routes.indexOf('const beginIntakeCandidateResolution'),
+      routes.indexOf("app.post('/api/landos/deal-cards/:id/intake'"),
+    );
+    expect(block).toContain('invokeRuntimeCapability({');
+    expect(block).toContain("caller: { type: 'new_lead'");
+    expect(block).not.toMatch(/upsertCardFromDukeRun|writeParcelIdentity|persistParcelIdentityFromResolution/);
   });
 });
