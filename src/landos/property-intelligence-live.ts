@@ -37,6 +37,7 @@ import {
   type IdentityLaneResult,
   type IndexedWebLaneOptions,
   type JurisdictionLaneOptions,
+  type ResolverIdentityPatch,
   type UniversalResolutionResult,
 } from './universal-property-resolution.js';
 import type { LandPortalSearchPackage } from './landportal-subject-upgrade.js';
@@ -144,16 +145,22 @@ export interface ExactAddressWebResult {
   persistence?: SubjectListingWriteResult;
 }
 
+interface PublicIdentityLookupResult {
+  ok: boolean;
+  error?: string;
+  patch?: ResolverIdentityPatch | null;
+  source?: { label: string; url?: string | null };
+}
+
 export interface LiveCollectorDeps {
   /** Workflow identity only; it never changes resolver logic. */
   resolutionCaller?: CapabilityCallerType;
   /** Deal Card refreshes are explicit; automatic/internal callers normally reuse. */
   resolutionMode?: CapabilityInvocationMode;
-  /**
-   * Runs the canonical public property intelligence lane (official parcel
-   * lookup + the free public screening adapters) and persists its run.
-   */
-  runPublicIntelligence: (dealCardId: number) => Promise<{ ok: boolean; error?: string }>;
+  /** Identity-only official lookup. It neither fans out nor writes canonical identity. */
+  runPublicIntelligence: (dealCardId: number) => Promise<PublicIdentityLookupResult>;
+  /** Existing public-intelligence orchestration, invoked only by a dependent post-resolution lane. */
+  runPublicIntelligenceAfterResolution?: (dealCardId: number) => Promise<{ ok: boolean; error?: string }>;
   /** Zillow public land comps, already scoped to the subject market. */
   captureZillowComps?: (input: {
     address: string | null; city: string | null; county: string | null; state: string | null; zip: string | null;
@@ -537,11 +544,11 @@ async function collectParcelIdentityUnlocked(
     return {
       lane: 'official_parcel',
       status: outcome.result?.ok ? 'evidence' : outcome.timedOut ? 'unavailable' : outcome.error ? 'error' : 'no_evidence',
-      // The public run persists its own official parcel match.
       note: outcome.result?.ok
-        ? 'The official/statewide public parcel run completed and persisted its match.'
+        ? 'The official/statewide public parcel lookup returned an identity match.'
         : outcome.timedOut ? 'The public parcel refresh exceeded its identity handoff window.' : 'The public parcel run matched no official record.',
-      source: { label: 'Official public parcel sources', url: null, officiality: 'official' },
+      patch: outcome.result?.patch ?? null,
+      source: { label: outcome.result?.source?.label ?? 'Official public parcel sources', url: outcome.result?.source?.url ?? null, officiality: 'official' },
     };
   });
   const promoteSubjectIdentity = deps.promoteSubjectIdentity
@@ -567,9 +574,10 @@ async function collectParcelIdentityUnlocked(
       lane: 'official_parcel',
       status: outcome.result?.ok ? 'evidence' : outcome.error ? 'error' : 'no_evidence',
       note: outcome.result?.ok
-        ? 'The official/statewide public parcel run completed against the enriched jurisdiction and persisted its match.'
+        ? 'The official/statewide public parcel lookup returned an identity match against the enriched jurisdiction.'
         : `The re-aimed official parcel run matched no official record${outcome.result?.error ? ` (${outcome.result.error})` : ''}.`,
-      source: { label: 'Official public parcel sources', url: null, officiality: 'official' },
+      patch: outcome.result?.patch ?? null,
+      source: { label: outcome.result?.source?.label ?? 'Official public parcel sources', url: outcome.result?.source?.url ?? null, officiality: 'official' },
     };
   };
 
@@ -1613,9 +1621,9 @@ function landPortalSubjectProviderAdapter(input: {
 }
 
 function publicPropertyProviderAdapter(input: {
-  execute: () => Promise<{ ok: boolean; error?: string }>;
+  execute: () => Promise<PublicIdentityLookupResult>;
 }): PropertyProviderAdapter<{
-  capture: { ok: boolean; error?: string };
+  capture: PublicIdentityLookupResult;
   card: ReturnType<typeof getPropertyCard>;
 }> {
   return {
@@ -1626,22 +1634,22 @@ function publicPropertyProviderAdapter(input: {
       return { capture, card: getPropertyCard(property.propertyCardId) };
     },
     validate: (_property, execution) => {
-      const verified = hasVerifiedPropertyCard(execution.card as unknown as Record<string, unknown> | null);
+      const verified = execution.capture.ok && !!execution.capture.patch;
       return {
         valid: true,
         subjectClassification: verified ? 'verified_subject' : 'no_match',
         checks: [
           { check: 'public_lookup_attempted', passed: true, reason: execution.capture.error ?? (execution.capture.ok ? 'Public lookup completed.' : 'Public lookup returned no match.') },
-          { check: 'official_subject_match', passed: verified, reason: verified ? 'Official public identity is accepted on the Property Card.' : 'No accepted official subject match was retained.' },
+          { check: 'official_subject_match', passed: verified, reason: verified ? 'Official public identity evidence was returned to Property Resolution.' : 'No official subject match was returned.' },
         ],
         rejectedEvidenceIds: [],
       };
     },
     normalize: (property, execution, validation) => {
-      if (validation.subjectClassification !== 'verified_subject' || !execution.card) return [];
-      const card = execution.card as unknown as Record<string, unknown>;
-      return ['apn', 'owner', 'acres', 'county', 'state', 'active_input_address'].flatMap((field): NormalizedPropertyEvidence[] => {
-        const value = card[field];
+      if (validation.subjectClassification !== 'verified_subject' || !execution.capture.patch) return [];
+      const patch = execution.capture.patch as Record<string, unknown>;
+      return ['apn', 'owner', 'acres', 'county', 'state', 'address'].flatMap((field): NormalizedPropertyEvidence[] => {
+        const value = patch[field];
         if (!str(value)) return [];
         return [{
           id: `public-property:${field}`,
@@ -1652,7 +1660,7 @@ function publicPropertyProviderAdapter(input: {
           value,
           subjectClassification: 'verified_subject',
           strength: 'official_record',
-          sourceUrl: null,
+          sourceUrl: execution.capture.source?.url ?? null,
           retrievedAt: new Date().toISOString(),
           confidence: 'high',
           kind: 'fact',
@@ -2554,7 +2562,12 @@ export function makeLivePropertyIntelligenceCollectors(deps: LiveCollectorDeps):
       // collector releases one canonical subject.
       return collectParcelIdentity(ctx, deps);
     },
-    government_records: (ctx) => collectGovernmentRecords(ctx),
+    government_records: async (ctx) => {
+      if (deps.runPublicIntelligenceAfterResolution) {
+        await deps.runPublicIntelligenceAfterResolution(ctx.dealCardId).catch(() => ({ ok: false }));
+      }
+      return collectGovernmentRecords(ctx);
+    },
     zoning_land_use: (ctx) => collectZoningLandUse(ctx),
     environmental_terrain: (ctx) => collectEnvironmentalTerrain(ctx),
     access_utilities: (ctx) => collectAccessUtilities(ctx),

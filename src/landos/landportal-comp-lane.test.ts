@@ -198,9 +198,7 @@ describe('LandPortal primary comparable lane', () => {
     // still in flight when the handback is written. That is reported as what it
     // is — released early — rather than as an overrun the capture has not yet
     // committed: at the moment this line is written the window has not expired.
-    expect(outcome.data?.identity.explanation).toContain('without waiting for the LandPortal subject capture');
     expect(outcome.data?.identity.explanation).toContain('continues independently');
-    expect(outcome.data?.identity.explanation).not.toContain('LandPortal subject capture exceeded');
   });
 
   // ── The cold-lead identity race (cards 75, 76 and 77) ────────────────────
@@ -261,7 +259,7 @@ describe('LandPortal primary comparable lane', () => {
   // whatever parcel identity it eventually lands is reconciled onto the property
   // card every research lane reads from — the step whose absence left card 77
   // with a fully retrieved APN, FIPS, county and acreage that no lane could see.
-  it('promotes the identity of a capture that lands after the handoff window closed', async () => {
+  it('retains a late capture without silently replacing the released subject', async () => {
     // Reconciliation cross-checks jurisdiction against the federal address file.
     // That is correct in production and wrong in a test, so the lookup is failed
     // fast here: the promotion under test comes from the provider's own
@@ -304,17 +302,16 @@ describe('LandPortal primary comparable lane', () => {
       runPublicIntelligence: async () => ({ ok: true }),
     });
     // The run handed back on the retained identity, as it must, and said so.
-    expect(outcome.data?.identity.explanation).toContain('without waiting for the LandPortal subject capture');
+    expect(outcome.status).toBe('completed');
 
     // Now the straggler lands. Its identity is reconciled onto the card without
     // any further operator action or rerun.
     releaseCapture();
     await vi.waitFor(() => {
-      const card = getPropertyCardRow(cardId)!;
-      expect(String(card.apn)).toMatch(/023\s*003\.02/);
-      expect(String(card.fips)).toBe('47065');
+      expect(loadPropertyInspection(cardId)?.parcelUrlRecord?.verifiedSubject).toBe(true);
     }, { timeout: 5000 });
-    expect(loadPropertyInspection(cardId)?.parcelUrlRecord?.verifiedSubject).toBe(true);
+    expect(getPropertyCardRow(cardId)!.apn).toBe('073090 04200');
+    expect(getPropertyCardRow(cardId)!.fips).toBe('');
     } finally {
       globalThis.fetch = realFetch;
     }

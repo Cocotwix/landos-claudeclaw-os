@@ -43,8 +43,6 @@ import {
   LIVE_DATA_ENV_KEYS,
   type LiveDataPreflight,
 } from './live-data-preflight.js';
-import { runPropertyAnalysis } from './property-analysis.js';
-import { savePropertyAnalysisReport } from './property-analysis-report.js';
 import { rosterSummary, getAgentDef } from './agent-roster.js';
 import { knowledgeStoreStatus, resolveKnowledgeStore } from './knowledge-store-r2.js';
 import { DataProviderRegistry, DEFAULT_DATA_SOURCES, REALIE_ENV_KEY } from './providers/data-registry.js';
@@ -114,8 +112,7 @@ import fs from 'fs';
 import path from 'path';
 import { routeDukeRequest } from './duke-router.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
-import { runDukeVerification, mapResolveToVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
-import { resolveParcelIdentityResult } from './parcel-capability.js';
+import { runDukeVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
 import { distanceMiles, fetchZillowLandComps } from './zillow-land-comps.js';
 import { fetchRedfinLandComps } from './redfin-land-comps.js';
 import { fetchRealtorLandComps } from './realtor-land-comps.js';
@@ -135,7 +132,7 @@ import { buildSmartIntake } from './smart-intake.js';
 import { parseConversationalLeadIntake } from './conversational-lead-intake.js';
 import { buildLeadCardTitle, streetReferenceFrom, unresolvedLeadStorageLabel, isPlaceholderPropertyLabel } from './lead-identity.js';
 import { planResolver, smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
-import { apnSearchVariants, ownerSearchVariants } from './landportal-client.js';
+import { apnSearchVariants, ownerSearchVariants, lpResolveForPreflight, type LpResolveResult } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
 import { invokeRuntimeCapability, listRuntimeCapabilities } from './capability-registry.js';
 import { CapabilityInvocationStore } from './capability-store.js';
@@ -771,7 +768,7 @@ function scheduleResearchMission(missionId: number): void {
       const statedAcres = Number(meaningfulStr(observedFacts.Acres));
       const calculatedAcres = Number(meaningfulStr(observedFacts['Calc Acres']));
       const observedAcres = Number.isFinite(statedAcres) && statedAcres > 0 ? statedAcres : calculatedAcres;
-      upsertPropertyCard({
+      const { card: acceptedPropertyCard } = upsertPropertyCard({
         entity: running.entity, cardId: running.primaryPropertyCardId,
         activeInputAddress: mission.constraints.address ?? str(prop.active_input_address) ?? running.title,
         city: observedCity, county: observedCounty, state: observedState, apn: observedApn,
@@ -795,8 +792,14 @@ function scheduleResearchMission(missionId: number): void {
       // automation; no paid LandPortal workflow is involved.
       const marketTrace: Array<Record<string, unknown>> = [];
       try {
+        if (isCandidate) {
+          marketTrace.push({
+            provider: 'Zillow / Redfin browser', stage: 'comparable_market', status: 'not_attempted',
+            note: 'Marketplace research remains blocked until Property Resolution establishes one canonical parcel.',
+          });
+        } else {
         const marketRun = await runDealCardReport(running.legacyDealCardId, {
-          resolve: resolveParcelIdentityResult,
+          resolve: buildPersistedResolver(acceptedPropertyCard as unknown as Record<string, unknown>),
           timeoutMs: PHASE1_RESEARCH_LANE_TIMEOUT_MS,
           actor: 'property-research-agent',
           compResearchDriver: makeLiveBrowserDriver('market_research'),
@@ -813,6 +816,7 @@ function scheduleResearchMission(missionId: number): void {
         }
         if (!research?.attempts?.length) {
           marketTrace.push({ provider: 'Zillow / Redfin browser', stage: 'comparable_market', status: 'not_attempted', note: 'No browser marketplace attempt was returned by the report workflow.' });
+        }
         }
       } catch (error) {
         marketTrace.push({ provider: 'Zillow / Redfin browser', stage: 'comparable_market', status: 'error', note: error instanceof Error ? error.message : 'Marketplace browser research failed before results could be returned.' });
@@ -5742,14 +5746,52 @@ export function registerLandosRoutes(app: Hono): void {
     );
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
     const sellerAskUsd = num(body.sellerAskUsd);
-    // Parse the parcel identifier and attempt the bounded LandPortal exact
-    // lookup (never a comp tool/credit, never coordinates). A full street
-    // address is a valid identifier and is mapped truthfully (e.g. needs
-    // county/FIPS), never "no parcel identifier".
-    const verification = await runDukeVerification(text, {
-      resolve: resolveParcelIdentityResult,
+    let exactResolve: LpResolveResult | null = null;
+    const capability = await runToolsPropertyResolution({
+      rawInput: text,
+      entity: isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ',
+      refresh: body.refresh === true,
+    }, {
+      exactCompatibility: true,
+      onExactResolve: (result) => { exactResolve = result; },
+    });
+    const canonical = (capability.facts.canonicalIdentity ?? {}) as Record<string, unknown>;
+    const parcelVerified = capability.subjectResolution === 'RESOLVED';
+    const capabilityVerification: DukeVerificationResult = {
+      status: parcelVerified ? 'parcel_verified' : 'unverified',
+      parcelVerified,
+      ...(parcelVerified ? {
+        verificationSource: capability.evidence[0]?.source ?? 'LandOS Property Resolution Capability',
+        identity: {
+          apn: str(canonical.apn), fips: str(canonical.fips), propertyId: str(canonical.landPortalPropertyId),
+          situsAddress: str(canonical.address), city: str(canonical.city), county: str(canonical.county),
+          state: str(canonical.state), owner: str(canonical.owner), acres: num(canonical.acres),
+        },
+      } : {}),
+      sourceAttempts: capability.evidence.map((item) => ({
+        source: item.source,
+        status: parcelVerified ? 'verified' as const : 'not_verified' as const,
+        reason: str(capability.facts.identityBasis) ?? capability.subjectResolution,
+        truthLabel: parcelVerified ? 'verified_fact' as const : 'attempted_lookup' as const,
+      })),
+      dataGaps: capability.missingInformation,
+      nextAction: capability.missingInformation.join('; ') || undefined,
+      localAreaContextLabel: parcelVerified ? undefined : 'Local Area Context — Not Parcel Verified',
+      marketPulseEligible: parcelVerified,
+      strategyUnderwritingBlocked: !parcelVerified,
+      summary: str(capability.facts.identityBasis) ?? `Property Resolution returned ${capability.subjectResolution}.`,
+      executionMode: 'duke_verification_read_only',
+    };
+    const exactVerification = await runDukeVerification(text, {
+      resolve: async () => {
+        if (!exactResolve) throw new Error('Exact provider returned no result inside Property Resolution.');
+        return exactResolve;
+      },
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
     });
+    const verification = capability.subjectResolution === 'RESOLVED'
+      ? exactVerification.parcelVerified ? exactVerification : capabilityVerification
+      : exactVerification;
     // Duke first-pass analysis (flags + strategy candidates/readiness) from the
     // verified property data. Unverified -> blocked, no fabricated offers.
     const dukeAnalysis = buildDukeAnalysis({
@@ -5771,7 +5813,7 @@ export function registerLandosRoutes(app: Hono): void {
     // (a parcel input like propertyid+FIPS has no area words in the text). This
     // uses the source's county/state name — never coordinates/proximity.
     const area = extractAreaSignals(text);
-    const verifiedId = verification.propertyData?.identity;
+    const verifiedId = verification.propertyData?.identity ?? verification.identity;
     const marketPulse = buildMarketPulseV1({
       city: area.city,
       county: verifiedId?.county ?? area.county,
@@ -5803,7 +5845,7 @@ export function registerLandosRoutes(app: Hono): void {
       { event: 'duke_verification_result', status: verification.status, parcelVerified: verification.parcelVerified, dataGaps: verification.dataGaps, strategyStatus: dukeAnalysis.strategyStatus, marketPulseEligible: marketPulse.eligible, landScored: !!landScore, imageryCaptured: imagery ? !imagery.notCaptured : false },
       'duke_verification_result',
     );
-    return c.json({ verification, dukeAnalysis, acePrep, marketPulse, dealCardUpdatePlan, landScore, imagery });
+    return c.json({ capability, verification, dukeAnalysis, acePrep, marketPulse, dealCardUpdatePlan, landScore, imagery });
   });
 
   // Verified-ONLY Deal Card creation. Re-runs the SAME bounded non-credit
@@ -5817,100 +5859,33 @@ export function registerLandosRoutes(app: Hono): void {
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
     const entity = str(body.entity);
     if (!isEntity(entity)) return c.json({ error: 'entity must be LAND_ALLY or TY_LAND_BIZ' }, 400);
-    const sellerAskUsd = num(body.sellerAskUsd);
+    const capability = await runToolsPropertyResolution({ rawInput: text, entity, refresh: body.refresh === true });
+    const parcelVerified = capability.subjectResolution === 'RESOLVED';
 
-    const verification = await runDukeVerification(text, {
-      resolve: resolveParcelIdentityResult,
-      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
-    });
-
-    // UNVERIFIED -> local area context only, NO Deal Card (fail loud, never fake).
-    if (!verification.parcelVerified || !verification.propertyData) {
+    // This legacy conversion URL is now research-only. Creating a CRM record
+    // belongs to New Lead, whose raw-target capability transition owns identity.
+    if (!parcelVerified) {
       const area = extractAreaSignals(text);
-      const idu = verification.propertyData?.identity;
       const marketPulse = buildMarketPulseV1({
         city: area.city,
-        county: idu?.county ?? area.county,
-        state: idu?.state ?? area.state,
+        county: area.county,
+        state: area.state,
         parcelVerified: false,
       });
       return c.json({
         created: false,
         parcelVerified: false,
-        reason: 'Local Area Context — Not Parcel Verified',
-        verification,
+        reason: 'Local Area Context — Not Parcel Verified', capability,
         marketPulse,
       });
     }
-
-    // VERIFIED -> upsert the property card from the verified identity, then
-    // find-or-create its Deal Card. Identity comes ONLY from the verified
-    // LandPortal source — never imagery/coordinates.
-    const pid = verification.propertyData.identity;
-    const acres = verification.propertyData.landFacts.acres;
-    const ownerOnRecord = pid.owner;
-    const { card } = upsertCardFromDukeRun({
-      entity,
-      agentId: 'duke-due-diligence',
-      activeInputAddress: pid.situsAddress || text.trim(),
-      county: pid.county,
-      state: pid.state,
-      apn: pid.apn,
-      lpPropertyId: pid.propertyId,
-      fips: pid.fips,
-      owner: ownerOnRecord,
-      acres: typeof acres === 'number' ? acres : undefined,
-      verified: true,
-      verificationSource: 'LandPortal exact (non-credit)',
-      summary: verification.propertyData.note,
-    });
-    const dealCardId = ensureDealCardForProperty({
-      cardId: card.id,
-      entity,
-      title: pid.situsAddress || pid.apn || `Deal ${card.id}`,
-    });
-
-    // Populate DD/Market/Strategy via the EXISTING safe non-credit report
-    // workflow (same path as Run Report). Best-effort: a populate failure never
-    // loses the verified Deal Card.
-    let reportWarnings: string[] = [];
-    try {
-      const rep = (await runDealCardReport(dealCardId, {
-        resolve: resolveParcelIdentityResult,
-        timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
-        actor: 'tyler/from-verification',
-        googleVisualConfigured: googleVisualConfiguredResolved(),
-        captureZillowComps: fetchZillowLandComps,
-        captureRedfinComps: fetchRedfinLandComps,
-        compResearchDriver: makeLiveBrowserDriver('comp_research'),
-      })) as { warnings?: string[] } | null;
-      if (rep && Array.isArray(rep.warnings)) reportWarnings = rep.warnings;
-    } catch {
-      reportWarnings = ['Worksheet population deferred — run the report from the Deal Card.'];
-    }
-    // Parcel just confirmed → the full public intelligence mission continues
-    // automatically (background, guarded, free approved sources only).
-    ensurePublicIntelligenceMission(dealCardId, 'verification');
-
-    const landScore = computeLandScoreFromPropertyData(verification.propertyData);
-
-    // Owner-mismatch is a NOTE, not a failure (possible inherited/pre-transfer).
-    const lead = str(body.leadName);
-    const ownerNote =
-      lead && ownerOnRecord && lead.trim().toLowerCase() !== ownerOnRecord.trim().toLowerCase()
-        ? `Owner on record: ${ownerOnRecord} / Lead: ${lead} — do not match (possible inherited/pre-transfer).`
-        : null;
-
     return c.json({
-      created: true,
+      created: false,
       parcelVerified: true,
-      dealCardId,
-      propertyCardId: card.id,
-      landScore,
-      ownerNote,
-      sellerAskUsd: sellerAskUsd ?? null,
-      reportWarnings,
+      reason: 'Property resolved. Create the CRM record through New Lead so canonical capability persistence remains authoritative.',
+      capability,
     });
+
   });
 
   // ── One-button Property Analysis (the normal dashboard path) ───────────────
@@ -5925,65 +5900,23 @@ export function registerLandosRoutes(app: Hono): void {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const text = str(body.text);
     if (!text || !text.trim()) return c.json({ error: 'text required' }, 400);
-    const entity = isEntity(str(body.entity)) ? (str(body.entity) as LandosEntity) : undefined;
-    logger.info(
-      { event: 'property_analysis_request', hasText: !!text, textLen: text.length, hasEntity: !!entity },
-      'property_analysis_request',
-    );
-
-    const result = await runPropertyAnalysis(text, { entity }, {
-      resolve: resolveParcelIdentityResult,
-      timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
-      // Verified-only Deal Card upsert from the named-source identity (never a
-      // client 'verified' flag; identity never from coordinates).
-      upsertDealCard: entity
-        ? (v, ent, input) => {
-            const pid = v.identity ?? {};
-            const acres = v.propertyData?.landFacts.acres;
-            const { card } = upsertCardFromDukeRun({
-              entity: ent,
-              agentId: 'duke-due-diligence',
-              activeInputAddress: pid.situsAddress || input.trim(),
-              county: pid.county,
-              state: pid.state,
-              apn: pid.apn,
-              lpPropertyId: pid.propertyId,
-              fips: pid.fips,
-              owner: pid.owner,
-              acres: typeof acres === 'number' ? acres : undefined,
-              verified: true,
-              verificationSource: v.verificationSource ?? 'LandPortal exact (non-credit)',
-              summary: v.propertyData?.note ?? v.summary,
-            });
-            const dealCardId = ensureDealCardForProperty({
-              cardId: card.id,
-              entity: ent,
-              title: pid.situsAddress || pid.apn || `Deal ${card.id}`,
-            });
-            return { dealCardId, propertyCardId: card.id };
-          }
-        : undefined,
+    const capability = await runToolsPropertyResolution({
+      rawInput: text,
+      entity: isEntity(str(body.entity)) ? str(body.entity) : 'TY_LAND_BIZ',
+      refresh: body.refresh === true,
     });
-
-    // Persist Markdown (+ local PDF when pdfkit is installed) under store/.
-    let report = { markdownPath: '', pdfPath: null as string | null, pdfReason: '' };
-    try {
-      report = await savePropertyAnalysisReport(result);
-    } catch (err) {
-      report = { markdownPath: '', pdfPath: null, pdfReason: `report persistence failed: ${(err as Error)?.message ?? 'unknown'}` };
-    }
-
-    logger.info(
-      {
-        event: 'property_analysis_result',
-        verified: result.verified, verdict: result.verdict, offerReadiness: result.offerReadiness,
-        providerCalls: result.providerCallCount, spendUsd: result.actualSpendUsd,
-        compsRan: result.redfinComps.ran, compCount: result.redfinComps.comps.length,
-        pdf: !!report.pdfPath,
+    return c.json({
+      capability,
+      result: {
+        verified: capability.subjectResolution === 'RESOLVED',
+        verdict: capability.subjectResolution,
+        offerReadiness: 'blocked_until_new_lead',
+        providerCallCount: capability.evidence.length,
+        actualSpendUsd: 0,
+        note: 'Legacy Property Analysis is now a Property Resolution research adapter. Create a New Lead to run downstream Deal Intelligence.',
       },
-      'property_analysis_result',
-    );
-    return c.json({ result, report });
+      report: { markdownPath: '', pdfPath: null, pdfReason: 'No report is created by one-off property research.' },
+    });
   });
 
   // ── Smart Address Search (free/open providers; no paid dependency) ────────
@@ -6030,10 +5963,14 @@ export function registerLandosRoutes(app: Hono): void {
   // Matched | Needs Clarification with the canonical NormalizedProperty + the
   // lane-by-lane trace. Free Census/Photon + budgeted Realie exact resolve;
   // browser lanes parked. Never opens an empty shell.
-  const runToolsPropertyResolution = async (body: Record<string, unknown>) => {
+  async function runToolsPropertyResolution(
+    body: Record<string, unknown>,
+    options: { exactCompatibility?: boolean; onExactResolve?: (result: LpResolveResult) => void } = {},
+  ) {
     const rawInput = str(body.rawInput) ?? str(body.text);
     if (!rawInput?.trim()) throw new Error('rawInput is required');
     const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    const exactArgs = options.exactCompatibility ? extractPropertyArgs(rawInput) : null;
     return invokeRuntimeCapability({
       capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
       caller: { type: 'tools', ref: 'tools:property-resolver' },
@@ -6042,18 +5979,63 @@ export function registerLandosRoutes(app: Hono): void {
       context: { surface: 'tools', tool: 'property-resolver' },
     }, {
       universalOptions: {
-        indexedWeb: {
-          search: createHermesFreeSearch(),
-          fetchText: defaultGovFetchText,
-          maxQueries: 3,
-          maxPages: 3,
-          timeoutMs: 20_000,
-        },
-        jurisdiction: { timeoutMs: 15_000 },
+        ...(exactArgs ? { lanes: { landportal: async () => {
+          try {
+            const resolved = await lpResolveForPreflight(exactArgs, LANDPORTAL_VERIFICATION_TIMEOUT_MS);
+            options.onExactResolve?.(resolved);
+            if (!resolved.verified) {
+              return {
+                lane: 'landportal' as const,
+                status: 'no_evidence' as const,
+                note: resolved.match_notes ?? `Exact lookup returned ${resolved.status}.`,
+                source: { label: resolved.source ?? 'LandPortal exact lookup', url: null, officiality: 'officially_linked' as const },
+              };
+            }
+            const summary = resolved.property_summary;
+            const acres = Number(summary?.lot_size_acres ?? summary?.calc_acres);
+            return {
+              lane: 'landportal' as const,
+              status: 'evidence' as const,
+              note: resolved.match_notes ?? 'Exact parcel identity returned.',
+              patch: {
+                apn: resolved.apn ?? summary?.apn,
+                fips: resolved.fips,
+                lpPropertyId: resolved.propertyid ?? summary?.propertyid,
+                address: resolved.situs_address ?? summary?.situs_address,
+                city: resolved.city ?? summary?.city,
+                county: summary?.county,
+                state: resolved.state ?? summary?.state,
+                zip: summary?.zip,
+                owner: resolved.owner ?? summary?.owner,
+                acres: Number.isFinite(acres) && acres > 0 ? acres : null,
+                verified: true,
+                verificationSource: resolved.source ?? 'LandPortal exact lookup',
+              },
+              source: { label: resolved.source ?? 'LandPortal exact lookup', url: null, officiality: 'officially_linked' as const },
+            };
+          } catch (error) {
+            return {
+              lane: 'landportal' as const,
+              status: 'error' as const,
+              note: error instanceof Error ? error.message : 'Exact parcel lookup failed.',
+              source: { label: 'LandPortal exact lookup', url: null, officiality: 'officially_linked' as const },
+            };
+          }
+        } } } : {}),
+        ...(!options.exactCompatibility ? {
+          indexedWeb: {
+            search: createHermesFreeSearch(),
+            fetchText: defaultGovFetchText,
+            maxQueries: 3,
+            maxPages: 3,
+            timeoutMs: 20_000,
+          },
+          jurisdiction: { timeoutMs: 15_000 },
+        } : {}),
         deadlineMs: 65_000,
       },
     });
-  };
+  }
 
   app.get('/api/landos/capabilities', (c) => c.json({ capabilities: listRuntimeCapabilities() }));
 
@@ -6909,6 +6891,23 @@ export function registerLandosRoutes(app: Hono): void {
     persistProviderResult: (result) => propertyResearchStore.persistProviderResult(result),
     captureHermesLandPortal: (input) => runHermesLandPortalLane(input),
     runPublicIntelligence: async (id) => {
+      const deal = getDealCard(id);
+      const property = deal ? resolveSubjectPropertyCard(deal).card ?? {} : {};
+      const lookup = await lookupOfficialParcel({
+        address: str(property.active_input_address) ?? str(property.address),
+        county: str(property.county),
+        state: str(property.state),
+        apn: str(property.apn),
+        owner: str(property.owner),
+      }, 25_000);
+      if (!lookup.parcel) return { ok: false, error: lookup.status };
+      return {
+        ok: true,
+        patch: officialParcelPatch(lookup.parcel),
+        source: { label: lookup.parcel.provider, url: lookup.parcel.sourceUrl },
+      };
+    },
+    runPublicIntelligenceAfterResolution: async (id) => {
       const result = await runPublicIntelligenceForDealCard(id);
       return result.ok ? { ok: true } : { ok: false, error: result.error };
     },
@@ -9557,6 +9556,19 @@ export function registerLandosRoutes(app: Hono): void {
     const outcome = await propertyIntelligenceCollectors(id, 'deal_card', 'refresh').parcel_identity({
       dealCardId: id, runId, identity: null, comparables: null,
     });
+    if (outcome.status === 'blocked' && /already running/i.test(outcome.summary)) {
+      return c.json({
+        dealCardId: id,
+        capability: PROPERTY_RESOLUTION_CAPABILITY_ID,
+        reusedActiveRun: true,
+        active: { runId: null },
+        propertyResolution: null,
+        outcome: { status: outcome.status, summary: outcome.summary },
+        parallelResolution: null,
+        promoted: false,
+        operatorConfirmationRequired: false,
+      }, 202);
+    }
     const currentDeal = getDealCard(id);
     const currentCardId = currentDeal ? subjectCardId(currentDeal) : null;
     if (currentCardId !== cardId) {
@@ -9787,30 +9799,41 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({ route, evidence, session });
   });
 
-  // On-demand Land Score for a Deal Card's subject parcel. Re-runs the bounded
-  // NON-CREDIT LandPortal resolve and scores the 100-pt rubric from the verified
-  // attributes. Never spends a comp credit, never scores unverified data.
+  // On-demand Land Score for a Deal Card's canonical subject. Property
+  // Resolution owns the identity gate; scoring only reuses persisted facts.
   app.get('/api/landos/deal-cards/:id/land-score', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
-    // REUSE the persisted verified Property Card (same as runDealCardReport) so a
-    // parcel verified via a persisted browser read scores instead of failing a
-    // fresh re-resolve. Only fall back to a live resolve when no verified card is
-    // linked. Never scored from unverified data.
-    const verifiedCard = (deal.propertyCards as Array<Record<string, unknown>> | undefined)?.find(
-      (cd) => cd.verification_status === 'verified_property' &&
-        (String(cd.apn ?? '').trim() || String(cd.lp_property_id ?? '').trim() || String(cd.parcel_id ?? '').trim() || String(cd.active_input_address ?? '').trim()),
-    );
+    const canonicalPropertyCardId = subjectCardId(deal);
+    if (!canonicalPropertyCardId) return c.json({ landScore: null, parcelVerified: false, note: 'Canonical subject Property Card is missing.' }, 409);
     const prop = deal.propertyCards?.[0] as { active_input_address?: string | null; apn?: string | null; county?: string | null; state?: string | null } | undefined;
     const identityText = buildIdentityText(deal, getDealCardDd(id));
     const lookup = identityText || prop?.active_input_address || prop?.apn || deal.title;
     if (!lookup) {
       return c.json({ landScore: null, parcelVerified: false, note: 'No parcel identifier on this Deal Card to resolve.' });
     }
+    const capability = await invokeRuntimeCapability({
+      capabilityId: PROPERTY_RESOLUTION_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: `deal:${id}:land-score` },
+      subject: { kind: 'canonical_property', entity: isEntity(deal.entity) ? deal.entity : 'TY_LAND_BIZ', propertyCardId: canonicalPropertyCardId, dealCardId: id },
+      mode: 'reuse',
+      context: { surface: 'deal_card', action: 'land_score' },
+    });
+    if (capability.subjectResolution !== 'RESOLVED') {
+      return c.json({ landScore: null, parcelVerified: false, capability, note: 'Parcel not source-verified â€” Land Score not computed (never scored from unverified data).' });
+    }
+    const refreshedDeal = getDealCard(id);
+    const verifiedCard = (refreshedDeal?.propertyCards as Array<Record<string, unknown>> | undefined)?.find(
+      (cd) => cd.id === canonicalPropertyCardId && cd.verification_status === 'verified_property' &&
+        (String(cd.apn ?? '').trim() || String(cd.lp_property_id ?? '').trim() || String(cd.parcel_id ?? '').trim() || String(cd.active_input_address ?? '').trim()),
+    );
+    if (!verifiedCard) {
+      return c.json({ landScore: null, parcelVerified: false, capability, note: 'Canonical subject has no persisted verified facts to score.' });
+    }
     const verification = await runDukeVerification(lookup, {
-      resolve: verifiedCard ? buildPersistedResolver(verifiedCard) : resolveParcelIdentityResult,
+      resolve: buildPersistedResolver(verifiedCard),
       timeoutMs: LANDPORTAL_VERIFICATION_TIMEOUT_MS,
     });
     if (!verification.parcelVerified) {
@@ -9819,8 +9842,8 @@ export function registerLandosRoutes(app: Hono): void {
     // Consume approved-provider data: verified property data + the LandPortal
     // parcel fact sheet (road frontage, wetlands, FEMA, buildability, acreage,
     // valuation) so LandPortal data is scored, not ignored (2026-07-04 correction).
-    const subjectCardId = ((verifiedCard?.id ?? (deal.propertyCards?.[0] as { id?: number } | undefined)?.id)) as number | undefined;
-    const inspection = subjectCardId ? loadPropertyInspection(subjectCardId) : null;
+    const scoreSubjectCardId = ((verifiedCard?.id ?? (deal.propertyCards?.[0] as { id?: number } | undefined)?.id)) as number | undefined;
+    const inspection = scoreSubjectCardId ? loadPropertyInspection(scoreSubjectCardId) : null;
     const factSheet = inspection ? buildParcelFactSheet(inspection.parcelFacts) : null;
     // Reuse the persisted live gov-DD (FEMA/NWI/USGS) so Buildability gets the USGS
     // slope cross-check here too (no new fetch; empty gov-DD when no report yet).
@@ -9833,7 +9856,7 @@ export function registerLandosRoutes(app: Hono): void {
         if (scoreInputs.buildability.conflict) landScore.flags.push(`Buildability sources disagree — ${scoreInputs.buildability.basis}.`);
       }
     }
-    return c.json({ landScore, parcelVerified: true, note: '' });
+    return c.json({ landScore, parcelVerified: true, capability, note: '' });
   });
 
   // On-demand SUPPORTING imagery for a Deal Card. Stub returns

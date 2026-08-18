@@ -59,9 +59,12 @@ describe('official public identity handoff into Deal Card report orchestration',
 
   it('never promotes a provisional key and uses retained official identity as fallback without skipping live collectors', () => {
     expect(verificationFromStoredPublicIntelligence({ ...storedOfficial(), parcelKey: 'unresolved:02704512' })).toBeUndefined();
-    expect(ROUTES).toMatch(
-      /const propertyIntelligenceCollectors = \(dealCardId: number\) => makeLivePropertyIntelligenceCollectors\(\{[\s\S]{0,220}runPublicIntelligence: async \(id\) => \{[\s\S]{0,160}runPublicIntelligenceForDealCard\(id\)/,
-    );
+    const collectors = ROUTES.slice(ROUTES.indexOf('const propertyIntelligenceCollectors'), ROUTES.indexOf('captureExactAddressWeb:'));
+    expect(collectors).toContain('runPublicIntelligence: async (id) => {');
+    expect(collectors).toContain('lookupOfficialParcel({');
+    expect(collectors).toContain('runPublicIntelligenceAfterResolution: async (id) => {');
+    expect(collectors.indexOf('runPublicIntelligenceAfterResolution')).toBeLessThan(collectors.indexOf('runPublicIntelligenceForDealCard(id)'));
+    expect(collectors.slice(0, collectors.indexOf('runPublicIntelligenceAfterResolution'))).not.toContain('runPublicIntelligenceForDealCard(id)');
     expect(ROUTES).toMatch(/const retainedResolved = new PublicIntelligenceStore\(\)\.loadLatestResolved\(id\)/);
     expect(ROUTES).not.toMatch(/if \(retainedResolved && retainedVerification\?\.identity\)[\s\S]{0,1200}saved: retainedResolved/);
     expect(ROUTES).toMatch(/normalizedAddress:[\s\S]{0,180}retainedVerification\?\.identity\?\.situsAddress/);

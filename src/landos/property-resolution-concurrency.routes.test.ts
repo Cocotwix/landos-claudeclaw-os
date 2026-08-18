@@ -9,6 +9,7 @@ const CONTROL = vi.hoisted(() => ({
   signalStarted: (() => undefined) as () => void,
   skipCapability: false,
   mockStatus: 'blocked' as 'completed' | 'blocked',
+  mockSummary: 'pre-seeded capability result',
 }));
 
 vi.mock('./property-intelligence-live.js', async (importOriginal) => {
@@ -20,7 +21,7 @@ vi.mock('./property-intelligence-live.js', async (importOriginal) => {
         CONTROL.calls += 1;
         CONTROL.signalStarted();
         await CONTROL.gate;
-        if (CONTROL.skipCapability) return { status: CONTROL.mockStatus, summary: 'pre-seeded capability result', data: null };
+        if (CONTROL.skipCapability) return { status: CONTROL.mockStatus, summary: CONTROL.mockSummary, data: null };
         const { getDealCard, resolveSubjectPropertyCard } = await import('./deal-card.js');
         const { invokeRuntimeCapability } = await import('./capability-registry.js');
         const deal = getDealCard(ctx.dealCardId)!;
@@ -62,6 +63,7 @@ beforeEach(() => {
   CONTROL.started = new Promise<void>((resolve) => { CONTROL.signalStarted = resolve; });
   CONTROL.skipCapability = false;
   CONTROL.mockStatus = 'blocked';
+  CONTROL.mockSummary = 'pre-seeded capability result';
 });
 
 const post = (url: string) => app.request(`${url}?token=${TOKEN}`, {
@@ -141,6 +143,35 @@ describe('standalone Deal Card Property Resolution single-flight', () => {
     expect(first.status).toBe(200);
     expect(CONTROL.calls).toBe(1);
     expect((getLandosDb().prepare('SELECT count(*) AS n FROM landos_capability_invocation').get() as { n: number }).n).toBe(1);
+  });
+
+  it('does not report a prior resolved result as the outcome of a contended compatibility refresh', async () => {
+    const { card } = upsertPropertyCard({ entity: 'TY_LAND_BIZ', activeInputAddress: 'Prior resolved parcel', state: 'TN' });
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Contended compatibility deal' });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
+    const seeded = await invokeRuntimeCapability({
+      capabilityId: 'property-resolution', caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'raw_property', entity: 'TY_LAND_BIZ', rawInput: 'Map 042 Parcel 123, Fairview TN', target: { dealCardId: deal.id, propertyCardId: card.id } },
+      mode: 'refresh',
+    }, { universalOptions: { lanes: { official_parcel: async () => ({
+      lane: 'official_parcel' as const, status: 'evidence' as const, note: 'official match',
+      source: { label: 'County Assessor', url: 'https://county.example.gov/parcel', officiality: 'official' as const },
+      patch: { apn: '042-123.00-000', county: 'Williamson', state: 'TN', verified: true, verificationSource: 'County Assessor' },
+    }) } } });
+    expect(seeded.subjectResolution).toBe('RESOLVED');
+    CONTROL.skipCapability = true;
+    CONTROL.mockStatus = 'blocked';
+    CONTROL.mockSummary = 'Property Resolution is already running for this Deal Card.';
+    CONTROL.gate = Promise.resolve();
+
+    const response = await post(`/api/landos/deal-cards/${deal.id}/parallel-resolve`);
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({
+      reusedActiveRun: true,
+      propertyResolution: null,
+      promoted: false,
+      operatorConfirmationRequired: false,
+    });
   });
 
   it('prevents a full Deal Intelligence launch while standalone resolution owns the subject', async () => {
