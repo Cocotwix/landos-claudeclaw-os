@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { Landmark, Map, Search, Wrench } from 'lucide-preact';
+import { Landmark, Map, Scale, Search, Wrench } from 'lucide-preact';
 
 import { apiPost } from '@/lib/api';
 
@@ -71,6 +71,45 @@ interface LandPortalResearchResult {
   execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
 }
 
+interface CompsValuationResult {
+  invocationId: string;
+  status: 'SUCCEEDED' | 'NEEDS_INPUT' | 'FAILED';
+  subjectResolution: 'RESOLVED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'ERROR';
+  canonicalSubject: { kind: 'property' | 'research_session'; id: string; temporary: boolean; propertyCardId?: number } | null;
+  facts: {
+    lane: string;
+    executed: boolean;
+    outcome: 'valuation_returned' | 'lane_completed' | 'retained_only' | 'not_available';
+    subject: { address: string | null; apn: string | null; acres: number | null; improved: boolean; buildingSqft: number | null; valuationScopeLabel: string | null };
+    valuation: {
+      statusLabel: string; basisLabel: string; statusReason: string; confidence: string;
+      landValue: number | null; medianPricePerAcre: number | null; weightedPricePerAcre: number | null;
+      retailRangeLow: number | null; retailRangeHigh: number | null;
+      acquisitionLevels: { pct40: number; pct50: number; pct60: number } | null;
+      valuationSetCount: number; directCount: number; windowLabel: string | null;
+    } | null;
+    split: { applies: boolean; why: string; landValue: number | null; houseValue: number | null; wholePropertyValue: number | null };
+    comps: {
+      canonicalCount: number; retainedTotal: number; valuationSetCount: number; activeCount: number;
+      mapped: number; unresolvedLocations: number;
+      selected: Array<{ key: string; address: string | null; source: string; sourceUrl: string | null; acres: number | null; price: number | null; priceKind: string; pricePerAcre: number | null; dateIso: string | null; distanceMiles: number | null; valuationRole: string | null; inValuationSet: boolean }>;
+    };
+    sourceAttempts: Array<{ source: string; status: string; note: string }>;
+    summary: string;
+  };
+  evidence: Array<{ id?: string; source: string; sourceUrl?: string | null; sourceType?: string | null; retrievedAt: string }>;
+  warnings: string[];
+  missingInformation: string[];
+  execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
+}
+
+const COMPS_VALUATION_OUTCOME_LABEL: Record<CompsValuationResult['facts']['outcome'], string> = {
+  valuation_returned: 'Valuation returned',
+  lane_completed: 'Comps & Valuation lane completed',
+  retained_only: 'Retained comp evidence only',
+  not_available: 'No valuation established',
+};
+
 const LANDPORTAL_OUTCOME_LABEL: Record<LandPortalResearchResult['facts']['outcome'], string> = {
   record_returned: 'LandPortal record returned',
   lane_completed: 'LandPortal lane completed',
@@ -83,6 +122,12 @@ const RECORD_STATUS_LABEL: Record<AssessorTaxResult['facts']['recordStatus'], st
   retained_record_only: 'Retained record only',
   not_retrieved: 'No record retrieved',
 };
+
+function usd(amount: number | null | undefined): string {
+  return typeof amount === 'number' && Number.isFinite(amount)
+    ? `$${Math.round(amount).toLocaleString('en-US')}`
+    : 'Not established';
+}
 
 function value(value: unknown): string {
   if (value == null || value === '') return 'Not established';
@@ -101,6 +146,9 @@ export function Tools() {
   const [landPortal, setLandPortal] = useState<LandPortalResearchResult | null>(null);
   const [landPortalRunning, setLandPortalRunning] = useState(false);
   const [landPortalError, setLandPortalError] = useState<string | null>(null);
+  const [compsValuation, setCompsValuation] = useState<CompsValuationResult | null>(null);
+  const [compsRunning, setCompsRunning] = useState(false);
+  const [compsError, setCompsError] = useState<string | null>(null);
 
   const run = async (refresh = false) => {
     if (!rawInput.trim() || running) return;
@@ -160,6 +208,26 @@ export function Tools() {
     }
   };
 
+  // Comps & Valuation runs the shared LandOS Capability. Property Resolution
+  // establishes the subject first; this never creates a lead or a Deal Card.
+  const runCompsValuation = async (refresh = false) => {
+    if (!rawInput.trim() || compsRunning) return;
+    setCompsRunning(true);
+    setCompsError(null);
+    try {
+      const response = await apiPost<{ resolution: ResolutionResult; result: CompsValuationResult }>(
+        '/api/landos/capabilities/comps-valuation/invoke',
+        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh },
+      );
+      setResult(response.resolution);
+      setCompsValuation(response.result);
+    } catch (caught) {
+      setCompsError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setCompsRunning(false);
+    }
+  };
+
   const identity = result?.facts.canonicalIdentity ?? {};
   const parcel = (landPortal?.facts.parcel ?? {}) as Record<string, unknown>;
   return (
@@ -200,10 +268,14 @@ export function Tools() {
             <button type="button" data-testid="landportal-research-run" disabled={landPortalRunning || !rawInput.trim()} onClick={() => void runLandPortalResearch(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {landPortalRunning ? 'Reading LandPortal record…' : 'Run LandPortal Research'}
             </button>
+            <button type="button" data-testid="comps-valuation-run" disabled={compsRunning || !rawInput.trim()} onClick={() => void runCompsValuation(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {compsRunning ? 'Reading comp and valuation evidence…' : 'Run Comps & Valuation'}
+            </button>
           </div>
           <p class="mt-2 text-xs text-[var(--color-text-muted)]">
             Assessor &amp; Tax resolves the subject first, then reads the assessor and taxing-jurisdiction record.
             LandPortal Research resolves the subject first, then reads the LandPortal record for that exact parcel.
+            Comps &amp; Valuation resolves the subject first, then reads the comparable evidence and the valuation LandOS retains for it.
             Nothing here creates a lead or a Deal Card.
           </p>
           {error && <div class="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{error}</div>}
@@ -410,6 +482,106 @@ export function Tools() {
             )}
 
             <div class="mt-4 text-xs text-[var(--color-text-muted)]">Subject: {landPortal.canonicalSubject?.id ?? 'not established'} · Invocation: {landPortal.invocationId}</div>
+          </section>
+        )}
+
+        {compsError && <div class="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{compsError}</div>}
+
+        {compsValuation && (
+          <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="comps-valuation-result">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                  <Scale size={14} /> Comps &amp; Valuation
+                </div>
+                <div class="mt-1 text-2xl font-semibold" data-testid="comps-valuation-status">{COMPS_VALUATION_OUTCOME_LABEL[compsValuation.facts.outcome]}</div>
+                <div class="mt-1 text-sm text-[var(--color-text-muted)]">
+                  Subject {compsValuation.subjectResolution}
+                  {compsValuation.facts.valuation ? ` · ${compsValuation.facts.valuation.statusLabel}` : ''}
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="rounded-full border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-text-muted)]">
+                  {compsValuation.execution.reused ? 'Reused persisted result' : `${compsValuation.execution.mode} · ${compsValuation.execution.durationMs} ms`}
+                </div>
+                <button type="button" data-testid="comps-valuation-refresh" disabled={compsRunning} onClick={() => void runCompsValuation(true)} class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Refresh valuation</button>
+              </div>
+            </div>
+
+            <p class="mt-3 text-sm leading-6 text-[var(--color-text-muted)]">{compsValuation.facts.summary}</p>
+
+            <dl class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                ['Land Value', usd(compsValuation.facts.split.landValue ?? compsValuation.facts.valuation?.landValue)] as [string, string],
+                // The accepted acreage rule: the three components are reported
+                // separately only for a subject of more than one acre.
+                ...(compsValuation.facts.split.applies
+                  ? [
+                    ['House Value', usd(compsValuation.facts.split.houseValue)] as [string, string],
+                    ['Whole Property Value', usd(compsValuation.facts.split.wholePropertyValue)] as [string, string],
+                  ]
+                  : []),
+                ['Median $/acre', usd(compsValuation.facts.valuation?.medianPricePerAcre)] as [string, string],
+                ['Weighted $/acre', usd(compsValuation.facts.valuation?.weightedPricePerAcre)] as [string, string],
+                ['Supported retail range', compsValuation.facts.valuation?.retailRangeLow != null
+                  ? `${usd(compsValuation.facts.valuation.retailRangeLow)} – ${usd(compsValuation.facts.valuation.retailRangeHigh)}`
+                  : 'Not established'] as [string, string],
+                ['Confidence', compsValuation.facts.valuation?.confidence ?? 'Not established'] as [string, string],
+                ['Valuation set', `${compsValuation.facts.comps.valuationSetCount} closed sale(s), ${compsValuation.facts.valuation?.directCount ?? 0} direct`] as [string, string],
+                ['Sale window', compsValuation.facts.valuation?.windowLabel ?? 'Not established'] as [string, string],
+                ['Acquisition 40 / 50 / 60', compsValuation.facts.valuation?.acquisitionLevels
+                  ? `${usd(compsValuation.facts.valuation.acquisitionLevels.pct40)} / ${usd(compsValuation.facts.valuation.acquisitionLevels.pct50)} / ${usd(compsValuation.facts.valuation.acquisitionLevels.pct60)}`
+                  : 'Not established'] as [string, string],
+              ].map(([label, item]) => (
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+                  <dt class="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{label}</dt>
+                  <dd class="mt-1 break-words text-sm">{item}</dd>
+                </div>
+              ))}
+            </dl>
+
+            <div class="mt-4 text-sm" data-testid="comps-valuation-split">{compsValuation.facts.split.why}</div>
+
+            {compsValuation.facts.comps.selected.length > 0 && (
+              <div class="mt-5" data-testid="comps-valuation-comps">
+                <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Comparables behind the result</div>
+                <ul class="mt-2 space-y-1">
+                  {compsValuation.facts.comps.selected.map((comp) => (
+                    <li class="text-sm">
+                      {value(comp.address)} · {value(comp.acres)} ac · {usd(comp.price)} ({comp.priceKind})
+                      {comp.pricePerAcre != null && <span class="text-[var(--color-text-muted)]"> · {usd(comp.pricePerAcre)}/ac</span>}
+                      {comp.distanceMiles != null && <span class="text-[var(--color-text-muted)]"> · {comp.distanceMiles} mi</span>}
+                      <span class="text-[var(--color-text-muted)]"> · {comp.inValuationSet ? comp.valuationRole ?? 'in valuation set' : 'active competition'} · {comp.source}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div class="mt-4 text-sm" data-testid="comps-valuation-counts">
+              <b>Comparable evidence:</b> {compsValuation.facts.comps.canonicalCount} canonical record(s),{' '}
+              {compsValuation.facts.comps.valuationSetCount} pricing this subject, {compsValuation.facts.comps.activeCount} active competitor(s),{' '}
+              {compsValuation.facts.comps.mapped} placed
+              {compsValuation.facts.comps.unresolvedLocations > 0 && `, ${compsValuation.facts.comps.unresolvedLocations} location(s) unresolved`}
+            </div>
+
+            {compsValuation.warnings.length > 0 && <div class="mt-4 text-sm"><b>Reported:</b> {compsValuation.warnings.join('; ')}</div>}
+            {compsValuation.missingInformation.length > 0 && <div class="mt-4 text-sm"><b>Not established:</b> {compsValuation.missingInformation.join('; ')}</div>}
+
+            <div class="mt-5">
+              <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Evidence and provenance</div>
+              {compsValuation.evidence.length === 0
+                ? <div class="mt-2 text-sm text-[var(--color-text-muted)]">No comparable evidence is retained for this subject.</div>
+                : <ul class="mt-2 space-y-2">{compsValuation.evidence.map((item) => <li class="text-sm"><b>{item.source}</b>{item.sourceType ? ` · ${item.sourceType.replace(/_/g, ' ')}` : ''}<span class="text-[var(--color-text-muted)]"> · {item.retrievedAt}</span></li>)}</ul>}
+            </div>
+
+            {compsValuation.facts.sourceAttempts.length > 0 && (
+              <div class="mt-4 text-xs text-[var(--color-text-muted)]" data-testid="comps-valuation-attempts">
+                <b>Providers behind the evidence:</b> {compsValuation.facts.sourceAttempts.map((attempt) => `${attempt.source} — ${attempt.status}`).join('; ')}
+              </div>
+            )}
+
+            <div class="mt-4 text-xs text-[var(--color-text-muted)]">Subject: {compsValuation.canonicalSubject?.id ?? 'not established'} · Invocation: {compsValuation.invocationId}</div>
           </section>
         )}
       </div>

@@ -30,6 +30,7 @@ import {
   type CompRecordIdentity,
 } from './CompRecordIdentity';
 import { CompFullDetails } from './AcquisitionWorkspaceV2CompDetails';
+import { CompsValuationCapabilityRun } from './AcquisitionWorkspaceV2CompsValuationRun';
 import { providerSummary } from '@/lib/comp-provenance';
 
 // ── View types (mirror src/landos/comps-valuation.ts) ──────────────────
@@ -683,6 +684,12 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
   const reconciledWarning = isStaleCompConclusion(cleaned.insufficiencyWarning) ? null : cleaned.insufficiencyWarning;
   const reconciledLockedReason = isStaleCompConclusion(summary.acquisitionLockedReason) ? null : summary.acquisitionLockedReason;
   const reconciledNeededEvidence = view.explanation.neededEvidence.filter((line) => !isStaleCompConclusion(line));
+  // The accepted acreage rule for the valuation components: Land Value, House
+  // Value and Whole Property Value are reported as three separate figures only
+  // for a subject of MORE than one acre. At an acre or less — or with the
+  // acreage unknown — the parcel carries one value and the split is not shown.
+  const subjectAcres = view.subject?.acres ?? null;
+  const showValuationSplit = subjectAcres != null && subjectAcres > 1;
   const valuationSet = comps.filter((c) => c.inValuationSet);
   const mapCaptureUrl = view.propertyCardId != null
     ? tok(`/api/landos/inspection/image?cardId=${view.propertyCardId}&key=comps_map`)
@@ -728,6 +735,9 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
         <div class="awv2-panel-title">
           Comps &amp; Valuation <span class="awv2-src-tag">{summary.basisLabel}</span>
         </div>
+        {/* The shared LandOS Comps & Valuation Capability, run against the
+            subject this card already has. Same capability as Tools and New Lead. */}
+        <CompsValuationCapabilityRun dealId={dealId} />
         {/* An improved subject priced off vacant-land sales has a LAND value,
             not a property value. Say so before any figure is read. */}
         {subjectImprovement?.improved && (
@@ -874,6 +884,17 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
         </section>
       )}
 
+      {/* Land remains the primary basis. The separate House Value and Whole
+          Property Value components are reported only above one acre; at an acre
+          or less the parcel carries the one value shown in the decision strip. */}
+      {!showValuationSplit && (
+        <p class="awv2-pi-note" data-testid="cv-no-valuation-split">
+          {subjectAcres == null
+            ? 'Subject acreage is not established, so this parcel carries one value: Land Value, House Value and Whole Property Value are not split out.'
+            : `The subject is ${subjectAcres} acres, one acre or less, so this parcel carries one value rather than separate Land Value, House Value and Whole Property Value figures.`}
+        </p>
+      )}
+      {showValuationSplit && (
       <section data-domain="valuation" class="awv2-panel" aria-label="House valuation">
         <div class="awv2-panel-title">House Valuation <span class="awv2-src-tag">$/sqft evidence for the residence</span></div>
         <div class="awv2-cv-methodgrid">
@@ -910,6 +931,8 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
           </div>
         )}
       </section>
+      )}
+      {showValuationSplit && (
       <section data-domain="valuation" class="awv2-panel" aria-label="Whole Property Value">
         <div class="awv2-panel-title">Whole Property Value</div>
         <div class="awv2-cv-methodrows">
@@ -926,6 +949,7 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
         )}
         {improvementValuation.redfinSourceUrl && <p class="awv2-pi-note">House overlay source: <a href={improvementValuation.redfinSourceUrl} target="_blank" rel="noreferrer">Redfin {improvementValuation.redfinZip} Housing Market</a> ({improvementValuation.redfinSourceRetrievedAt ?? 'current'}). The land value remains unchanged.</p>}
       </section>
+      )}
 
       {/* ── 3. Valuation methods, compact ── */}
       <section data-domain="valuation" class="awv2-panel" aria-label="Valuation methods" id="valuation-methodology">

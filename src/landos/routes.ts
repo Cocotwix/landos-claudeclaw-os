@@ -141,6 +141,11 @@ import {
   type LandPortalAgenticOutcome,
   type LandPortalInspectionOutcome,
 } from './landportal-research-capability.js';
+import {
+  COMPS_VALUATION_CAPABILITY_ID,
+  type CompCollectionOutcome,
+  type MissionValuationOutcome,
+} from './comps-valuation-capability.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
@@ -192,6 +197,11 @@ import { launchDealIntelligenceMission } from './deal-intelligence-run.js';
 import { reconcileSubjectIdentity } from './subject-identity-reconciliation.js';
 import { autoLaunchDealIntelligenceForIntake } from './deal-intelligence-intake.js';
 import type { SnapshotComps, SnapshotEvidenceItem, SnapshotFact } from './property-intelligence-snapshot.js';
+import type {
+  ComparablesContribution,
+  PropertyIntelligenceCollectors,
+  SpecialistOutcome,
+} from './property-intelligence-collector-types.js';
 import {
   jurisdictionLocalApnVariants,
   presentPropertyIntelligenceSnapshot,
@@ -200,7 +210,15 @@ import {
 } from './property-intelligence-snapshot.js';
 import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
 import { buildPropertyIntelligenceStrategies } from './property-intelligence-strategy.js';
-import { dealIntelligenceDefinitionShape, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, type DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
+import {
+  computeMissionCompValuation,
+  dealIntelligenceDefinitionShape,
+  DEAL_INTELLIGENCE_KIND,
+  DEAL_INTELLIGENCE_SCOPE,
+  type DealIntelligenceCapabilities,
+  type MissionCompValuationInput,
+  type MissionCompValuationResult,
+} from './deal-intelligence-mission.js';
 import { livePostResolutionCapabilities } from './post-resolution-capabilities.js';
 import { readPreCallIntelligenceHandoff } from './pre-call-intelligence-handoff.js';
 import { MissionGraphStore } from './mission-graph-store.js';
@@ -6118,6 +6136,34 @@ export function registerLandosRoutes(app: Hono): void {
     }
   });
 
+  // Tools → Comps & Valuation. Property Resolution establishes the subject
+  // first; the Comps & Valuation Capability is then handed that exact canonical
+  // subject rather than resolving anything of its own. A Tools run is research:
+  // it never creates a Deal Card, a Property Card, or a CRM lead, so a subject
+  // LandOS holds no canonical property for reports honestly that it retains no
+  // comparable evidence instead of manufacturing a card to hold some.
+  app.post('/api/landos/capabilities/comps-valuation/invoke', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const rawInput = str(body.rawInput) ?? str(body.text);
+    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    const refresh = body.refresh === true;
+    try {
+      const resolution = await runToolsPropertyResolution(body);
+      const result = await invokeRuntimeCapability({
+        capabilityId: COMPS_VALUATION_CAPABILITY_ID,
+        caller: { type: 'tools', ref: 'tools:comps-valuation' },
+        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        mode: refresh ? 'refresh' : 'reuse',
+        parameters: { lane: 'retained_valuation' },
+        context: { surface: 'tools', tool: 'comps-valuation' },
+      }, { resolveSubject: async () => resolution });
+      return c.json({ resolution, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
   // Compatibility URL. It is now only an adapter over the canonical Capability.
   app.post('/api/landos/property/resolve', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -7035,11 +7081,131 @@ export function registerLandosRoutes(app: Hono): void {
     }
   };
 
+  // ── New Lead reaches comping and valuation through the shared Capability ──
+  //
+  // The marketplace transports, the provider browsers and the mission's own
+  // valuation computation stay exactly where they are; what changed is WHO
+  // invokes them. New Lead's comparable-collection lane and its valuation lane
+  // both execute INSIDE the Comps & Valuation Capability, so Tools, New Lead and
+  // the Deal Card share one implementation, one subject contract and one
+  // invocation record, and no caller keeps its own authoritative comp or
+  // valuation execution path.
+  const compsValuationEntity = (dealCardId: number): LandosEntity =>
+    (getDealCard(dealCardId)?.entity as LandosEntity | undefined) ?? 'TY_LAND_BIZ';
+
+  /**
+   * The existing comparable-collection lane, run inside the capability.
+   *
+   * The collection itself is unchanged — the same providers, the same parallel
+   * mission, the same persistence. When the capability declines to release the
+   * lane, the collector reports that instead of running a second path outside
+   * it, and the mission's own honest "no candidates" handling takes over.
+   */
+  const throughCompCollection = async (
+    dealCardId: number,
+    caller: 'new_lead' | 'deal_card' | 'internal_workflow',
+    execute: () => Promise<SpecialistOutcome<ComparablesContribution>>,
+  ): Promise<SpecialistOutcome<ComparablesContribution>> => {
+    const cardId = subjectCardId(getDealCard(dealCardId) ?? {});
+    if (!cardId) return execute();
+    let executed: SpecialistOutcome<ComparablesContribution> | null = null;
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId: COMPS_VALUATION_CAPABILITY_ID,
+        caller: { type: caller, ref: `deal:${dealCardId}` },
+        subject: { kind: 'canonical_property', entity: compsValuationEntity(dealCardId), propertyCardId: cardId, dealCardId },
+        mode: 'refresh',
+        parameters: { lane: 'comp_collection' },
+        context: { surface: 'new_lead', dealCardId },
+      }, {
+        runCompCollection: async (): Promise<CompCollectionOutcome> => {
+          executed = await execute();
+          const candidates = executed.data?.candidates ?? [];
+          return {
+            candidateCount: candidates.length,
+            duplicatesMerged: executed.data?.duplicatesMerged ?? 0,
+            sources: [...new Set(candidates.map((candidate) => candidate.provider).filter(Boolean))],
+            summary: executed.summary,
+            sourceAttempts: [{
+              source: 'Comparable collection lane',
+              status: executed.status,
+              note: executed.summary,
+            }],
+          };
+        },
+      });
+      if (executed) return executed;
+      return {
+        status: 'blocked',
+        summary: result.warnings[0] ?? 'The Comps & Valuation Capability did not release the comparable-collection lane for this subject.',
+        data: null,
+      };
+    } catch (error) {
+      return {
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : String(error),
+        data: null,
+      };
+    }
+  };
+
+  /**
+   * New Lead's valuation computation, run inside the capability.
+   *
+   * `computeMissionCompValuation` IS the mission's existing implementation; the
+   * capability executes it rather than deriving a value of its own, so the
+   * valuation on a new lead and the valuation the capability reports can never
+   * be two different calculations.
+   */
+  const throughMissionValuation = async (
+    dealCardId: number,
+    caller: 'new_lead' | 'deal_card' | 'internal_workflow',
+    input: MissionCompValuationInput,
+  ): Promise<MissionCompValuationResult> => {
+    const cardId = subjectCardId(getDealCard(dealCardId) ?? {});
+    if (!cardId) return computeMissionCompValuation(input);
+    let executed: MissionCompValuationResult | null = null;
+    try {
+      await invokeRuntimeCapability({
+        capabilityId: COMPS_VALUATION_CAPABILITY_ID,
+        caller: { type: caller, ref: `deal:${dealCardId}` },
+        subject: { kind: 'canonical_property', entity: compsValuationEntity(dealCardId), propertyCardId: cardId, dealCardId },
+        mode: 'refresh',
+        parameters: { lane: 'mission_valuation' },
+        context: { surface: 'new_lead', dealCardId },
+      }, {
+        runMissionValuation: async (): Promise<MissionValuationOutcome> => {
+          executed = computeMissionCompValuation(input);
+          return {
+            priceable: executed.valuation.priceable,
+            rangeLow: executed.valuation.range?.low ?? null,
+            rangeHigh: executed.valuation.range?.high ?? null,
+            confidence: executed.valuation.confidence ?? null,
+            notPriceableReason: executed.valuation.notPriceableReason ?? null,
+            acceptedSoldCount: executed.acceptedSoldCount,
+            activeListingCount: executed.activeListingCount,
+            landHomeCompCount: executed.landHomeCompCount,
+            summary: executed.valuation.priceable
+              ? `Value band from ${executed.acceptedSoldCount} selected closed sale(s) and ${executed.activeListingCount} selected active competitor(s).`
+              : `Not priceable: ${executed.valuation.notPriceableReason}`,
+          };
+        },
+      });
+      // The valuation is a pure computation over evidence the mission already
+      // holds. An invocation-envelope failure must never delete a valuation the
+      // operator's comps support, so the same shared computation still answers.
+      return executed ?? computeMissionCompValuation(input);
+    } catch {
+      return computeMissionCompValuation(input);
+    }
+  };
+
   const propertyIntelligenceCollectors = (
     dealCardId: number,
     resolutionCaller: 'new_lead' | 'deal_card' | 'internal_workflow' = 'internal_workflow',
     resolutionMode: 'reuse' | 'refresh' = 'reuse',
-  ) => makeLivePropertyIntelligenceCollectors({
+  ): PropertyIntelligenceCollectors => {
+    const live = makeLivePropertyIntelligenceCollectors({
     resolutionCaller,
     resolutionMode,
     persistProviderResult: (result) => propertyResearchStore.persistProviderResult(result),
@@ -7498,7 +7664,15 @@ export function registerLandosRoutes(app: Hono): void {
     // selected by county, so a lead that names only a town cannot reach one
     // until this lane settles.
     jurisdictionEnrichment: { timeoutMs: 15_000 },
-  });
+    });
+    // The comparable-collection lane is the one collector that IS comping, so it
+    // runs inside the Comps & Valuation Capability. Every other collector is
+    // untouched, and the collection work itself is the same live lane.
+    return {
+      ...live,
+      comparables: (ctx) => throughCompCollection(dealCardId, resolutionCaller, () => live.comparables(ctx)),
+    };
+  };
 
   // ── The Deal Intelligence parent mission (Phase 5) ─────────────────────────
   // ONE operator action creates ONE parent mission on the Phase 4 mission graph.
@@ -7919,6 +8093,9 @@ export function registerLandosRoutes(app: Hono): void {
     resolutionMode: 'reuse' | 'refresh' = 'reuse',
   ): DealIntelligenceCapabilities => ({
     collectors: propertyIntelligenceCollectors(dealCardId, resolutionCaller, resolutionMode),
+    // New Lead's valuation lane executes inside the Comps & Valuation
+    // Capability. The computation it runs is the mission's own shared one.
+    compsValuation: (input) => throughMissionValuation(dealCardId, resolutionCaller, input),
     // Post-resolution intelligence: property backstory, controlling land-use
     // authority, current zoning, and subdivision rules + feasibility. Keyless,
     // browserless, no paid provider. Each lane runs beside the existing ones.
@@ -9644,6 +9821,49 @@ export function registerLandosRoutes(app: Hono): void {
         context: { surface: 'deal_card', dealCardId: id },
       });
       return c.json({ capability: LANDPORTAL_RESEARCH_CAPABILITY_ID, propertyCardId: subject.cardId, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  // Deal Card → Comps & Valuation. The subject is this card's existing canonical
+  // Property Card; the capability reads the comp and valuation evidence for that
+  // parcel and never replaces it, so a rerun refreshes the result without
+  // touching property identity. It is the SAME capability Tools and New Lead
+  // invoke, over the same underlying comp-selection and valuation implementation.
+  app.get('/api/landos/deal-cards/:id/comps-valuation/capability', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    return c.json({
+      capability: COMPS_VALUATION_CAPABILITY_ID,
+      propertyCardId: subject.cardId,
+      result: new CapabilityInvocationStore().latestForProperty(subject.cardId, id, COMPS_VALUATION_CAPABILITY_ID),
+    });
+  });
+
+  app.post('/api/landos/deal-cards/:id/comps-valuation/capability', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId: COMPS_VALUATION_CAPABILITY_ID,
+        caller: { type: 'deal_card', ref: `deal:${id}` },
+        subject: {
+          kind: 'canonical_property',
+          entity: subject.deal.entity as LandosEntity,
+          propertyCardId: subject.cardId,
+          dealCardId: id,
+        },
+        mode: body.refresh === false ? 'reuse' : 'refresh',
+        parameters: { lane: 'retained_valuation' },
+        context: { surface: 'deal_card', dealCardId: id },
+      });
+      return c.json({ capability: COMPS_VALUATION_CAPABILITY_ID, propertyCardId: subject.cardId, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }

@@ -341,6 +341,17 @@ export interface DealIntelligenceCapabilities {
     facts: SnapshotFact[];
     summary: string;
   }>;
+  /**
+   * The Comps & Valuation Capability envelope for New Lead's valuation lane.
+   *
+   * Injected for the same reason the other capabilities are: the capability
+   * registry, the invocation store and the route layer stay out of the mission
+   * definition. What it wraps is `computeMissionCompValuation` — the shared
+   * implementation below — so a wired capability and an unwired mission run the
+   * identical comp selection and valuation, and New Lead never keeps a second
+   * authoritative valuation path.
+   */
+  compsValuation?: (input: MissionCompValuationInput) => Promise<MissionCompValuationResult>;
   /** Deal-scoped CRM, retained-source-attempt, market, and visual context. */
   operatorContext?: (dealCardId: number) => Promise<DealOperatorContext>;
   /** Optional whole-card multimodal Analyst. Deterministic synthesis remains the safe fallback. */
@@ -1230,6 +1241,118 @@ function subdivisionEvidenceFrom(input: {
   };
 }
 
+/** What New Lead's valuation lane reads. Exactly the upstream handbacks it had. */
+export interface MissionCompValuationInput {
+  dealCardId: number;
+  identity: SubjectResearchHandback | null;
+  comparables: ComparablesHandback | null;
+  environmental: EnvironmentalHandback | null;
+  zoning: ZoningHandback | null;
+  access: UtilitiesAccessHandback | null;
+}
+
+/** What it produces. The `ValuationHandback` fields the lane derives from comps. */
+export interface MissionCompValuationResult {
+  valuation: SnapshotValuation;
+  comps: SnapshotComps;
+  acceptedSoldCount: number;
+  activeListingCount: number;
+  landHomeCompCount: number;
+  landHomeSearchProof: ComparablesHandback['landHomeSearchProof'];
+}
+
+/**
+ * New Lead's comp-derived valuation, unchanged and in one place.
+ *
+ * This is the SAME source-policy → working-set → valuation implementation the
+ * valuation lane has always run; it was lifted out of the lane body so the
+ * Comps & Valuation Capability can execute it rather than a second copy of it.
+ * Pure: no I/O, no persistence, no provider work.
+ */
+export function computeMissionCompValuation(input: MissionCompValuationInput): MissionCompValuationResult {
+  const { identity, comparables, environmental, zoning, access } = input;
+  const subjectMarket: SubjectMarket = identity?.subjectMarket ?? {};
+  const policy = applyCompSourcePolicy(subjectMarket, comparables?.candidates ?? []);
+  const dueDiligence = [...(zoning?.items ?? []), ...(environmental?.items ?? []), ...(access?.items ?? [])];
+
+  // ── The ONE operator-facing comp result ─────────────────────────────
+  //
+  // The source policy says which providers may speak. The working set says
+  // which ROWS the operator reads: at most five closed sales and five active
+  // competitors, deduplicated across providers, with everything else counted
+  // as evidence with a reason. The valuation is then derived from that same
+  // set, so the conclusion on the page can never disagree with the comps
+  // shown beside it.
+  const subjectSelection = {
+    acres: identity?.subjectAcres ?? subjectMarket.acres ?? null,
+    locality: subjectMarket.locality ?? null,
+    county: subjectMarket.county ?? null,
+    address: identity?.address ?? identity?.identity.situs ?? identity?.identity.normalizedAddress ?? null,
+    apn: identity?.apn ?? identity?.identity.apn ?? null,
+  };
+  const workingSet = selectWorkingComps({
+    subject: subjectSelection,
+    rows: candidateRowsFromPolicy(policy),
+    nowMs: Date.now(),
+    sourceCaps: policy.plan.caps,
+  });
+  const comps = workingSetToSnapshotComps(workingSet, {
+    policyExplanation: policy.plan.explanation,
+    landPortalUsable: policy.plan.landPortalUsable,
+    landPortalRowsSeen: policy.plan.landPortalRowsSeen,
+    caps: policy.plan.caps,
+  });
+  comps.landHomeSearchProof = comparables?.landHomeSearchProof ?? null;
+
+  // Identity and hard due-diligence gates still outrank the comp evidence:
+  // an unresolved parcel is never priced, however good the comps look.
+  const gated = buildPropertyIntelligenceValuation({
+    identityState: identity?.identity.state ?? 'unresolved',
+    discoveryIdentityUsable: identity?.discoveryUsable ?? false,
+    identityBasis: identity?.discoveryBasis ?? null,
+    subjectAcres: identity?.subjectAcres ?? null,
+    acreageConflict: identity?.acreageConflict ?? false,
+    policy,
+    constraints: environmental?.constraints ?? [],
+    hardRisks: dueDiligence.filter((item) => item.verdict === 'risk').map((item) => `${item.label}: ${item.headline}`),
+  });
+  const hardRisks = dueDiligence
+    .filter((item) => item.verdict === 'risk')
+    .map((item) => `${item.label}: ${item.headline}`);
+  const fromComps = valuationFromWorkingSet(subjectSelection, workingSet, {
+    constraints: environmental?.constraints ?? [],
+    hardRisks,
+    identityState: identity?.identity.state ?? 'unresolved',
+    discoveryIdentityUsable: identity?.discoveryUsable ?? false,
+    identityBasis: identity?.discoveryBasis ?? null,
+  });
+  // A HARD gate — unconfirmed identity, unknown or contradicted subject
+  // acreage — is about the SUBJECT, not the comps, and its refusal always
+  // stands. Everything else is a comp question, and the working set the
+  // operator is reading is what answers it. Letting the old comp-count gate
+  // also veto is what produced a page saying "not priceable" above a list of
+  // qualified sales.
+  const subjectAcresKnown = (identity?.subjectAcres ?? 0) > 0;
+  const identityState = identity?.identity.state ?? 'unresolved';
+  const usableDiscoveryIdentity = identityState === 'confirmed'
+    || (identityState === 'provisional' && identity?.discoveryUsable === true);
+  const hardGate = !usableDiscoveryIdentity
+    || !subjectAcresKnown
+    || identity?.acreageConflict === true;
+  const valuation: SnapshotValuation = hardGate
+    ? gated
+    : fromComps;
+
+  return {
+    valuation,
+    comps,
+    acceptedSoldCount: workingSet.sold.length,
+    activeListingCount: workingSet.active.length,
+    landHomeCompCount: workingSet.landHomeOnly.length,
+    landHomeSearchProof: comparables?.landHomeSearchProof ?? null,
+  };
+}
+
 export function dealIntelligenceExecutors(
   capabilities: DealIntelligenceCapabilities,
 ): Record<string, (ctx: MissionChildContext) => Promise<MissionChildOutcome>> {
@@ -1668,89 +1791,35 @@ export function dealIntelligenceExecutors(
       const zoning = upstream<ZoningHandback>(ctx, 'zoning_land_use');
       const access = upstream<UtilitiesAccessHandback>(ctx, 'access_utilities');
 
-      const subjectMarket: SubjectMarket = identity?.subjectMarket ?? {};
-      const policy = applyCompSourcePolicy(subjectMarket, comparables?.candidates ?? []);
-      const dueDiligence = [...(zoning?.items ?? []), ...(environmental?.items ?? []), ...(access?.items ?? [])];
-
-      // ── The ONE operator-facing comp result ─────────────────────────────
-      //
-      // The source policy says which providers may speak. The working set says
-      // which ROWS the operator reads: at most five closed sales and five active
-      // competitors, deduplicated across providers, with everything else counted
-      // as evidence with a reason. The valuation is then derived from that same
-      // set, so the conclusion on the page can never disagree with the comps
-      // shown beside it.
-      const subjectSelection = {
-        acres: identity?.subjectAcres ?? subjectMarket.acres ?? null,
-        locality: subjectMarket.locality ?? null,
-        county: subjectMarket.county ?? null,
-        address: identity?.address ?? identity?.identity.situs ?? identity?.identity.normalizedAddress ?? null,
-        apn: identity?.apn ?? identity?.identity.apn ?? null,
+      // New Lead's comp-derived valuation runs through the Comps & Valuation
+      // Capability when one is wired, and through the SAME shared computation
+      // directly when it is not. Either way there is one implementation: the
+      // capability executes `computeMissionCompValuation`, it never re-derives
+      // a valuation of its own.
+      const valuationInput: MissionCompValuationInput = {
+        dealCardId: ctx.scopeId,
+        identity,
+        comparables,
+        environmental,
+        zoning,
+        access,
       };
-      const workingSet = selectWorkingComps({
-        subject: subjectSelection,
-        rows: candidateRowsFromPolicy(policy),
-        nowMs: Date.now(),
-        sourceCaps: policy.plan.caps,
-      });
-      const comps = workingSetToSnapshotComps(workingSet, {
-        policyExplanation: policy.plan.explanation,
-        landPortalUsable: policy.plan.landPortalUsable,
-        landPortalRowsSeen: policy.plan.landPortalRowsSeen,
-        caps: policy.plan.caps,
-      });
-      comps.landHomeSearchProof = comparables?.landHomeSearchProof ?? null;
-
-      // Identity and hard due-diligence gates still outrank the comp evidence:
-      // an unresolved parcel is never priced, however good the comps look.
-      const gated = buildPropertyIntelligenceValuation({
-        identityState: identity?.identity.state ?? 'unresolved',
-        discoveryIdentityUsable: identity?.discoveryUsable ?? false,
-        identityBasis: identity?.discoveryBasis ?? null,
-        subjectAcres: identity?.subjectAcres ?? null,
-        acreageConflict: identity?.acreageConflict ?? false,
-        policy,
-        constraints: environmental?.constraints ?? [],
-        hardRisks: dueDiligence.filter((item) => item.verdict === 'risk').map((item) => `${item.label}: ${item.headline}`),
-      });
-      const hardRisks = dueDiligence
-        .filter((item) => item.verdict === 'risk')
-        .map((item) => `${item.label}: ${item.headline}`);
-      const fromComps = valuationFromWorkingSet(subjectSelection, workingSet, {
-        constraints: environmental?.constraints ?? [],
-        hardRisks,
-        identityState: identity?.identity.state ?? 'unresolved',
-        discoveryIdentityUsable: identity?.discoveryUsable ?? false,
-        identityBasis: identity?.discoveryBasis ?? null,
-      });
-      // A HARD gate — unconfirmed identity, unknown or contradicted subject
-      // acreage — is about the SUBJECT, not the comps, and its refusal always
-      // stands. Everything else is a comp question, and the working set the
-      // operator is reading is what answers it. Letting the old comp-count gate
-      // also veto is what produced a page saying "not priceable" above a list of
-      // qualified sales.
-      const subjectAcresKnown = (identity?.subjectAcres ?? 0) > 0;
-      const identityState = identity?.identity.state ?? 'unresolved';
-      const usableDiscoveryIdentity = identityState === 'confirmed'
-        || (identityState === 'provisional' && identity?.discoveryUsable === true);
-      const hardGate = !usableDiscoveryIdentity
-        || !subjectAcresKnown
-        || identity?.acreageConflict === true;
-      const valuation: SnapshotValuation = hardGate
-        ? gated
-        : fromComps;
+      const computed = capabilities.compsValuation
+        ? await capabilities.compsValuation(valuationInput)
+        : computeMissionCompValuation(valuationInput);
+      const valuation = computed.valuation;
 
       const handback: ValuationHandback = {
         dealCardId: ctx.scopeId,
         priceable: valuation.priceable,
         valuation,
-        comps,
-        acceptedSoldCount: workingSet.sold.length,
-        activeListingCount: workingSet.active.length,
-        landHomeCompCount: workingSet.landHomeOnly.length,
-        landHomeSearchProof: comparables?.landHomeSearchProof ?? null,
+        comps: computed.comps,
+        acceptedSoldCount: computed.acceptedSoldCount,
+        activeListingCount: computed.activeListingCount,
+        landHomeCompCount: computed.landHomeCompCount,
+        landHomeSearchProof: computed.landHomeSearchProof,
         summary: valuation.priceable
-          ? `Value band $${valuation.range!.low.toLocaleString()}–$${valuation.range!.high.toLocaleString()} (${valuation.confidence} confidence) from ${workingSet.sold.length} selected closed sale(s) and ${workingSet.active.length} selected active competitor(s).`
+          ? `Value band $${valuation.range!.low.toLocaleString()}–$${valuation.range!.high.toLocaleString()} (${valuation.confidence} confidence) from ${computed.acceptedSoldCount} selected closed sale(s) and ${computed.activeListingCount} selected active competitor(s).`
           : `Not priceable: ${valuation.notPriceableReason}`,
       };
       // A stated, defensible "not priceable" is a real valuation answer, so the
