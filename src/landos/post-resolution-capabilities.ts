@@ -21,6 +21,8 @@
 import { readResolverSubject, retainedLandPortalIdentity } from './universal-property-resolution.js';
 import { createHermesFreeSearch } from './hermes-free-search.js';
 import { defaultGovFetchText } from './gis-transport.js';
+import { loadPropertyInspection } from './property-card.js';
+import { buildParcelFactSheet } from './landportal-facts.js';
 import { resolveJurisdiction, type JurisdictionResolution } from './jurisdiction-resolution.js';
 import { readDocumentIntelligence } from './official-document-intelligence-store.js';
 import { documentUrlIdentity } from './document-url-identity.js';
@@ -30,10 +32,10 @@ import {
   resolveControllingLandUseAuthority,
   type ControllingLandUseAuthority,
 } from './controlling-land-use-authority.js';
-import { attachHistoricalZoning, determineCurrentZoning } from './current-zoning-determination.js';
+import { attachHistoricalZoning, determineCurrentZoning, type CurrentZoningDetermination } from './current-zoning-determination.js';
 import { researchZoningStandards } from './zoning-standards-research.js';
 import { retrieveSubdivisionRegulations, type SubdivisionRegulations } from './subdivision-regulations.js';
-import { buildPropertySubdivisionRead } from './subdivision-property-read.js';
+import { buildPropertySubdivisionRead, type PropertySubdivisionRead } from './subdivision-property-read.js';
 import {
   persistControllingAuthority,
   persistCurrentZoning,
@@ -49,7 +51,7 @@ import {
   type RegulationJurisdiction,
 } from './regulation-document-store.js';
 import { logger } from '../logger.js';
-import type { DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
+import type { DealIntelligenceCapabilities, EnvironmentalHandback, UtilitiesAccessHandback } from './deal-intelligence-mission.js';
 import type { PropertyBackstory } from './property-backstory.js';
 import type { SubjectQueryFacts } from './land-use-lanes.js';
 
@@ -183,6 +185,29 @@ export async function runPropertyBackstoryForDeal(
   );
 }
 
+/**
+ * The subject's own existing road frontage, when LandOS already retains it.
+ *
+ * A screening figure only, from the retained LandPortal parcel record — never
+ * a survey. This is the only source `buildPropertySubdivisionRead` is offered:
+ * without it, the frontage ceiling stays UNKNOWN and "measure the frontage"
+ * lands on the diligence list, silently dropping the constraint that most
+ * often decides lot yield.
+ */
+function subjectFrontageFeet(propertyCardId: number | null): { feet: number | null; basis: string | null } {
+  if (propertyCardId == null) return { feet: null, basis: null };
+  try {
+    const inspection = loadPropertyInspection(propertyCardId);
+    if (!inspection) return { feet: null, basis: null };
+    const feet = buildParcelFactSheet(inspection.parcelFacts).access.roadFrontageFt;
+    return feet != null
+      ? { feet, basis: 'LandPortal parcel record (screening; legal frontage not established)' }
+      : { feet: null, basis: null };
+  } catch {
+    return { feet: null, basis: null };
+  }
+}
+
 /** Hosts LandOS has established as this parcel's government. */
 function officialHostsFor(dealCardId: number): string[] {
   return [...new Set(knownSourceUrls(dealCardId)
@@ -244,27 +269,53 @@ async function geographyFor(input: { city: string | null; county: string | null;
   }
 }
 
+/** Subject facts a caller may already hold for the authority + zoning lane. Every one is optional. */
+export interface LandUseAuthorityZoningOverrides {
+  apn?: string | null;
+  owner?: string | null;
+  address?: string | null;
+  city?: string | null;
+  county?: string | null;
+  state?: string | null;
+}
+
 /**
- * The authority + current-zoning capability, wired into the existing zoning lane.
+ * The authority + current-zoning lane for one Deal Card, wired to its live
+ * transports.
+ *
+ * This is the ONE place the lane is launched from a plain `dealCardId`. New
+ * Lead reaches it through `liveLandUseAuthorityAndZoningCapability()`; the
+ * Deal Card's own re-research reaches it directly, exactly the pattern
+ * `runPropertyBackstoryForDeal` already uses for the backstory lane. Neither
+ * caller holds a second copy of the authority race, the zoning-layer
+ * discovery, or the current-zoning source race with its browser-escalation
+ * lane — all of that lives here, once.
  *
  * The zoning-layer discovery runs CONCURRENTLY with the authority resolution:
  * finding the county's ArcGIS zoning layer does not depend on knowing who
  * administers zoning, and serializing them would add a full discovery sweep to
  * a required lane's wall clock for nothing.
  */
-export function liveLandUseAuthorityAndZoningCapability(): NonNullable<DealIntelligenceCapabilities['landUseAuthorityAndZoning']> {
-  return async ({ dealCardId, identity }) => {
+export async function runLandUseAuthorityAndZoningForDeal(
+  dealCardId: number,
+  overrides: LandUseAuthorityZoningOverrides = {},
+): Promise<{
+  authority: ControllingLandUseAuthority;
+  zoning: CurrentZoningDetermination;
+  zoningStandards: Awaited<ReturnType<typeof researchZoningStandards>> | null;
+}> {
     const resolved = subjectFor(dealCardId);
-    const city = identity.identity.city ?? resolved?.city ?? null;
-    const county = identity.county ?? resolved?.county ?? null;
-    const state = identity.state ?? resolved?.state ?? null;
-    const apn = identity.apn ?? resolved?.apn ?? null;
-    const address = identity.address ?? resolved?.address ?? null;
+    const city = overrides.city ?? resolved?.city ?? null;
+    const county = overrides.county ?? resolved?.county ?? null;
+    const state = overrides.state ?? resolved?.state ?? null;
+    const apn = overrides.apn ?? resolved?.apn ?? null;
+    const address = overrides.address ?? resolved?.address ?? null;
+    const owner = overrides.owner ?? resolved?.owner ?? null;
     const search = createHermesFreeSearch();
     const known = knownSourceUrls(dealCardId);
     const hosts = officialHostsFor(dealCardId);
     const retained = retainedDocuments(dealCardId);
-    const facts = subjectQueryFacts(dealCardId, { apn, address, city, county, state, owner: identity.owner ?? resolved?.owner ?? null, hosts });
+    const facts = subjectQueryFacts(dealCardId, { apn, address, city, county, state, owner, hosts });
 
     // Geography and the zoning-layer discovery run beside the authority race.
     // None of the three needs another's answer, and serializing them would add
@@ -358,7 +409,18 @@ export function liveLandUseAuthorityAndZoningCapability(): NonNullable<DealIntel
       standardsEstablished: zoningStandards?.established ?? false,
     }, 'land_use_authority_and_zoning_completed');
     return { authority: withGeography, zoning, zoningStandards };
-  };
+}
+
+/**
+ * New Lead's own wiring for the authority + current-zoning capability: adapts
+ * the mission's `SubjectResearchHandback` into the plain overrides
+ * `runLandUseAuthorityAndZoningForDeal` takes, and runs nothing else.
+ */
+export function liveLandUseAuthorityAndZoningCapability(): NonNullable<DealIntelligenceCapabilities['landUseAuthorityAndZoning']> {
+  return ({ dealCardId, identity }) => runLandUseAuthorityAndZoningForDeal(dealCardId, {
+    apn: identity.apn, owner: identity.owner, address: identity.address,
+    city: identity.identity.city, county: identity.county, state: identity.state,
+  });
 }
 
 // ── The retained regulation set ─────────────────────────────────────────────
@@ -477,19 +539,48 @@ function rememberRegulationSet(
   }
 }
 
+/** Subject facts a caller may already hold for the subdivision lane. Every one is optional. */
+export interface SubdivisionIntelligenceOverrides {
+  apn?: string | null;
+  owner?: string | null;
+  address?: string | null;
+  city?: string | null;
+  county?: string | null;
+  state?: string | null;
+  acres?: number | null;
+}
+
+/** What the zoning lane and the other mission lanes already established, when they ran. */
+export interface SubdivisionIntelligenceContext {
+  authority: ControllingLandUseAuthority | null;
+  zoning: CurrentZoningDetermination | null;
+  backstory: PropertyBackstory | null;
+  environmental?: EnvironmentalHandback | null;
+  access?: UtilitiesAccessHandback | null;
+}
+
 /**
- * The subdivision capability.
+ * The subdivision lane for one Deal Card, wired to its live transports.
  *
  * Consumes the authority the zoning lane established rather than resolving it
  * again, which is the whole reason the two are separate lanes with an `awaits`
- * edge instead of one long serial chain.
+ * edge instead of one long serial chain. This is the ONE place the lane is
+ * launched from a plain `dealCardId`, mirroring `runLandUseAuthorityAndZoningForDeal`.
  */
-export function liveSubdivisionIntelligenceCapability(): NonNullable<DealIntelligenceCapabilities['subdivisionIntelligence']> {
-  return async ({ dealCardId, identity, authority, zoning, backstory, environmental, access }) => {
+export async function runSubdivisionIntelligenceForDeal(
+  dealCardId: number,
+  overrides: SubdivisionIntelligenceOverrides = {},
+  context: SubdivisionIntelligenceContext,
+): Promise<{ regulations: SubdivisionRegulations; propertyRead: PropertySubdivisionRead }> {
+    const { authority, zoning, backstory, environmental, access } = context;
     const resolved = subjectFor(dealCardId);
-    const city = identity.identity.city ?? resolved?.city ?? null;
-    const county = identity.county ?? resolved?.county ?? null;
-    const state = identity.state ?? resolved?.state ?? null;
+    const city = overrides.city ?? resolved?.city ?? null;
+    const county = overrides.county ?? resolved?.county ?? null;
+    const state = overrides.state ?? resolved?.state ?? null;
+    const apn = overrides.apn ?? resolved?.apn ?? null;
+    const address = overrides.address ?? resolved?.address ?? null;
+    const owner = overrides.owner ?? resolved?.owner ?? null;
+    const acres = overrides.acres ?? resolved?.acres ?? null;
 
     // The regulation SET belongs to the government, so it is remembered against
     // the government. Once the controlling subdivision authority is
@@ -512,10 +603,7 @@ export function liveSubdivisionIntelligenceCapability(): NonNullable<DealIntelli
         // resolver already retrieved from it.
         preferredHosts: officialHostsFor(dealCardId),
         queryFacts: subjectQueryFacts(dealCardId, {
-          apn: identity.apn ?? resolved?.apn ?? null,
-          address: identity.address ?? resolved?.address ?? null,
-          city, county, state,
-          owner: identity.owner ?? resolved?.owner ?? null,
+          apn, address, city, county, state, owner,
           hosts: officialHostsFor(dealCardId),
         }),
         knownDocumentUrls: knownSourceUrls(dealCardId),
@@ -525,15 +613,17 @@ export function liveSubdivisionIntelligenceCapability(): NonNullable<DealIntelli
       },
     );
 
+    // The subject's own existing road frontage — the screening figure that
+    // decides whether existing frontage already supports the by-right ceiling
+    // or whether it is the limiting factor. Read once, here, so a private-road
+    // concept is never raised ahead of this existing-frontage screen.
+    const frontage = subjectFrontageFeet(resolved?.propertyCardId ?? null);
+
     const propertyRead = buildPropertySubdivisionRead({
       dealCardId,
-      acres: identity.acres ?? resolved?.acres ?? null,
-      // Frontage is not established by any current LandOS lane. It arrives as
-      // null so the read reports the frontage ceiling as UNKNOWN and puts
-      // "measure the frontage" on the diligence list, rather than quietly
-      // dropping the constraint that most often decides lot yield.
-      roadFrontageFeet: null,
-      roadFrontageBasis: null,
+      acres,
+      roadFrontageFeet: frontage.feet,
+      roadFrontageBasis: frontage.basis,
       accessStatus: access?.accessStatus ?? null,
       environmentalConstraints: environmental?.constraints ?? [],
       utilitiesKnown: access?.utilitiesKnown ?? null,
@@ -553,11 +643,29 @@ export function liveSubdivisionIntelligenceCapability(): NonNullable<DealIntelli
       documents: regulations.documents.length,
       retainedDocumentsOffered: retainedSet.length,
       regulationDocumentsLearned: learned,
+      roadFrontageFeet: frontage.feet,
       likelyPath: propertyRead.likelyPath.kind,
       theoreticalLots: propertyRead.theoreticalLotCount.value,
     }, 'subdivision_intelligence_completed');
     return { regulations, propertyRead };
-  };
+}
+
+/**
+ * New Lead's own wiring for the subdivision capability: adapts the mission's
+ * `SubjectResearchHandback` and its sibling lane handbacks into the plain
+ * overrides and context `runSubdivisionIntelligenceForDeal` takes.
+ */
+export function liveSubdivisionIntelligenceCapability(): NonNullable<DealIntelligenceCapabilities['subdivisionIntelligence']> {
+  return ({ dealCardId, identity, authority, zoning, backstory, environmental, access }) =>
+    runSubdivisionIntelligenceForDeal(
+      dealCardId,
+      {
+        apn: identity.apn, owner: identity.owner, address: identity.address,
+        city: identity.identity.city, county: identity.county, state: identity.state,
+        acres: identity.acres,
+      },
+      { authority, zoning, backstory, environmental, access },
+    );
 }
 
 /**

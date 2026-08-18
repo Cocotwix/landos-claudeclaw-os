@@ -368,9 +368,15 @@ export function buildPropertySubdivisionRead(input: PropertySubdivisionReadInput
   }
 
   // ── The path and the review body ─────────────────────────────────────────
+  //
+  // What a PAST owner once proposed is property history, never the current
+  // by-right question — so it must never decide whether TODAY's path is minor
+  // or major review. Only the current arithmetic (current acreage over the
+  // current minimum lot size) may drive that classification; `priorLots` is
+  // reported separately above as a historical constraint and stays out of it.
   const thresholds = rules?.thresholds ?? null;
   const ceiling = thresholds?.statedMaxMinorLots ?? null;
-  const intended = priorLots ?? theoretical.value;
+  const intended = theoretical.value;
 
   const likelyPath: PropertySubdivisionRead['likelyPath'] = (() => {
     if (!rules || !rules.documents.length) {

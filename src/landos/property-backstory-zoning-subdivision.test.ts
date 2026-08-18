@@ -1073,6 +1073,28 @@ describe('property-specific subdivision read', () => {
     expect(history?.headline).toMatch(/91-lot concept/);
     expect(history?.detail).toMatch(/concept that was put forward and not an approval/);
   });
+
+  it('never lets a historical lot-count proposal decide today\'s minor-vs-major path', async () => {
+    const { dealCardId } = seedResolvedSubject();
+    await seedPacketIntelligence(dealCardId);
+    const backstory = await runPropertyBackstory(runSubject(dealCardId), { persist: false });
+    expect(backstory.events.some((event) => event.materialNumbers.lots === 91)).toBe(true);
+
+    // A tiny CURRENT tract whose own arithmetic sits at or below the minor
+    // ceiling. Before the fix, `priorLots ?? theoretical.value` let the
+    // historical 91-lot Kingwood concept override this and report major
+    // review for a 2-acre tract; only the current arithmetic may decide it.
+    const read = await fairviewRead({ backstory, acres: 2 });
+    expect(read.theoreticalLotCount.value).toBe(2);
+    expect(read.likelyPath.kind).toBe('minor_subdivision');
+    expect(read.likelyPath.why).not.toMatch(/91/);
+    expect(read.reviewIndication).toBe('minor');
+
+    // The historical concept is still visible as PROPERTY HISTORY — just never
+    // as the reason for today's path classification.
+    const history = read.constraints.find((constraint) => constraint.kind === 'history');
+    expect(history?.headline).toMatch(/91-lot concept/);
+  });
 });
 
 // ── 19-20. Durability and the pre-call handoff ─────────────────────────────

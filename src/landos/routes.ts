@@ -225,7 +225,14 @@ import {
   type MissionCompValuationInput,
   type MissionCompValuationResult,
 } from './deal-intelligence-mission.js';
-import { livePostResolutionCapabilities, runPropertyBackstoryForDeal } from './post-resolution-capabilities.js';
+import {
+  livePostResolutionCapabilities,
+  runLandUseAuthorityAndZoningForDeal,
+  runPropertyBackstoryForDeal,
+  runSubdivisionIntelligenceForDeal,
+} from './post-resolution-capabilities.js';
+import { readCurrentZoning } from './land-use-intelligence-store.js';
+import { readPropertyBackstory } from './property-backstory-store.js';
 import { readPreCallIntelligenceHandoff } from './pre-call-intelligence-handoff.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { readFanOutMission } from './mission-graph-runner.js';
@@ -9728,6 +9735,51 @@ export function registerLandosRoutes(app: Hono): void {
     const carveout = typeof supplied.sellerDiscussedCarveoutAcres === 'number' && supplied.sellerDiscussedCarveoutAcres > 0
       ? supplied.sellerDiscussedCarveoutAcres
       : null;
+
+    // ── CURRENT ZONING RESOLUTION ORDER ──────────────────────────────────
+    //
+    // A retained current-zoning result is reused ONLY when it is already
+    // established from an official, parcel-specific source — never merely
+    // because SOME retained material (a historical planning packet, a
+    // subdivision-regulations PDF) exists for the parcel. Otherwise, before
+    // the nationwide engine below runs its own handoff-only zoning read, the
+    // SAME post-resolution authority, current-zoning and subdivision lanes
+    // New Lead already runs are refreshed here: a focused web search for the
+    // official zoning map/GIS/Planning-and-Zoning page, with the existing
+    // browser-escalation lane for an interactive GIS map. Bounded by the same
+    // budgets those lanes already carry; nothing here searches indefinitely.
+    const retainedZoning = readCurrentZoning(input.dealCardId);
+    const zoningRefreshLanes: Array<{ lane: string; status: string; durationMs: number }> = [];
+    if (!retainedZoning?.established) {
+      const overrides = {
+        apn: card.apn || null,
+        address: card.active_input_address || null,
+        city: card.city || null,
+        county: card.county || null,
+        state: card.state || null,
+      };
+      const zoningStartedAt = Date.now();
+      try {
+        const { authority, zoning } = await runLandUseAuthorityAndZoningForDeal(input.dealCardId, overrides);
+        zoningRefreshLanes.push({
+          lane: 'current_zoning_refresh',
+          status: zoning.established ? 'complete' : 'partial',
+          durationMs: Date.now() - zoningStartedAt,
+        });
+        const subdivisionStartedAt = Date.now();
+        try {
+          await runSubdivisionIntelligenceForDeal(input.dealCardId, overrides, {
+            authority, zoning, backstory: readPropertyBackstory(input.dealCardId),
+          });
+          zoningRefreshLanes.push({ lane: 'subdivision_refresh', status: 'complete', durationMs: Date.now() - subdivisionStartedAt });
+        } catch {
+          zoningRefreshLanes.push({ lane: 'subdivision_refresh', status: 'unreachable', durationMs: Date.now() - subdivisionStartedAt });
+        }
+      } catch {
+        zoningRefreshLanes.push({ lane: 'current_zoning_refresh', status: 'unreachable', durationMs: Date.now() - zoningStartedAt });
+      }
+    }
+
     const run = await runLandUseResearch({
       dealCardId: input.dealCardId,
       address: card.active_input_address || null,
@@ -9749,7 +9801,10 @@ export function registerLandosRoutes(app: Hono): void {
       addressHint: notes.split(/[\r\n]+/).map((line) => line.trim())
         .find((line) => line.includes(',') && /[a-z]{3}/i.test(line)) ?? null,
     });
-    const lanes = run.lanes.map((lane) => ({ lane: lane.lane, status: lane.status, durationMs: lane.durationMs }));
+    const lanes = [
+      ...zoningRefreshLanes,
+      ...run.lanes.map((lane) => ({ lane: lane.lane, status: lane.status, durationMs: lane.durationMs })),
+    ];
     return {
       ran: true,
       lanes,
