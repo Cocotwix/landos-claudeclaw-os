@@ -40,7 +40,9 @@ describe('Property Resolution Capability routes', () => {
     const response = await get('/api/landos/capabilities');
     expect(response.status).toBe(200);
     const body = await response.json() as { capabilities: Array<{ id: string; name: string; contractVersion: string }> };
-    expect(body.capabilities).toEqual([expect.objectContaining({ id: 'property-resolution', name: 'Property Resolution', contractVersion: '1.0' })]);
+    expect(body.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'property-resolution', name: 'Property Resolution', contractVersion: '1.0' }),
+    ]));
   });
 
   it('runs a one-off Tools research session honestly without creating CRM records', async () => {

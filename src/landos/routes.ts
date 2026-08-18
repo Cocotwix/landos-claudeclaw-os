@@ -135,6 +135,7 @@ import { planResolver, smallestNextIdentifier, type IntakeFields } from './resol
 import { apnSearchVariants, ownerSearchVariants, lpResolveForPreflight, type LpResolveResult } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
 import { invokeRuntimeCapability, listRuntimeCapabilities } from './capability-registry.js';
+import { ASSESSOR_TAX_CAPABILITY_ID } from './assessor-tax-capability.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
@@ -6056,6 +6057,31 @@ export function registerLandosRoutes(app: Hono): void {
     catch (error) { return c.json({ error: error instanceof Error ? error.message : String(error) }, 400); }
   });
 
+  // Tools → Assessor & Tax. Property Resolution establishes the subject first;
+  // the Assessor & Tax Capability is then handed that exact canonical subject
+  // rather than resolving anything of its own. A Tools run is research: it
+  // never creates a Deal Card, a Property Card, or a CRM lead.
+  app.post('/api/landos/capabilities/assessor-tax/invoke', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const rawInput = str(body.rawInput) ?? str(body.text);
+    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    const refresh = body.refresh === true;
+    try {
+      const resolution = await runToolsPropertyResolution(body);
+      const result = await invokeRuntimeCapability({
+        capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
+        caller: { type: 'tools', ref: 'tools:assessor-tax' },
+        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        mode: refresh ? 'refresh' : 'reuse',
+        context: { surface: 'tools', tool: 'assessor-tax' },
+      }, { resolveSubject: async () => resolution });
+      return c.json({ resolution, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
   // Compatibility URL. It is now only an adapter over the canonical Capability.
   app.post('/api/landos/property/resolve', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -9407,6 +9433,54 @@ export function registerLandosRoutes(app: Hono): void {
       return c.json({ capability: PROPERTY_RESOLUTION_CAPABILITY_ID, outcome: { status: outcome.status, summary: outcome.summary }, result });
     } finally {
       capabilityStore.releaseExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, lockSubject, runId);
+    }
+  });
+
+  // Deal Card → Assessor & Tax. The subject is the Deal Card's existing
+  // canonical Property Card; the capability reads it and never replaces it, so
+  // a rerun can refresh the assessor record without touching property identity.
+  const dealCardAssessorTaxSubject = (id: number) => {
+    const deal = getDealCard(id);
+    if (!deal) return { error: 'deal card not found' as const, status: 404 as const };
+    const cardId = subjectCardId(deal);
+    if (!cardId) return { error: 'this Deal Card has no canonical subject Property Card yet' as const, status: 409 as const };
+    return { deal, cardId };
+  };
+
+  app.get('/api/landos/deal-cards/:id/assessor-tax', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    return c.json({
+      capability: ASSESSOR_TAX_CAPABILITY_ID,
+      propertyCardId: subject.cardId,
+      result: new CapabilityInvocationStore().latestForProperty(subject.cardId, id, ASSESSOR_TAX_CAPABILITY_ID),
+    });
+  });
+
+  app.post('/api/landos/deal-cards/:id/assessor-tax', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
+        caller: { type: 'deal_card', ref: `deal:${id}` },
+        subject: {
+          kind: 'canonical_property',
+          entity: subject.deal.entity as LandosEntity,
+          propertyCardId: subject.cardId,
+          dealCardId: id,
+        },
+        mode: body.refresh === false ? 'reuse' : 'refresh',
+        context: { surface: 'deal_card', dealCardId: id },
+      });
+      return c.json({ capability: ASSESSOR_TAX_CAPABILITY_ID, propertyCardId: subject.cardId, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 

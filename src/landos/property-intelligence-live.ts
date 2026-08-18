@@ -24,12 +24,12 @@ import { parseLandPortalCompRows } from './comp-extraction.js';
 import { documentRegistryForCard } from './deal-card-canonical.js';
 import { listComps } from './comps.js';
 import { getLandosDb } from './db.js';
-import { listPublicRecordOutcomes } from './lead-card-intake.js';
 import { distinctApnIdentities, type SnapshotDueDiligenceItem, type SnapshotEvidenceItem, type SnapshotFact, type SnapshotIdentity } from './property-intelligence-snapshot.js';
-import { governmentFactsFromPublicRecordOutcomes, officialParcelSourceCoverage } from './public-property-intelligence-live.js';
+import { officialParcelSourceCoverage } from './public-property-intelligence-live.js';
 import type { GovernmentRecordArtifactView } from './government-records-types.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
 import { invokeRuntimeCapability } from './capability-registry.js';
+import { ASSESSOR_TAX_CAPABILITY_ID, assessorTaxSnapshotFacts } from './assessor-tax-capability.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import type { CapabilityCallerType, CapabilityInvocationMode } from './capability-contract.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
@@ -47,7 +47,6 @@ import {
   GOVERNMENT_RECORD_TASKS,
   VISUAL_EVIDENCE_TASKS,
   ZONING_TASKS,
-  countyRecordFactsFromPublicRun,
   publicLaneExecution,
   snapshotEvidenceFromPublicTasks,
 } from './property-intelligence-specialist-execution.js';
@@ -1046,8 +1045,51 @@ export function governmentArtifactEvidence(
   );
 }
 
-export async function collectGovernmentRecords(ctx: MissionContext): Promise<SpecialistOutcome<GovernmentRecordsContribution>> {
+/**
+ * The one assessor / public-record read this collector is allowed to have.
+ *
+ * Government records used to walk the parcel adapters and the persisted public
+ * run itself. It now invokes the Assessor & Tax Capability for the SAME
+ * canonical subject Tools and the Deal Card invoke, so there is exactly one
+ * assessor implementation behind all three surfaces.
+ */
+async function assessorTaxRecordsForDeal(
+  ctx: MissionContext,
+  deps: Pick<LiveCollectorDeps, 'resolutionCaller' | 'resolutionMode'>,
+): Promise<{ facts: SnapshotFact[]; summary: string | null }> {
+  const deal = getDealCard(ctx.dealCardId);
+  const cardId = deal ? resolveSubjectPropertyCard(deal).cardId : null;
+  if (!deal || cardId == null) return { facts: [], summary: null };
+  try {
+    const result = await invokeRuntimeCapability({
+      capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
+      caller: { type: deps.resolutionCaller ?? 'internal_workflow', ref: `deal:${ctx.dealCardId}` },
+      subject: {
+        kind: 'canonical_property',
+        entity: deal.entity as 'LAND_ALLY' | 'TY_LAND_BIZ',
+        propertyCardId: cardId,
+        dealCardId: ctx.dealCardId,
+      },
+      mode: deps.resolutionMode ?? 'reuse',
+      context: { workflow: 'deal_intelligence', runId: ctx.runId },
+    });
+    const summary = typeof (result.facts as { summary?: unknown }).summary === 'string'
+      ? (result.facts as { summary: string }).summary
+      : null;
+    return { facts: assessorTaxSnapshotFacts(result), summary };
+  } catch {
+    // The capability is one lane among many. A failed assessor read is reported
+    // through the retained model below, never as a collector crash.
+    return { facts: [], summary: null };
+  }
+}
+
+export async function collectGovernmentRecords(
+  ctx: MissionContext,
+  deps: Pick<LiveCollectorDeps, 'resolutionCaller' | 'resolutionMode'> = {},
+): Promise<SpecialistOutcome<GovernmentRecordsContribution>> {
   const now = new Date().toISOString();
+  const assessorTax = await assessorTaxRecordsForDeal(ctx, deps);
   const publicRun = new PublicIntelligenceStore().load(ctx.dealCardId)?.run ?? null;
   const execution = publicLaneExecution(publicRun, GOVERNMENT_RECORD_TASKS);
   let model = null as ReturnType<typeof readGovernmentRecordsForDeal>;
@@ -1067,7 +1109,7 @@ export async function collectGovernmentRecords(ctx: MissionContext): Promise<Spe
       status: 'blocked',
       summary: execution.summary,
       data: {
-        records: countyRecordFactsFromPublicRun(publicRun),
+        records: assessorTax.facts,
         collectorAttemptCount: execution.attemptedCount,
         sourceLimitations: execution.limitations,
       },
@@ -1113,12 +1155,7 @@ export async function collectGovernmentRecords(ctx: MissionContext): Promise<Spe
   for (const missing of analysis.missingInstruments) {
     records.push({ key: `missing_${records.length}`, label: 'Missing instrument', value: missing, grade: 'unavailable_public_record', source: 'County recorded government records', sourceUrl: null, retrievedAt: now, note: null });
   }
-  for (const fact of countyRecordFactsFromPublicRun(publicRun)) {
-    if (!records.some((record) => record.key === fact.key || (record.label === fact.label && record.value === fact.value))) {
-      records.push(fact);
-    }
-  }
-  for (const fact of governmentFactsFromPublicRecordOutcomes(listPublicRecordOutcomes(ctx.dealCardId))) {
+  for (const fact of assessorTax.facts) {
     if (!records.some((record) => record.key === fact.key || (record.label === fact.label && record.value === fact.value))) {
       records.push(fact);
     }
@@ -1134,7 +1171,7 @@ export async function collectGovernmentRecords(ctx: MissionContext): Promise<Spe
   return {
     status: materialRecordCount > 0 && percent >= 80 ? 'completed' : materialRecordCount > 0 ? 'partial' : 'blocked',
     summary: materialRecordCount > 0
-      ? `${materialRecordCount} subject-property government fact(s) retained; ${artifactCount} official artifact(s). ${execution.summary}`
+      ? `${materialRecordCount} subject-property government fact(s) retained; ${artifactCount} official artifact(s). ${execution.summary}${assessorTax.summary ? ` ${assessorTax.summary}` : ''}`
       : execution.summary,
     data: {
       records,
@@ -2566,7 +2603,10 @@ export function makeLivePropertyIntelligenceCollectors(deps: LiveCollectorDeps):
       if (deps.runPublicIntelligenceAfterResolution) {
         await deps.runPublicIntelligenceAfterResolution(ctx.dealCardId).catch(() => ({ ok: false }));
       }
-      return collectGovernmentRecords(ctx);
+      return collectGovernmentRecords(ctx, {
+        resolutionCaller: deps.resolutionCaller,
+        resolutionMode: deps.resolutionMode,
+      });
     },
     zoning_land_use: (ctx) => collectZoningLandUse(ctx),
     environmental_terrain: (ctx) => collectEnvironmentalTerrain(ctx),

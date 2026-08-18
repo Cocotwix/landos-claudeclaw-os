@@ -115,11 +115,13 @@ describe('Slice 7 runtime capability contract', () => {
   });
 
   it('registers Property Resolution as the first callable LandOS capability', () => {
-    expect(listRuntimeCapabilities()).toEqual([expect.objectContaining({
+    // Property Resolution stays the root capability. Slice 8 registered
+    // Assessor & Tax beside it, so this asserts position rather than count.
+    expect(listRuntimeCapabilities()[0]).toEqual(expect.objectContaining({
       id: 'property-resolution',
       name: 'Property Resolution',
       contractVersion: '1.0',
-    })]);
+    }));
   });
 
   it('persists one normalized Tools result and evidence without creating a lead or Deal Card', async () => {

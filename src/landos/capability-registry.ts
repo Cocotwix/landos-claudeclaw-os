@@ -3,7 +3,14 @@ import {
   type CapabilityInvocationRequest,
   type CapabilityMetadata,
   type CapabilityResult,
+  type JsonObject,
+  type LandosCapability,
 } from './capability-contract.js';
+import {
+  ASSESSOR_TAX_CAPABILITY,
+  ASSESSOR_TAX_CAPABILITY_ID,
+  type AssessorTaxRuntime,
+} from './assessor-tax-capability.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import {
   PROPERTY_RESOLUTION_CAPABILITY,
@@ -11,8 +18,12 @@ import {
   type PropertyResolutionRuntime,
 } from './property-resolution-capability.js';
 
-const CAPABILITIES = new Map([
-  [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY],
+/** Every runtime a registered LandOS capability accepts. */
+export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRuntime;
+
+const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
+  [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
+  [ASSESSOR_TAX_CAPABILITY_ID, ASSESSOR_TAX_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
 ]);
 
 export function listRuntimeCapabilities(): CapabilityMetadata[] {
@@ -25,14 +36,14 @@ export function runtimeCapability(capabilityId: string): CapabilityMetadata | nu
 
 export async function invokeRuntimeCapability(
   request: CapabilityInvocationRequest,
-  runtime: PropertyResolutionRuntime = {},
+  runtime: RuntimeCapabilityRuntime = {},
 ): Promise<CapabilityResult> {
   const definition = CAPABILITIES.get(request.capabilityId);
   if (!definition) throw new Error(`unknown LandOS capability ${request.capabilityId}`);
   return invokeCapabilityDefinition({
     definition,
     request,
-    runtime,
+    runtime: runtime as never,
     persistence: new CapabilityInvocationStore(),
   });
 }

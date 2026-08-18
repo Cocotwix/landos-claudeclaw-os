@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { Search, Wrench } from 'lucide-preact';
+import { Landmark, Search, Wrench } from 'lucide-preact';
 
 import { apiPost } from '@/lib/api';
 
@@ -19,6 +19,43 @@ interface ResolutionResult {
   execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
 }
 
+interface AssessorTaxRecord {
+  field: string;
+  value: string;
+  classification: 'official_record' | 'recorded_instrument';
+  source: string | null;
+  sourceUrl: string | null;
+  retrievedAt: string | null;
+}
+
+interface AssessorTaxResult {
+  invocationId: string;
+  status: 'SUCCEEDED' | 'NEEDS_INPUT' | 'FAILED';
+  subjectResolution: 'RESOLVED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'ERROR';
+  canonicalSubject: { kind: 'property' | 'research_session'; id: string; temporary: boolean; propertyCardId?: number } | null;
+  facts: {
+    recordStatus: 'official_record_retrieved' | 'retained_record_only' | 'not_retrieved';
+    jurisdiction: string | null;
+    assessor: Record<string, unknown>;
+    tax: Record<string, unknown>;
+    improvements: Record<string, unknown>;
+    transfer: Record<string, unknown>;
+    records: AssessorTaxRecord[];
+    sourceAttempts: Array<{ source: string; status: string; note: string }>;
+    summary: string;
+  };
+  evidence: Array<{ id?: string; source: string; sourceUrl?: string | null; sourceType?: string | null; retrievedAt: string }>;
+  warnings: string[];
+  missingInformation: string[];
+  execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
+}
+
+const RECORD_STATUS_LABEL: Record<AssessorTaxResult['facts']['recordStatus'], string> = {
+  official_record_retrieved: 'Official record retrieved',
+  retained_record_only: 'Retained record only',
+  not_retrieved: 'No record retrieved',
+};
+
 function value(value: unknown): string {
   if (value == null || value === '') return 'Not established';
   if (Array.isArray(value)) return value.join(', ') || 'Not established';
@@ -30,6 +67,9 @@ export function Tools() {
   const [result, setResult] = useState<ResolutionResult | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [assessor, setAssessor] = useState<AssessorTaxResult | null>(null);
+  const [assessorRunning, setAssessorRunning] = useState(false);
+  const [assessorError, setAssessorError] = useState<string | null>(null);
 
   const run = async (refresh = false) => {
     if (!rawInput.trim() || running) return;
@@ -46,6 +86,26 @@ export function Tools() {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setRunning(false);
+    }
+  };
+
+  // Assessor & Tax runs the shared LandOS Capability. Property Resolution
+  // establishes the subject first; this never creates a lead or a Deal Card.
+  const runAssessorTax = async (refresh = false) => {
+    if (!rawInput.trim() || assessorRunning) return;
+    setAssessorRunning(true);
+    setAssessorError(null);
+    try {
+      const response = await apiPost<{ resolution: ResolutionResult; result: AssessorTaxResult }>(
+        '/api/landos/capabilities/assessor-tax/invoke',
+        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh },
+      );
+      setResult(response.resolution);
+      setAssessor(response.result);
+    } catch (caught) {
+      setAssessorError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setAssessorRunning(false);
     }
   };
 
@@ -82,7 +142,13 @@ export function Tools() {
               {running ? 'Resolving…' : 'Resolve property'}
             </button>
             {result && <button type="button" disabled={running} onClick={() => void run(true)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">Refresh sources</button>}
+            <button type="button" data-testid="assessor-tax-run" disabled={assessorRunning || !rawInput.trim()} onClick={() => void runAssessorTax(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {assessorRunning ? 'Reading assessor record…' : 'Run Assessor & Tax'}
+            </button>
           </div>
+          <p class="mt-2 text-xs text-[var(--color-text-muted)]">
+            Assessor &amp; Tax resolves the subject first, then reads the assessor and taxing-jurisdiction record. Nothing here creates a lead or a Deal Card.
+          </p>
           {error && <div class="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{error}</div>}
         </section>
 
@@ -127,6 +193,90 @@ export function Tools() {
                 : <ul class="mt-2 space-y-2">{result.evidence.map((item) => <li class="text-sm"><b>{item.source}</b>{item.sourceType ? ` · ${item.sourceType.replace('_', ' ')}` : ''}<span class="text-[var(--color-text-muted)]"> · {item.retrievedAt}</span></li>)}</ul>}
             </div>
             <div class="mt-4 text-xs text-[var(--color-text-muted)]">Research session: {result.canonicalSubject?.id ?? 'not created'} · Invocation: {result.invocationId}</div>
+          </section>
+        )}
+
+        {assessorError && <div class="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{assessorError}</div>}
+
+        {assessor && (
+          <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="assessor-tax-result">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                  <Landmark size={14} /> Assessor &amp; Tax
+                </div>
+                <div class="mt-1 text-2xl font-semibold" data-testid="assessor-tax-status">{RECORD_STATUS_LABEL[assessor.facts.recordStatus]}</div>
+                <div class="mt-1 text-sm text-[var(--color-text-muted)]">{assessor.facts.jurisdiction ?? 'Jurisdiction not established'}</div>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="rounded-full border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-text-muted)]">
+                  {assessor.execution.reused ? 'Reused persisted result' : `${assessor.execution.mode} · ${assessor.execution.durationMs} ms`}
+                </div>
+                <button type="button" data-testid="assessor-tax-refresh" disabled={assessorRunning} onClick={() => void runAssessorTax(true)} class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Refresh record</button>
+              </div>
+            </div>
+
+            <p class="mt-3 text-sm leading-6 text-[var(--color-text-muted)]">{assessor.facts.summary}</p>
+
+            <dl class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                ['Owner of record', assessor.facts.assessor.ownerOfRecord],
+                ['Owner mailing address', assessor.facts.assessor.ownerMailingAddress],
+                ['Situs address', assessor.facts.assessor.situsAddress],
+                ['APN / Parcel', assessor.facts.assessor.apn],
+                ['Assessed acreage', assessor.facts.assessor.assessedAcres],
+                ['Land use class', assessor.facts.assessor.landUseClass],
+                ['Appraised value (land)', assessor.facts.assessor.landAppraisedValue],
+                ['Total appraised value', assessor.facts.assessor.totalAppraisedValue],
+                ['Taxable value', assessor.facts.assessor.taxableValue],
+                ['Annual property tax', assessor.facts.tax.annualTaxAmount],
+                ['Tax year', assessor.facts.tax.taxYear],
+                ['Tax standing', assessor.facts.tax.standingLabel],
+                ['Improvement / structure', assessor.facts.improvements.structureType],
+                ['Year built', assessor.facts.improvements.yearBuilt],
+                ['Last recorded sale', assessor.facts.transfer.lastSaleDate],
+              ].map(([label, item]) => (
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+                  <dt class="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{label}</dt>
+                  <dd class="mt-1 break-words text-sm">{value(item)}</dd>
+                </div>
+              ))}
+            </dl>
+
+            <div class="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-sm" data-testid="assessor-tax-standing">
+              {String(assessor.facts.tax.statement ?? '')}
+            </div>
+
+            {assessor.facts.records.length > 0 && (
+              <div class="mt-5" data-testid="assessor-tax-records">
+                <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Record fields retained</div>
+                <ul class="mt-2 space-y-1">
+                  {assessor.facts.records.map((record) => (
+                    <li class="text-sm">
+                      <b>{record.field}:</b> {record.value}
+                      {record.source && <span class="text-[var(--color-text-muted)]"> · {record.source}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {assessor.missingInformation.length > 0 && <div class="mt-4 text-sm"><b>Not established:</b> {assessor.missingInformation.join('; ')}</div>}
+
+            <div class="mt-5">
+              <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Evidence and provenance</div>
+              {assessor.evidence.length === 0
+                ? <div class="mt-2 text-sm text-[var(--color-text-muted)]">No assessor or tax source has been retrieved for this subject.</div>
+                : <ul class="mt-2 space-y-2">{assessor.evidence.map((item) => <li class="text-sm"><b>{item.source}</b>{item.sourceType ? ` · ${item.sourceType.replace(/_/g, ' ')}` : ''}<span class="text-[var(--color-text-muted)]"> · {item.retrievedAt}</span></li>)}</ul>}
+            </div>
+
+            {assessor.facts.sourceAttempts.length > 0 && (
+              <div class="mt-4 text-xs text-[var(--color-text-muted)]" data-testid="assessor-tax-attempts">
+                <b>Sources attempted:</b> {assessor.facts.sourceAttempts.map((attempt) => `${attempt.source} — ${attempt.status}`).join('; ')}
+              </div>
+            )}
+
+            <div class="mt-4 text-xs text-[var(--color-text-muted)]">Subject: {assessor.canonicalSubject?.id ?? 'not established'} · Invocation: {assessor.invocationId}</div>
           </section>
         )}
       </div>

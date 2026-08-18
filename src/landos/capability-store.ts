@@ -387,18 +387,24 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
     return persisted;
   }
 
-  latestForProperty(propertyCardId: number, dealCardId?: number): CapabilityResult | null {
+  latestForProperty(
+    propertyCardId: number,
+    dealCardId?: number,
+    capabilityId = 'property-resolution',
+  ): CapabilityResult | null {
     const dealClause = dealCardId == null ? '' : 'AND subject_deal_card_id = ?';
     const row = getLandosDb().prepare(`
       SELECT id, result_json
       FROM landos_capability_invocation
-      WHERE capability_id = 'property-resolution'
+      WHERE capability_id = ?
         AND subject_kind IN ('canonical_property','raw_property') AND subject_ref = ?
         ${dealClause}
         AND status <> 'running' AND result_json <> 'null'
       ORDER BY completed_at DESC, created_at DESC
       LIMIT 1
-    `).get(...(dealCardId == null ? [String(propertyCardId)] : [String(propertyCardId), dealCardId])) as InvocationRow | undefined;
+    `).get(...(dealCardId == null
+      ? [capabilityId, String(propertyCardId)]
+      : [capabilityId, String(propertyCardId), dealCardId])) as InvocationRow | undefined;
     return parsedResult(row);
   }
 

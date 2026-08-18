@@ -1182,7 +1182,15 @@ export function PropertyIntelligenceProperty({ snapshot }: { snapshot: PiSnapsho
         {snapshot.facts.length ? <FactTable facts={snapshot.facts} /> : <Empty text="No reconciled parcel fact was retained by this run." />}
       </Card>
 
-      <Card title="Government records" right={<Tag tone="border-zinc-500/40 text-zinc-400">{snapshot.governmentRecords.length}</Tag>}>
+      <Card
+        title="Government records"
+        right={(
+          <div class="flex items-center gap-2">
+            <AssessorTaxRerun dealCardId={snapshot.dealCardId} />
+            <Tag tone="border-zinc-500/40 text-zinc-400">{snapshot.governmentRecords.length}</Tag>
+          </div>
+        )}
+      >
         {snapshot.governmentRecords.length
           ? <FactTable facts={snapshot.governmentRecords} />
           : <Empty text="No recorded-government evidence has been retrieved for this parcel. Deed, tax and ownership records remain unretrieved rather than assumed." />}
@@ -1194,6 +1202,63 @@ export function PropertyIntelligenceProperty({ snapshot }: { snapshot: PiSnapsho
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Rerun Assessor & Tax for the Deal Card's EXISTING canonical subject.
+ *
+ * This is the same LandOS Capability that Tools and New Lead invoke. It reads
+ * the assessor and taxing-jurisdiction record for the subject the Deal Card
+ * already has; it never resolves, replaces, or reassigns property identity.
+ */
+function AssessorTaxRerun({ dealCardId }: { dealCardId: number }) {
+  const [running, setRunning] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  const run = useCallback(async () => {
+    if (!dealCardId || running) return;
+    setRunning(true);
+    setFailed(false);
+    setNote(null);
+    try {
+      const response = await apiPost<{
+        result: {
+          subjectResolution: string;
+          facts: { summary?: string; recordStatus?: string };
+        };
+      }>(`/api/landos/deal-cards/${dealCardId}/assessor-tax`, { refresh: true });
+      setNote(response.result.facts?.summary ?? `Assessor & Tax returned ${response.result.subjectResolution}.`);
+    } catch (error) {
+      setFailed(true);
+      setNote((error as Error)?.message ?? 'Assessor & Tax could not run.');
+    } finally {
+      setRunning(false);
+    }
+  }, [dealCardId, running]);
+
+  return (
+    <span class="flex items-center gap-2">
+      {note && (
+        <span
+          class={`max-w-[280px] truncate text-[10px] ${failed ? 'text-rose-300' : 'text-[var(--color-text-muted)]'}`}
+          data-testid="assessor-tax-rerun-note"
+          title={note}
+        >
+          {note}
+        </span>
+      )}
+      <button
+        type="button"
+        data-testid="assessor-tax-rerun"
+        disabled={running}
+        onClick={() => { void run(); }}
+        class="rounded-md border border-[var(--color-border)] px-2 py-1 text-[10px] font-semibold text-[var(--color-text)] disabled:opacity-50"
+      >
+        {running ? 'Reading assessor record…' : 'Rerun Assessor & Tax'}
+      </button>
+    </span>
   );
 }
 
