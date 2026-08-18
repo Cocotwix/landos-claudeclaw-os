@@ -12,9 +12,9 @@
 //      with no status beside it reads as an entitlement, and it is not one.
 //   2. Every rule row renders either the rule or the named unresolved reason,
 //      and the official source stays one click away.
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
-import { apiPost } from '@/lib/api';
+import { apiGet, apiPost } from '@/lib/api';
 
 interface ZoningSubdivisionRunResult {
   invocationId: string;
@@ -102,6 +102,27 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ZoningSubdivisionRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Load the persisted result on open/refresh — a normal page view READS what
+  // the shared Capability already computed and stored; it never triggers a
+  // fresh run. "Run Zoning & Subdivision" below remains the only explicit
+  // trigger for live research.
+  useEffect(() => {
+    if (!dealId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await apiGet<{ result: ZoningSubdivisionRunResult | null }>(
+          `/api/landos/deal-cards/${dealId}/zoning-subdivision/capability`,
+        );
+        if (!cancelled && response.result) setResult(response.result);
+      } catch {
+        // No persisted result yet, or the read failed — the operator can still
+        // trigger a fresh run with the button below.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dealId]);
 
   if (!dealId) return null;
 
