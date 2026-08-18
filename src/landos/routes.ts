@@ -146,6 +146,12 @@ import {
   type CompCollectionOutcome,
   type MissionValuationOutcome,
 } from './comps-valuation-capability.js';
+import {
+  ZONING_SUBDIVISION_CAPABILITY_ID,
+  type LandUseResearchOutcome,
+} from './zoning-subdivision-capability.js';
+import { PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID } from './property-development-history-capability.js';
+import type { PropertyBackstory } from './property-backstory.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
@@ -219,7 +225,7 @@ import {
   type MissionCompValuationInput,
   type MissionCompValuationResult,
 } from './deal-intelligence-mission.js';
-import { livePostResolutionCapabilities } from './post-resolution-capabilities.js';
+import { livePostResolutionCapabilities, runPropertyBackstoryForDeal } from './post-resolution-capabilities.js';
 import { readPreCallIntelligenceHandoff } from './pre-call-intelligence-handoff.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { readFanOutMission } from './mission-graph-runner.js';
@@ -6164,6 +6170,58 @@ export function registerLandosRoutes(app: Hono): void {
     }
   });
 
+  // Tools → Zoning & Subdivision. Property Resolution establishes the subject
+  // first; the Zoning & Subdivision Capability is handed that exact canonical
+  // subject. A Tools run is research: it never creates a Deal Card, a Property
+  // Card, or a CRM lead, so a subject LandOS holds no canonical property for
+  // reports honestly that it retains no land-use rules for it.
+  app.post('/api/landos/capabilities/zoning-subdivision/invoke', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const rawInput = str(body.rawInput) ?? str(body.text);
+    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    const refresh = body.refresh === true;
+    try {
+      const resolution = await runToolsPropertyResolution(body);
+      const result = await invokeRuntimeCapability({
+        capabilityId: ZONING_SUBDIVISION_CAPABILITY_ID,
+        caller: { type: 'tools', ref: 'tools:zoning-subdivision' },
+        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        mode: refresh ? 'refresh' : 'reuse',
+        parameters: { lane: body.research === true ? 'research' : 'retained_rules' },
+        context: { surface: 'tools', tool: 'zoning-subdivision' },
+      }, { resolveSubject: async () => resolution, runLandUseResearch: landUseResearchLane });
+      return c.json({ resolution, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  // Tools → Property Development History. Same subject contract, different
+  // business question: what has happened to THIS parcel. The capability
+  // consumes the context LandOS already retained before any bounded search.
+  app.post('/api/landos/capabilities/property-development-history/invoke', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const rawInput = str(body.rawInput) ?? str(body.text);
+    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    const refresh = body.refresh === true;
+    try {
+      const resolution = await runToolsPropertyResolution(body);
+      const result = await invokeRuntimeCapability({
+        capabilityId: PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
+        caller: { type: 'tools', ref: 'tools:property-development-history' },
+        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        mode: refresh ? 'refresh' : 'reuse',
+        parameters: { lane: body.research === true ? 'research' : 'retained_history' },
+        context: { surface: 'tools', tool: 'property-development-history' },
+      }, { resolveSubject: async () => resolution, runHistorySearch: propertyHistoryLane });
+      return c.json({ resolution, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
   // Compatibility URL. It is now only an adapter over the canonical Capability.
   app.post('/api/landos/property/resolve', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -7200,6 +7258,103 @@ export function registerLandosRoutes(app: Hono): void {
     }
   };
 
+  // ── New Lead reaches land use and property history through the Capabilities ─
+  //
+  // The three post-resolution lanes are the same accepted implementation, run
+  // by the same keyless transports. What changed is WHO invokes them: the
+  // authority + current-zoning lane and the subdivision lane execute inside the
+  // Zoning & Subdivision Capability, and the backstory lane executes inside the
+  // Property Development History Capability. That is what keeps New Lead, Tools
+  // and the Deal Card on one implementation each, and it is why neither
+  // capability can be bypassed by a caller keeping its own path.
+  //
+  // Each wrapper degrades to the underlying lane when the capability envelope
+  // itself fails. An invocation-record problem must never delete research the
+  // operator's lead depends on.
+  const throughLandUseCapabilities = (
+    dealCardId: number,
+    caller: 'new_lead' | 'deal_card' | 'internal_workflow',
+    live: ReturnType<typeof livePostResolutionCapabilities>,
+  ): ReturnType<typeof livePostResolutionCapabilities> => {
+    const canonicalSubject = () => {
+      const cardId = subjectCardId(getDealCard(dealCardId) ?? {});
+      return cardId
+        ? {
+            kind: 'canonical_property' as const,
+            entity: compsValuationEntity(dealCardId),
+            propertyCardId: cardId,
+            dealCardId,
+          }
+        : null;
+    };
+
+    /** Run one land-use lane inside the Zoning & Subdivision Capability. */
+    const throughZoningSubdivision = async <T>(
+      runId: string,
+      execute: () => Promise<T>,
+      describe: (result: T) => string,
+    ): Promise<T> => {
+      const subject = canonicalSubject();
+      if (!subject) return execute();
+      let executed: { value: T } | null = null;
+      try {
+        await invokeRuntimeCapability({
+          capabilityId: ZONING_SUBDIVISION_CAPABILITY_ID,
+          caller: { type: caller, ref: `deal:${dealCardId}` },
+          subject,
+          mode: 'refresh',
+          parameters: { lane: 'research', runId },
+          context: { surface: 'new_lead', dealCardId },
+        }, {
+          runLandUseResearch: async (): Promise<LandUseResearchOutcome> => {
+            executed = { value: await execute() };
+            return { ran: true, lanes: [{ lane: runId, status: 'success', durationMs: 0 }], summary: describe(executed.value) };
+          },
+        });
+      } catch {
+        // fall through to the underlying lane below
+      }
+      return executed ? (executed as { value: T }).value : execute();
+    };
+
+    return {
+      ...live,
+      propertyBackstory: async (input) => {
+        const subject = canonicalSubject();
+        if (!subject) return live.propertyBackstory(input);
+        let executed: PropertyBackstory | null = null;
+        try {
+          await invokeRuntimeCapability({
+            capabilityId: PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
+            caller: { type: caller, ref: `deal:${dealCardId}` },
+            subject,
+            mode: 'refresh',
+            parameters: { lane: 'research' },
+            context: { surface: 'new_lead', dealCardId },
+          }, {
+            runHistorySearch: async (): Promise<PropertyBackstory> => {
+              executed = await live.propertyBackstory(input);
+              return executed;
+            },
+          });
+        } catch {
+          // fall through to the underlying lane below
+        }
+        return executed ?? live.propertyBackstory(input);
+      },
+      landUseAuthorityAndZoning: (input) => throughZoningSubdivision(
+        'authority_and_zoning',
+        () => live.landUseAuthorityAndZoning(input),
+        (result) => `Controlling authority ${result.authority.zoningAuthority.determination}; current zoning ${result.zoning.established ? result.zoning.districtCode ?? 'established' : 'not established'}.`,
+      ),
+      subdivisionIntelligence: (input) => throughZoningSubdivision(
+        'subdivision_rules',
+        () => live.subdivisionIntelligence(input),
+        (result) => `${result.regulations.rules.length} subdivision rule(s) from ${result.regulations.documents.length} official document(s); likely path ${result.propertyRead.likelyPath.kind}.`,
+      ),
+    };
+  };
+
   const propertyIntelligenceCollectors = (
     dealCardId: number,
     resolutionCaller: 'new_lead' | 'deal_card' | 'internal_workflow' = 'internal_workflow',
@@ -8099,7 +8254,12 @@ export function registerLandosRoutes(app: Hono): void {
     // Post-resolution intelligence: property backstory, controlling land-use
     // authority, current zoning, and subdivision rules + feasibility. Keyless,
     // browserless, no paid provider. Each lane runs beside the existing ones.
-    ...livePostResolutionCapabilities(),
+    //
+    // The three land-use and history lanes now execute INSIDE the two shared
+    // capabilities, so New Lead, Tools and the Deal Card reach one zoning and
+    // subdivision implementation and one property-history implementation. The
+    // research itself is unchanged; only the invoker moved.
+    ...throughLandUseCapabilities(dealCardId, resolutionCaller, livePostResolutionCapabilities()),
     // The existing LandPortal + county subject-research system, reused as a
     // child-mission capability. Phase 5 does not rebuild it.
     // Market Matrix + Market Pulse, read through the same code the Market tab uses.
@@ -9536,8 +9696,85 @@ export function registerLandosRoutes(app: Hono): void {
     });
   });
 
+  /**
+   * The live land-use research lane, as ONE function.
+   *
+   * It is the same nationwide engine the Deal Card has always run: jurisdiction
+   * resolution, early web search to LOCATE the authoritative government source,
+   * bounded official retrieval, rule extraction and the deterministic yield.
+   * The Zoning & Subdivision Capability INJECTS this rather than importing it,
+   * because the search transport and the government HTTP reader belong to the
+   * route layer; the capability owns the invocation, not the network.
+   *
+   * Seller-supplied screening facts stay exactly what they were: SELLER-
+   * REPORTED inputs to physical plausibility and discovery questions. None of
+   * them becomes a legal conclusion.
+   */
+  async function landUseResearchLane(
+    input: { propertyCardId: number; dealCardId: number },
+    supplied: {
+      hasImprovements?: unknown; hasExistingWell?: unknown; hasExistingSeptic?: unknown;
+      sellerDiscussedCarveoutAcres?: unknown;
+    } = {},
+  ): Promise<LandUseResearchOutcome> {
+    const deal = getDealCard(input.dealCardId);
+    const card = getPropertyCard(input.propertyCardId);
+    if (!deal || !card) {
+      return { ran: false, lanes: [], summary: 'The Deal Card has no canonical subject Property Card, so no land-use research ran.' };
+    }
+    const notes = String(deal.seller_notes ?? '');
+    const bool = (value: unknown, fallbackPattern: RegExp): boolean =>
+      typeof value === 'boolean' ? value : fallbackPattern.test(notes);
+    const carveout = typeof supplied.sellerDiscussedCarveoutAcres === 'number' && supplied.sellerDiscussedCarveoutAcres > 0
+      ? supplied.sellerDiscussedCarveoutAcres
+      : null;
+    const run = await runLandUseResearch({
+      dealCardId: input.dealCardId,
+      address: card.active_input_address || null,
+      city: card.city || null,
+      county: card.county || null,
+      state: card.state || null,
+      acres: typeof card.acres === 'number' ? card.acres : null,
+      apn: card.apn || null,
+      latitude: typeof card.lat === 'number' ? card.lat : null,
+      longitude: typeof card.lng === 'number' ? card.lng : null,
+      hasImprovements: bool(supplied.hasImprovements, /\b(house|home|residence|dwelling|improved|barn|structure|mobile home)\b/i),
+      hasExistingWell: bool(supplied.hasExistingWell, /\bwell\b/i),
+      hasExistingSeptic: bool(supplied.hasExistingSeptic, /\bseptic\b/i),
+      sellerReported: notes.trim() ? [notes.trim().slice(0, 600)] : [],
+      sellerDiscussedCarveoutAcres: carveout,
+      // The first line of the operator's own lead text, used only to let the
+      // federal geography lookup resolve a record whose structured city and
+      // state were never filled in.
+      addressHint: notes.split(/[\r\n]+/).map((line) => line.trim())
+        .find((line) => line.includes(',') && /[a-z]{3}/i.test(line)) ?? null,
+    });
+    const lanes = run.lanes.map((lane) => ({ lane: lane.lane, status: lane.status, durationMs: lane.durationMs }));
+    return {
+      ran: true,
+      lanes,
+      summary: `Land-use research ran ${lanes.length} lane(s); ${lanes.filter((lane) => lane.status === 'complete').length} completed.`,
+    };
+  }
+
+  /**
+   * The bounded Property Development History lane.
+   *
+   * It IS the accepted Property Backstory lane, wired to its live transports by
+   * `livePropertyBackstoryCapability()`. Retained document intelligence is read
+   * inside it before anything is fetched, and its budget is the bound; nothing
+   * here widens the search because a result was not found.
+   */
+  async function propertyHistoryLane(input: { propertyCardId: number; dealCardId: number }) {
+    return runPropertyBackstoryForDeal(input.dealCardId);
+  }
+
   // Run the nationwide land-use lane for one deal. Operator-initiated, like the
   // parcel lane: opening a Deal Card must never start legal research on its own.
+  //
+  // The research itself is unchanged; what changed is WHO invokes it. This
+  // compatibility URL now executes INSIDE the Zoning & Subdivision Capability,
+  // so no active caller keeps its own authoritative land-use execution path.
   app.post('/api/landos/deal-cards/:id/land-use/run', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
@@ -9545,8 +9782,7 @@ export function registerLandosRoutes(app: Hono): void {
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
 
     const cardId = subjectCardId(deal);
-    const card = cardId ? getPropertyCard(cardId) : null;
-    if (!card) return c.json({ error: 'deal card has no subject property card' }, 409);
+    if (!cardId || !getPropertyCard(cardId)) return c.json({ error: 'deal card has no subject property card' }, 409);
 
     // Subject facts an operator can supply. They are SELLER-REPORTED and are
     // used to screen physical plausibility and to generate discovery questions.
@@ -9555,39 +9791,34 @@ export function registerLandosRoutes(app: Hono): void {
       hasImprovements?: unknown; hasExistingWell?: unknown; hasExistingSeptic?: unknown;
       sellerDiscussedCarveoutAcres?: unknown;
     };
-    const notes = String(deal.seller_notes ?? '');
-    const bool = (supplied: unknown, fallbackPattern: RegExp): boolean =>
-      typeof supplied === 'boolean' ? supplied : fallbackPattern.test(notes);
-    const carveout = typeof body.sellerDiscussedCarveoutAcres === 'number' && body.sellerDiscussedCarveoutAcres > 0
-      ? body.sellerDiscussedCarveoutAcres
-      : null;
 
     try {
-      const run = await runLandUseResearch({
-        dealCardId: id,
-        address: card.active_input_address || null,
-        city: card.city || null,
-        county: card.county || null,
-        state: card.state || null,
-        acres: typeof card.acres === 'number' ? card.acres : null,
-        apn: card.apn || null,
-        latitude: typeof card.lat === 'number' ? card.lat : null,
-        longitude: typeof card.lng === 'number' ? card.lng : null,
-        hasImprovements: bool(body.hasImprovements, /\b(house|home|residence|dwelling|improved|barn|structure|mobile home)\b/i),
-        hasExistingWell: bool(body.hasExistingWell, /\bwell\b/i),
-        hasExistingSeptic: bool(body.hasExistingSeptic, /\bseptic\b/i),
-        sellerReported: notes.trim() ? [notes.trim().slice(0, 600)] : [],
-        sellerDiscussedCarveoutAcres: carveout,
-        // The first line of the operator's own lead text, used only to let the
-        // federal geography lookup resolve a record whose structured city and
-        // state were never filled in.
-        addressHint: notes.split(/[\r\n]+/).map((line) => line.trim())
-          .find((line) => line.includes(',') && /[a-z]{3}/i.test(line)) ?? null,
+      let executed: LandUseResearchOutcome | null = null;
+      const result = await invokeRuntimeCapability({
+        capabilityId: ZONING_SUBDIVISION_CAPABILITY_ID,
+        caller: { type: 'deal_card', ref: `deal:${id}` },
+        subject: { kind: 'canonical_property', entity: deal.entity as LandosEntity, propertyCardId: cardId, dealCardId: id },
+        mode: 'refresh',
+        parameters: { lane: 'research' },
+        context: { surface: 'deal_card', dealCardId: id },
+      }, {
+        runLandUseResearch: async (input) => {
+          executed = await landUseResearchLane(input, body);
+          return executed;
+        },
       });
+      if (!executed) {
+        return c.json({
+          error: 'land use research was not released for this subject',
+          detail: result.warnings[0] ?? 'The Zoning & Subdivision Capability did not release the research lane.',
+        }, 409);
+      }
       return c.json({
         landUse: buildLandUseView(id),
         landUseIntelligence: buildRetainedLandUseIntelligenceView(id),
-        lanes: run.lanes.map((lane) => ({ lane: lane.lane, status: lane.status, durationMs: lane.durationMs })),
+        lanes: (executed as LandUseResearchOutcome).lanes,
+        capability: ZONING_SUBDIVISION_CAPABILITY_ID,
+        result,
       });
     } catch (err) {
       logger.error({ event: 'land_use_run_failed', dealCardId: id, msg: (err as Error)?.message }, 'land_use_run_failed');
@@ -9864,6 +10095,92 @@ export function registerLandosRoutes(app: Hono): void {
         context: { surface: 'deal_card', dealCardId: id },
       });
       return c.json({ capability: COMPS_VALUATION_CAPABILITY_ID, propertyCardId: subject.cardId, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  // Deal Card → Zoning & Subdivision. The subject is this card's existing
+  // canonical Property Card; the capability reads the land-use rules for that
+  // parcel's jurisdiction and applies them to it, and never replaces the
+  // parcel, so a rerun refreshes the result without touching property identity.
+  app.get('/api/landos/deal-cards/:id/zoning-subdivision/capability', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    return c.json({
+      capability: ZONING_SUBDIVISION_CAPABILITY_ID,
+      propertyCardId: subject.cardId,
+      result: new CapabilityInvocationStore().latestForProperty(subject.cardId, id, ZONING_SUBDIVISION_CAPABILITY_ID),
+    });
+  });
+
+  app.post('/api/landos/deal-cards/:id/zoning-subdivision/capability', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId: ZONING_SUBDIVISION_CAPABILITY_ID,
+        caller: { type: 'deal_card', ref: `deal:${id}` },
+        subject: {
+          kind: 'canonical_property',
+          entity: subject.deal.entity as LandosEntity,
+          propertyCardId: subject.cardId,
+          dealCardId: id,
+        },
+        mode: body.refresh === false ? 'reuse' : 'refresh',
+        // A rerun from the card researches: when the jurisdiction's rules are
+        // not already trusted, the lane searches early for the authoritative
+        // government source rather than reporting "not established".
+        parameters: { lane: body.research === false ? 'retained_rules' : 'research' },
+        context: { surface: 'deal_card', dealCardId: id },
+      }, { runLandUseResearch: landUseResearchLane });
+      return c.json({ capability: ZONING_SUBDIVISION_CAPABILITY_ID, propertyCardId: subject.cardId, result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
+
+  // Deal Card → Property Development History. Same canonical subject, different
+  // business question. Retained context is consumed first; the additional
+  // search is bounded and may honestly return no material history.
+  app.get('/api/landos/deal-cards/:id/property-development-history/capability', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    return c.json({
+      capability: PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
+      propertyCardId: subject.cardId,
+      result: new CapabilityInvocationStore().latestForProperty(subject.cardId, id, PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID),
+    });
+  });
+
+  app.post('/api/landos/deal-cards/:id/property-development-history/capability', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId: PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
+        caller: { type: 'deal_card', ref: `deal:${id}` },
+        subject: {
+          kind: 'canonical_property',
+          entity: subject.deal.entity as LandosEntity,
+          propertyCardId: subject.cardId,
+          dealCardId: id,
+        },
+        mode: body.refresh === false ? 'reuse' : 'refresh',
+        parameters: { lane: body.research === false ? 'retained_history' : 'research' },
+        context: { surface: 'deal_card', dealCardId: id },
+      }, { runHistorySearch: propertyHistoryLane });
+      return c.json({ capability: PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID, propertyCardId: subject.cardId, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }

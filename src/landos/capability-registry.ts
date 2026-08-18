@@ -23,20 +23,39 @@ import {
   type LandPortalResearchRuntime,
 } from './landportal-research-capability.js';
 import {
+  PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY,
+  PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
+  type PropertyDevelopmentHistoryRuntime,
+} from './property-development-history-capability.js';
+import {
   PROPERTY_RESOLUTION_CAPABILITY,
   PROPERTY_RESOLUTION_CAPABILITY_ID,
   type PropertyResolutionRuntime,
 } from './property-resolution-capability.js';
+import {
+  ZONING_SUBDIVISION_CAPABILITY,
+  ZONING_SUBDIVISION_CAPABILITY_ID,
+  type ZoningSubdivisionRuntime,
+} from './zoning-subdivision-capability.js';
 
 /** Every runtime a registered LandOS capability accepts. */
 export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRuntime & LandPortalResearchRuntime
-  & CompsValuationRuntime;
+  & CompsValuationRuntime & ZoningSubdivisionRuntime & PropertyDevelopmentHistoryRuntime;
 
 const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   [ASSESSOR_TAX_CAPABILITY_ID, ASSESSOR_TAX_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   [LANDPORTAL_RESEARCH_CAPABILITY_ID, LANDPORTAL_RESEARCH_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   [COMPS_VALUATION_CAPABILITY_ID, COMPS_VALUATION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
+  // Two SEPARATE business capabilities sharing search and official-document
+  // infrastructure: the first answers what rules apply because of WHERE the
+  // parcel is (jurisdiction-scoped, reusable), the second what has happened to
+  // THIS parcel (canonical-property-specific, never reused across parcels).
+  [ZONING_SUBDIVISION_CAPABILITY_ID, ZONING_SUBDIVISION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
+  [
+    PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
+    PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
 ]);
 
 export function listRuntimeCapabilities(): CapabilityMetadata[] {

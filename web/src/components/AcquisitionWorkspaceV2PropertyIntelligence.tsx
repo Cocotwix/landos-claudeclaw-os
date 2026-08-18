@@ -15,6 +15,8 @@ import { AssessorTaxRun } from './AcquisitionWorkspaceV2AssessorTax';
 import { LandPortalResearchRun } from './AcquisitionWorkspaceV2LandPortalResearch';
 import { OfficialParcelGisPanel, type OfficialParcelGisView } from './AcquisitionWorkspaceV2OfficialParcelGis';
 import { LandUsePanel, type LandUseView, type RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
+import { ZoningSubdivisionCapabilityRun } from './AcquisitionWorkspaceV2ZoningSubdivision';
+import { PropertyDevelopmentHistoryPanel } from './AcquisitionWorkspaceV2PropertyDevelopmentHistory';
 import type { CvSummary } from './AcquisitionWorkspaceV2CompsValuation';
 import '../styles/workspace-v2-property-intelligence.css';
 
@@ -1083,7 +1085,16 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           be divided by right. Every downstream valuation scenario depends on
           this being right, so it sits where the operator reads it in order. */}
       {dealId != null && (
-        <div id="zoning-land-use"><LandUsePanel dealId={dealId} initial={landUse ?? null} retained={landUseIntelligence ?? null} /></div>
+        <div id="zoning-land-use">
+          <LandUsePanel dealId={dealId} initial={landUse ?? null} retained={landUseIntelligence ?? null} />
+          {/* The shared Zoning & Subdivision Capability, run against the parcel
+              this card already has. Same implementation Tools and New Lead
+              reach; the rules it returns belong to the JURISDICTION. */}
+          <ZoningSubdivisionCapabilityRun dealId={dealId} />
+          {/* The separate property question. Shares the search and official
+              document infrastructure above; owns none of the same truth. */}
+          <PropertyDevelopmentHistoryPanel dealId={dealId} />
+        </div>
       )}
 
       <section data-domain="risk" class="awv2-panel" id="utilities-septic">

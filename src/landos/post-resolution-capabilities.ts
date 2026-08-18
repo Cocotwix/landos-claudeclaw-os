@@ -117,31 +117,70 @@ function subjectFor(dealCardId: number): ReturnType<typeof readResolverSubject> 
  * mined the planning packet gets its backstory from a SELECT.
  */
 export function livePropertyBackstoryCapability(): NonNullable<DealIntelligenceCapabilities['propertyBackstory']> {
-  return async ({ dealCardId, identity }): Promise<PropertyBackstory> => {
-    const resolved = subjectFor(dealCardId);
-    const projectName = readDocumentIntelligence(dealCardId).findings
+  return async ({ dealCardId, identity }): Promise<PropertyBackstory> => runPropertyBackstoryForDeal(dealCardId, {
+    apn: identity.apn,
+    owner: identity.owner,
+    address: identity.address,
+    city: identity.identity.city,
+    county: identity.county,
+    state: identity.state,
+    acres: identity.acres,
+  });
+}
+
+/** Subject facts a caller may already hold. Every one is optional. */
+export interface BackstoryIdentityOverrides {
+  apn?: string | null;
+  owner?: string | null;
+  address?: string | null;
+  city?: string | null;
+  county?: string | null;
+  state?: string | null;
+  acres?: number | null;
+}
+
+/**
+ * The bounded Property Backstory lane for one Deal Card, wired to its live
+ * transports.
+ *
+ * This is the ONE place the lane is launched. New Lead reaches it through
+ * `livePropertyBackstoryCapability()`; Tools and the Deal Card reach it through
+ * the Property Development History Capability. All three run this function, so
+ * no surface can hold a second history implementation.
+ *
+ * The confirmed subject is the resolver's own, and any override a caller
+ * already holds is only ever preferred over it — never invented.
+ */
+export async function runPropertyBackstoryForDeal(
+  dealCardId: number,
+  overrides: BackstoryIdentityOverrides = {},
+): Promise<PropertyBackstory> {
+  const resolved = subjectFor(dealCardId);
+  let projectName: string | null = null;
+  try {
+    projectName = readDocumentIntelligence(dealCardId).findings
       .find((finding) => finding.category === 'project_name' && finding.value)?.value ?? null;
-    return runPropertyBackstory(
-      {
-        dealCardId,
-        apn: identity.apn ?? resolved?.apn ?? null,
-        parcelNotation: resolved?.notations[0]?.raw ?? null,
-        parcelNotations: resolved?.notations ?? [],
-        owner: identity.owner ?? resolved?.owner ?? null,
-        address: identity.address ?? resolved?.address ?? null,
-        city: identity.identity.city ?? resolved?.city ?? null,
-        county: identity.county ?? resolved?.county ?? null,
-        state: identity.state ?? resolved?.state ?? null,
-        acres: identity.acres ?? resolved?.acres ?? null,
-        projectName,
-        knownSourceUrls: knownSourceUrls(dealCardId),
-      },
-      {
-        search: createHermesFreeSearch(),
-        ...BACKSTORY_BUDGET,
-      },
-    );
-  };
+  } catch { /* retained intelligence is optional here */ }
+  return runPropertyBackstory(
+    {
+      dealCardId,
+      apn: overrides.apn ?? resolved?.apn ?? null,
+      parcelNotation: resolved?.notations[0]?.raw ?? null,
+      parcelNotations: resolved?.notations ?? [],
+      owner: overrides.owner ?? resolved?.owner ?? null,
+      address: overrides.address ?? resolved?.address ?? null,
+      city: overrides.city ?? resolved?.city ?? null,
+      county: overrides.county ?? resolved?.county ?? null,
+      state: overrides.state ?? resolved?.state ?? null,
+      acres: overrides.acres ?? resolved?.acres ?? null,
+      projectName,
+      knownSourceUrls: knownSourceUrls(dealCardId),
+    },
+    {
+      search: createHermesFreeSearch(),
+      ...BACKSTORY_BUDGET,
+    },
+  );
 }
 
 /** Hosts LandOS has established as this parcel's government. */
@@ -521,11 +560,17 @@ export function liveSubdivisionIntelligenceCapability(): NonNullable<DealIntelli
   };
 }
 
-/** The three capabilities, ready to spread into `DealIntelligenceCapabilities`. */
-export function livePostResolutionCapabilities(): Pick<
+/**
+ * The three capabilities, ready to spread into `DealIntelligenceCapabilities`.
+ *
+ * `Required` rather than `Pick`: all three are always wired here, and saying so
+ * in the type is what lets a caller compose them without a null check that
+ * could only ever be dead code.
+ */
+export function livePostResolutionCapabilities(): Required<Pick<
   DealIntelligenceCapabilities,
   'propertyBackstory' | 'landUseAuthorityAndZoning' | 'subdivisionIntelligence'
-> {
+>> {
   return {
     propertyBackstory: livePropertyBackstoryCapability(),
     landUseAuthorityAndZoning: liveLandUseAuthorityAndZoningCapability(),

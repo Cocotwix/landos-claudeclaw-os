@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { Landmark, Map, Scale, Search, Wrench } from 'lucide-preact';
+import { History, Landmark, Map, Ruler, Scale, Search, Wrench } from 'lucide-preact';
 
 import { apiPost } from '@/lib/api';
 
@@ -103,6 +103,94 @@ interface CompsValuationResult {
   execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
 }
 
+interface ZoningSubdivisionResult {
+  invocationId: string;
+  status: 'SUCCEEDED' | 'NEEDS_INPUT' | 'FAILED';
+  subjectResolution: 'RESOLVED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'ERROR';
+  canonicalSubject: { kind: 'property' | 'research_session'; id: string; temporary: boolean; propertyCardId?: number } | null;
+  facts: {
+    lane: string;
+    outcome: 'rules_returned' | 'lane_completed' | 'retained_only' | 'not_available';
+    jurisdiction: {
+      county: string | null; state: string | null; municipality: string | null; incorporationStatus: string | null;
+      authorities: Array<{ role: string; name: string | null; level: string | null; determination: string; basis: string | null }>;
+      rulePackageKey: string | null; rulePackageReused: boolean;
+      retainedJurisdictionDocuments: Array<{ label: string; url: string }>;
+    };
+    zoning: {
+      established: boolean; districtCode: string | null; districtName: string | null; statement: string;
+      confidence: string; governingAuthority: string | null;
+      nonZoningClassification: { code: string; description: string | null; sourceUrl: string | null } | null;
+      historicalReferences: Array<{ kind: string; value: string | null; asOf: string | null; sourceUrl: string | null }>;
+    };
+    rules: {
+      count: number; documentCount: number; ordinanceLabel: string | null; ordinanceUrl: string | null;
+      package: Array<{ key: string; label: string; value: string | null; unresolved: string | null; section: string | null; sourceUrl: string | null; confidence: string }>;
+    };
+    subdivisionByRight: {
+      status: string; statusLabel: string; maximumLots: number | null; path: string | null;
+      reviewBody: string | null; calculation: string | null; reason: string;
+      constraintsApplied: Array<{ constraint: string; value: string; source: string }>;
+      missingInputs: string[];
+    };
+    sources: Array<{ title: string; sourceType: string; url: string | null; jurisdiction: string | null; date: string | null; section: string | null }>;
+    limitations: string[];
+    summary: string;
+  };
+  evidence: Array<{ id?: string; source: string; sourceUrl?: string | null; sourceType?: string | null; retrievedAt: string }>;
+  warnings: string[];
+  missingInformation: string[];
+  execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
+}
+
+interface PropertyDevelopmentHistoryResult {
+  invocationId: string;
+  status: 'SUCCEEDED' | 'NEEDS_INPUT' | 'FAILED';
+  subjectResolution: 'RESOLVED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'ERROR';
+  canonicalSubject: { kind: 'property' | 'research_session'; id: string; temporary: boolean; propertyCardId?: number } | null;
+  facts: {
+    lane: string;
+    outcome: 'history_returned' | 'lane_completed' | 'no_material_history' | 'not_available';
+    history: {
+      established: boolean; statement: string; eventCount: number;
+      events: Array<{
+        key: string; eventDate: string | null; eventTypeLabel: string; governingBody: string | null;
+        projectName: string | null; statusLabel: string; statusClass: string;
+        entitlementEstablished: false; entitlementBasis: string;
+        proposedLots: number | null; acres: number | null; summary: string;
+        ownerAtTheTime: string | null; applicant: string | null; sourceUrl: string | null; confidence: string;
+      }>;
+      zoningReferences: Array<{ kind: string; value: string | null; asOf: string | null; sourceUrl: string | null }>;
+      narrative: string; highlights: string[]; openQuestions: string[];
+    };
+    relatedParties: Array<{ name: string; role: string; roleLabel: string; basis: string; sourceUrl: string | null }>;
+    crmContacts: Array<{ name: string; role: string }>;
+    retainedContext: { documentsHeld: number; findingsHeld: number; summariesHeld: number; documentsReused: number };
+    search: { ran: boolean; documentsRetrieved: number; sourcesConsulted: number; note: string };
+    sources: Array<{ title: string; sourceType: string; url: string | null; date: string | null; reusedFromStorage: boolean }>;
+    limitations: string[];
+    summary: string;
+  };
+  evidence: Array<{ id?: string; source: string; sourceUrl?: string | null; sourceType?: string | null; retrievedAt: string }>;
+  warnings: string[];
+  missingInformation: string[];
+  execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
+}
+
+const ZONING_SUBDIVISION_OUTCOME_LABEL: Record<ZoningSubdivisionResult['facts']['outcome'], string> = {
+  rules_returned: 'Land-use rules returned',
+  lane_completed: 'Research lane completed',
+  retained_only: 'Retained land-use record only',
+  not_available: 'No land-use rules established',
+};
+
+const PROPERTY_HISTORY_OUTCOME_LABEL: Record<PropertyDevelopmentHistoryResult['facts']['outcome'], string> = {
+  history_returned: 'Material history established',
+  lane_completed: 'Bounded search completed',
+  no_material_history: 'No material history established',
+  not_available: 'No retained record for this subject',
+};
+
 const COMPS_VALUATION_OUTCOME_LABEL: Record<CompsValuationResult['facts']['outcome'], string> = {
   valuation_returned: 'Valuation returned',
   lane_completed: 'Comps & Valuation lane completed',
@@ -149,6 +237,12 @@ export function Tools() {
   const [compsValuation, setCompsValuation] = useState<CompsValuationResult | null>(null);
   const [compsRunning, setCompsRunning] = useState(false);
   const [compsError, setCompsError] = useState<string | null>(null);
+  const [zoning, setZoning] = useState<ZoningSubdivisionResult | null>(null);
+  const [zoningRunning, setZoningRunning] = useState(false);
+  const [zoningError, setZoningError] = useState<string | null>(null);
+  const [history, setHistory] = useState<PropertyDevelopmentHistoryResult | null>(null);
+  const [historyRunning, setHistoryRunning] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const run = async (refresh = false) => {
     if (!rawInput.trim() || running) return;
@@ -228,6 +322,48 @@ export function Tools() {
     }
   };
 
+  // Zoning & Subdivision runs the shared LandOS Capability. Property Resolution
+  // establishes the subject first; this never creates a lead or a Deal Card.
+  // The LOCATION question: what rules apply because of where the parcel is.
+  const runZoningSubdivision = async (refresh = false) => {
+    if (!rawInput.trim() || zoningRunning) return;
+    setZoningRunning(true);
+    setZoningError(null);
+    try {
+      const response = await apiPost<{ resolution: ResolutionResult; result: ZoningSubdivisionResult }>(
+        '/api/landos/capabilities/zoning-subdivision/invoke',
+        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh, research: true },
+      );
+      setResult(response.resolution);
+      setZoning(response.result);
+    } catch (caught) {
+      setZoningError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setZoningRunning(false);
+    }
+  };
+
+  // Property Development History runs the shared LandOS Capability. The
+  // PROPERTY question: what has happened to this exact parcel. Retained context
+  // is consumed first, and any additional search is bounded.
+  const runPropertyDevelopmentHistory = async (refresh = false) => {
+    if (!rawInput.trim() || historyRunning) return;
+    setHistoryRunning(true);
+    setHistoryError(null);
+    try {
+      const response = await apiPost<{ resolution: ResolutionResult; result: PropertyDevelopmentHistoryResult }>(
+        '/api/landos/capabilities/property-development-history/invoke',
+        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh, research: true },
+      );
+      setResult(response.resolution);
+      setHistory(response.result);
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setHistoryRunning(false);
+    }
+  };
+
   const identity = result?.facts.canonicalIdentity ?? {};
   const parcel = (landPortal?.facts.parcel ?? {}) as Record<string, unknown>;
   return (
@@ -271,11 +407,19 @@ export function Tools() {
             <button type="button" data-testid="comps-valuation-run" disabled={compsRunning || !rawInput.trim()} onClick={() => void runCompsValuation(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {compsRunning ? 'Reading comp and valuation evidence…' : 'Run Comps & Valuation'}
             </button>
+            <button type="button" data-testid="zoning-subdivision-run" disabled={zoningRunning || !rawInput.trim()} onClick={() => void runZoningSubdivision(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {zoningRunning ? 'Researching the land-use rules…' : 'Run Zoning & Subdivision'}
+            </button>
+            <button type="button" data-testid="property-development-history-run" disabled={historyRunning || !rawInput.trim()} onClick={() => void runPropertyDevelopmentHistory(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {historyRunning ? 'Reading the parcel record…' : 'Run Property Development History'}
+            </button>
           </div>
           <p class="mt-2 text-xs text-[var(--color-text-muted)]">
             Assessor &amp; Tax resolves the subject first, then reads the assessor and taxing-jurisdiction record.
             LandPortal Research resolves the subject first, then reads the LandPortal record for that exact parcel.
             Comps &amp; Valuation resolves the subject first, then reads the comparable evidence and the valuation LandOS retains for it.
+            Zoning &amp; Subdivision establishes the controlling jurisdiction and its rules, then applies them to the parcel.
+            Property Development History reads what LandOS already retained about this exact parcel, then runs one bounded targeted search.
             Nothing here creates a lead or a Deal Card.
           </p>
           {error && <div class="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{error}</div>}
@@ -582,6 +726,216 @@ export function Tools() {
             )}
 
             <div class="mt-4 text-xs text-[var(--color-text-muted)]">Subject: {compsValuation.canonicalSubject?.id ?? 'not established'} · Invocation: {compsValuation.invocationId}</div>
+          </section>
+        )}
+
+        {zoningError && <div class="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{zoningError}</div>}
+
+        {zoning && (
+          <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="zoning-subdivision-result">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                  <Ruler size={14} /> Zoning &amp; Subdivision
+                </div>
+                <div class="mt-1 text-2xl font-semibold" data-testid="zoning-subdivision-status">{ZONING_SUBDIVISION_OUTCOME_LABEL[zoning.facts.outcome]}</div>
+                <div class="mt-1 text-sm text-[var(--color-text-muted)]">
+                  Subject {zoning.subjectResolution}
+                  {[zoning.facts.jurisdiction.municipality, zoning.facts.jurisdiction.county, zoning.facts.jurisdiction.state].filter(Boolean).length > 0
+                    ? ` · ${[zoning.facts.jurisdiction.municipality, zoning.facts.jurisdiction.county, zoning.facts.jurisdiction.state].filter(Boolean).join(', ')}`
+                    : ''}
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="rounded-full border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-text-muted)]">
+                  {zoning.execution.reused ? 'Reused persisted result' : `${zoning.execution.mode} · ${zoning.execution.durationMs} ms`}
+                </div>
+                <button type="button" data-testid="zoning-subdivision-refresh" disabled={zoningRunning} onClick={() => void runZoningSubdivision(true)} class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Refresh rules</button>
+              </div>
+            </div>
+
+            <p class="mt-3 text-sm leading-6 text-[var(--color-text-muted)]">{zoning.facts.summary}</p>
+
+            <dl class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                ['Zoning district', zoning.facts.zoning.established ? zoning.facts.zoning.districtCode : null],
+                ['District name', zoning.facts.zoning.districtName],
+                ['Zoning authority', zoning.facts.zoning.governingAuthority],
+                ['Zoning confidence', zoning.facts.zoning.confidence],
+                ['Incorporation', zoning.facts.jurisdiction.incorporationStatus],
+                ['Rules retained', zoning.facts.rules.count ? `${zoning.facts.rules.count} from ${zoning.facts.rules.documentCount} document(s)` : null],
+              ].map(([label, item]) => (
+                <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+                  <dt class="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{label}</dt>
+                  <dd class="mt-1 break-words text-sm">{value(item)}</dd>
+                </div>
+              ))}
+            </dl>
+
+            {/* The by-right STATUS leads. A lot count never appears without it,
+                because a number alone reads as an entitlement. */}
+            <div class="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-sm" data-testid="zoning-subdivision-by-right">
+              <b>Subdivision by right: {zoning.facts.subdivisionByRight.statusLabel}</b>
+              {zoning.facts.subdivisionByRight.maximumLots != null && ` — up to ${zoning.facts.subdivisionByRight.maximumLots} lot(s)`}
+              {zoning.facts.subdivisionByRight.reviewBody && ` · reviewed by ${zoning.facts.subdivisionByRight.reviewBody}`}
+              <div class="mt-1 text-[var(--color-text-muted)]">{zoning.facts.subdivisionByRight.reason}</div>
+              {zoning.facts.subdivisionByRight.constraintsApplied.length > 0 && (
+                <div class="mt-1"><b>Constraints applied:</b> {zoning.facts.subdivisionByRight.constraintsApplied.map((row) => `${row.constraint} = ${row.value}`).join('; ')}</div>
+              )}
+              {zoning.facts.subdivisionByRight.missingInputs.length > 0 && (
+                <div class="mt-1" data-testid="zoning-subdivision-missing-inputs"><b>Missing for a firm result:</b> {zoning.facts.subdivisionByRight.missingInputs.join('; ')}</div>
+              )}
+            </div>
+
+            {zoning.facts.zoning.nonZoningClassification && (
+              <div class="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm" data-testid="zoning-subdivision-non-zoning">
+                <b>Not adopted zoning:</b> {zoning.facts.zoning.nonZoningClassification.code}
+                {zoning.facts.zoning.nonZoningClassification.description ? ` — ${zoning.facts.zoning.nonZoningClassification.description}` : ''}.
+                {' '}This is a classification the source published; it is not this parcel&#39;s zoning district.
+              </div>
+            )}
+
+            {zoning.facts.zoning.historicalReferences.length > 0 && (
+              <div class="mt-4 text-sm" data-testid="zoning-subdivision-historical">
+                <b>Historical or requested districts (never the district in force today):</b>
+                <ul class="mt-1 space-y-1">
+                  {zoning.facts.zoning.historicalReferences.map((row) => (
+                    <li>{row.kind.replace(/_/g, ' ')}: {value(row.value)}{row.asOf ? ` (as of ${row.asOf})` : ''}{row.sourceUrl && <> · <a class="underline" href={row.sourceUrl} target="_blank" rel="noreferrer">open source</a></>}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {zoning.facts.rules.package.length > 0 && (
+              <div class="mt-5" data-testid="zoning-subdivision-rules">
+                <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                  Jurisdiction rule package{zoning.facts.jurisdiction.rulePackageReused ? ' · reused for this jurisdiction' : ''}
+                </div>
+                <ul class="mt-2 space-y-1">
+                  {zoning.facts.rules.package.map((rule) => (
+                    <li class="text-sm">
+                      <b>{rule.label}:</b> {rule.value ?? rule.unresolved ?? 'Not established'}
+                      {rule.section && <span class="text-[var(--color-text-muted)]"> · {rule.section}</span>}
+                      {rule.sourceUrl && <> · <a class="underline" href={rule.sourceUrl} target="_blank" rel="noreferrer">open source</a></>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {zoning.facts.sources.length > 0 && (
+              <div class="mt-5" data-testid="zoning-subdivision-sources">
+                <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Authoritative sources</div>
+                <ul class="mt-2 space-y-1">
+                  {zoning.facts.sources.map((source) => (
+                    <li class="text-sm">
+                      {source.url
+                        ? <a class="underline" href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
+                        : source.title}
+                      <span class="text-[var(--color-text-muted)]">{source.jurisdiction ? ` · ${source.jurisdiction}` : ''}{source.date ? ` · ${source.date}` : ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {zoning.warnings.length > 0 && <div class="mt-4 text-sm"><b>Reported:</b> {zoning.warnings.join('; ')}</div>}
+            {zoning.missingInformation.length > 0 && <div class="mt-4 text-sm"><b>Not established:</b> {zoning.missingInformation.join('; ')}</div>}
+
+            <div class="mt-4 text-xs text-[var(--color-text-muted)]">Subject: {zoning.canonicalSubject?.id ?? 'not established'} · Invocation: {zoning.invocationId}</div>
+          </section>
+        )}
+
+        {historyError && <div class="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{historyError}</div>}
+
+        {history && (
+          <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="property-development-history-result">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                  <History size={14} /> Property Development History
+                </div>
+                <div class="mt-1 text-2xl font-semibold" data-testid="property-development-history-status">{PROPERTY_HISTORY_OUTCOME_LABEL[history.facts.outcome]}</div>
+                <div class="mt-1 text-sm text-[var(--color-text-muted)]">Subject {history.subjectResolution}</div>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="rounded-full border border-[var(--color-border)] px-3 py-1 text-xs text-[var(--color-text-muted)]">
+                  {history.execution.reused ? 'Reused persisted result' : `${history.execution.mode} · ${history.execution.durationMs} ms`}
+                </div>
+                <button type="button" data-testid="property-development-history-refresh" disabled={historyRunning} onClick={() => void runPropertyDevelopmentHistory(true)} class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-xs font-semibold disabled:opacity-50">Refresh history</button>
+              </div>
+            </div>
+
+            {/* Absence of a result is a valid result, and it is stated as what
+                LandOS did not establish rather than as what does not exist. */}
+            <p class="mt-3 text-sm leading-6 text-[var(--color-text-muted)]" data-testid="property-development-history-statement">
+              {history.facts.history.statement}
+            </p>
+            {history.facts.history.narrative && <p class="mt-2 text-sm leading-6">{history.facts.history.narrative}</p>}
+
+            {history.facts.history.events.length > 0 && (
+              <ul class="mt-4 space-y-3" data-testid="property-development-history-events">
+                {history.facts.history.events.map((event) => (
+                  <li class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-sm">
+                    <div class="font-semibold">{event.eventDate ?? 'Date not stated'} — {event.projectName ?? event.eventTypeLabel}</div>
+                    <div class="text-[var(--color-text-muted)]">{event.eventTypeLabel} · {event.statusLabel}{event.governingBody ? ` · ${event.governingBody}` : ''}</div>
+                    {event.proposedLots != null && <div class="mt-1">{event.proposedLots} lot(s) proposed{event.acres != null ? ` on ${event.acres} acre(s)` : ''}</div>}
+                    {/* Stated on its own line: a proposed lot count and an
+                        entitled one are never the same claim. */}
+                    <div class="mt-1" data-testid="property-history-entitlement">
+                      Final entitlement status: Not established
+                      {event.entitlementBasis ? ` — ${event.entitlementBasis}` : ''}
+                    </div>
+                    {event.applicant && <div class="mt-1">Applicant / developer: {event.applicant}</div>}
+                    {event.ownerAtTheTime && <div>Owner of record at the time: {event.ownerAtTheTime}</div>}
+                    <div class="mt-1">{event.summary}</div>
+                    {event.sourceUrl && <div class="mt-1"><a class="underline" href={event.sourceUrl} target="_blank" rel="noreferrer">Open official record</a></div>}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {history.facts.relatedParties.length > 0 && (
+              <div class="mt-5" data-testid="property-history-related-parties">
+                <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                  Related parties named in the record (context only — no CRM seller or contact is changed)
+                </div>
+                <ul class="mt-2 space-y-1">
+                  {history.facts.relatedParties.map((party) => (
+                    <li class="text-sm">
+                      <b>{party.name}</b> — {party.roleLabel}
+                      {party.sourceUrl && <> · <a class="underline" href={party.sourceUrl} target="_blank" rel="noreferrer">open source</a></>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {history.facts.sources.length > 0 && (
+              <div class="mt-5" data-testid="property-history-sources">
+                <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Official sources</div>
+                <ul class="mt-2 space-y-1">
+                  {history.facts.sources.map((source) => (
+                    <li class="text-sm">
+                      {source.url
+                        ? <a class="underline" href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
+                        : source.title}
+                      <span class="text-[var(--color-text-muted)]">{source.reusedFromStorage ? ' · already retained, nothing re-fetched' : ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div class="mt-4 text-xs text-[var(--color-text-muted)]" data-testid="property-history-search-note">
+              {history.facts.search.note} Retained before searching: {history.facts.retainedContext.documentsHeld} document(s),{' '}
+              {history.facts.retainedContext.findingsHeld} finding(s).
+            </div>
+
+            {history.warnings.length > 0 && <div class="mt-4 text-sm"><b>Reported:</b> {history.warnings.join('; ')}</div>}
+            {history.facts.limitations.length > 0 && <div class="mt-2 text-sm"><b>Limitations:</b> {history.facts.limitations.join('; ')}</div>}
+
+            <div class="mt-4 text-xs text-[var(--color-text-muted)]">Subject: {history.canonicalSubject?.id ?? 'not established'} · Invocation: {history.invocationId}</div>
           </section>
         )}
       </div>

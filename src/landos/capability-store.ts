@@ -16,6 +16,16 @@ interface InvocationRow {
   result_json: string;
 }
 
+/**
+ * How long a second caller waits for an in-flight invocation of the same key.
+ *
+ * It is also the line past which a still-`running` row is treated as
+ * abandoned, because a row this side of it can never be waited on
+ * successfully — the two must be the same number or the store would refuse a
+ * key it has already given up on.
+ */
+const WAIT_FOR_RESULT_MS = 10 * 60_000;
+
 function subjectRef(request: CapabilityInvocationRequest): string | null {
   return request.subject.kind === 'canonical_property'
     ? String(request.subject.propertyCardId)
@@ -282,16 +292,27 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
       if (!/SQLITE_CONSTRAINT/.test(code) && !/UNIQUE constraint failed/i.test(error instanceof Error ? error.message : String(error))) throw error;
       const recover = db.transaction((): { started: true; researchSessionId: string | null } | { started: false; existingInvocationId: string } => {
         const existing = db.prepare(`
-        SELECT id, status FROM landos_capability_invocation
+        SELECT id, status, started_at FROM landos_capability_invocation
         WHERE capability_id = ? AND idempotency_key = ?
         ORDER BY created_at DESC LIMIT 1
-      `).get(input.metadata.id, input.idempotencyKey) as { id: string; status: string } | undefined;
+      `).get(input.metadata.id, input.idempotencyKey) as { id: string; status: string; started_at: string | null } | undefined;
         if (!existing) throw error;
-        if (existing.status !== 'failed') return { started: false, existingInvocationId: existing.id };
+        // A run still inside the wait window is the one to wait on.
+        //
+        // A row left `running` past that window is different: `waitForResult`
+        // has already decided it will give up on it, so waiting again can only
+        // spend the operator's time to reach the same timeout. It is abandoned
+        // — its process died, or it threw on the way to completion — and it is
+        // re-keyed exactly like a failed row so the key is usable again. The
+        // abandoned row is kept, not deleted: a durable record of a run that
+        // never finished is evidence, not clutter.
+        const abandoned = existing.status === 'running'
+          && Date.now() - Date.parse(existing.started_at ?? '') > WAIT_FOR_RESULT_MS;
+        if (existing.status !== 'failed' && !abandoned) return { started: false, existingInvocationId: existing.id };
         db.prepare(`
           UPDATE landos_capability_invocation
-          SET idempotency_key = idempotency_key || ':failed:' || id
-          WHERE id = ? AND status = 'failed'
+          SET idempotency_key = idempotency_key || ':' || status || ':' || id
+          WHERE id = ? AND status IN ('failed','running')
         `).run(existing.id);
         insertRows();
         return { started: true, researchSessionId };
@@ -301,7 +322,7 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
   }
 
   async waitForResult(invocationId: string): Promise<CapabilityResult> {
-    const deadline = Date.now() + 10 * 60_000;
+    const deadline = Date.now() + WAIT_FOR_RESULT_MS;
     while (Date.now() < deadline) {
       const result = this.get(invocationId);
       if (result) return result;
@@ -326,9 +347,22 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
       ?? (request.subject.kind === 'canonical_property'
         ? String(request.subject.propertyCardId)
         : invocation.research_session_id ?? 'unassigned');
+    // Every evidence row belongs to the invocation that reported it.
+    //
+    // A capability that consumes another capability's result forwards that
+    // result's evidence — Assessor & Tax, LandPortal Research, Comps &
+    // Valuation, Zoning & Subdivision and Property Development History all
+    // carry Property Resolution's evidence into their own. Those forwarded
+    // items already carry the row id the ORIGINAL invocation was written
+    // under, so writing them again under that id collides with the row that
+    // owns it and the whole invocation fails to complete. Keying this
+    // invocation's row by its own invocation id keeps the row unique while
+    // preserving which upstream evidence it restates.
     const evidence = result.evidence.map((item) => ({
       ...item,
-      id: item.id?.trim() || `evidence_${randomUUID()}`,
+      id: item.id?.trim()
+        ? `${result.invocationId}:${item.id.trim()}`
+        : `evidence_${randomUUID()}`,
     }));
     const persisted: CapabilityResult = { ...result, evidence };
 
