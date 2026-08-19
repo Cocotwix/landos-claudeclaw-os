@@ -7,6 +7,11 @@ import {
   type LandosCapability,
 } from './capability-contract.js';
 import {
+  ACQUISITION_INTELLIGENCE_CAPABILITY,
+  ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
+  type AcquisitionIntelligenceRuntimeDeps,
+} from './acquisition-intelligence-capability.js';
+import {
   ASSESSOR_TAX_CAPABILITY,
   ASSESSOR_TAX_CAPABILITY_ID,
   type AssessorTaxRuntime,
@@ -40,7 +45,8 @@ import {
 
 /** Every runtime a registered LandOS capability accepts. */
 export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRuntime & LandPortalResearchRuntime
-  & CompsValuationRuntime & ZoningSubdivisionRuntime & PropertyDevelopmentHistoryRuntime;
+  & CompsValuationRuntime & ZoningSubdivisionRuntime & PropertyDevelopmentHistoryRuntime
+  & AcquisitionIntelligenceRuntimeDeps;
 
 const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
@@ -55,6 +61,12 @@ const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [
     PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
     PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
+  // The one capability ABOVE the research capabilities: it consumes what they
+  // established and returns a judgment. It collects nothing and owns no fact.
+  [
+    ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
+    ACQUISITION_INTELLIGENCE_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
   ],
 ]);
 

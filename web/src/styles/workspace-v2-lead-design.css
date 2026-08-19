@@ -531,11 +531,18 @@
 .awv2-overview > * { min-width: 0; }
 .awv2-overview-decisionband { grid-column: 8 / -1; grid-row: 1; padding: 20px; }
 .awv2-overview-hero { grid-column: 1 / 8; grid-row: 1; min-height: 460px; }
-.awv2-overview-valuation { grid-column: 1 / 8; grid-row: 2; }
-.awv2-overview-decision { grid-column: 8 / -1; grid-row: 2; }
-.awv2-overview-market { grid-column: 1 / 6; grid-row: 3; }
-.awv2-overview-listing { grid-column: 6 / 10; grid-row: 3; }
-.awv2-overview-access[data-domain="property"] { grid-column: 10 / -1; grid-row: 3; }
+/* The acquisitions judgment spans the full width on its own row, directly
+   under the decision band and the subject hero. Every panel below it reports
+   one lane's findings; this one says what they mean together, so it reads
+   across all twelve columns rather than competing with a sibling for half a
+   row. The rows below simply shift down — the page keeps its panels and their
+   order unchanged. */
+.awv2-ai { grid-column: 1 / -1; grid-row: 2; }
+.awv2-overview-valuation { grid-column: 1 / 8; grid-row: 3; }
+.awv2-overview-decision { grid-column: 8 / -1; grid-row: 3; }
+.awv2-overview-market { grid-column: 1 / 6; grid-row: 4; }
+.awv2-overview-listing { grid-column: 6 / 10; grid-row: 4; }
+.awv2-overview-access[data-domain="property"] { grid-column: 10 / -1; grid-row: 4; }
 .awv2-overview-access[data-domain="evidence"] { grid-column: 1 / 7; }
 .awv2-overview-access[data-domain="risk"] { grid-column: 7 / -1; }
 .awv2-overview-closeout, .awv2-overview-methodology { grid-column: 1 / -1; }
@@ -685,7 +692,7 @@
   .awv2-header .awv2-statusbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .awv2-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .awv2-overview > * { grid-column: auto !important; grid-row: auto !important; }
-  .awv2-overview-hero, .awv2-overview-valuation, .awv2-overview-closeout, .awv2-overview-methodology { grid-column: 1 / -1 !important; }
+  .awv2-ai, .awv2-overview-hero, .awv2-overview-valuation, .awv2-overview-closeout, .awv2-overview-methodology { grid-column: 1 / -1 !important; }
   .awv2-overview-hero { min-height: 470px; }
   .awv2-overview-aerial { min-height: 470px; }
   .awv2-market-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }

@@ -18,6 +18,12 @@ import type {
   VisualBuyerNarrativeView,
 } from './AcquisitionWorkspaceV2PropertyIntelligence';
 import type { RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
+import {
+  AcquisitionIntelligenceSection,
+  type AcquisitionIntelligenceView,
+  type AcquisitionIntelligenceReadiness,
+  type AcquisitionIntelligenceRuntimeStatus,
+} from './AcquisitionWorkspaceV2AcquisitionIntelligence';
 import type { CompsValuationViewData } from './AcquisitionWorkspaceV2CompsValuation';
 import '../styles/workspace-v2-overview.css';
 
@@ -170,6 +176,17 @@ interface OverviewSectionProps {
   landPortalFacts?: ParcelFactSheetView | null;
   /** Retained land-use intelligence: authority, current zoning, backstory. */
   landUseIntelligence?: RetainedLandUseIntelligenceView | null;
+  /** The persisted Acquisition Intelligence read and its controls. Overview
+   *  renders it; it never triggers a reasoning run by rendering. */
+  acquisitionIntelligence?: {
+    read: AcquisitionIntelligenceView | null;
+    readiness: AcquisitionIntelligenceReadiness | null;
+    runtime: AcquisitionIntelligenceRuntimeStatus | null;
+    stale: boolean;
+    running: boolean;
+    error: string | null;
+    onRun: () => void;
+  } | null;
 }
 
 const unique = (items: Array<string | null | undefined>) => Array.from(new Set(items.filter((item): item is string => !!item?.trim())));
@@ -236,6 +253,7 @@ export function OverviewSection({
   formatUsd,
   landPortalFacts,
   landUseIntelligence,
+  acquisitionIntelligence,
 }: OverviewSectionProps) {
   const identity = snap.identity ?? {};
   const operator = snap.operatorAnalysis;
@@ -539,6 +557,21 @@ export function OverviewSection({
         </div>
         {decisionSummary !== decisionHeadline && <details class="awv2-decision-rationale"><summary>Decision rationale</summary><p>{decisionSummary}</p></details>}
       </section>
+
+      {/* ── 2. The acquisitions judgment. It sits directly under the decision
+             band because its whole job is to make the facts below it MEAN
+             something; the overview metrics stay exactly where they were. ── */}
+      {acquisitionIntelligence && (
+        <AcquisitionIntelligenceSection
+          read={acquisitionIntelligence.read}
+          readiness={acquisitionIntelligence.readiness}
+          runtime={acquisitionIntelligence.runtime}
+          stale={acquisitionIntelligence.stale}
+          running={acquisitionIntelligence.running}
+          error={acquisitionIntelligence.error}
+          onRun={acquisitionIntelligence.onRun}
+        />
+      )}
 
       <section class="awv2-overview-hero" data-domain="property" aria-label="Subject property">
         <div class="awv2-overview-aerial">

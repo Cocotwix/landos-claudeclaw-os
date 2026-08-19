@@ -135,6 +135,20 @@ import { planResolver, smallestNextIdentifier, type IntakeFields } from './resol
 import { apnSearchVariants, ownerSearchVariants, lpResolveForPreflight, type LpResolveResult } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
 import { invokeRuntimeCapability, listRuntimeCapabilities } from './capability-registry.js';
+import {
+  ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
+  propertyFileIsSufficient,
+} from './acquisition-intelligence-capability.js';
+import {
+  buildAcquisitionDossier,
+  type PropertyFileSource as AcquisitionPropertyFileSource,
+} from './acquisition-intelligence-dossier.js';
+import {
+  createHermesAcquisitionAnalyst,
+  dossierFingerprint as acquisitionDossierFingerprint,
+  acquisitionAnalystRuntimeStatus,
+} from './acquisition-analyst.js';
+import { readAcquisitionIntelligence } from './acquisition-intelligence-store.js';
 import { ASSESSOR_TAX_CAPABILITY_ID } from './assessor-tax-capability.js';
 import {
   LANDPORTAL_RESEARCH_CAPABILITY_ID,
@@ -8596,6 +8610,11 @@ export function registerLandosRoutes(app: Hono): void {
         if (/roadfrontage/.test(compact)) return 'road_frontage_aerial';
         // Wider-context captures are their own category: a newer context shot
         // must never displace the close-parcel hero, and vice versa.
+        // The surrounding-area aerial is its own category, resolved BEFORE the
+        // parcel-context bucket: it is a deliberately wider frame answering a
+        // different question, and collapsing it into parcel_context would let
+        // one displace the other.
+        if (/surroundingarea|areacontext/.test(compact)) return 'surrounding_area_aerial';
         if (/landportaloverview|parcelcontext|widercontext|neighborcontext/.test(compact)) return 'parcel_context';
         if (/closeparcelaerial|parcelpage/.test(compact)) return 'close_parcel_aerial';
         // Contour must resolve before the 3D bucket: "Contour terrain view"
@@ -9682,6 +9701,153 @@ export function registerLandosRoutes(app: Hono): void {
       logger.error({ event: 'official_parcel_gis_run_failed', dealCardId: id, msg: (err as Error)?.message }, 'official_parcel_gis_run_failed');
       return c.json({ error: 'official parcel research failed', detail: (err as Error)?.message ?? 'unknown' }, 502);
     }
+  });
+
+
+  // ── Acquisition Intelligence ─────────────────────────────────────────────
+  //
+  // The layer above research. It reads the property file LandOS already built
+  // and returns one acquisitions judgment. Two endpoints, and the split between
+  // them is the whole persistence contract:
+  //
+  //   GET  … /acquisition-intelligence      SELECT-only. Opening or reloading a
+  //                                         Deal Card returns the persisted read
+  //                                         and NEVER runs a model.
+  //   POST … /acquisition-intelligence/run  The explicit refresh. The only path
+  //                                         that engages the Acquisition Analyst.
+
+  /** The complete canonical property file for one Deal Card, assembled from the
+   *  reads that already exist. Nothing here researches; every call is a SELECT.
+   *  Retained visuals are resolved to their files on this machine so the analyst
+   *  can actually look at them rather than read a URL. */
+  const acquisitionPropertyFile = (dealCardId: number): AcquisitionPropertyFileSource | null => {
+    const deal = getDealCard(dealCardId);
+    if (!deal) return null;
+    const cardId = subjectCardId(deal) ?? null;
+    const inspection = cardId != null ? loadPropertyInspection(cardId) : null;
+    const visuals = (inspection?.assets ?? [])
+      .filter((asset) => usableInspectionAsset(asset))
+      // Only imagery visual validation actually bound to THIS Property Card may
+      // be reasoned over. A context capture from another parcel is not evidence
+      // about this one.
+      .filter((asset) => cardId != null && isAcceptedLandPortalVisualForProperty(asset.validation, cardId))
+      .map((asset) => ({
+        key: asset.key,
+        label: asset.label,
+        purpose: asset.purpose ?? asset.note ?? null,
+        capturedAt: asset.timestamp ?? null,
+        filePath: asset.storedPath ?? null,
+      }));
+    return {
+      dealCardId,
+      propertyCardId: cardId,
+      propertyIntelligence: propertyIntelligenceView(dealCardId) as unknown,
+      marketContext: marketContextFor(deal) as unknown,
+      documentRegistry: documentRegistryForCard(cardId, { dealCardId }) as unknown,
+      dealCard: deal as unknown,
+      visuals,
+    };
+  };
+
+  /**
+   * In-flight Acquisition Intelligence runs, by Deal Card.
+   *
+   * The analyst reasons locally over a full property file and inspects the
+   * retained imagery, which takes minutes rather than seconds. Holding an HTTP
+   * request open for that long is the fragile way to do it — a sleeping laptop,
+   * a navigation, or any proxy in between loses the run and the operator never
+   * learns whether it finished. So the POST STARTS the run and returns, and the
+   * SELECT-only GET reports whether one is in flight. Same fire-and-poll shape
+   * the LandPortal pilot already uses for long work.
+   *
+   * In memory on purpose: an interrupted process has no in-flight run, and the
+   * persisted read is the durable record.
+   */
+  const acquisitionIntelligenceRuns = new Map<number, { startedAt: string; error: string | null }>();
+
+  app.get('/api/landos/deal-cards/:id/acquisition-intelligence', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const read = readAcquisitionIntelligence(id);
+    // Whether the property file has moved on since the read was produced is
+    // answered by comparing fingerprints — no model, no research, one SELECT.
+    const source = acquisitionPropertyFile(id);
+    const dossier = source ? buildAcquisitionDossier(source) : null;
+    const fingerprint = dossier ? acquisitionDossierFingerprint(dossier) : null;
+    return c.json({
+      acquisitionIntelligence: read,
+      readiness: dossier
+        ? {
+          ...propertyFileIsSufficient(dossier),
+          coverage: dossier.coverage,
+          conflicts: dossier.conflicts,
+          visualsAvailable: dossier.visuals.map((visual) => visual.key),
+        }
+        : null,
+      stale: !!read && !!fingerprint && read.dossierFingerprint !== fingerprint,
+      run: acquisitionIntelligenceRuns.get(id) ?? null,
+      runtime: acquisitionAnalystRuntimeStatus(),
+    });
+  });
+
+
+  app.post('/api/landos/deal-cards/:id/acquisition-intelligence/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const cardId = subjectCardId(deal);
+    if (!cardId) return c.json({ error: 'deal card has no subject property card' }, 409);
+    // One run per Deal Card. A second press while one is in flight joins the
+    // run already going rather than starting a competing read.
+    const inFlight = acquisitionIntelligenceRuns.get(id);
+    if (inFlight && !inFlight.error) {
+      return c.json({ running: true, startedAt: inFlight.startedAt, runtime: acquisitionAnalystRuntimeStatus() }, 202);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const startedAt = new Date().toISOString();
+    acquisitionIntelligenceRuns.set(id, { startedAt, error: null });
+
+    // Deliberately not awaited: the operator polls the GET above.
+    void (async () => {
+      try {
+        const result = await invokeRuntimeCapability({
+          capabilityId: ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
+          caller: { type: 'deal_card', ref: `deal:${id}` },
+          subject: {
+            kind: 'canonical_property',
+            entity: deal.entity as LandosEntity,
+            propertyCardId: cardId,
+            dealCardId: id,
+          },
+          // Always a refresh: this endpoint exists precisely to produce a NEW
+          // read. Reuse is what the GET above is for.
+          mode: 'refresh',
+          parameters: {
+            ...(str(body.provider) ? { provider: str(body.provider)! } : {}),
+            ...(str(body.model) ? { model: str(body.model)! } : {}),
+          },
+          context: { surface: 'deal_card', section: 'acquisition_intelligence' },
+        }, {
+          readPropertyFile: acquisitionPropertyFile,
+          analyst: createHermesAcquisitionAnalyst(),
+        });
+        // A run that produced no read must leave the reason behind rather than
+        // simply stopping, or the section looks unchanged for no stated cause.
+        const failure = result.status === 'SUCCEEDED'
+          ? null
+          : String((result.facts as { summary?: unknown } | undefined)?.summary ?? result.warnings[0] ?? 'The analyst did not produce a read.');
+        acquisitionIntelligenceRuns.set(id, { startedAt, error: failure });
+        if (!failure) acquisitionIntelligenceRuns.delete(id);
+      } catch (error) {
+        const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
+        logger.error({ event: 'acquisition_intelligence_run_failed', dealCardId: id, msg: detail }, 'acquisition_intelligence_run_failed');
+        acquisitionIntelligenceRuns.set(id, { startedAt, error: `Acquisition Intelligence run failed: ${detail}` });
+      }
+    })();
+
+    return c.json({ running: true, startedAt, runtime: acquisitionAnalystRuntimeStatus() }, 202);
   });
 
   // Land use, zoning and by-right subdivision projection alone, for refresh
@@ -10865,6 +11031,7 @@ export function registerLandosRoutes(app: Hono): void {
     const provider = body.provider === 'google' ? 'google' : body.provider === 'ollama' ? 'ollama' : 'auto';
     const allowedCaptureLabels = new Set([
       'road_frontage_aerial', 'close_parcel_aerial', 'clean_parcel_aerial', 'wider_context',
+      'surrounding_area_aerial',
       'wetlands_overlay', 'soil_overlay', 'contour_terrain_view', 'fema_flood_overlay',
       'front_side_3d', 'rear_side_3d',
     ]);

@@ -437,7 +437,7 @@ export async function runLandPortalStagedPilot(
       const overlayResults = captures
         .filter((capture) => capture.kind === 'overlay')
         .map((capture) => ({ overlay: capture.overlay ?? capture.label, label: capture.label, file: capture.file }));
-      const missing = (deps.captureLabels ?? ['clean_parcel_aerial', 'close_parcel_aerial', 'wider_context'])
+      const missing = (deps.captureLabels ?? ['clean_parcel_aerial', 'close_parcel_aerial', 'wider_context', 'surrounding_area_aerial'])
         .filter((label) => !byLabel(label));
       return {
         status: captures.length ? 'completed' : 'failed',

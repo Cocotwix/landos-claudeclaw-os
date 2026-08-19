@@ -19,6 +19,8 @@
     "landos:health": "node scripts/runtime/landos-runtime.mjs health",
     "landos:hermes:profile": "node scripts/hermes/provision-landos-profile.mjs",
     "landos:hermes:profile:check": "node scripts/hermes/provision-landos-profile.mjs --check",
+    "landos:hermes:analyst": "node scripts/hermes/provision-acquisition-analyst.mjs",
+    "landos:hermes:analyst:check": "node scripts/hermes/provision-acquisition-analyst.mjs --check",
     "hermes:governed:audit": "node scripts/hermes/governed-profile-manager.mjs audit",
     "hermes:governed:provision": "node scripts/hermes/governed-profile-manager.mjs provision --apply-external",
     "hermes:governed:check": "node scripts/hermes/governed-profile-manager.mjs check",

@@ -42,6 +42,33 @@ export function contextZoomOutSteps(subjectAcres: number | null): number {
   return 2;
 }
 
+/**
+ * Hard ceiling on zoom steps out from the parcel fit for ANY standard aerial.
+ *
+ * Three steps is 8x the fitted linear extent: the neighborhood a buyer would
+ * drive, not the city. Five steps (32x) was the county-scale defect, so no
+ * capture in the standard package may reach it.
+ */
+export const MAX_STANDARD_ZOOM_OUT_STEPS = 3;
+
+/**
+ * Zoom steps OUT from the parcel "Fit" view for the SURROUNDING-AREA capture.
+ *
+ * This is the second, deliberately wider standard aerial. Where the
+ * parcel-context frame answers "what is immediately around the boundary", this
+ * one answers "what is the area doing": neighboring subdivisions, nearby
+ * development, the roads approaching the subject and the roads that stop near
+ * its boundaries, adjoining vacant acreage, and the residential/commercial
+ * pattern around it.
+ *
+ * It is always at least one step wider than the parcel-context frame and never
+ * wider than the standard ceiling, so the subject stays identifiable inside it.
+ * Zooming to the whole city would answer nothing an operator can act on.
+ */
+export function surroundingAreaZoomOutSteps(subjectAcres: number | null): number {
+  return Math.min(contextZoomOutSteps(subjectAcres) + 2, MAX_STANDARD_ZOOM_OUT_STEPS);
+}
+
 /** Parse the subject's acreage from the LandPortal parcel fact sheet fields. */
 export function parseAcresFromFields(fields: Record<string, string>): number | null {
   const keys = Object.keys(fields);

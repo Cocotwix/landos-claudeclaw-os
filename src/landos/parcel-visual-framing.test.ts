@@ -4,6 +4,8 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   contextZoomOutSteps,
+  surroundingAreaZoomOutSteps,
+  MAX_STANDARD_ZOOM_OUT_STEPS,
   assessMapViewportFrame,
   assessParcelVisualCapture,
   fileSha256,
@@ -39,6 +41,32 @@ describe('contextZoomOutSteps', () => {
       expect(steps).toBeGreaterThanOrEqual(1);
       expect(steps).toBeLessThanOrEqual(2);
     }
+  });
+});
+
+describe('surroundingAreaZoomOutSteps', () => {
+  it('is always WIDER than the parcel-context frame, for every acreage', () => {
+    for (const acres of [null, 0.25, 1, 6.14, 12.28, 40, 75.91, 100, 150, 640, 1000]) {
+      expect(surroundingAreaZoomOutSteps(acres)).toBeGreaterThan(contextZoomOutSteps(acres));
+    }
+  });
+
+  it('stays at neighborhood scale and never reaches the county-scale zoom', () => {
+    for (const acres of [null, 0.25, 6.14, 75.91, 150, 1000]) {
+      const steps = surroundingAreaZoomOutSteps(acres);
+      expect(steps).toBeLessThanOrEqual(MAX_STANDARD_ZOOM_OUT_STEPS);
+      // Five steps out from Fit is 32x the fitted extent: the county-scale
+      // defect. The surrounding-area frame must never be that.
+      expect(steps).toBeLessThan(5);
+    }
+  });
+
+  it('reaches the same neighborhood frame from either parcel-context baseline', () => {
+    // A 6-acre parcel fits tight and a 640-acre parcel fits wide, so their
+    // context baselines differ; the surrounding-area frame is defined by the
+    // area an operator needs to see, not by how tight the fit started.
+    expect(surroundingAreaZoomOutSteps(6.14)).toBe(MAX_STANDARD_ZOOM_OUT_STEPS);
+    expect(surroundingAreaZoomOutSteps(640)).toBe(MAX_STANDARD_ZOOM_OUT_STEPS);
   });
 });
 

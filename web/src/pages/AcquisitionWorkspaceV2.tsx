@@ -6,6 +6,7 @@
 //   GET /api/landos/deal-cards/:id/property-intelligence  (snapshot projection)
 //   GET /api/landos/deal-cards/:id/acquisition            (stage + next action)
 //   GET /api/landos/deal-cards/:id/activity               (last activity)
+//   GET /api/landos/deal-cards/:id/acquisition-intelligence (persisted read)
 //
 // This route is separate from the existing Deal Card and changes no backend
 // behavior. Values missing from the current data interfaces render as missing;
@@ -17,7 +18,7 @@ import {
   Phone, MessageSquare, Mail, StickyNote, ListPlus, Pencil, ExternalLink,
   LayoutDashboard, Map, Activity, UserRound, CalendarClock,
 } from 'lucide-preact';
-import { apiGet, dashboardToken } from '@/lib/api';
+import { apiGet, apiPost, dashboardToken } from '@/lib/api';
 import {
   readSection, readPropertyMarketView, sectionHref, rememberWorkspaceDeal, lastWorkspaceDealId,
   SECTION_SLUGS, type WorkspaceV2Section,
@@ -37,6 +38,11 @@ import { PropertyIntelligenceRunStatus } from '../components/AcquisitionWorkspac
 import {
   OverviewSection, type OverviewSnapshotView,
 } from '../components/AcquisitionWorkspaceV2Overview';
+import type {
+  AcquisitionIntelligenceView,
+  AcquisitionIntelligenceReadiness,
+  AcquisitionIntelligenceRuntimeStatus,
+} from '../components/AcquisitionWorkspaceV2AcquisitionIntelligence';
 import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
 import type { LandUseView, RetainedLandUseIntelligenceView } from '../components/AcquisitionWorkspaceV2LandUse';
 import '../styles/workspace-v2.css';
@@ -52,6 +58,14 @@ import '../styles/workspace-v2-lead-design.css';
 interface DdItem {
   key: string; label: string; verdict: string; headline: string; detail?: string;
   missing?: string[];
+}
+interface AcqIntelResp {
+  acquisitionIntelligence?: AcquisitionIntelligenceView | null;
+  readiness?: AcquisitionIntelligenceReadiness | null;
+  runtime?: AcquisitionIntelligenceRuntimeStatus | null;
+  stale?: boolean;
+  /** Present while a read is being produced on the server. */
+  run?: { startedAt?: string; error?: string | null } | null;
 }
 interface SnapshotView extends OverviewSnapshotView {
   status?: string;
@@ -216,6 +230,15 @@ export function AcquisitionWorkspaceV2() {
   // Property-tax payment status, answered by the collecting office rather than
   // the assessor. Without it the panel could only ever say "not screened".
   const [taxStatus, setTaxStatus] = useState<TaxStatusView | null>(null);
+  // Acquisition Intelligence. The read is FETCHED, never generated on render:
+  // opening or reloading a Deal Card must not start a reasoning run, so the
+  // only thing that produces a new read is the operator pressing refresh.
+  const [aiRead, setAiRead] = useState<AcquisitionIntelligenceView | null>(null);
+  const [aiReadiness, setAiReadiness] = useState<AcquisitionIntelligenceReadiness | null>(null);
+  const [aiRuntime, setAiRuntime] = useState<AcquisitionIntelligenceRuntimeStatus | null>(null);
+  const [aiStale, setAiStale] = useState(false);
+  const [aiRunning, setAiRunning] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Bumped when a research run settles, so the workspace re-reads the records
@@ -235,6 +258,7 @@ export function AcquisitionWorkspaceV2() {
           apiGet<ActivityResp>(`/api/landos/deal-cards/${dealId}/activity`).catch(() => null),
           apiGet<BrowseruseResp>(`/api/landos/deal-cards/${dealId}/browseruse`).catch(() => null),
         ]);
+        const ai = await apiGet<AcqIntelResp>(`/api/landos/deal-cards/${dealId}/acquisition-intelligence`).catch(() => null);
         if (dead) return;
         setDeal(d); setSnap(i?.propertyIntelligence?.snapshot ?? null); setMarket(i?.marketContext ?? null); setAcq(a); setActivity(act);
         setSoils(bu?.soilDetails ?? null);
@@ -252,6 +276,14 @@ export function AcquisitionWorkspaceV2() {
         setCompsValuation(i?.propertyIntelligence?.compsValuation ?? null);
         setLandPortalFacts(i?.propertyIntelligence?.landPortalFacts ?? i?.landPortalFacts ?? null);
         setTaxStatus(i?.propertyIntelligence?.taxStatus ?? null);
+        setAiRead(ai?.acquisitionIntelligence ?? null);
+        setAiReadiness(ai?.readiness ?? null);
+        setAiRuntime(ai?.runtime ?? null);
+        setAiStale(ai?.stale === true);
+        // A run started before this page load is still the operator's run:
+        // reopening the card rejoins it rather than showing an idle section.
+        setAiRunning(!!ai?.run && !ai.run.error);
+        setAiError(ai?.run?.error ?? null);
       } catch (e) {
         if (!dead) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -260,6 +292,25 @@ export function AcquisitionWorkspaceV2() {
     })();
     return () => { dead = true; };
   }, [dealId, reloadNonce]);
+
+  // Poll only while a read is actually being produced. Nothing here triggers a
+  // reasoning run: this is the SELECT-only projection.
+  useEffect(() => {
+    if (dealId == null || !aiRunning) return undefined;
+    let dead = false;
+    const timer = window.setInterval(async () => {
+      const ai = await apiGet<AcqIntelResp>(`/api/landos/deal-cards/${dealId}/acquisition-intelligence`).catch(() => null);
+      if (dead || !ai) return;
+      setAiReadiness(ai.readiness ?? null);
+      setAiRuntime(ai.runtime ?? null);
+      if (ai.run && !ai.run.error) return;
+      setAiRunning(false);
+      setAiRead(ai.acquisitionIntelligence ?? null);
+      setAiStale(ai.stale === true);
+      setAiError(ai.run?.error ?? (ai.acquisitionIntelligence ? null : 'The analyst did not produce a read for this property.'));
+    }, 5_000);
+    return () => { dead = true; window.clearInterval(timer); };
+  }, [dealId, aiRunning]);
 
   if (dealId == null) return null;
   if (loading) return <div class="awv2"><div class="awv2-state">Loading the workspace…</div></div>;
@@ -278,6 +329,22 @@ export function AcquisitionWorkspaceV2() {
   // property identity resolution is pending; it fills in as research lands.
   const pendingResolution = !snapState;
   const snap: SnapshotView = snapState ?? {};
+
+  // The ONLY path that engages the Acquisition Analyst. The analyst reasons
+  // locally over the whole property file and inspects the retained imagery,
+  // which takes minutes, so the POST just STARTS the run and the section polls
+  // for the result. The operator can leave the page and come back to it.
+  const runAcquisitionIntelligence = async () => {
+    if (dealId == null || aiRunning) return;
+    setAiRunning(true);
+    setAiError(null);
+    try {
+      await apiPost(`/api/landos/deal-cards/${dealId}/acquisition-intelligence/run`, {});
+    } catch (e) {
+      setAiRunning(false);
+      setAiError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   // ── View model, straight from canonical data ─────────────────────────
   const id = snap.identity || {};
@@ -505,6 +572,15 @@ export function AcquisitionWorkspaceV2() {
           market={market}
           landPortalFacts={landPortalFacts}
           landUseIntelligence={landUseIntelligence}
+          acquisitionIntelligence={{
+            read: aiRead,
+            readiness: aiReadiness,
+            runtime: aiRuntime,
+            stale: aiStale,
+            running: aiRunning,
+            error: aiError,
+            onRun: runAcquisitionIntelligence,
+          }}
           compsValuation={compsValuation}
           valuationBasisLabel={valuationBasisLabel}
           landBasisOpeningReference={landBasisOpeningReference}

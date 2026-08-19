@@ -24,7 +24,7 @@ import { logger } from '../logger.js';
 import { automationBrowserConfig, launchAutomationBrowser, verifyAutomationOwnership } from './automation-browser.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 import { landosArtifactPath } from './storage-profile.js';
-import { assessMapViewportFrame, contextZoomOutSteps, parseAcresFromFields, inspectSavedParcelVisual, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN, type MapViewportClip, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
+import { assessMapViewportFrame, contextZoomOutSteps, surroundingAreaZoomOutSteps, parseAcresFromFields, inspectSavedParcelVisual, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN, type MapViewportClip, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
 import { evaluateThreeDCaptureEligibility, landPortalIdentityFromUrl } from './landportal-operating-rules.js';
 import {
   landPortalCompCardsFromApi,
@@ -2889,6 +2889,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         const capturedShas: string[] = [];
         const requestedCaptureLabels = new Set(opts.captureLabels ?? [
           'road_frontage_aerial', 'close_parcel_aerial', 'clean_parcel_aerial', 'wider_context',
+          'surrounding_area_aerial',
           'wetlands_overlay', 'soil_overlay', 'contour_terrain_view', 'fema_flood_overlay',
           'front_side_3d', 'rear_side_3d',
         ]);
@@ -2926,6 +2927,55 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           visualShots.push({ label: 'wider_context', path: parcelFile, kind: 'parcel_page', purpose: 'Full-boundary wider parcel context' });
         }
         try { capturedShas.push(fileSha256(parcelFile)); } catch { /* gate degrades gracefully */ }
+        // ONE additional standard aerial: the surrounding AREA, moderately
+        // wider than the parcel-context frame above. It exists because the
+        // decisive facts about a tract are frequently NOT on the tract —
+        // a subdivision on the far side, a paved road that stops near a
+        // boundary, adjoining vacant acreage, the direction growth is coming
+        // from. None of that has a database field, so it has to be a picture.
+        //
+        // Same discipline as every other capture: resume from Fit, refuse the
+        // frame if the camera could not be driven, and refuse to save a frame
+        // byte-identical to one already taken (that would mean the camera never
+        // actually moved and the parcel-context shot was about to be relabeled).
+        if (requestedCaptureLabels.has('surrounding_area_aerial')) {
+          const surroundingSteps = surroundingAreaZoomOutSteps(parseAcresFromFields(fieldsOut.fields ?? {}));
+          await clickNamedButton('Fit');
+          await sleep(1400);
+          const surroundingStepsDone = await zoomOutParcelMap(surroundingSteps);
+          if (surroundingStepsDone !== surroundingSteps) {
+            logger.warn({
+              event: 'landportal_visual_rejected',
+              reason: 'surrounding_area_zoom_not_driven',
+              completed: surroundingStepsDone,
+              requested: surroundingSteps,
+            }, 'landportal_visual_rejected');
+          } else {
+            const surroundingFile = path.join(dir, `landportal-surrounding-${Date.now()}.png`);
+            let surroundingOk = false;
+            await pollUntil(async () => {
+              surroundingOk = await captureMapViewport(surroundingFile, 'parcel_context');
+              if (!surroundingOk) return false;
+              try { return fs.statSync(surroundingFile).size >= 500_000; } catch { return false; }
+            }, 26_000);
+            let surroundingSha: string | null = null;
+            try { surroundingSha = surroundingOk ? fileSha256(surroundingFile) : null; } catch { surroundingSha = null; }
+            if (surroundingOk && surroundingSha && isDistinctOverlayCapture(surroundingSha, capturedShas)) {
+              visualShots.push({
+                label: 'surrounding_area_aerial',
+                path: surroundingFile,
+                kind: 'parcel_page',
+                purpose: 'Surrounding-area aerial: neighboring development, approaching roads and adjoining acreage around the subject',
+              });
+              capturedShas.push(surroundingSha);
+            } else {
+              logger.warn({
+                event: 'landportal_visual_rejected',
+                reason: surroundingOk ? 'surrounding_area_identical_to_prior_capture' : 'surrounding_area_capture_failed',
+              }, 'landportal_visual_rejected');
+            }
+          }
+        }
         const openOverlayDialog = async (): Promise<boolean> => {
           if (await buttonState('Close')) return true;
           const opened = await clickNamedButton('Basemaps and overlays');
