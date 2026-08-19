@@ -29,12 +29,33 @@ import yaml from 'js-yaml';
 export const ACQUISITION_ANALYST_PROFILE = 'landos-acquisition-analyst';
 export const ACQUISITION_ANALYST_SKILL = 'landos-acquisition-analysis';
 
-/** V1 runtime default: Gemma 4 through the local Ollama server.
- *  Hermes resolves the `ollama` provider alias to its local OpenAI-compatible
- *  `custom` transport, so the base URL is the Ollama /v1 endpoint. */
-export const DEFAULT_ANALYST_PROVIDER = 'ollama';
-export const DEFAULT_ANALYST_MODEL = 'gemma4:12b';
-export const DEFAULT_ANALYST_BASE_URL = 'http://localhost:11434/v1';
+/** PRIMARY reasoning default: GPT-5.6 Sol through the configured `openai-codex`
+ *  provider. Deliberately the same pair `src/landos/acquisition-analyst.ts`
+ *  resolves to, so the profile's own default and the default LandOS passes on
+ *  every invocation name one model rather than two. Written as a DEFAULT only;
+ *  LandOS still overrides provider and model per invocation, so changing the
+ *  reasoning engine stays a setting and never a reprovision. */
+export const DEFAULT_ANALYST_PROVIDER = 'openai-codex';
+export const DEFAULT_ANALYST_MODEL = 'gpt-5.6-sol';
+
+/** VISION auxiliary: Gemma 4 on the local Ollama server, unchanged.
+ *
+ *  Separate constants from the primary on purpose. The image pass runs on this
+ *  machine rather than reaching for a hosted vision model, and that property is
+ *  worth keeping independent of whatever reasons over the dossier. Before this
+ *  split both roles read the same two constants, so moving the primary would
+ *  have silently moved the vision runtime with it. */
+export const DEFAULT_ANALYST_VISION_PROVIDER = 'ollama';
+export const DEFAULT_ANALYST_VISION_MODEL = 'gemma4:12b';
+
+/** The local Ollama route.
+ *
+ *  Load-bearing rather than decorative: Hermes' `ollama` provider carries no
+ *  catalog base URL of its own, so this value is what resolves the local
+ *  OpenAI-compatible transport for the vision auxiliary and for any fallback of
+ *  the primary onto the local runtime. `openai-codex` ships its own route and
+ *  ignores it, which is why it can stay configured under a hosted primary. */
+export const LOCAL_RUNTIME_BASE_URL = 'http://localhost:11434/v1';
 
 /**
  * Context window for the local runtime. Two numbers, because they answer two
@@ -48,11 +69,14 @@ export const DEFAULT_ANALYST_BASE_URL = 'http://localhost:11434/v1';
  * run an agent on a runtime context below 64K, so 64K is the floor, not a
  * preference.
  *
- * `context_length` is what the model can DO. Gemma 4 12B's real window is 256K;
- * stating it keeps the same gate satisfied on the model side.
+ * `context_length` is what the primary model can DO. GPT-5.6 Sol's real window
+ * is 1.05M; stating it keeps the same gate satisfied on the model side. Hermes
+ * drops a configured context length whenever the active route differs from the
+ * configured one, so a run that falls back to the local Gemma runtime picks up
+ * that model's own window instead of this number.
  */
-export const DEFAULT_ANALYST_LOADED_CONTEXT_TOKENS = 65536;
-export const DEFAULT_ANALYST_MODEL_CONTEXT_TOKENS = 262144;
+export const LOCAL_RUNTIME_LOADED_CONTEXT_TOKENS = 65536;
+export const DEFAULT_ANALYST_MODEL_CONTEXT_TOKENS = 1_050_000;
 
 const workspace = path.resolve(import.meta.dirname, '..', '..');
 const templates = path.join(workspace, 'config', 'hermes', 'acquisition-analyst');
@@ -113,6 +137,10 @@ function verify() {
     const config = yaml.load(fs.readFileSync(configPath, 'utf8')) || {};
     if (!String(config?.model?.provider || '').trim()) failures.push('model.provider is not set');
     if (!String(config?.model?.default || '').trim()) failures.push('model.default is not set');
+    // The vision runtime is a separate role now, so it gets a separate check.
+    // Losing it silently would move the image pass onto the hosted primary.
+    if (!String(config?.auxiliary?.vision?.provider || '').trim()) failures.push('auxiliary.vision.provider is not set');
+    if (!String(config?.auxiliary?.vision?.model || '').trim()) failures.push('auxiliary.vision.model is not set');
     if (Number(config?.model?.ollama_num_ctx || 0) < 64000) {
       failures.push('model.ollama_num_ctx is below the 64K runtime context Hermes requires');
     }
@@ -132,7 +160,8 @@ function verify() {
   }
   const config = yaml.load(fs.readFileSync(path.join(profileHome, 'config.yaml'), 'utf8')) || {};
   console.log(`LandOS Acquisition Analyst ready: ${profileHome}`);
-  console.log(`  runtime default: ${config.model.provider} / ${config.model.default}`);
+  console.log(`  primary model:   ${config.model.provider} / ${config.model.default}`);
+  console.log(`  vision model:    ${config.auxiliary.vision.provider} / ${config.auxiliary.vision.model}`);
   console.log(`  context window:  ${config.model.ollama_num_ctx} loaded / ${config.model.context_length} model`);
   console.log(`  skill: ${ACQUISITION_ANALYST_SKILL}`);
   return true;
@@ -157,15 +186,16 @@ if (!fs.existsSync(python) || !fs.existsSync(launcher)) {
     // never a reprovision and never a loss of persona, skills, or memory.
     runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'model.provider', DEFAULT_ANALYST_PROVIDER]);
     runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'model.default', DEFAULT_ANALYST_MODEL]);
-    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'model.base_url', DEFAULT_ANALYST_BASE_URL]);
-    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'model.ollama_num_ctx', String(DEFAULT_ANALYST_LOADED_CONTEXT_TOKENS)]);
+    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'model.base_url', LOCAL_RUNTIME_BASE_URL]);
+    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'model.ollama_num_ctx', String(LOCAL_RUNTIME_LOADED_CONTEXT_TOKENS)]);
     runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'model.context_length', String(DEFAULT_ANALYST_MODEL_CONTEXT_TOKENS)]);
-    // The image pass runs on the same local runtime rather than reaching for a
+    // The image pass stays on the local runtime rather than reaching for a
     // hosted vision model: the analyst inspects retained property imagery on
-    // this machine, and nothing about a read leaves it.
-    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'auxiliary.vision.provider', DEFAULT_ANALYST_PROVIDER]);
-    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'auxiliary.vision.model', DEFAULT_ANALYST_MODEL]);
-    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'auxiliary.vision.base_url', DEFAULT_ANALYST_BASE_URL]);
+    // this machine, and nothing about a read leaves it. Its own constants, so
+    // the primary above can move without dragging the vision runtime along.
+    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'auxiliary.vision.provider', DEFAULT_ANALYST_VISION_PROVIDER]);
+    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'auxiliary.vision.model', DEFAULT_ANALYST_VISION_MODEL]);
+    runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'auxiliary.vision.base_url', LOCAL_RUNTIME_BASE_URL]);
     runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'terminal.backend', 'local']);
     runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'terminal.cwd', workspace]);
     runHermes(['--profile', ACQUISITION_ANALYST_PROFILE, 'config', 'set', 'memory.memory_enabled', 'true']);
