@@ -196,7 +196,11 @@ describe('operator-question hierarchy', () => {
   it('keeps market and collector detail collapsed behind the operator read', () => {
     expect(PI_SRC).toMatch(/market\.read\?\.resolvedVia/);
     expect(PI_SRC).toContain("market.liquidity?.competition != null ? market.liquidity.competition : 'unmeasured'");
-    expect(PI_SRC).toMatch(/<summary>Market records and methodology<\/summary>/);
+    // The market records, methodology and collector diagnostics stay behind
+    // one collapsed control. The control is now the shared Disclosure
+    // primitive every Property & Market section uses, so the whole page
+    // discloses evidence the same way; the requirement is unchanged.
+    expect(PI_SRC).toMatch(/<Disclosure label="Market records, methodology and collector diagnostics">/);
     expect(PI_SRC).toMatch(/<summary>Collection diagnostics<\/summary>/);
   });
 

@@ -1,0 +1,317 @@
+/* Property & Market — the visual diligence workspace.
+ *
+ * One reading order per section, expressed as four visual weights:
+ *   conclusion (heaviest)  →  metrics  →  what it means  →  still needed
+ * with every raw rule, source and diagnostic behind one collapsed control.
+ *
+ * The point of the weights is scannability: an operator should be able to read
+ * only the conclusions down the page and come away with the property, then
+ * drop into any one section for the evidence. Sections that all look the same
+ * defeat that, so conclusion, interpretation and open-question surfaces carry
+ * different grounds, rails and type. */
+
+/* ── Collapsed evidence ── */
+
+.awv2-dx-disclosure {
+  margin-top: 12px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .14);
+}
+.awv2-dx-disclosure > summary {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 13px;
+  color: var(--awv2-bone-faint);
+  font: 600 11px var(--awv2-mono); letter-spacing: .1em; text-transform: uppercase;
+  cursor: pointer; list-style: none;
+}
+.awv2-dx-disclosure > summary::-webkit-details-marker { display: none; }
+.awv2-dx-disclosure > summary::before {
+  content: '▸'; display: inline-block; color: var(--awv2-brass); transition: transform .15s ease;
+}
+.awv2-dx-disclosure[open] > summary::before { transform: rotate(90deg); }
+.awv2-dx-disclosure > summary:hover { color: var(--awv2-bone); }
+.awv2-dx-disclosure > summary .n {
+  margin-left: auto;
+  padding: 2px 8px; border: 1px solid var(--awv2-line-strong); border-radius: 999px;
+  color: var(--awv2-bone-dim); font-size: 10px; letter-spacing: .06em;
+}
+.awv2-dx-disclosure-body { padding: 4px 14px 14px; border-top: 1px solid var(--awv2-line); }
+
+/* ── Conclusion first ── */
+
+.awv2-dx-conclusion {
+  display: grid; gap: 4px;
+  padding: 14px 17px;
+  margin-bottom: 12px;
+  border: 1px solid var(--awv2-line-strong);
+  border-left: 3px solid var(--awv2-bone-faint);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .035), rgba(0, 0, 0, .2) 70%);
+}
+.awv2-dx-conclusion small {
+  color: var(--awv2-bone-faint);
+  font: 700 9.5px var(--awv2-mono); letter-spacing: .16em; text-transform: uppercase;
+}
+.awv2-dx-conclusion b { color: var(--awv2-bone); font-size: 18px; line-height: 1.3; font-weight: 600; }
+.awv2-dx-conclusion p { margin: 3px 0 0; color: var(--awv2-bone-dim); font-size: 13px; line-height: 1.5; }
+.awv2-dx-conclusion.tone-good { border-left-color: var(--awv2-moss); }
+.awv2-dx-conclusion.tone-good b { color: var(--awv2-moss); }
+.awv2-dx-conclusion.tone-warn { border-left-color: var(--awv2-amber); }
+.awv2-dx-conclusion.tone-warn b { color: var(--awv2-amber); }
+.awv2-dx-conclusion.tone-bad { border-left-color: var(--awv2-rust); }
+.awv2-dx-conclusion.tone-bad b { color: var(--awv2-rust); }
+
+/* ── Metrics ── */
+
+.awv2-dx-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(146px, 1fr));
+  gap: 9px;
+  margin: 12px 0;
+}
+.awv2-dx-metric {
+  display: grid; gap: 3px; align-content: start;
+  padding: 12px 14px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .2);
+}
+.awv2-dx-metric small {
+  color: var(--awv2-bone-faint);
+  font: 9.5px var(--awv2-mono); letter-spacing: .13em; text-transform: uppercase;
+}
+.awv2-dx-metric b { color: var(--awv2-bone); font-size: 19px; line-height: 1.2; font-weight: 600; }
+.awv2-dx-metric i { color: var(--awv2-bone-faint); font-size: 11.5px; font-style: normal; line-height: 1.35; }
+.awv2-dx-metric.tone-good { border-color: color-mix(in srgb, var(--awv2-moss) 34%, var(--awv2-line)); }
+.awv2-dx-metric.tone-good b { color: var(--awv2-moss); }
+.awv2-dx-metric.tone-warn { border-color: color-mix(in srgb, var(--awv2-amber) 34%, var(--awv2-line)); }
+.awv2-dx-metric.tone-warn b { color: var(--awv2-amber); }
+.awv2-dx-metric.tone-bad { border-color: color-mix(in srgb, var(--awv2-rust) 34%, var(--awv2-line)); }
+.awv2-dx-metric.tone-bad b { color: var(--awv2-rust); }
+
+/* ── A reconciled conflict ── */
+
+.awv2-dx-conflict {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 11px;
+  padding: 13px 16px; margin: 12px 0;
+  border: 1px solid color-mix(in srgb, var(--awv2-amber) 45%, var(--awv2-line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--awv2-amber) 8%, transparent);
+  color: var(--awv2-amber);
+}
+.awv2-dx-conflict > div { display: grid; gap: 3px; min-width: 0; }
+.awv2-dx-conflict small { font: 700 9.5px var(--awv2-mono); letter-spacing: .15em; text-transform: uppercase; }
+.awv2-dx-conflict b { color: var(--awv2-bone); font-size: 17px; font-weight: 600; }
+.awv2-dx-conflict p { margin: 2px 0 0; color: var(--awv2-bone-dim); font-size: 12.5px; line-height: 1.5; }
+
+/* ── What it means here ── */
+
+.awv2-dx-means {
+  margin: 12px 0;
+  padding: 13px 16px;
+  border: 1px solid color-mix(in srgb, var(--awv2-moss) 28%, var(--awv2-line));
+  border-radius: 10px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--awv2-moss) 6%, transparent), rgba(0, 0, 0, .16) 72%);
+}
+.awv2-dx-means h4 {
+  display: flex; align-items: center; gap: 7px; margin: 0;
+  color: var(--awv2-moss);
+  font: 700 9.5px var(--awv2-mono); letter-spacing: .15em; text-transform: uppercase;
+}
+.awv2-dx-means ul { margin: 9px 0 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+.awv2-dx-means li {
+  color: var(--awv2-bone-dim); font-size: 13px; line-height: 1.5;
+}
+.awv2-dx-means .tag {
+  display: inline-block; margin-right: 8px; vertical-align: 1px;
+  padding: 1px 7px; border: 1px solid var(--awv2-line-strong); border-radius: 999px;
+  color: var(--awv2-bone-faint); font: 9px var(--awv2-mono); letter-spacing: .1em; text-transform: uppercase;
+}
+.awv2-dx-means li[data-kind='constraint'] .tag { border-color: color-mix(in srgb, var(--awv2-rust) 50%, var(--awv2-line)); color: var(--awv2-rust); }
+.awv2-dx-means li[data-kind='conflict'] .tag { border-color: color-mix(in srgb, var(--awv2-amber) 50%, var(--awv2-line)); color: var(--awv2-amber); }
+.awv2-dx-means li[data-kind='opportunity'] .tag { border-color: color-mix(in srgb, var(--awv2-moss) 50%, var(--awv2-line)); color: var(--awv2-moss); }
+
+/* ── Still needed / next action ── */
+
+.awv2-dx-needed {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px;
+  margin: 12px 0 0;
+}
+.awv2-dx-needed-list {
+  padding: 12px 15px;
+  border: 1px solid var(--awv2-line); border-radius: 9px;
+  background: rgba(0, 0, 0, .16);
+}
+.awv2-dx-needed-list h4 {
+  display: flex; align-items: center; gap: 7px; margin: 0;
+  color: var(--awv2-bone-faint);
+  font: 700 9.5px var(--awv2-mono); letter-spacing: .15em; text-transform: uppercase;
+}
+.awv2-dx-needed-list ul { margin: 8px 0 0; padding-left: 16px; display: grid; gap: 5px; }
+.awv2-dx-needed-list li { color: var(--awv2-bone-dim); font-size: 12.5px; line-height: 1.45; }
+.awv2-dx-needed-action {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 11px;
+  padding: 12px 15px;
+  border: 1px solid color-mix(in srgb, var(--awv2-brass) 34%, var(--awv2-line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--awv2-brass) 8%, transparent);
+  color: var(--awv2-brass);
+}
+.awv2-dx-needed-action > div { display: grid; gap: 2px; min-width: 0; }
+.awv2-dx-needed-action small { font: 700 9.5px var(--awv2-mono); letter-spacing: .15em; text-transform: uppercase; }
+.awv2-dx-needed-action b { color: var(--awv2-bone); font-size: 13px; line-height: 1.4; font-weight: 600; }
+
+/* ── History is not entitlement ── */
+
+.awv2-dx-history-warn {
+  display: flex; align-items: flex-start; gap: 9px;
+  margin: 12px 0 0; padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--awv2-amber) 42%, var(--awv2-line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--awv2-amber) 7%, transparent);
+  color: var(--awv2-amber); font-size: 12.5px; line-height: 1.5;
+}
+.awv2-dx-history-warn b { color: var(--awv2-amber); }
+
+/* ── Remaining diligence: one ranked queue, not twenty "not established" rows ── */
+
+.awv2-dx-queue { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 12px; }
+.awv2-dx-queue-group {
+  padding: 14px 17px;
+  border: 1px solid var(--awv2-line); border-radius: 10px;
+  background: rgba(0, 0, 0, .18);
+}
+.awv2-dx-queue-group[data-tier='high'] {
+  border-color: color-mix(in srgb, var(--awv2-rust) 34%, var(--awv2-line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--awv2-rust) 6%, transparent), rgba(0, 0, 0, .2) 70%);
+}
+.awv2-dx-queue-group h4 {
+  margin: 0; color: var(--awv2-bone-faint);
+  font: 700 9.5px var(--awv2-mono); letter-spacing: .16em; text-transform: uppercase;
+}
+.awv2-dx-queue-group[data-tier='high'] h4 { color: var(--awv2-rust); }
+.awv2-dx-queue-group ol { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; counter-reset: dxq; }
+.awv2-dx-queue-group li {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px;
+  counter-increment: dxq;
+}
+.awv2-dx-queue-group li::before {
+  content: counter(dxq);
+  display: grid; place-items: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--awv2-line-strong);
+  color: var(--awv2-bone-faint); font: 700 10.5px var(--awv2-mono);
+}
+.awv2-dx-queue-group li > div { display: grid; gap: 2px; min-width: 0; }
+.awv2-dx-queue-group li b { color: var(--awv2-bone); font-size: 13px; font-weight: 600; line-height: 1.4; }
+.awv2-dx-queue-group li span { color: var(--awv2-bone-faint); font-size: 12px; line-height: 1.4; }
+
+/* ── The full analyst read, kept whole and kept collapsed ── */
+
+.awv2-dx-fullintel { margin-top: 6px; }
+.awv2-dx-fullintel .awv2-ai { border-style: dashed; }
+
+/* ── Acreage-band comparison ────────────────────────────────────────────
+   The subject's own band beside the fastest-moving one. Two surfaces, not
+   one table: an operator is comparing two things, so the page shows two. */
+
+.awv2-dx-bands {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.awv2-dx-band {
+  padding: 14px 16px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .18);
+}
+.awv2-dx-band[data-role='subject'] {
+  border-color: color-mix(in srgb, var(--awv2-brass) 34%, var(--awv2-line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--awv2-brass) 7%, transparent), rgba(0, 0, 0, .2) 70%);
+}
+.awv2-dx-band[data-role='liquid'] {
+  border-color: color-mix(in srgb, var(--awv2-moss) 30%, var(--awv2-line));
+}
+.awv2-dx-band small {
+  color: var(--awv2-bone-faint);
+  font: 700 9.5px var(--awv2-mono); letter-spacing: .16em; text-transform: uppercase;
+}
+.awv2-dx-band[data-role='subject'] small { color: var(--awv2-brass); }
+.awv2-dx-band[data-role='liquid'] small { color: var(--awv2-moss); }
+.awv2-dx-band b { display: block; margin-top: 3px; color: var(--awv2-bone); font-size: 17px; font-weight: 600; }
+.awv2-dx-band .awv2-dx-metrics { grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); margin-bottom: 0; }
+.awv2-dx-band .awv2-dx-metric { padding: 9px 11px; }
+.awv2-dx-band .awv2-dx-metric b { font-size: 15px; margin-top: 0; }
+
+/* ── Zoning & subdivision: concise fields, not 27 ordinance quotes ──────
+   The lane retains every rule it read. The grid promotes the handful an
+   operator decides on; the rest stay verbatim under Full rules. */
+
+.awv2-lu-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 9px;
+  margin: 12px 0;
+}
+.awv2-lu-field {
+  display: grid; gap: 3px; align-content: start;
+  padding: 12px 14px;
+  border: 1px solid var(--awv2-line);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .2);
+}
+.awv2-lu-field small {
+  color: var(--awv2-bone-faint);
+  font: 9.5px var(--awv2-mono); letter-spacing: .13em; text-transform: uppercase;
+}
+.awv2-lu-field b { color: var(--awv2-bone); font-size: 13px; font-weight: 600; line-height: 1.4; }
+.awv2-lu-field i { color: var(--awv2-bone-faint); font-size: 10.5px; font-style: normal; }
+
+.awv2-lu-know {
+  margin: 12px 0;
+  padding: 13px 16px;
+  border: 1px solid var(--awv2-line);
+  border-left: 3px solid var(--awv2-brass);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .16);
+}
+.awv2-lu-know h4 {
+  margin: 0; color: var(--awv2-brass);
+  font: 700 9.5px var(--awv2-mono); letter-spacing: .15em; text-transform: uppercase;
+}
+.awv2-lu-know ul { margin: 8px 0 0; padding-left: 17px; display: grid; gap: 5px; }
+.awv2-lu-know li { color: var(--awv2-bone-dim); font-size: 12.5px; line-height: 1.5; }
+
+/* ── Property development history: visually a different kind of fact ── */
+
+.awv2-lu-history {
+  margin: 16px 0 0;
+  padding: 15px 17px;
+  border: 1px solid color-mix(in srgb, var(--awv2-dom-evidence, #6fb3ad) 30%, var(--awv2-line));
+  border-radius: 11px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--awv2-dom-evidence, #6fb3ad) 6%, transparent), rgba(0, 0, 0, .2) 66%);
+}
+.awv2-lu-history > h4 {
+  margin: 0; color: var(--awv2-dom-evidence, #6fb3ad);
+  font: 700 10px var(--awv2-mono); letter-spacing: .15em; text-transform: uppercase;
+}
+.awv2-lu-timeline { margin: 12px 0 0; padding: 0 0 0 4px; list-style: none; display: grid; gap: 0; }
+.awv2-lu-timeline li {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 12px;
+  padding-bottom: 12px;
+  position: relative;
+}
+.awv2-lu-timeline li:not(:last-child)::before {
+  content: ''; position: absolute; left: 7px; top: 13px; bottom: 0;
+  width: 1px; background: var(--awv2-line-strong);
+}
+.awv2-lu-timeline li > span {
+  width: 9px; height: 9px; margin-top: 5px; margin-left: 3px;
+  border-radius: 50%;
+  background: var(--awv2-dom-evidence, #6fb3ad);
+  position: relative; z-index: 1;
+}
+.awv2-lu-timeline li > div { color: var(--awv2-bone-dim); font-size: 12.5px; line-height: 1.5; }

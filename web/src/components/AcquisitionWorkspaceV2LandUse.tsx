@@ -19,6 +19,11 @@
 import { useState } from 'preact/hooks';
 import { apiPost } from '@/lib/api';
 import { sectionCitationLabel } from '@/lib/format';
+import {
+  Conclusion, Disclosure, HistoryWarning, StillNeeded, WhatItMeans,
+} from './AcquisitionWorkspaceV2Diligence';
+import type { AcquisitionIntelligenceView } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
+import '../styles/workspace-v2-diligence.css';
 
 /* ────────────────────────────── view types ───────────────────────────── */
 
@@ -275,6 +280,29 @@ export interface RetainedLandUseIntelligenceView {
   } | null;
 }
 
+/**
+ * The subdivision questions a land investor asks first, matched against the
+ * rules this jurisdiction actually published.
+ *
+ * The lane retains every rule it read — this parcel's jurisdiction returned 27
+ * of them — and printing all 27 on the main surface is what made this the
+ * longest section on the page. These promote the handful an operator decides
+ * on; every rule, promoted or not, stays verbatim under Full rules.
+ */
+const PROMOTED_RULE_FIELDS: Array<{ label: string; match: RegExp }> = [
+  { label: 'Minor / simple split framework', match: /minor subdivision|administrative split|maximum lots before major/i },
+  { label: 'Frontage standard', match: /minimum frontage|road frontage/i },
+  { label: 'Direct-frontage potential', match: /^access requirement/i },
+  { label: 'Private / shared access potential', match: /shared driveway|flag lot|private road|public \/ private road/i },
+  { label: 'Lot size standard', match: /minimum lot size|lot area/i },
+];
+
+/** A rule value is a verbatim ordinance quote; the field grid shows its lead. */
+function ruleLead(value: string, max = 92): string {
+  const text = value.replace(/\s+/g, ' ').trim();
+  return text.length <= max ? text : `${text.slice(0, max).replace(/[\s,;]+$/, '')}…`;
+}
+
 function determinationClass(determination: string): string {
   if (determination === 'confirmed') return 'verified';
   if (determination === 'likely') return 'provisional';
@@ -291,214 +319,262 @@ function determinationClass(determination: string): string {
  * Current zoning still renders its own unresolved state, and a historical
  * district is shown under a label that says it is history.
  */
-function RetainedIntelligence({ r }: { r: RetainedLandUseIntelligenceView }) {
+function RetainedIntelligence({ r, read }: {
+  r: RetainedLandUseIntelligenceView;
+  read?: AcquisitionIntelligenceView | null;
+}) {
+  const rules = r.subdivision?.rules ?? [];
+  const promoted = PROMOTED_RULE_FIELDS
+    .map((field) => ({ field, rule: rules.find((rule) => field.match.test(rule.label)) }))
+    .filter((entry): entry is { field: typeof PROMOTED_RULE_FIELDS[number]; rule: typeof rules[number] } => !!entry.rule);
+  const promotedLabels = new Set(promoted.map((entry) => entry.rule.label));
+  const remainingRules = rules.filter((rule) => !promotedLabels.has(rule.label));
+  const zoningAuthorityName = r.authority?.roles.find((role) => role.name)?.name ?? null;
+  const confirmedRules = rules.filter((rule) => rule.confidence === 'confirmed').length;
+
+  // Established subdivision facts are shown on their own footing. Current
+  // zoning can stay unresolved while independently confirmed subdivision
+  // rules are real, retained and decision-relevant; suppressing them because
+  // one other question is open would throw away work the lane already did.
+  const whatWeKnow = [
+    zoningAuthorityName ? `${zoningAuthorityName} is the controlling zoning and subdivision authority (${r.authority?.roles[0]?.determinationLabel ?? 'confirmed'}).` : null,
+    confirmedRules > 0 ? `${confirmedRules} subdivision rule${confirmedRules === 1 ? '' : 's'} confirmed from the jurisdiction's own adopted regulations.` : null,
+    r.subdivision?.likelyPathWhy ?? null,
+    r.currentZoning?.established && r.currentZoning.districtCode
+      ? `Current zoning district established: ${r.currentZoning.districtCode}.`
+      : 'Current zoning is not established: no current, parcel-specific official source has stated the district.',
+  ].filter((line): line is string => !!line);
+
   return (
     <>
-      <div class="awv2-lu-operator-summary">
-        <div class="awv2-lu-summary-row">
-          <span>Controlling authority</span>
-          <b>
-            {r.authority?.roles.find((role) => role.name)?.name || 'Unresolved'}
-            {r.authority?.roles[0] && (
-              <span class={`awv2-lu-q ${determinationClass(r.authority.roles[0].determination)}`}>
-                {r.authority.roles[0].determinationLabel}
-              </span>
-            )}
-          </b>
+      {/* Conclusion first: the one question this section exists to answer. */}
+      <Conclusion
+        label="Current zoning"
+        value={r.currentZoning?.established && r.currentZoning.districtCode ? r.currentZoning.districtCode : 'Unresolved'}
+        tone={r.currentZoning?.established ? 'good' : 'warn'}
+        note={r.currentZoning?.statement ?? null}
+      />
+
+      {/* The concise field grid. Long ordinance text stays under Full rules. */}
+      <div class="awv2-lu-fields" aria-label="Zoning and subdivision fields">
+        <div class="awv2-lu-field">
+          <small>Controlling authority</small>
+          <b>{zoningAuthorityName || 'Unresolved'}</b>
+          {r.authority?.roles[0] && <i>{r.authority.roles[0].determinationLabel}</i>}
         </div>
-        <div class="awv2-lu-summary-row">
-          <span>Current zoning</span>
-          <b>{r.currentZoning?.established && r.currentZoning.districtCode
-            ? r.currentZoning.districtCode
-            : <span class="awv2-lu-unresolved">Unresolved</span>}</b>
+        <div class="awv2-lu-field">
+          <small>Current use / allowance status</small>
+          <b>{r.currentZoning?.established ? 'Established' : 'Not established'}</b>
+          <i>{r.currentZoning?.established ? 'district on record' : 'by-right uses cannot be stated'}</i>
         </div>
-        <div class="awv2-lu-summary-row">
-          <span>Subdivision path</span>
+        {promoted.map((entry) => (
+          <div class="awv2-lu-field">
+            <small>{entry.field.label}</small>
+            <b>{ruleLead(entry.rule.value)}</b>
+            <i>{entry.rule.confidence.replace(/_/g, ' ')}</i>
+          </div>
+        ))}
+        <div class="awv2-lu-field">
+          <small>Subdivision path</small>
           <b>{r.subdivision?.likelyPathLabel && r.subdivision.likelyPathLabel !== 'unknown'
             ? r.subdivision.likelyPathLabel
-            : <span class="awv2-lu-unresolved">Not established</span>}</b>
+            : 'Not established'}</b>
+          <i>{r.subdivision?.reviewBody || 'review body not established'}</i>
         </div>
-        <div class="awv2-lu-summary-row">
-          <span>Planning history</span>
-          <b>{r.backstory?.highlights.length
-            ? `${r.backstory.highlights.length} retained matter(s)`
-            : <span class="awv2-lu-unresolved">None retained</span>}</b>
+        <div class="awv2-lu-field">
+          <small>Manufactured-home status</small>
+          <b>Not established</b>
+          <i>evaluated separately from modular homes</i>
         </div>
       </div>
 
-      {/* ── CONTROLLING AUTHORITY ── */}
-      <div class="awv2-opg-sub">Controlling authority</div>
-      {r.authority ? (
-        <>
-          <div class="awv2-kv">
-            {r.authority.roles.map((role) => (
-              <>
-                <span class="k">{role.role}</span>
-                <span class="v">
-                  {role.name
-                    ? <>{role.name}{role.level ? ` (${role.level})` : ''}<span class={`awv2-lu-q ${determinationClass(role.determination)}`}>{role.determinationLabel}</span></>
-                    : <span class="awv2-lu-unresolved">Unresolved.</span>}
-                </span>
-              </>
-            ))}
-          </div>
-          {r.authority.roles.filter((role) => role.basis).map((role) => (
-            <div class="awv2-pi-note"><b>{role.role}:</b> {role.basis}</div>
-          ))}
-          {r.authority.sources.length > 0 && (
-            <div class="awv2-opg-links">
-              {r.authority.sources.map((s) => (
-                s.url
-                  ? <a href={s.url} target="_blank" rel="noreferrer" title={s.quote || s.label}>{s.label}</a>
-                  : <span>{s.label}</span>
-              ))}
-            </div>
-          )}
-        </>
-      ) : (
-        <div class="awv2-pi-note">No controlling authority has been determined for this parcel.</div>
-      )}
+      <div class="awv2-lu-know">
+        <h4>What we know</h4>
+        <ul>{whatWeKnow.map((line) => <li>{line}</li>)}</ul>
+      </div>
 
-      {/* ── CURRENT ZONING ── */}
-      <div class="awv2-opg-sub">Current zoning</div>
-      {r.currentZoning ? (
-        <>
-          <div class="awv2-kv">
-            <span class="k">District</span>
-            <span class="v">
-              {r.currentZoning.established && r.currentZoning.districtCode
-                ? <>{r.currentZoning.districtCode}<span class="awv2-lu-q verified">Established</span></>
-                : <span class="awv2-lu-unresolved">Unresolved.</span>}
-            </span>
-          </div>
-          <div class="awv2-pi-note">{r.currentZoning.statement}</div>
-          {r.currentZoning.references.length > 0 && (
-            <>
-              <div class="awv2-opg-warn">
-                <b>Historical zoning statements — these never establish current zoning.</b>
-                {' '}Each states what its own document said on its own date.
-              </div>
-              <ul class="awv2-opg-list">
-                {r.currentZoning.references.map((ref) => (
-                  <li>
-                    <b>{ref.kindLabel}{ref.value ? `: ${ref.value}` : ''}</b>
-                    {ref.asOf ? <span class="awv2-lu-term"> (as of {ref.asOf})</span> : null}
-                    <div class="awv2-pi-note" style="margin-top:2px">“{ref.quote}”</div>
-                    {ref.sourceUrl && (
-                      <a class="awv2-lu-cite" href={ref.sourceUrl} target="_blank" rel="noreferrer">Official source</a>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          {r.currentZoning.limitations.length > 0 && (
-            <details class="awv2-collapse">
-              <summary>Why current zoning is not established</summary>
-              <ul class="awv2-opg-list">
-                {r.currentZoning.limitations.map((limitation) => <li>{limitation}</li>)}
-              </ul>
-            </details>
-          )}
-        </>
-      ) : (
-        <div class="awv2-pi-note">Current zoning has not been determined for this Deal Card.</div>
-      )}
+      <WhatItMeans read={read ?? null} topic="zoning" />
+      <StillNeeded
+        read={read ?? null}
+        topic="zoning"
+        extra={(r.currentZoning?.limitations ?? []).slice(0, 2)}
+      />
 
-      {/* ── PROPERTY BACKSTORY ── */}
-      <div class="awv2-opg-sub">Property backstory</div>
-      {r.backstory ? (
-        <>
-          <div class="awv2-pi-note">{r.backstory.narrative}</div>
+      {/* ── PROPERTY DEVELOPMENT HISTORY ──
+          Visually separate from the current rules above, because it is a
+          different kind of fact. A prior approval is real intelligence and
+          never an entitlement. */}
+      {r.backstory && (
+        <div class="awv2-lu-history" id="property-development-history">
+          <h4>Property development history</h4>
           {r.backstory.highlights.length > 0 && (
-            <ul class="awv2-opg-list">
-              {r.backstory.highlights.map((highlight) => <li>{highlight}</li>)}
-            </ul>
+            <ol class="awv2-lu-timeline">
+              {r.backstory.highlights.map((highlight) => <li><span /><div>{highlight}</div></li>)}
+            </ol>
           )}
-          {r.backstory.openQuestions.length > 0 && (
-            <>
-              <div class="awv2-pi-note" style="margin-top:8px"><b>Open questions the record raises</b></div>
-              <ul class="awv2-opg-list">
-                {r.backstory.openQuestions.map((question) => <li>{question}</li>)}
-              </ul>
-            </>
-          )}
-          {r.backstory.documents.length > 0 && (
-            <div class="awv2-opg-links">
-              {r.backstory.documents.map((d) => (
-                d.url ? <a href={d.url} target="_blank" rel="noreferrer">{d.label}</a> : <span>{d.label}</span>
-              ))}
-            </div>
-          )}
-        </>
-      ) : (
-        <div class="awv2-pi-note">No property backstory has been retained for this parcel.</div>
+          {r.backstory.highlights.length === 0 && <p class="awv2-pi-note">{r.backstory.narrative}</p>}
+          <HistoryWarning />
+          <Disclosure label="Timeline narrative and official documents" count={r.backstory.documents.length || null}>
+            <div class="awv2-pi-note">{r.backstory.narrative}</div>
+            {r.backstory.openQuestions.length > 0 && (
+              <>
+                <div class="awv2-pi-note" style="margin-top:8px"><b>Open questions the record raises</b></div>
+                <ul class="awv2-opg-list">
+                  {r.backstory.openQuestions.map((question) => <li>{question}</li>)}
+                </ul>
+              </>
+            )}
+            {r.backstory.documents.length > 0 && (
+              <div class="awv2-opg-links">
+                {r.backstory.documents.map((d) => (
+                  d.url ? <a href={d.url} target="_blank" rel="noreferrer">{d.label}</a> : <span>{d.label}</span>
+                ))}
+              </div>
+            )}
+          </Disclosure>
+        </div>
       )}
 
-      {/* ── SUBDIVISION RULES ── */}
-      <div class="awv2-opg-sub">Subdivision rules &amp; feasibility</div>
-      {r.subdivision ? (
-        <>
-          <div class="awv2-kv">
-            <span class="k">Governing body</span>
-            <span class="v">
-              {r.subdivision.authorityName
-                ? <>{r.subdivision.authorityName}<span class={`awv2-lu-q ${determinationClass(r.subdivision.authorityDetermination)}`}>
-                    {r.subdivision.authorityDetermination === 'confirmed' ? 'Confirmed' : r.subdivision.authorityDetermination}
-                  </span></>
-                : <span class="awv2-lu-unresolved">Subdivision authority unresolved.</span>}
-            </span>
-            <span class="k">Likely path</span>
-            <span class="v">
-              {r.subdivision.likelyPathLabel && r.subdivision.likelyPathLabel !== 'unknown'
-                ? r.subdivision.likelyPathLabel
-                : <span class="awv2-lu-unresolved">Not established.</span>}
-            </span>
-            <span class="k">Review body</span>
-            <span class="v">
-              {r.subdivision.reviewBody || <span class="awv2-lu-unresolved">Not established.</span>}
-            </span>
-            <span class="k">Theoretical lots</span>
-            <span class="v">
-              {r.subdivision.lotCountStatement || <span class="awv2-lu-unresolved">Not established.</span>}
-            </span>
-          </div>
-          {r.subdivision.likelyPathWhy && <div class="awv2-pi-note">{r.subdivision.likelyPathWhy}</div>}
-          {r.subdivision.rules.length > 0 ? (
+      {/* ── Evidence, kept whole and kept out of the default scan ── */}
+
+      <Disclosure
+        label="Official sources"
+        count={(r.authority?.sources.length ?? 0) + (r.currentZoning?.references.length ?? 0) + (r.subdivision?.documents.length ?? 0) || null}
+      >
+        <div class="awv2-opg-sub">Controlling authority</div>
+        {r.authority ? (
+          <>
+            <div class="awv2-kv">
+              {r.authority.roles.map((role) => (
+                <>
+                  <span class="k">{role.role}</span>
+                  <span class="v">
+                    {role.name
+                      ? <>{role.name}{role.level ? ` (${role.level})` : ''}<span class={`awv2-lu-q ${determinationClass(role.determination)}`}>{role.determinationLabel}</span></>
+                      : <span class="awv2-lu-unresolved">Unresolved.</span>}
+                  </span>
+                </>
+              ))}
+            </div>
+            {r.authority.roles.filter((role) => role.basis).map((role) => (
+              <div class="awv2-pi-note"><b>{role.role}:</b> {role.basis}</div>
+            ))}
+            {r.authority.sources.length > 0 && (
+              <div class="awv2-opg-links">
+                {r.authority.sources.map((s) => (
+                  s.url
+                    ? <a href={s.url} target="_blank" rel="noreferrer" title={s.quote || s.label}>{s.label}</a>
+                    : <span>{s.label}</span>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div class="awv2-pi-note">No controlling authority has been determined for this parcel.</div>
+        )}
+
+        {r.currentZoning && r.currentZoning.references.length > 0 && (
+          <>
+            <div class="awv2-opg-sub">Historical zoning statements</div>
+            <div class="awv2-opg-warn">
+              <b>Historical zoning statements — these never establish current zoning.</b>
+              {' '}Each states what its own document said on its own date.
+            </div>
             <ul class="awv2-opg-list">
-              {r.subdivision.rules.map((rule) => (
+              {r.currentZoning.references.map((ref) => (
                 <li>
-                  <b>{rule.label}:</b> {rule.value}
-                  <span class={`awv2-lu-q ${rule.confidence === 'confirmed' ? 'verified' : 'provisional'}`}>{rule.confidence.replace(/_/g, ' ')}</span>
-                  {rule.sourceUrl && (
-                    <a class="awv2-lu-cite" href={rule.sourceUrl} target="_blank" rel="noreferrer">
-                      {rule.section ? sectionCitationLabel(rule.section) : 'Adopted regulations'}
-                    </a>
+                  <b>{ref.kindLabel}{ref.value ? `: ${ref.value}` : ''}</b>
+                  {ref.asOf ? <span class="awv2-lu-term"> (as of {ref.asOf})</span> : null}
+                  <div class="awv2-pi-note" style="margin-top:2px">“{ref.quote}”</div>
+                  {ref.sourceUrl && (
+                    <a class="awv2-lu-cite" href={ref.sourceUrl} target="_blank" rel="noreferrer">Official source</a>
                   )}
                 </li>
               ))}
             </ul>
-          ) : (
-            <div class="awv2-pi-note">
-              No subdivision rule was extracted from the sources this run retrieved. That is an absence of retrieved text, not evidence that no rule exists.
-            </div>
-          )}
-          {r.subdivision.documents.length > 0 && (
+          </>
+        )}
+
+        {r.subdivision?.documents.length ? (
+          <>
+            <div class="awv2-opg-sub">Adopted subdivision documents</div>
             <div class="awv2-opg-links">
               {r.subdivision.documents.map((d) => (
                 d.url ? <a href={d.url} target="_blank" rel="noreferrer">{d.label}</a> : <span>{d.label}</span>
               ))}
             </div>
-          )}
-        </>
-      ) : (
-        <div class="awv2-pi-note">No subdivision regulations have been retained for this parcel.</div>
-      )}
+          </>
+        ) : null}
+      </Disclosure>
 
-      {r.determinedAt && (
-        <div class="awv2-pi-note" style="margin-top:10px">
-          Retained {new Date(r.determinedAt).toLocaleString()}
-        </div>
+      <Disclosure label="Full rules" count={rules.length || null}>
+        {r.subdivision ? (
+          <>
+            <div class="awv2-kv">
+              <span class="k">Governing body</span>
+              <span class="v">
+                {r.subdivision.authorityName
+                  ? <>{r.subdivision.authorityName}<span class={`awv2-lu-q ${determinationClass(r.subdivision.authorityDetermination)}`}>
+                      {r.subdivision.authorityDetermination === 'confirmed' ? 'Confirmed' : r.subdivision.authorityDetermination}
+                    </span></>
+                  : <span class="awv2-lu-unresolved">Subdivision authority unresolved.</span>}
+              </span>
+              <span class="k">Likely path</span>
+              <span class="v">
+                {r.subdivision.likelyPathLabel && r.subdivision.likelyPathLabel !== 'unknown'
+                  ? r.subdivision.likelyPathLabel
+                  : <span class="awv2-lu-unresolved">Not established.</span>}
+              </span>
+              <span class="k">Review body</span>
+              <span class="v">
+                {r.subdivision.reviewBody || <span class="awv2-lu-unresolved">Not established.</span>}
+              </span>
+              <span class="k">Theoretical lots</span>
+              <span class="v">
+                {r.subdivision.lotCountStatement || <span class="awv2-lu-unresolved">Not established.</span>}
+              </span>
+            </div>
+            {rules.length > 0 ? (
+              <ul class="awv2-opg-list">
+                {[...promoted.map((entry) => entry.rule), ...remainingRules].map((rule) => (
+                  <li>
+                    <b>{rule.label}:</b> {rule.value}
+                    <span class={`awv2-lu-q ${rule.confidence === 'confirmed' ? 'verified' : 'provisional'}`}>{rule.confidence.replace(/_/g, ' ')}</span>
+                    {rule.sourceUrl && (
+                      <a class="awv2-lu-cite" href={rule.sourceUrl} target="_blank" rel="noreferrer">
+                        {rule.section ? sectionCitationLabel(rule.section) : 'Adopted regulations'}
+                      </a>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div class="awv2-pi-note">
+                No subdivision rule was extracted from the sources this run retrieved. That is an absence of retrieved text, not evidence that no rule exists.
+              </div>
+            )}
+          </>
+        ) : (
+          <div class="awv2-pi-note">No subdivision regulations have been retained for this parcel.</div>
+        )}
+      </Disclosure>
+
+      {(r.currentZoning?.limitations.length || r.determinedAt) && (
+        <Disclosure label="Research diagnostics" count={r.currentZoning?.limitations.length || null}>
+          {r.currentZoning && r.currentZoning.limitations.length > 0 && (
+            <>
+              <div class="awv2-pi-note"><b>Why current zoning is not established</b></div>
+              <ul class="awv2-opg-list">
+                {r.currentZoning.limitations.map((limitation) => <li>{limitation}</li>)}
+              </ul>
+            </>
+          )}
+          {r.determinedAt && (
+            <div class="awv2-pi-note" style="margin-top:10px">
+              Retained {new Date(r.determinedAt).toLocaleString()}
+            </div>
+          )}
+        </Disclosure>
       )}
     </>
   );
@@ -506,10 +582,12 @@ function RetainedIntelligence({ r }: { r: RetainedLandUseIntelligenceView }) {
 
 /* ─────────────────────────────── the panel ───────────────────────────── */
 
-export function LandUsePanel({ dealId, initial, retained }: {
+export function LandUsePanel({ dealId, initial, retained, read }: {
   dealId: number;
   initial: LandUseView | null;
   retained?: RetainedLandUseIntelligenceView | null;
+  /** The persisted analyst read, for this section's "what it means" line. */
+  read?: AcquisitionIntelligenceView | null;
 }) {
   const [view, setView] = useState<LandUseView | null>(initial ?? null);
   const [retainedView, setRetainedView] = useState<RetainedLandUseIntelligenceView | null>(retained ?? null);
@@ -553,7 +631,7 @@ export function LandUsePanel({ dealId, initial, retained }: {
       {error && <div class="awv2-opg-warn">{error}</div>}
 
       {/* Promoted source-racing results, shown whenever they exist. */}
-      {r && <RetainedIntelligence r={r} />}
+      {r && <RetainedIntelligence r={r} read={read ?? null} />}
 
       {!researched && !r && !running && (
         <div class="awv2-pi-note">

@@ -516,7 +516,7 @@ export function AcquisitionWorkspaceV2() {
             </div>
             <nav class="awv2-zone-index" aria-label="Workspace zones">
               {propertyMarketView === 'property-intelligence' ? <>
-                <a href="#pi-subject">Subject</a><a href="#access-road-frontage">Access</a><a href="#terrain-buildability">Terrain</a><a href="#environmental-soils">Environmental</a><a href="#zoning-land-use">Zoning</a><a href="#utilities-septic">Utilities</a><a href="#visual-evidence">Visual evidence</a><a href="#market-intelligence">Market</a><a href="#research-status">Diligence</a>
+                <a href="#pi-subject">Subject</a><a href="#access-road-frontage">Access</a><a href="#terrain-buildability">Terrain</a><a href="#environmental-soils">Environmental</a><a href="#zoning-land-use">Zoning</a><a href="#utilities-septic">Utilities</a><a href="#assessment-tax">Assessment</a><a href="#visual-evidence">Visual evidence</a><a href="#market-intelligence">Market</a><a href="#research-status">Diligence</a><a href="#remaining-diligence">Remaining</a><a href="#full-acquisition-intelligence">Full read</a>
               </> : <>
                 <a href="#valuation-decision">Valuation</a><a href="#comparable-sales">Comparable sales</a><a href="#valuation-market-intelligence">Market</a><a href="#valuation-methodology">Methodology</a>
               </>}
@@ -524,7 +524,17 @@ export function AcquisitionWorkspaceV2() {
             {propertyMarketView === 'comps-valuation' ? (
               <CompsValuationSection dealId={dealId} initial={compsValuation} onViewChange={setCompsValuation} />
             ) : (
-              <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} landPortalFacts={landPortalFacts} taxStatus={taxStatus} />
+              <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} landPortalFacts={landPortalFacts} taxStatus={taxStatus}
+                acquisitionIntelligence={{
+                  read: aiRead,
+                  readiness: aiReadiness,
+                  runtime: aiRuntime,
+                  stale: aiStale,
+                  running: aiRunning,
+                  error: aiError,
+                  onRun: runAcquisitionIntelligence,
+                }}
+              />
             )}
           </main>
         ) : section === 'Deal Activity' ? (

@@ -1,0 +1,136 @@
+/* LandOS Deal Read — the compact Overview face of Acquisition Intelligence.
+ *
+ * It inherits the judgment surface from workspace-v2-acquisition-intelligence
+ * (moss rail, warmer ground) so an operator never mistakes the analyst's read
+ * for a retained fact. What this sheet adds is the SCAN: two reason columns, a
+ * ranked strategy strip, one next move, one way into the full read. Nothing
+ * here is a wall of prose — every block has a shape you can read at a glance. */
+
+.awv2-dealread { gap: 18px; }
+
+/* ── Two reason columns: why it is interesting / what is still open ── */
+
+.awv2-dealread-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.awv2-dealread-col {
+  min-width: 0;
+  padding: 15px 17px;
+  border: 1px solid var(--awv2-line);
+  border-radius: var(--awv2-radius-tight, 10px);
+  background: rgba(0, 0, 0, .16);
+}
+.awv2-dealread-col[data-kind='interesting'] {
+  border-color: color-mix(in srgb, var(--awv2-moss) 30%, var(--awv2-line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--awv2-moss) 7%, transparent), rgba(0, 0, 0, .18) 70%);
+}
+.awv2-dealread-col[data-kind='questions'] {
+  border-color: color-mix(in srgb, var(--awv2-amber) 30%, var(--awv2-line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--awv2-amber) 6%, transparent), rgba(0, 0, 0, .18) 70%);
+}
+.awv2-dealread-col h3 {
+  display: flex; align-items: center; gap: 7px; margin: 0;
+  color: var(--awv2-brass);
+  font: 700 10px var(--awv2-mono); letter-spacing: .14em; text-transform: uppercase;
+}
+.awv2-dealread-col[data-kind='interesting'] h3 { color: var(--awv2-moss); }
+.awv2-dealread-col[data-kind='questions'] h3 { color: var(--awv2-amber); }
+.awv2-dealread-col ul { margin: 11px 0 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+.awv2-dealread-col li {
+  display: grid; gap: 3px;
+  padding-left: 13px; position: relative;
+  line-height: 1.45;
+}
+.awv2-dealread-col li::before {
+  content: ''; position: absolute; left: 0; top: 7px;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor; color: var(--awv2-bone-faint);
+}
+.awv2-dealread-col[data-kind='interesting'] li::before { color: var(--awv2-moss); }
+.awv2-dealread-col[data-kind='questions'] li::before { color: var(--awv2-amber); }
+.awv2-dealread-col li b { color: var(--awv2-bone); font-size: 13.5px; font-weight: 600; }
+.awv2-dealread-col li span { color: var(--awv2-bone-faint); font-size: 12.5px; }
+
+/* ── Ranked strategy strip ── */
+
+.awv2-dealread-strategies h3 {
+  display: flex; align-items: center; gap: 7px; margin: 0 0 10px;
+  color: var(--awv2-brass);
+  font: 700 10px var(--awv2-mono); letter-spacing: .14em; text-transform: uppercase;
+}
+.awv2-dealread-strategies ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.awv2-dealread-strategies li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center; gap: 12px;
+  padding: 11px 14px;
+  border: 1px solid var(--awv2-line);
+  border-left: 3px solid var(--awv2-line-strong);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .18);
+}
+.awv2-dealread-strategies li.fit-strong { border-left-color: var(--awv2-moss); }
+.awv2-dealread-strategies li.fit-possible { border-left-color: var(--awv2-brass); }
+.awv2-dealread-strategies li.fit-weak { border-left-color: var(--awv2-amber); }
+.awv2-dealread-strategies li.fit-rejected { border-left-color: var(--awv2-rust); opacity: .78; }
+.awv2-dealread-strategies .rank {
+  display: grid; place-items: center;
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--awv2-line-strong);
+  color: var(--awv2-bone-faint); font: 700 12px var(--awv2-mono);
+}
+.awv2-dealread-strategies li > div { min-width: 0; }
+.awv2-dealread-strategies li b { display: block; color: var(--awv2-bone); font-size: 14px; }
+.awv2-dealread-strategies li p { margin: 3px 0 0; color: var(--awv2-bone-faint); font-size: 12.5px; line-height: 1.45; }
+.awv2-dealread-strategies li em {
+  font-style: normal; white-space: nowrap;
+  padding: 4px 9px; border: 1px solid var(--awv2-line-strong); border-radius: 999px;
+  color: var(--awv2-bone-dim); font: 10px var(--awv2-mono); letter-spacing: .09em; text-transform: uppercase;
+}
+.awv2-dealread-strategies li.fit-strong em { border-color: color-mix(in srgb, var(--awv2-moss) 55%, var(--awv2-line)); color: var(--awv2-moss); }
+.awv2-dealread-strategies li.fit-weak em { border-color: color-mix(in srgb, var(--awv2-amber) 50%, var(--awv2-line)); color: var(--awv2-amber); }
+.awv2-dealread-strategies li.fit-rejected em { border-color: color-mix(in srgb, var(--awv2-rust) 50%, var(--awv2-line)); color: var(--awv2-rust); }
+
+/* ── Next move ── */
+
+.awv2-dealread-next {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 13px;
+  padding: 14px 17px;
+  border: 1px solid color-mix(in srgb, var(--awv2-brass) 34%, var(--awv2-line));
+  border-radius: 10px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--awv2-brass) 10%, transparent), rgba(0, 0, 0, .18) 68%);
+  color: var(--awv2-brass);
+}
+.awv2-dealread-next > div { display: grid; gap: 3px; min-width: 0; }
+.awv2-dealread-next small {
+  color: var(--awv2-brass); font: 700 9.5px var(--awv2-mono); letter-spacing: .16em; text-transform: uppercase;
+}
+.awv2-dealread-next b { color: var(--awv2-bone); font-size: 14.5px; line-height: 1.35; }
+.awv2-dealread-next span { color: var(--awv2-bone-faint); font-size: 12.5px; line-height: 1.45; }
+
+/* ── The way into the full read ── */
+
+.awv2-dealread-open {
+  display: grid; gap: 3px; justify-items: start;
+  width: 100%; padding: 12px 16px;
+  border: 1px dashed color-mix(in srgb, var(--awv2-moss) 40%, var(--awv2-line));
+  border-radius: 9px;
+  background: transparent;
+  color: var(--awv2-moss);
+  font: 600 12.5px var(--awv2-mono); letter-spacing: .05em;
+  text-align: left; cursor: pointer;
+}
+.awv2-dealread-open:hover { background: color-mix(in srgb, var(--awv2-moss) 10%, transparent); }
+.awv2-dealread-open:focus-visible { outline: 2px solid var(--awv2-brass); outline-offset: 2px; }
+.awv2-dealread-open small {
+  color: var(--awv2-bone-faint);
+  font: 10.5px var(--awv2-mono); letter-spacing: .06em; text-transform: uppercase;
+}
+
+@media (max-width: 720px) {
+  .awv2-dealread-strategies li { grid-template-columns: 26px minmax(0, 1fr); }
+  .awv2-dealread-strategies li em { grid-column: 2; justify-self: start; }
+}

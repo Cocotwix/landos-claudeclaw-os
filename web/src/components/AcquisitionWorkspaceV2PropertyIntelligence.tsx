@@ -12,6 +12,17 @@ import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide
 import { dashboardToken } from '@/lib/api';
 import { AcquisitionWorkspaceV2CompPhotoGallery, type CvCompPhoto } from './AcquisitionWorkspaceV2CompPhotoGallery';
 import { AssessorTaxRun } from './AcquisitionWorkspaceV2AssessorTax';
+import {
+  Conclusion, ConflictBanner, Disclosure, MetricRow, StillNeeded, WhatItMeans,
+  type DxMetric,
+} from './AcquisitionWorkspaceV2Diligence';
+import {
+  AcquisitionIntelligenceSection,
+  type AcquisitionIntelligenceView,
+  type AcquisitionIntelligenceReadiness,
+  type AcquisitionIntelligenceRuntimeStatus,
+} from './AcquisitionWorkspaceV2AcquisitionIntelligence';
+import { diligencePriorities } from '../lib/acquisition-intelligence-digest';
 import { LandPortalResearchRun } from './AcquisitionWorkspaceV2LandPortalResearch';
 import { OfficialParcelGisPanel, type OfficialParcelGisView } from './AcquisitionWorkspaceV2OfficialParcelGis';
 import { LandUsePanel, type LandUseView, type RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
@@ -538,8 +549,26 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus }: {
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus, acquisitionIntelligence }: {
   snap: PiSnapshot;
+  /**
+   * The persisted Acquisition Intelligence read and its controls.
+   *
+   * Property & Market is where the evidence lives, so this is where the
+   * analyst's interpretation of that evidence belongs: each section shows the
+   * few retained insights that are ABOUT its own subject, and the complete
+   * structured read stays whole behind one expansion at the end. Rendering
+   * never starts a reasoning run.
+   */
+  acquisitionIntelligence?: {
+    read: AcquisitionIntelligenceView | null;
+    readiness: AcquisitionIntelligenceReadiness | null;
+    runtime: AcquisitionIntelligenceRuntimeStatus | null;
+    stale: boolean;
+    running: boolean;
+    error: string | null;
+    onRun: () => void;
+  } | null;
   /** Payment status from the collecting office, or the sources attempted. */
   taxStatus?: TaxStatusView | null;
   /**
@@ -745,6 +774,61 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   if (!byId.has('inspection-parcel_context')) missing.push('Wider-context aerial');
   if (!hasStreetViewCapture && streetView?.available !== false) missing.push('Street View capture');
   if (!hasBuildabilityCapture && !landPortalBuildability) missing.push('Dedicated buildability capture');
+
+  // ── Diligence-workspace derivations ──────────────────────────────────
+  // Conclusions, figures and the analyst's per-topic read. Every one of these
+  // reads a value this component already had; none of them fetches, derives a
+  // new fact, or reruns anything.
+  const aiRead = acquisitionIntelligence?.read ?? null;
+
+  // Two retained sources state this parcel's frontage and they disagree
+  // (mapped parcel frontage vs the reconciled access read). Printing both
+  // numbers with no explanation is what made the page unreadable; the span is
+  // stated once, as a conflict, with what would settle it.
+  const accessFrontageFt = accessView?.frontageFt ?? null;
+  const sheetFrontageFt = lpf?.access?.roadFrontageFt ?? null;
+  const frontageConflict = accessFrontageFt != null && sheetFrontageFt != null
+    && Math.abs(accessFrontageFt - sheetFrontageFt) > Math.max(1, 0.05 * Math.max(accessFrontageFt, sheetFrontageFt));
+  const frontageSpan = frontageConflict
+    ? `~${Math.min(accessFrontageFt!, sheetFrontageFt!).toLocaleString('en-US', { maximumFractionDigits: 2 })}–${Math.max(accessFrontageFt!, sheetFrontageFt!).toLocaleString('en-US', { maximumFractionDigits: 2 })} ft`
+    : null;
+  const workingFrontage = frontageConflict
+    ? frontageSpan!
+    : landPortalFrontage
+      || (accessFrontageFt != null ? `${accessFrontageFt.toLocaleString('en-US', { maximumFractionDigits: 2 })} ft` : null)
+      || (frontageFt ? `${Math.round(Number(frontageFt))} ft` : null);
+
+  const accessMetrics: DxMetric[] = [
+    {
+      label: 'Access status',
+      value: accessView?.established ? 'Established' : 'Unresolved',
+      sub: accessView?.evidence?.parcelFlagged ? 'parcel flagged landlocked' : lpf?.access?.landLocked ? `landlocked: ${lpf.access.landLocked}` : null,
+      tone: accessView?.established ? 'good' : 'warn',
+    },
+    { label: 'Working frontage', value: workingFrontage ?? '', sub: frontageConflict ? 'sources conflict' : landPortalFrontage ? 'mapped parcel frontage' : null, tone: frontageConflict ? 'warn' : 'neutral' },
+    { label: 'Road', value: accessView?.road || roadName || '', sub: roadName ? 'situs road' : null },
+    { label: 'Legal access', value: accessView?.legalAccess || '', sub: 'recorded-instrument review is ordinary closing diligence' },
+  ];
+
+  const terrainMetrics: DxMetric[] = [
+    { label: 'Average slope', value: landPortalSlope || (slopePct ? `${slopePct}%` : ''), sub: 'LandPortal' },
+    { label: 'Under 10% slope', value: landPortalSlopeUnder10 || '', sub: 'of the parcel' },
+    { label: 'Buildable', value: lpf?.buildability?.pct || landPortalBuildability || (buildPct ? `${buildPct}%` : ''), sub: lpf?.buildability?.acres || null },
+    { label: 'FEMA flood', value: lpf?.environment?.femaCoveragePct || (floodPct ? `${floodPct}%` : ''), sub: 'mapped coverage' },
+    { label: 'Wetlands', value: lpf?.environment?.wetlandsPct || landPortalWetlands || (wetPct ? `${wetPct}%` : ''), sub: 'mapped coverage' },
+    { label: 'Water feature', value: waterFeature || '', sub: 'LandPortal' },
+  ];
+
+  const utilityMetrics: DxMetric[] = [
+    { label: 'Utilities', value: utilities?.headline || 'Not established', tone: utilities?.headline ? 'neutral' : 'warn' },
+    { label: 'Septic outlook', value: soilsSeptic?.categoryLabel || septic?.headline || 'Field testing required', tone: soilsSeptic && /favorable|suitable/i.test(soilsSeptic.categoryLabel) ? 'good' : 'warn' },
+    { label: 'Listing-reported', value: listingUtilities.length ? listingUtilities.join(', ') : '', sub: 'listing weight' },
+  ];
+
+  // One ranked queue instead of a page of "not established" rows. Everything
+  // the reconciled checklist tracks that the queue does not show stays in the
+  // Missing diligence panel below it; nothing is dropped here.
+  const queue = diligencePriorities(aiRead, missing);
 
   return (
     <>
@@ -953,53 +1037,72 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             once, as tier-2 support, and nowhere else on this page. */}
         <section data-domain="property" class="awv2-panel" id="access-road-frontage">
           <div class="awv2-panel-title">Access &amp; road frontage</div>
-          {/* Shared access rule (matches Overview): not flagged landlocked +
-              mapped road frontage = ESTABLISHED, stated first, no speculative
-              legal warning. The evidence ladder below stays as provenance. */}
-          {accessView?.established && !accessView?.evidence?.parcelFlagged && (
-            <div class="awv2-pi-note" data-testid="pi-access-established">
-              <b>Access established:</b> {accessView.legalAccess ?? 'Yes'}
-              {accessView.frontageFt != null ? ` — ${accessView.frontageFt} ft mapped road frontage` : ''}; not flagged landlocked.
+          {/* Conclusion first. The shared access rule (matches Overview):
+              not flagged landlocked + mapped road frontage = ESTABLISHED, with
+              no speculative legal warning. Recorded-instrument access remains
+              ordinary closing diligence, never a discovery-stage blocker — the
+              discovery-stage standard here is unchanged. */}
+          {accessView?.established && !accessView?.evidence?.parcelFlagged ? (
+            <Conclusion
+              label="Access"
+              value="Established"
+              tone="good"
+              note={`${accessView.legalAccess ?? 'Yes'}; not flagged landlocked. Recorded-instrument review remains ordinary closing diligence.`}
+              testId="pi-access-established"
+            />
+          ) : (
+            <Conclusion
+              label="Access"
+              value="Unresolved"
+              tone="warn"
+              note={accessView?.evidence?.operatorConclusion || 'Physical access evidence remains incomplete for this parcel.'}
+            />
+          )}
+          <MetricRow metrics={accessMetrics} label="Access and frontage figures" />
+          {/* Two retained sources state the frontage and they disagree. One
+              reconciled span, said once, with what would settle it — never two
+              unexplained numbers in two panels. */}
+          {frontageConflict && (
+            <ConflictBanner
+              subject="Mapped frontage"
+              span={frontageSpan!}
+              resolution="Exact frontage requires confirmation. Access appears established for discovery purposes, but narrow or uncertain frontage may materially affect subdivision or development."
+            />
+          )}
+          <WhatItMeans read={aiRead} topic="access" />
+          <StillNeeded read={aiRead} topic="access" extra={(access?.missing || []).slice(0, 2)} />
+          <Disclosure label="Access evidence ladder and sources" count={accessRungs.length}>
+            <div class="awv2-access-ladder" aria-label="Four-part access evidence ladder">
+              {ACCESS_GROUPS.map((group) => (
+                <div class={`awv2-access-group ${group.key}`}>
+                  <div class="awv2-access-group-title">{group.title}</div>
+                  {accessRungs.map((rung, index) => (
+                    group.tiers.includes(rung.tier) ? (
+                      <div class="awv2-access-rung">
+                        <span class="step">{index + 1}</span>
+                        <div><b>{ACCESS_TIER_LABEL[rung.tier]}</b><p>{rung.statement}</p></div>
+                        <span class="weight">{rung.weight || 'Unresolved'}</span>
+                      </div>
+                    ) : null
+                  ))}
+                  {group.key === 'physical' && listingAccessWording.length > 0 && listingAccessWording.map((text) => (
+                    <div class="awv2-sv-basis">Listing-reported driveway / directions wording, supporting apparent physical access only: “{text}”</div>
+                  ))}
+                </div>
+              ))}
             </div>
-          )}
-          <div class="awv2-kv">
-            <Kv k="Road frontage" v={landPortalFrontage || (frontageFt ? `${Math.round(Number(frontageFt))} ft` : null)} empty="Not supplied by LandPortal" />
-            <Kv k="Road" v={roadName ? `${roadName} (situs road)` : null} />
-          </div>
-          <div class="awv2-access-ladder" aria-label="Four-part access evidence ladder">
-            {ACCESS_GROUPS.map((group) => (
-              <div class={`awv2-access-group ${group.key}`}>
-                <div class="awv2-access-group-title">{group.title}</div>
-                {accessRungs.map((rung, index) => (
-                  group.tiers.includes(rung.tier) ? (
-                    <div class="awv2-access-rung">
-                      <span class="step">{index + 1}</span>
-                      <div><b>{ACCESS_TIER_LABEL[rung.tier]}</b><p>{rung.statement}</p></div>
-                      <span class="weight">{rung.weight || 'Unresolved'}</span>
-                    </div>
-                  ) : null
-                ))}
-                {group.key === 'physical' && listingAccessWording.length > 0 && listingAccessWording.map((text) => (
-                  <div class="awv2-sv-basis">Listing-reported driveway / directions wording, supporting apparent physical access only: “{text}”</div>
-                ))}
-              </div>
-            ))}
-          </div>
-          {/* The evidence-ladder conclusion speaks for the operator read ONLY
-              while access is unresolved; once the parcel evidence establishes
-              access, an empty ladder must not contradict the established
-              headline above — it moves into the provenance details. */}
-          {accessView?.evidence?.operatorConclusion && !(accessView?.established && !accessView?.evidence?.parcelFlagged)
-            && <div class="awv2-pi-note"><b>Reconciled operator read:</b> {accessView.evidence.operatorConclusion}</div>}
-          <details class="awv2-collapse awv2-access-details">
-            <summary>Access sources and unresolved diligence</summary>
-            {accessRungs.map((rung) => <div class="awv2-pi-note">{rung.sourceLabel || 'No source retained'}{rung.basis ? ` · ${rung.basis.replace(/_/g, ' ')}` : ''}{rung.sourceUrl ? <> · <a href={rung.sourceUrl} target="_blank" rel="noreferrer">source</a></> : null}</div>)}
-          </details>
-          {(access?.missing || []).length > 0 && (
-            missingDiligence
-              ? <div class="awv2-pi-note">Survey-grade frontage and easement review are tracked under Missing diligence below.</div>
-              : <div class="awv2-pi-note">Still required: {(access?.missing || []).slice(0, 4).join('; ')}{(access?.missing || []).length > 4 ? '…' : ''}</div>
-          )}
+            {accessView?.evidence?.operatorConclusion
+              && <div class="awv2-pi-note"><b>Reconciled operator read:</b> {accessView.evidence.operatorConclusion}</div>}
+            <details class="awv2-collapse awv2-access-details">
+              <summary>Access sources and unresolved diligence</summary>
+              {accessRungs.map((rung) => <div class="awv2-pi-note">{rung.sourceLabel || 'No source retained'}{rung.basis ? ` · ${rung.basis.replace(/_/g, ' ')}` : ''}{rung.sourceUrl ? <> · <a href={rung.sourceUrl} target="_blank" rel="noreferrer">source</a></> : null}</div>)}
+            </details>
+            {(access?.missing || []).length > 0 && (
+              missingDiligence
+                ? <div class="awv2-pi-note">Survey-grade frontage and easement review are tracked under Missing diligence below.</div>
+                : <div class="awv2-pi-note">Still required: {(access?.missing || []).slice(0, 4).join('; ')}{(access?.missing || []).length > 4 ? '…' : ''}</div>
+            )}
+          </Disclosure>
         </section>
       </div>
 
@@ -1007,6 +1110,11 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       <div class="awv2-grid cols-3-2">
         <section data-domain="property" class="awv2-panel" id="terrain-buildability">
           <div class="awv2-panel-title">Terrain &amp; usable area</div>
+          {/* The figures a land investor prices from, as figures. The full
+              retained fact table follows as evidence, unchanged. */}
+          <MetricRow metrics={terrainMetrics} label="Terrain and environmental figures" />
+          <WhatItMeans read={aiRead} topic="terrain" />
+          <StillNeeded read={aiRead} topic="terrain" />
           <div class="awv2-kv">
             <Kv k="Average slope" v={landPortalSlope || (slopePct ? `${slopePct}%` : null)} />
             <Kv k="Land under 10% slope" v={landPortalSlopeUnder10} empty="Not published as a combined figure" />
@@ -1052,6 +1160,17 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
 
         <section data-domain="property" class="awv2-panel" id="environmental-soils">
           <div class="awv2-panel-title">Environmental &amp; soils</div>
+          {femaDescription && (
+            <Conclusion
+              label="Mapped environmental coverage"
+              value={[
+                lpf?.environment?.femaCoveragePct ? `FEMA ${lpf.environment.femaCoveragePct}` : null,
+                lpf?.environment?.wetlandsPct ? `wetlands ${lpf.environment.wetlandsPct}` : null,
+              ].filter(Boolean).join(' · ') || 'Mapped'}
+              tone="neutral"
+              note={waterFeature ? `Water feature retained: ${waterFeature}.` : null}
+            />
+          )}
           <div class="awv2-kv">
             <Kv k="Wetlands" v={landPortalWetlands || (wetPct ? `${wetPct}% — parcel panel` : null)} />
             <Kv k="FEMA flood" v={femaDescription || (floodPct ? `${floodPct}% — parcel panel` : null)} />
@@ -1086,7 +1205,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           this being right, so it sits where the operator reads it in order. */}
       {dealId != null && (
         <div id="zoning-land-use">
-          <LandUsePanel dealId={dealId} initial={landUse ?? null} retained={landUseIntelligence ?? null} />
+          <LandUsePanel dealId={dealId} initial={landUse ?? null} retained={landUseIntelligence ?? null} read={aiRead} />
           {/* The shared Zoning & Subdivision Capability, run against the parcel
               this card already has. Same implementation Tools and New Lead
               reach; the rules it returns belong to the JURISDICTION. */}
@@ -1098,14 +1217,19 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       )}
 
       <section data-domain="risk" class="awv2-panel" id="utilities-septic">
-        <div class="awv2-panel-title">Utilities / septic</div>
-        <div class="awv2-pi-question-read">
-          <div><span>Utilities</span><b>{utilities?.headline || 'Not yet resolved'}</b></div>
-          <div><span>Septic</span><b>{soilsSeptic?.categoryLabel || septic?.headline || 'Field testing required'}</b></div>
-          <div><span>Listing-reported context</span><b>{listingUtilities.length ? listingUtilities.join(', ') : 'No utility detail retained from listing'}</b></div>
-        </div>
+        <div class="awv2-panel-title">Utilities &amp; septic</div>
+        <MetricRow metrics={utilityMetrics} label="Utility and septic status" />
+        <WhatItMeans read={aiRead} topic="utilities" />
+        <StillNeeded read={aiRead} topic="utilities" />
         {(utilities?.detail || septic?.detail) && (
-          <details class="awv2-collapse"><summary>Supporting utility and septic evidence</summary><div class="awv2-pi-note">{[utilities?.detail, septic?.detail].filter(Boolean).join(' ')}</div></details>
+          <Disclosure label="Supporting utility and septic evidence">
+            <div class="awv2-pi-note">{[utilities?.detail, septic?.detail].filter(Boolean).join(' ')}</div>
+            <div class="awv2-pi-question-read">
+              <div><span>Utilities</span><b>{utilities?.headline || 'Not yet resolved'}</b></div>
+              <div><span>Septic</span><b>{soilsSeptic?.categoryLabel || septic?.headline || 'Field testing required'}</b></div>
+              <div><span>Listing-reported context</span><b>{listingUtilities.length ? listingUtilities.join(', ') : 'No utility detail retained from listing'}</b></div>
+            </div>
+          </Disclosure>
         )}
       </section>
 
@@ -1417,15 +1541,38 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
               {market.read?.note && <span>{market.read.note}</span>}
               <span>Competition: {market.liquidity?.competition != null ? market.liquidity.competition : 'unmeasured'}</span>
             </div>
-            <details class="awv2-collapse awv2-pi-diagnostics">
-              <summary>Market records and methodology</summary>
+            {/* The comparison that bears on this parcel: the subject's own
+                acreage band beside the fastest-moving one. Four headline
+                numbers alone never say whether the subject's band is the
+                liquid one. Collector diagnostics stay collapsed below. */}
+            <div class="awv2-dx-bands" aria-label="Acreage band comparison">
+              {[market.subjectBand, market.fastestBand]
+                .filter((record): record is MarketContextRecordView => !!record?.available && !!record.metrics)
+                .map((record, index) => (
+                  <div class="awv2-dx-band" data-role={index === 0 ? 'subject' : 'liquid'}>
+                    <small>{index === 0 ? 'Subject band' : 'Most liquid band'}</small>
+                    <b>{record.acreageBandLabel || record.acreageBand || record.label}</b>
+                    <MetricRow
+                      label={`${record.label} figures`}
+                      metrics={[
+                        { label: '$ / acre', value: fmtMetric('medianPricePerAcre', record.metrics!.medianPricePerAcre) ?? '' },
+                        { label: 'Median DOM', value: fmtMetric('medianDaysOnMarket', record.metrics!.medianDaysOnMarket) ?? '' },
+                        { label: 'Sell-through', value: fmtMetric('sellThroughRate', record.metrics!.sellThroughRate) ?? '' },
+                        { label: 'Months supply', value: fmtMetric('monthsOfSupply', record.metrics!.monthsOfSupply) ?? '' },
+                      ]}
+                    />
+                  </div>
+                ))}
+            </div>
+            <WhatItMeans read={aiRead} topic="market" heading="What it means for this property" />
+            <Disclosure label="Market records, methodology and collector diagnostics">
               <div class="awv2-mkt-grid">
                 <MarketCard rec={market.county} />
                 <MarketCard rec={market.zip} />
                 <MarketCard rec={market.subjectBand} />
                 <MarketCard rec={market.fastestBand} />
               </div>
-            </details>
+            </Disclosure>
           </>
         ) : (
           <div class="awv2-pi-note">No LandOS Market Research context was returned for this lead.</div>
@@ -1557,6 +1704,54 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           </section>
         );
       })()}
+
+      {/* ── Remaining diligence ──
+          One ranked queue. The reconciled checklist above holds every tracked
+          item; this states which few actually decide the deal, so the page
+          does not end in twenty interchangeable "not established" rows. */}
+      {(queue.high.length > 0 || queue.secondary.length > 0) && (
+        <section data-domain="action" class="awv2-panel" id="remaining-diligence">
+          <div class="awv2-panel-title">Remaining diligence</div>
+          <div class="awv2-dx-queue">
+            {queue.high.length > 0 && (
+              <div class="awv2-dx-queue-group" data-tier="high">
+                <h4>High priority</h4>
+                <ol>{queue.high.map((item) => <li><div><b>{item.label}</b>{item.why && <span>{item.why}</span>}</div></li>)}</ol>
+              </div>
+            )}
+            {queue.secondary.length > 0 && (
+              <div class="awv2-dx-queue-group" data-tier="secondary">
+                <h4>Secondary</h4>
+                <ol>{queue.secondary.map((item) => <li><div><b>{item.label}</b>{item.why && <span>{item.why}</span>}</div></li>)}</ol>
+              </div>
+            )}
+          </div>
+          <div class="awv2-pi-note">
+            Every unresolved item stays tracked under Missing diligence above; this is the priority order, not the whole list.
+          </div>
+        </section>
+      )}
+
+      {/* ── The complete analyst read ──
+          Overview shows the Deal Read; each section above shows the few
+          insights that are about its own subject. Nothing was discarded to do
+          that: the whole structured result is here, unabridged, one control
+          away, and rendering it never starts a reasoning run. */}
+      {acquisitionIntelligence && (
+        <section class="awv2-dx-fullintel" id="full-acquisition-intelligence">
+          <Disclosure label="Full Acquisition Intelligence — the complete analyst read">
+            <AcquisitionIntelligenceSection
+              read={acquisitionIntelligence.read}
+              readiness={acquisitionIntelligence.readiness}
+              runtime={acquisitionIntelligence.runtime}
+              stale={acquisitionIntelligence.stale}
+              running={acquisitionIntelligence.running}
+              error={acquisitionIntelligence.error}
+              onRun={acquisitionIntelligence.onRun}
+            />
+          </Disclosure>
+        </section>
+      )}
 
       {viewerIndex != null && gallery[viewerIndex] && (
         <EvidenceViewer

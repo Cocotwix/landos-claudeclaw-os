@@ -19,6 +19,7 @@ const read = (p: string) => fs.readFileSync(path.join(process.cwd(), p), 'utf8')
 const PAGE_SRC = read('web/src/pages/AcquisitionWorkspaceV2.tsx');
 const CV_SRC = read('web/src/components/AcquisitionWorkspaceV2CompsValuation.tsx');
 const DESIGN_CSS = read('web/src/styles/workspace-v2-lead-design.css');
+const DILIGENCE_SRC = read('web/src/components/AcquisitionWorkspaceV2Diligence.tsx');
 
 const DOMAINS = ['property', 'valuation', 'market', 'risk', 'evidence', 'action'] as const;
 
@@ -229,9 +230,17 @@ describe('ws3 Property Intelligence redesign', () => {
   });
 
   it('states the shared access-established read before the evidence ladder', () => {
-    expect(PI_SRC).toContain('data-testid="pi-access-established"');
+    // The identity is unchanged; it is now set through the shared Conclusion
+    // primitive, which renders it as data-testid on the conclusion surface.
+    expect(PI_SRC).toContain('testId="pi-access-established"');
+    expect(DILIGENCE_SRC).toContain('data-testid={testId}');
     expect(PI_SRC).toMatch(/accessView\?\.established && !accessView\?\.evidence\?\.parcelFlagged/);
-    expect(PI_SRC).toMatch(/Access established:/);
+    // The read now carries the section's conclusion surface rather than a
+    // sentence above the ladder, and the ladder itself moved behind its
+    // disclosure. Same shared rule, same order, more weight — and it is
+    // stated ONCE: the old sentence duplicated the conclusion beneath it.
+    expect(PI_SRC).toMatch(/<Conclusion\s+label="Access"\s+value="Established"/);
+    expect(PI_SRC).toMatch(/not flagged landlocked/);
   });
 });
 

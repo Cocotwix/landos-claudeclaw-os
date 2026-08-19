@@ -18,12 +18,12 @@ import type {
   VisualBuyerNarrativeView,
 } from './AcquisitionWorkspaceV2PropertyIntelligence';
 import type { RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
-import {
-  AcquisitionIntelligenceSection,
-  type AcquisitionIntelligenceView,
-  type AcquisitionIntelligenceReadiness,
-  type AcquisitionIntelligenceRuntimeStatus,
+import type {
+  AcquisitionIntelligenceView,
+  AcquisitionIntelligenceReadiness,
+  AcquisitionIntelligenceRuntimeStatus,
 } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
+import { DealReadCard } from './AcquisitionWorkspaceV2DealRead';
 import type { CompsValuationViewData } from './AcquisitionWorkspaceV2CompsValuation';
 import '../styles/workspace-v2-overview.css';
 
@@ -118,6 +118,14 @@ const STRATEGY_APPLICABILITY_LABEL: Record<string, string> = {
   conditional: 'Conditional',
   blocked: 'Blocked',
   not_applicable: 'Not applicable',
+};
+
+/** Strongest exits first, so the compact grid shows the ones worth reading. */
+const STRATEGY_APPLICABILITY_ORDER: Record<string, number> = {
+  viable: 0,
+  conditional: 1,
+  blocked: 2,
+  not_applicable: 3,
 };
 
 /** The 20-mile Brockovich data-center screen, as the snapshot carries it. */
@@ -222,6 +230,46 @@ function ScoreCard({ view }: { view?: OverviewScoreView }) {
       </div>
       {view?.explanation && <details class="awv2-overview-details"><summary>Score detail</summary><p>{view.explanation}</p></details>}
     </section>
+  );
+}
+
+/**
+ * One exit, read in four lines: fit, why it fits, the main blocker, the next
+ * confirmation. The lane's remaining output — every supporting fact, effort,
+ * timeline and risk — stays on the card behind one control rather than being
+ * printed as another wall of strategy copy on the Overview.
+ */
+function StrategyCard({ item }: { item: OverviewStrategyView }) {
+  const applicability = (item.applicability || '').toLowerCase();
+  const supports = item.supportingFacts ?? [];
+  const blockers = item.blockers ?? [];
+  const hasDetail = supports.length > 1 || blockers.length > 1 || !!item.effort || !!item.timeline || !!item.risk;
+  return (
+    <article class="awv2-strategy-card compact" data-applicability={applicability || 'unstated'}>
+      <header>
+        <b>{item.strategy}</b>
+        <em>{STRATEGY_APPLICABILITY_LABEL[applicability] ?? 'Assessed'}</em>
+      </header>
+      <dl class="awv2-strategy-lines">
+        {(item.valueCreationPath || supports[0]) && (
+          <><dt>Why it fits</dt><dd>{item.valueCreationPath || supports[0]}</dd></>
+        )}
+        {blockers[0] && <><dt>Main blocker</dt><dd class="blocker">{blockers[0]}</dd></>}
+        {item.nextVerificationStep && <><dt>Next confirmation</dt><dd>{item.nextVerificationStep}</dd></>}
+      </dl>
+      {hasDetail && (
+        <details class="awv2-strategy-detail">
+          <summary>Full assessment</summary>
+          {supports.length > 0 && <ul class="supports">{supports.map((fact) => <li>{fact}</li>)}</ul>}
+          {blockers.length > 0 && <ul class="blocks">{blockers.map((blocker) => <li>{blocker}</li>)}</ul>}
+          <dl>
+            {item.effort && <><dt>Effort</dt><dd>{item.effort}</dd></>}
+            {item.timeline && <><dt>Timeline</dt><dd>{item.timeline}</dd></>}
+            {item.risk && <><dt>Risk</dt><dd>{item.risk}</dd></>}
+          </dl>
+        </details>
+      )}
+    </article>
   );
 }
 
@@ -454,7 +502,13 @@ export function OverviewSection({
   ].filter((tile): tile is { label: string; value: string; note: string } => tile != null);
   // Strategy is read straight from the lane that produced it. A lane that ran
   // and delivered five assessed exits must not present as an empty section.
-  const strategies = (snap.strategies ?? []).filter((item) => !!item?.strategy);
+  const strategies = (snap.strategies ?? [])
+    .filter((item) => !!item?.strategy)
+    .slice()
+    .sort((a, b) => (
+      (STRATEGY_APPLICABILITY_ORDER[(a.applicability || '').toLowerCase()] ?? 9)
+      - (STRATEGY_APPLICABILITY_ORDER[(b.applicability || '').toLowerCase()] ?? 9)
+    ));
   const recommendation = snap.recommendation ?? null;
   const backstory = landUseIntelligence?.backstory ?? null;
   const zoningAuthority = (landUseIntelligence?.authority?.roles ?? []).find((role) => /zoning/i.test(role.role ?? ''));
@@ -486,7 +540,7 @@ export function OverviewSection({
   const actionCards = (nextActions.length ? nextActions : ['Review current evidence']).map((action) => {
     const [label, detail] = action.split(/\s+[—-]\s+/, 2);
     return { label, detail: detail || null };
-  }).slice(0, 4);
+  }).slice(0, 3);
   const zoningPending = questionCards.some((item) => /zoning|land use/i.test(item.label));
   const knownRiskPattern = /improv|house|whole.?property|septic|terrain|slope|buildab|zoning|access|landlock/i;
   const riskItems: Array<{ label: string; detail: string; tone: 'blocker' | 'caution' | 'pending' }> = [
@@ -558,11 +612,18 @@ export function OverviewSection({
         {decisionSummary !== decisionHeadline && <details class="awv2-decision-rationale"><summary>Decision rationale</summary><p>{decisionSummary}</p></details>}
       </section>
 
-      {/* ── 2. The acquisitions judgment. It sits directly under the decision
-             band because its whole job is to make the facts below it MEAN
-             something; the overview metrics stay exactly where they were. ── */}
+      {/* ── 2. The acquisitions judgment, compressed to a Deal Read. It sits
+             directly under the decision band because its whole job is to make
+             the facts below it MEAN something; the overview metrics stay
+             exactly where they were.
+
+             It is a SUMMARY, not the report. The analyst's full structured
+             result — every property-story point, market point, constraint,
+             conflict, visual observation, unknown and next action — is
+             persisted and rendered whole on Property & Market. Printing all of
+             it here is what buried the acquisition command center. ── */}
       {acquisitionIntelligence && (
-        <AcquisitionIntelligenceSection
+        <DealReadCard
           read={acquisitionIntelligence.read}
           readiness={acquisitionIntelligence.readiness}
           runtime={acquisitionIntelligence.runtime}
@@ -570,6 +631,10 @@ export function OverviewSection({
           running={acquisitionIntelligence.running}
           error={acquisitionIntelligence.error}
           onRun={acquisitionIntelligence.onRun}
+          onOpenFullIntelligence={() => {
+            onOpenSection('property-intelligence');
+            requestAnimationFrame(() => document.getElementById('full-acquisition-intelligence')?.scrollIntoView({ behavior: 'smooth' }));
+          }}
         />
       )}
 
@@ -646,7 +711,7 @@ export function OverviewSection({
         <ScoreCard view={operator?.scores?.property} />
         <div class="risks">
           <h2>Risk signals</h2>
-          <div class="awv2-risk-items">{(riskItems.length ? riskItems : [{ label: 'No material risk retained', detail: 'Continue ordinary diligence', tone: 'pending' as const }]).slice(0, 5).map((item) => (
+          <div class="awv2-risk-items">{(riskItems.length ? riskItems : [{ label: 'No material risk retained', detail: 'Continue ordinary diligence', tone: 'pending' as const }]).slice(0, 4).map((item) => (
             <div class={`awv2-risk-item ${item.tone}`}>
               {item.tone === 'blocker' ? <AlertTriangle size={15} /> : item.tone === 'caution' ? <CircleDot size={15} /> : <FileCheck2 size={15} />}
               <span><b>{item.label}</b><small>{item.detail}</small></span>
@@ -684,16 +749,24 @@ export function OverviewSection({
               provider context and never an input to the LandOS land value or any acquisition level.
             </p>
           )}
+          {/* Planning history is a headline on the Overview and a timeline on
+              Property & Market. Printing the whole narrative, every highlight
+              and every open question in both places is the duplication that
+              made this section the longest thing on the page. */}
           {backstory && (
             <div class="awv2-record-backstory">
               <h3>Property backstory</h3>
-              <p>{backstory.narrative}</p>
-              {(backstory.highlights ?? []).length > 0 && (
-                <ul>{(backstory.highlights ?? []).slice(0, 4).map((item) => <li>{item}</li>)}</ul>
-              )}
-              {(backstory.openQuestions ?? []).length > 0 && (
-                <p class="awv2-record-note"><b>Open questions the record raises:</b> {(backstory.openQuestions ?? []).join(' ')}</p>
-              )}
+              <p class="lede">{(backstory.highlights ?? [])[0] || backstory.narrative}</p>
+              <details class="awv2-overview-details">
+                <summary>Full planning narrative{(backstory.openQuestions ?? []).length ? ` · ${(backstory.openQuestions ?? []).length} open question(s)` : ''}</summary>
+                <p>{backstory.narrative}</p>
+                {(backstory.highlights ?? []).length > 0 && (
+                  <ul>{(backstory.highlights ?? []).map((item) => <li>{item}</li>)}</ul>
+                )}
+                {(backstory.openQuestions ?? []).length > 0 && (
+                  <p class="awv2-record-note"><b>Open questions the record raises:</b> {(backstory.openQuestions ?? []).join(' ')}</p>
+                )}
+              </details>
             </div>
           )}
           {authorityLine && <p class="awv2-record-note">{authorityLine}</p>}
@@ -719,32 +792,23 @@ export function OverviewSection({
           {(recommendation?.postureWhy || recommendation?.why) && (
             <p class="awv2-strategy-why">{recommendation?.postureWhy || recommendation?.why}</p>
           )}
+          {/* The strongest few exits, each as four scannable lines: fit,
+              why it fits, the one thing blocking it, what would confirm it.
+              Effort/timeline/risk and the full supporting-fact list are real
+              lane output and stay on the card, one control away. Every exit
+              the lane assessed beyond the strongest few follows below in the
+              same shape — none of them is dropped. */}
           <div class="awv2-strategy-grid">
-            {strategies.map((item) => {
-              const applicability = (item.applicability || '').toLowerCase();
-              return (
-                <article class="awv2-strategy-card" data-applicability={applicability || 'unstated'}>
-                  <header>
-                    <b>{item.strategy}</b>
-                    <em>{STRATEGY_APPLICABILITY_LABEL[applicability] ?? 'Assessed'}</em>
-                  </header>
-                  {item.valueCreationPath && <p class="path">{item.valueCreationPath}</p>}
-                  {(item.supportingFacts ?? []).length > 0 && (
-                    <ul class="supports">{(item.supportingFacts ?? []).slice(0, 3).map((fact) => <li>{fact}</li>)}</ul>
-                  )}
-                  {(item.blockers ?? []).length > 0 && (
-                    <ul class="blocks">{(item.blockers ?? []).slice(0, 2).map((blocker) => <li>{blocker}</li>)}</ul>
-                  )}
-                  <dl>
-                    {item.effort && <><dt>Effort</dt><dd>{item.effort}</dd></>}
-                    {item.timeline && <><dt>Timeline</dt><dd>{item.timeline}</dd></>}
-                    {item.risk && <><dt>Risk</dt><dd>{item.risk}</dd></>}
-                    {item.nextVerificationStep && <><dt>Next to confirm</dt><dd>{item.nextVerificationStep}</dd></>}
-                  </dl>
-                </article>
-              );
-            })}
+            {strategies.slice(0, 3).map((item) => <StrategyCard item={item} />)}
           </div>
+          {strategies.length > 3 && (
+            <details class="awv2-strategy-more">
+              <summary>{strategies.length - 3} further exit{strategies.length - 3 === 1 ? '' : 's'} assessed</summary>
+              <div class="awv2-strategy-grid">
+                {strategies.slice(3).map((item) => <StrategyCard item={item} />)}
+              </div>
+            </details>
+          )}
           {(recommendation?.whatWouldChangeIt ?? []).length > 0 && (
             <div class="awv2-strategy-unlock">
               <h3>What would settle the strategy</h3>
