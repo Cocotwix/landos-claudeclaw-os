@@ -43,6 +43,7 @@ import type {
   AcquisitionIntelligenceReadiness,
   AcquisitionIntelligenceRuntimeStatus,
 } from '../components/AcquisitionWorkspaceV2AcquisitionIntelligence';
+import type { ResearchReadinessManifestView } from '../components/AcquisitionWorkspaceV2ResearchReadiness';
 import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
 import type { LandUseView, RetainedLandUseIntelligenceView } from '../components/AcquisitionWorkspaceV2LandUse';
 import '../styles/workspace-v2.css';
@@ -239,6 +240,12 @@ export function AcquisitionWorkspaceV2() {
   const [aiStale, setAiStale] = useState(false);
   const [aiRunning, setAiRunning] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  // Research readiness. The manifest is RECONCILED on the server from retained
+  // state and only fetched here: opening or reloading the card runs no research
+  // at all. The backfill control below is the only thing that does.
+  const [readiness, setReadiness] = useState<ResearchReadinessManifestView | null>(null);
+  const [readinessRunning, setReadinessRunning] = useState<string[] | null>(null);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Bumped when a research run settles, so the workspace re-reads the records
@@ -258,6 +265,9 @@ export function AcquisitionWorkspaceV2() {
           apiGet<ActivityResp>(`/api/landos/deal-cards/${dealId}/activity`).catch(() => null),
           apiGet<BrowseruseResp>(`/api/landos/deal-cards/${dealId}/browseruse`).catch(() => null),
         ]);
+        const rr = await apiGet<{ manifest?: ResearchReadinessManifestView }>(
+          `/api/landos/deal-cards/${dealId}/research-readiness`,
+        ).catch(() => null);
         const ai = await apiGet<AcqIntelResp>(`/api/landos/deal-cards/${dealId}/acquisition-intelligence`).catch(() => null);
         if (dead) return;
         setDeal(d); setSnap(i?.propertyIntelligence?.snapshot ?? null); setMarket(i?.marketContext ?? null); setAcq(a); setActivity(act);
@@ -276,6 +286,7 @@ export function AcquisitionWorkspaceV2() {
         setCompsValuation(i?.propertyIntelligence?.compsValuation ?? null);
         setLandPortalFacts(i?.propertyIntelligence?.landPortalFacts ?? i?.landPortalFacts ?? null);
         setTaxStatus(i?.propertyIntelligence?.taxStatus ?? null);
+        setReadiness(rr?.manifest ?? null);
         setAiRead(ai?.acquisitionIntelligence ?? null);
         setAiReadiness(ai?.readiness ?? null);
         setAiRuntime(ai?.runtime ?? null);
@@ -343,6 +354,28 @@ export function AcquisitionWorkspaceV2() {
     } catch (e) {
       setAiRunning(false);
       setAiError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // Targeted backfill. The manifest decides WHAT; the server's registered
+  // capabilities decide HOW. With no ids this runs every red machine-resolvable
+  // item and nothing else — never a full research cycle.
+  const runResearchBackfill = async (itemIds?: string[]) => {
+    if (dealId == null || readinessRunning) return;
+    setReadinessRunning(itemIds ?? readiness?.backfillCandidates ?? []);
+    setReadinessError(null);
+    try {
+      const report = await apiPost<{ after?: ResearchReadinessManifestView }>(
+        `/api/landos/deal-cards/${dealId}/research-readiness/backfill`,
+        itemIds ? { itemIds } : {},
+      );
+      if (report?.after) setReadiness(report.after);
+      // A backfill rewrites the records the rest of the page reads.
+      setReloadNonce((nonce) => nonce + 1);
+    } catch (e) {
+      setReadinessError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReadinessRunning(null);
     }
   };
 
@@ -597,6 +630,13 @@ export function AcquisitionWorkspaceV2() {
           openCompsValuationLabel={openCompsValuationLabel}
           openCompsValuation={openCompsValuation}
           acquisitionNextAction={acq?.nextAction ?? null}
+          researchReadiness={{
+            manifest: readiness,
+            loading,
+            error: readinessError,
+            running: readinessRunning,
+            onBackfill: runResearchBackfill,
+          }}
           formatUsd={usd}
           onOpenSection={onOpenSection}
         />

@@ -1,0 +1,256 @@
+/* Acquisition Workspace V2 — Research Readiness strip.
+   ═══════════════════════════════════════════════════════════════════════
+   A compact record-sheet band under the decision band: the ready count, the
+   tallies that matter, and one chip per checklist item. The expanded view is
+   the only place the full checklist prints.
+
+   Status colors are RECOGNITION colors and stay constant across themes, the
+   same contract the domain hues carry:
+     green  moss   ready
+     yellow amber  a proper attempt settled nothing
+     red    rust   missing, and a machine can still go and get it
+     blue   slate  usable but aged
+     gray   bone   nobody expected a machine to answer this            */
+
+.awv2 .awv2-rr {
+  --rr-green: var(--awv2-moss);
+  --rr-yellow: var(--awv2-amber);
+  --rr-red: var(--awv2-rust);
+  --rr-blue: var(--awv2-dom-property);
+  --rr-gray: var(--awv2-bone-faint);
+  padding: 14px 18px 12px;
+  margin-bottom: 14px;
+}
+
+.awv2 .awv2-rr-empty {
+  font-size: 13px;
+  color: var(--awv2-bone-dim);
+  padding: 4px 0;
+}
+
+/* ── Head: count + tallies ─────────────────────────────────────────────── */
+
+.awv2 .awv2-rr-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.awv2 .awv2-rr-title h2 {
+  margin: 4px 0 0;
+  font-family: var(--awv2-mono);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--awv2-bone);
+}
+
+.awv2 .awv2-rr-tallies {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding-top: 14px;
+}
+
+.awv2 .awv2-rr-tally {
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--awv2-line-strong);
+  color: var(--awv2-bone-dim);
+  white-space: nowrap;
+}
+.awv2 .awv2-rr-tally.t-red { color: var(--rr-red); border-color: color-mix(in srgb, var(--rr-red) 45%, var(--awv2-line)); }
+.awv2 .awv2-rr-tally.t-yellow { color: var(--rr-yellow); border-color: color-mix(in srgb, var(--rr-yellow) 45%, var(--awv2-line)); }
+.awv2 .awv2-rr-tally.t-blue { color: var(--rr-blue); border-color: color-mix(in srgb, var(--rr-blue) 45%, var(--awv2-line)); }
+.awv2 .awv2-rr-tally.t-gray { color: var(--rr-gray); }
+
+/* ── The strip ─────────────────────────────────────────────────────────── */
+
+.awv2 .awv2-rr-strip {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.awv2 .awv2-rr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px 4px 7px;
+  border-radius: var(--awv2-radius-tight, 10px);
+  border: 1px solid var(--awv2-line);
+  background: rgba(255, 255, 255, 0.014);
+  font-size: 12px;
+  color: var(--awv2-bone-dim);
+  cursor: default;
+}
+
+.awv2 .awv2-rr-chip .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--rr-gray);
+}
+
+.awv2 .awv2-rr-chip.s-green  { border-color: color-mix(in srgb, var(--rr-green) 34%, var(--awv2-line)); }
+.awv2 .awv2-rr-chip.s-green .dot  { background: var(--rr-green); }
+.awv2 .awv2-rr-chip.s-yellow { border-color: color-mix(in srgb, var(--rr-yellow) 40%, var(--awv2-line)); }
+.awv2 .awv2-rr-chip.s-yellow .dot { background: var(--rr-yellow); }
+.awv2 .awv2-rr-chip.s-red    { border-color: color-mix(in srgb, var(--rr-red) 46%, var(--awv2-line)); color: var(--awv2-bone); }
+.awv2 .awv2-rr-chip.s-red .dot    { background: var(--rr-red); }
+.awv2 .awv2-rr-chip.s-blue   { border-color: color-mix(in srgb, var(--rr-blue) 40%, var(--awv2-line)); }
+.awv2 .awv2-rr-chip.s-blue .dot   { background: var(--rr-blue); }
+.awv2 .awv2-rr-chip.s-gray   { opacity: 0.72; }
+.awv2 .awv2-rr-chip.s-gray .dot   { background: transparent; border: 1px dashed var(--rr-gray); }
+
+/* A red item that blocks a future intelligence layer earns the only glow. */
+.awv2 .awv2-rr-chip.blocking {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rr-red) 30%, transparent);
+}
+
+/* ── Actions ───────────────────────────────────────────────────────────── */
+
+.awv2 .awv2-rr-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--awv2-line);
+}
+
+.awv2 .awv2-rr-backfill,
+.awv2 .awv2-rr-toggle,
+.awv2 .awv2-rr-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--awv2-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--awv2-line-strong);
+  background: var(--awv2-panel);
+  color: var(--awv2-bone-dim);
+  cursor: pointer;
+}
+
+.awv2 .awv2-rr-backfill {
+  border-color: color-mix(in srgb, var(--awv2-brass) 46%, var(--awv2-line));
+  color: var(--awv2-brass-bright);
+}
+.awv2 .awv2-rr-backfill:hover:not(:disabled),
+.awv2 .awv2-rr-toggle:hover,
+.awv2 .awv2-rr-run:hover:not(:disabled) { color: var(--awv2-bone); border-color: var(--awv2-brass); }
+.awv2 .awv2-rr-backfill:disabled,
+.awv2 .awv2-rr-run:disabled { opacity: 0.45; cursor: default; }
+
+.awv2 .awv2-rr-note {
+  font-size: 11px;
+  color: var(--awv2-bone-faint);
+  flex: 1 1 220px;
+  min-width: 200px;
+}
+
+.awv2 .awv2-rr-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--rr-red);
+}
+
+.awv2 .awv2-rr-actions .spin { animation: awv2-rr-spin 900ms linear infinite; }
+@keyframes awv2-rr-spin { to { transform: rotate(360deg); } }
+
+/* ── Expanded detail ───────────────────────────────────────────────────── */
+
+.awv2 .awv2-rr-detail {
+  margin-top: 12px;
+  display: grid;
+  gap: 14px;
+}
+
+.awv2 .awv2-rr-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--awv2-line);
+}
+.awv2 .awv2-rr-group-head b {
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-bone);
+}
+.awv2 .awv2-rr-groupstate { font-size: 11.5px; color: var(--awv2-bone-faint); }
+.awv2 .awv2-rr-groupstate.ok { color: var(--rr-green); }
+.awv2 .awv2-rr-groupstate.blocked { color: var(--rr-red); }
+
+.awv2 .awv2-rr-rows { list-style: none; margin: 0; padding: 0; }
+
+.awv2 .awv2-rr-row {
+  display: grid;
+  grid-template-columns: 130px 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--awv2-line);
+}
+.awv2 .awv2-rr-row:last-child { border-bottom: none; }
+
+.awv2 .awv2-rr-row .st {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--rr-gray);
+  padding-top: 2px;
+}
+.awv2 .awv2-rr-row .st .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: currentColor; }
+.awv2 .awv2-rr-row.s-green .st  { color: var(--rr-green); }
+.awv2 .awv2-rr-row.s-yellow .st { color: var(--rr-yellow); }
+.awv2 .awv2-rr-row.s-red .st    { color: var(--rr-red); }
+.awv2 .awv2-rr-row.s-blue .st   { color: var(--rr-blue); }
+
+.awv2 .awv2-rr-row .lbl {
+  font-size: 13.5px;
+  color: var(--awv2-bone);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.awv2 .awv2-rr-row .lbl small { font-size: 11.5px; color: var(--awv2-bone-faint); font-weight: 400; }
+.awv2 .awv2-rr-row .why { margin: 4px 0 0; font-size: 12.5px; color: var(--awv2-bone-dim); }
+.awv2 .awv2-rr-row .next { margin: 3px 0 0; font-size: 12.5px; color: var(--awv2-brass); }
+.awv2 .awv2-rr-row .meta {
+  margin: 4px 0 0;
+  font-family: var(--awv2-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--awv2-bone-faint);
+}
+
+@media (max-width: 720px) {
+  .awv2 .awv2-rr-row { grid-template-columns: 1fr; }
+  .awv2 .awv2-rr-row .st { padding-top: 0; }
+}

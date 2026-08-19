@@ -24,6 +24,10 @@ import type {
   AcquisitionIntelligenceRuntimeStatus,
 } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
 import { DealReadCard } from './AcquisitionWorkspaceV2DealRead';
+import {
+  ResearchReadinessStrip,
+  type ResearchReadinessManifestView,
+} from './AcquisitionWorkspaceV2ResearchReadiness';
 import type { CompsValuationViewData } from './AcquisitionWorkspaceV2CompsValuation';
 import '../styles/workspace-v2-overview.css';
 
@@ -178,6 +182,15 @@ interface OverviewSectionProps {
   openCompsValuationLabel: string;
   openCompsValuation: () => void;
   acquisitionNextAction: { label?: string; reason?: string } | null;
+  /** The deterministic Research Readiness Manifest and its bounded controls.
+   *  Rendering it runs no research; only the backfill control does. */
+  researchReadiness?: {
+    manifest: ResearchReadinessManifestView | null;
+    loading: boolean;
+    error: string | null;
+    running: string[] | null;
+    onBackfill: (itemIds?: string[]) => void;
+  } | null;
   onOpenSection: (slug: 'property-intelligence' | 'comps-valuation') => void;
   formatUsd: (value: number) => string;
   /** The canonical retained LandPortal parcel fact sheet. */
@@ -302,6 +315,7 @@ export function OverviewSection({
   landPortalFacts,
   landUseIntelligence,
   acquisitionIntelligence,
+  researchReadiness,
 }: OverviewSectionProps) {
   const identity = snap.identity ?? {};
   const operator = snap.operatorAnalysis;
@@ -611,6 +625,23 @@ export function OverviewSection({
         </div>
         {decisionSummary !== decisionHeadline && <details class="awv2-decision-rationale"><summary>Decision rationale</summary><p>{decisionSummary}</p></details>}
       </section>
+
+      {/* ── 1b. Research readiness: the checklist underneath every judgment
+             on this page. It sits directly under the decision band because a
+             decision is only as good as the research it stands on, and this
+             is the one surface that says plainly what ran, what returned a
+             usable answer, what is honestly unresolved, and what is simply
+             missing. Compact by default; the full checklist is one control
+             away. Rendering it never runs research. ── */}
+      {researchReadiness && (
+        <ResearchReadinessStrip
+          manifest={researchReadiness.manifest}
+          loading={researchReadiness.loading}
+          error={researchReadiness.error}
+          running={researchReadiness.running}
+          onBackfill={researchReadiness.onBackfill}
+        />
+      )}
 
       {/* ── 2. The acquisitions judgment, compressed to a Deal Read. It sits
              directly under the decision band because its whole job is to make

@@ -167,6 +167,10 @@ import {
 import { PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID } from './property-development-history-capability.js';
 import type { PropertyBackstory } from './property-backstory.js';
 import { CapabilityInvocationStore } from './capability-store.js';
+import type { CapabilityEntity } from './capability-contract.js';
+import { researchReadinessItem } from './research-readiness.js';
+import { isReconcileError, reconcileResearchReadiness } from './research-readiness-reconcile.js';
+import { runResearchReadinessBackfill } from './research-readiness-backfill.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
 import { browserLaneStatus } from './browser-retrieval.js';
@@ -10405,6 +10409,46 @@ export function registerLandosRoutes(app: Hono): void {
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
+  });
+
+  // ── Research Readiness Manifest ───────────────────────────────────────────
+  //
+  // ONE deterministic checklist per Deal Card: what research this property
+  // should have, what ran, what returned usable evidence, what is honestly
+  // unresolved, what is stale, and what needs a human.
+  //
+  // The GET is READ-ONLY and reconciles from retained state. Opening or
+  // refreshing a Deal Card calls it and nothing else: no capability is invoked,
+  // no model is called, no browser opens. Research happens only through the
+  // explicit backfill POST below.
+  app.get('/api/landos/deal-cards/:id/research-readiness', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const manifest = reconcileResearchReadiness(id);
+    if (isReconcileError(manifest)) return c.json({ error: manifest.error }, manifest.status);
+    return c.json({ manifest });
+  });
+
+  // Targeted backfill. Bounded by the manifest: only red machine-resolvable
+  // items (plus blue ones when explicitly asked for), one invocation per owning
+  // capability. Green is never rerun, yellow never loops, gray never runs.
+  app.post('/api/landos/deal-cards/:id/research-readiness/backfill', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as { itemIds?: unknown; includeStale?: unknown };
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    const itemIds = Array.isArray(body.itemIds)
+      ? body.itemIds.filter((value): value is string => typeof value === 'string' && !!researchReadinessItem(value))
+      : undefined;
+    const report = await runResearchReadinessBackfill(
+      id,
+      subject.deal.entity as CapabilityEntity,
+      { itemIds, includeStale: body.includeStale === true },
+      { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
+    );
+    if ('error' in report) return c.json({ error: report.error }, report.status);
+    return c.json(report);
   });
 
   app.get('/api/landos/deal-cards/:id/property-intelligence/progress', (c) => {
