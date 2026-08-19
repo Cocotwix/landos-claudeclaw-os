@@ -63,7 +63,7 @@ describe('research readiness reconciliation — retained state only', () => {
     if (isReconcileError(manifest)) throw new Error(manifest.error);
 
     expect(manifest.propertyCardId).toBe(propertyCardId);
-    expect(manifest.items).toHaveLength(15);
+    expect(manifest.items).toHaveLength(19);
     // The two facts this card really does hold, read straight off the card.
     expect(manifest.items.find((i) => i.id === 'property_resolution')?.status).toBe('green');
     expect(manifest.items.find((i) => i.id === 'official_parcel_record')?.status).toBe('green');

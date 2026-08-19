@@ -178,11 +178,17 @@ export const RESEARCH_READINESS_ITEMS: readonly ResearchReadinessItemDefinition[
     freshnessDays: null,
     intelligenceCritical: false,
   },
+  // Access and frontage are SEPARATE facts, answered by different evidence at
+  // different stages. A parcel can plainly front a recognized road — access
+  // established at discovery — while the exact frontage figure is still
+  // disputed between retained sources; and a parcel reached by a recorded
+  // easement can have access with little or no direct public-road frontage.
+  // One label over both would have to lie about one of them.
   {
-    id: 'access_frontage',
-    label: 'Access / Frontage',
+    id: 'access',
+    label: 'Access',
     group: 'property',
-    question: 'Does this parcel front a road, and is it flagged land-locked?',
+    question: 'Does this property have an established way in at the acquisition-screening stage?',
     owner: { kind: 'capability', capabilityId: 'landportal-research', label: 'LandPortal Research' },
     machineBackfill: true,
     humanExpected: false,
@@ -190,12 +196,60 @@ export const RESEARCH_READINESS_ITEMS: readonly ResearchReadinessItemDefinition[
     intelligenceCritical: false,
   },
   {
-    id: 'utilities_septic',
-    label: 'Utilities / Septic',
+    id: 'road_frontage',
+    label: 'Road Frontage',
     group: 'property',
-    question: 'What does the desktop soils and septic outlook say for this parcel?',
-    owner: { kind: 'operator_surface', capabilityId: null, label: 'Soils & Septic outlook' },
-    machineBackfill: false,
+    question: 'How much road frontage does the subject have?',
+    owner: { kind: 'capability', capabilityId: 'landportal-research', label: 'LandPortal Research' },
+    machineBackfill: true,
+    humanExpected: false,
+    freshnessDays: null,
+    intelligenceCritical: false,
+  },
+  // Public service and its onsite fallback, four separate questions. Water and
+  // sewer are independently screenable and routinely disagree; the well and
+  // septic outlooks exist ONLY as the fallback when the matching public service
+  // is not established, and are screens, never determinations.
+  {
+    id: 'public_water',
+    label: 'Public Water',
+    group: 'property',
+    question: 'Does public water appear available to or immediately serving this subject?',
+    owner: { kind: 'capability', capabilityId: 'utility-service-screen', label: 'Utility Service Screen' },
+    machineBackfill: true,
+    humanExpected: false,
+    freshnessDays: null,
+    intelligenceCritical: false,
+  },
+  {
+    id: 'public_sewer',
+    label: 'Public Sewer',
+    group: 'property',
+    question: 'Does public sewer appear available to or immediately serving this subject?',
+    owner: { kind: 'capability', capabilityId: 'utility-service-screen', label: 'Utility Service Screen' },
+    machineBackfill: true,
+    humanExpected: false,
+    freshnessDays: null,
+    intelligenceCritical: false,
+  },
+  {
+    id: 'well_outlook',
+    label: 'Well Outlook',
+    group: 'property',
+    question: 'Where public water is not established, does a private well look easy, moderate, or difficult here?',
+    owner: { kind: 'capability', capabilityId: 'utility-service-screen', label: 'Utility Service Screen' },
+    machineBackfill: true,
+    humanExpected: false,
+    freshnessDays: null,
+    intelligenceCritical: false,
+  },
+  {
+    id: 'septic_outlook',
+    label: 'Septic Outlook',
+    group: 'property',
+    question: 'Where public sewer is not established, how promising does septic look on the retained subject soils?',
+    owner: { kind: 'capability', capabilityId: 'utility-service-screen', label: 'Utility Service Screen' },
+    machineBackfill: true,
     humanExpected: false,
     freshnessDays: null,
     intelligenceCritical: false,

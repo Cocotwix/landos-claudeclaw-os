@@ -22,7 +22,22 @@ import { PropertyResearchStore, type CanonicalPropertyResearchRecord } from './p
 import { loadEligibleCardVisualCapture } from './property-card.js';
 import { listComps } from './comps.js';
 import { loadSellerStatedFacts, summarizeSellerFacts } from './seller-stated-facts.js';
-import { loadSoilsSepticScreening } from './soils-septic-outlook.js';
+import {
+  frontageFeet,
+  readAccess,
+  readFrontage,
+  readPublicSewer,
+  readPublicWater,
+  readSepticOutlook,
+  readWellOutlook,
+  type AccessFrontageInput,
+  type RetainedFrontageReading,
+} from './access-utilities-screening.js';
+import {
+  loadWellContextScreening,
+  retainedSoilUnits,
+  retainedUtilityScreen,
+} from './utility-service-screen-capability.js';
 import type { CapabilityResult, JsonObject, JsonValue } from './capability-contract.js';
 import {
   buildResearchReadinessManifest,
@@ -57,6 +72,12 @@ function factValue(record: CanonicalPropertyResearchRecord | null, key: string):
 function factRetrievedAt(record: CanonicalPropertyResearchRecord | null, key: string): string | null {
   const fact = record?.facts?.[key] as { retrievedAt?: string } | undefined;
   return fact?.retrievedAt ?? null;
+}
+
+/** The provider that carried a retained fact, for source-named conflicts. */
+function factProvider(record: CanonicalPropertyResearchRecord | null, key: string): string | null {
+  const fact = record?.facts?.[key] as { providerId?: string } | undefined;
+  return fact?.providerId?.trim() || null;
 }
 
 /** A retained string fact, ignoring LandPortal's "-" placeholder for "blank". */
@@ -351,45 +372,194 @@ function visualEvidenceProbe(ctx: ReconcileContext): ResearchReadinessProbe {
   };
 }
 
-function accessFrontageProbe(ctx: ReconcileContext): ResearchReadinessProbe {
-  const frontage = factText(ctx.research, 'road_frontage_ft');
-  const landlocked = factText(ctx.research, 'landlocked_status');
-  const at = factRetrievedAt(ctx.research, 'road_frontage_ft') ?? factRetrievedAt(ctx.research, 'landlocked_status');
+/** The retained keys each provider writes the same access fact under. */
+const LANDLOCKED_FACT_KEYS = ['landlocked_status', 'Land Locked'];
+const FRONTAGE_FACT_KEYS = ['road_frontage_ft', 'Road Frontage'];
+
+/** Every retained frontage reading, with the provider that carried each one. */
+function retainedFrontageReadings(record: CanonicalPropertyResearchRecord | null): RetainedFrontageReading[] {
+  const readings: RetainedFrontageReading[] = [];
+  for (const key of FRONTAGE_FACT_KEYS) {
+    const raw = factText(record, key);
+    if (!raw) continue;
+    readings.push({ raw, feet: frontageFeet(raw), source: factProvider(record, key) ?? key });
+  }
+  return readings;
+}
+
+function accessFrontageInput(ctx: ReconcileContext): AccessFrontageInput {
   const lane = ctx.research?.lanes?.landportal_subject ?? ctx.research?.lanes?.hermes_landportal_subject ?? null;
-  const usable = !!frontage || !!landlocked;
   return {
-    itemId: 'access_frontage',
-    attempted: !!lane || usable,
-    technicalSuccess: !!lane || usable,
-    usableEvidence: usable,
-    unresolved: true,
-    lastAttemptAt: at ?? lane?.latestAttemptAt ?? null,
-    lastSuccessAt: usable ? at : null,
-    reason: usable
-      ? `Mapped access evidence retained${frontage ? `: ${frontage} of road frontage` : ''}${landlocked ? `${frontage ? ', ' : ': '}land-locked flag ${landlocked}` : ''}.`
-      : lane
-        ? 'The parcel record was read and carries no frontage or land-locked evidence.'
-        : 'No frontage or land-locked evidence has been retrieved for this parcel.',
+    landlockedStatus: LANDLOCKED_FACT_KEYS.map((key) => factText(ctx.research, key)).find(Boolean) ?? null,
+    frontageReadings: retainedFrontageReadings(ctx.research),
+    parcelRecordRead: !!lane,
   };
 }
 
-function utilitiesSepticProbe(ctx: ReconcileContext): ResearchReadinessProbe {
-  const screening = loadSoilsSepticScreening(ctx.propertyCardId);
-  const units = screening?.units?.length ?? 0;
+function accessFrontageAt(ctx: ReconcileContext): string | null {
+  return [...LANDLOCKED_FACT_KEYS, ...FRONTAGE_FACT_KEYS]
+    .map((key) => factRetrievedAt(ctx.research, key))
+    .find((stamp): stamp is string => !!stamp)
+    ?? ctx.research?.lanes?.landportal_subject?.latestAttemptAt
+    ?? null;
+}
+
+/**
+ * ACCESS - "is there an established way in at the screening stage?"
+ *
+ * Discovery-stage doctrine, unchanged: an ordinary parcel that fronts a
+ * recognized road and carries no land-locked flag HAS access here. Deed and
+ * easement research is later diligence, not a precondition, so an established
+ * access read is green even while the exact frontage figure is disputed.
+ */
+function accessProbe(ctx: ReconcileContext): ResearchReadinessProbe {
+  const input = accessFrontageInput(ctx);
+  const read = readAccess(input);
+  const at = accessFrontageAt(ctx);
+  const attempted = !!input.parcelRecordRead || (input.frontageReadings?.length ?? 0) > 0 || input.landlockedStatus != null;
   return {
-    itemId: 'utilities_septic',
-    attempted: !!screening,
-    technicalSuccess: !!screening,
-    usableEvidence: units > 0,
-    unresolved: !!screening,
-    lastAttemptAt: null,
-    lastSuccessAt: null,
-    reason: units > 0
-      ? `Soils and septic outlook screened across ${units} mapped soil unit(s).`
-      : screening
-        ? 'The soils screening ran and mapped no soil units for this parcel.'
-        : 'No soils or septic screening is on record for this parcel. A perc test remains the confirming evidence in every case.',
+    itemId: 'access',
+    attempted,
+    technicalSuccess: attempted,
+    usableEvidence: read.established,
+    // A parcel record that was read and shows doubtful access is unresolved:
+    // the remaining route is a recorded instrument, not another parcel read.
+    unresolved: attempted,
+    lastAttemptAt: at,
+    lastSuccessAt: read.established ? at : null,
+    reason: read.statement,
+    nextAction: read.established
+      ? null
+      : attempted
+        ? 'Establish access from a recorded easement or an official access record. Repeating the parcel read does not change it.'
+        : null,
   };
+}
+
+/**
+ * ROAD FRONTAGE - "how much frontage does the subject have?"
+ *
+ * Independent of access, and honest about disagreement: retained readings that
+ * conflict are reported at their real values and never re-run on a loop, since
+ * the same providers will return the same two numbers.
+ */
+function roadFrontageProbe(ctx: ReconcileContext): ResearchReadinessProbe {
+  const input = accessFrontageInput(ctx);
+  const read = readFrontage(input);
+  const at = accessFrontageAt(ctx);
+  const attempted = !!input.parcelRecordRead || (input.frontageReadings?.length ?? 0) > 0;
+  return {
+    itemId: 'road_frontage',
+    attempted,
+    technicalSuccess: attempted,
+    usableEvidence: read.state === 'established',
+    unresolved: attempted,
+    lastAttemptAt: at,
+    lastSuccessAt: read.state === 'established' ? at : null,
+    reason: read.statement,
+    nextAction: read.state === 'established'
+      ? null
+      : read.state === 'conflicting'
+        ? 'Confirm the governing frontage from the plat, survey or county GIS measurement. Re-running the same providers returns the same two figures.'
+        : attempted
+          ? 'Obtain a frontage figure from the plat, survey or county GIS measurement.'
+          : null,
+  };
+}
+
+/** The four site-service probes, derived together because they gate each other. */
+function siteServiceProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
+  const reading = ctx.capability('utility-service-screen');
+  const facts = reading.facts;
+  const capabilityWater = asObject(facts.publicWater);
+  const capabilitySewer = asObject(facts.publicSewer);
+  const capabilityWell = asObject(facts.wellOutlook);
+  const capabilitySeptic = asObject(facts.septicOutlook);
+
+  // The capability result is the stronger source. The retained
+  // public-intelligence utilities lane is the fallback for every card whose
+  // research predates this capability.
+  const retainedScreen = retainedUtilityScreen(ctx.dealCardId);
+  const water = capabilityWater
+    ? { state: asString(capabilityWater.state) ?? 'not_screened', statement: asString(capabilityWater.statement) ?? '' }
+    : readPublicWater(retainedScreen);
+  const sewer = capabilitySewer
+    ? { state: asString(capabilitySewer.state) ?? 'not_screened', statement: asString(capabilitySewer.statement) ?? '' }
+    : readPublicSewer(retainedScreen);
+
+  const soilUnits = retainedSoilUnits(ctx.dealCardId, ctx.propertyCardId);
+  const wellContext = loadWellContextScreening(ctx.propertyCardId);
+  const well = capabilityWell
+    ? { category: asString(capabilityWell.category) ?? 'unknown', statement: asString(capabilityWell.statement) ?? '' }
+    : readWellOutlook(readPublicWater(retainedScreen), wellContext);
+  const septic = capabilitySeptic
+    ? { category: asString(capabilitySeptic.category) ?? 'unknown', statement: asString(capabilitySeptic.statement) ?? '' }
+    : readSepticOutlook(readPublicSewer(retainedScreen), soilUnits);
+
+  const at = reading.completedAt ?? retainedScreen?.screenedAt ?? null;
+  const screened = water.state !== 'not_screened';
+
+  const service = (itemId: string, read: { state: string; statement: string }, label: string): ResearchReadinessProbe => ({
+    itemId,
+    attempted: screened,
+    technicalSuccess: screened,
+    usableEvidence: read.state === 'available',
+    // A bounded official check that ran and established nothing is unresolved:
+    // it never loops, and the remaining route is the utility authority.
+    unresolved: screened,
+    lastAttemptAt: at,
+    lastSuccessAt: read.state === 'available' ? at : null,
+    reason: read.statement,
+    nextAction: read.state === 'available'
+      ? null
+      : screened
+        ? `Request written ${label} availability from the serving utility authority. The bounded official screen has already run.`
+        : null,
+  });
+
+  // An outlook is USABLE when it says something a buyer can act on, including
+  // "not needed". It is unresolved when the screen ran and the readily
+  // available evidence did not support an outlook - never a retry loop, and
+  // never a claim the ground is bad.
+  const outlook = (
+    itemId: string,
+    read: { category: string; statement: string },
+    gate: { state: string },
+    followUp: string,
+  ): ResearchReadinessProbe => {
+    const attempted = read.category !== 'unknown' || gate.state !== 'not_screened';
+    return {
+      itemId,
+      attempted,
+      technicalSuccess: attempted,
+      usableEvidence: read.category === 'not_needed' || read.category === 'favorable'
+        || read.category === 'difficult' || read.category === 'poor',
+      unresolved: attempted,
+      lastAttemptAt: at,
+      lastSuccessAt: read.category === 'unknown' ? null : at,
+      reason: read.statement,
+      nextAction: read.category === 'unknown' || read.category === 'mixed' || read.category === 'moderate'
+        ? followUp
+        : null,
+    };
+  };
+
+  return [
+    service('public_water', water, 'water'),
+    service('public_sewer', sewer, 'sewer'),
+    outlook(
+      'well_outlook',
+      well,
+      water,
+      'Obtain nearby domestic well records or a local depth range only if a well becomes decision-relevant. LandOS does not search further at the screening stage.',
+    ),
+    outlook(
+      'septic_outlook',
+      septic,
+      sewer,
+      'A perc test or professional soil evaluation remains the confirming evidence. This screen never predicts one passing.',
+    ),
+  ];
 }
 
 function compsAndValuationProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
@@ -572,8 +742,9 @@ export function reconcileResearchReadiness(
     ...zoningProbes(ctx),
     developmentHistoryProbe(ctx),
     visualEvidenceProbe(ctx),
-    accessFrontageProbe(ctx),
-    utilitiesSepticProbe(ctx),
+    accessProbe(ctx),
+    roadFrontageProbe(ctx),
+    ...siteServiceProbes(ctx),
     ...compsAndValuationProbes(ctx),
     ...marketProbes(ctx),
     sellerProbe(ctx),

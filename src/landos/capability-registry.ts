@@ -38,6 +38,11 @@ import {
   type PropertyResolutionRuntime,
 } from './property-resolution-capability.js';
 import {
+  UTILITY_SERVICE_SCREEN_CAPABILITY,
+  UTILITY_SERVICE_SCREEN_CAPABILITY_ID,
+  type UtilityServiceScreenRuntime,
+} from './utility-service-screen-capability.js';
+import {
   ZONING_SUBDIVISION_CAPABILITY,
   ZONING_SUBDIVISION_CAPABILITY_ID,
   type ZoningSubdivisionRuntime,
@@ -46,7 +51,7 @@ import {
 /** Every runtime a registered LandOS capability accepts. */
 export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRuntime & LandPortalResearchRuntime
   & CompsValuationRuntime & ZoningSubdivisionRuntime & PropertyDevelopmentHistoryRuntime
-  & AcquisitionIntelligenceRuntimeDeps;
+  & UtilityServiceScreenRuntime & AcquisitionIntelligenceRuntimeDeps;
 
 const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
@@ -61,6 +66,13 @@ const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [
     PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
     PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
+  // The narrowest research capability here: it owns public water, public sewer
+  // and their onsite fallbacks, and reuses the existing official parcel lookup
+  // and utilities intelligence lane rather than adding a second path to them.
+  [
+    UTILITY_SERVICE_SCREEN_CAPABILITY_ID,
+    UTILITY_SERVICE_SCREEN_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
   ],
   // The one capability ABOVE the research capabilities: it consumes what they
   // established and returns a judgment. It collects nothing and owns no fact.

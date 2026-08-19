@@ -37,11 +37,14 @@ const probe = (over: Partial<ResearchReadinessProbe> & { itemId: string }): Rese
 /**
  * An OLDER lead, reconstructed from retained evidence only.
  *
- *   green  — resolution, LandPortal, official record, subdivision rules,
- *            history, access, area context
+ *   green  — resolution, LandPortal, subdivision rules, history, visuals,
+ *            access, public water, well outlook (not needed), valuation,
+ *            area context
  *   red    — Assessor & Tax never ran (machine-resolvable)
- *   red    — soils/septic never ran (NO registered capability owns it)
+ *   red    — no official parcel record retrieved (NO registered capability owns it)
  *   yellow — zoning ran properly and established no district
+ *   yellow — frontage conflicts between two retained sources
+ *   yellow — public sewer screened and unresolved; septic outlook mixed
  *   yellow — comps ran properly and found no acceptable closed sale
  *   blue   — market statistics are usable but aged out
  *   gray   — seller not contacted
@@ -56,7 +59,8 @@ function oldLeadManifest(): ResearchReadinessManifest {
       probe({ itemId: 'landportal_research', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: 'Parcel record retained.' }),
       // Never ran at all — the machine gap.
       probe({ itemId: 'assessor_tax', reason: 'No Assessor & Tax run is on record.' }),
-      probe({ itemId: 'official_parcel_record', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: 'County GIS parcel matched.' }),
+      // Red, and NO registered capability owns it: reported honestly, never faked.
+      probe({ itemId: 'official_parcel_record', reason: 'No official parcel or GIS record has been retrieved.' }),
       // Ran correctly, honestly unresolved.
       probe({
         itemId: 'current_zoning',
@@ -70,9 +74,41 @@ function oldLeadManifest(): ResearchReadinessManifest {
       probe({ itemId: 'subdivision_rules', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: '31 rules retained.' }),
       probe({ itemId: 'property_development_history', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: 'No material history on record.' }),
       probe({ itemId: 'visual_evidence', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: 'Parcel imagery retained.' }),
-      probe({ itemId: 'access_frontage', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: 'Frontage retained.' }),
-      // Never ran, and no registered capability owns it.
-      probe({ itemId: 'utilities_septic', reason: 'No soils screening on record.' }),
+      // ACCESS is established at the discovery stage even though the exact
+      // FRONTAGE figure is disputed. Two facts, two states, never merged.
+      probe({ itemId: 'access', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: 'Fronts the abutting road; no land-locked flag.' }),
+      probe({
+        itemId: 'road_frontage',
+        attempted: true,
+        technicalSuccess: true,
+        usableEvidence: false,
+        unresolved: true,
+        lastAttemptAt: RECENT,
+        reason: 'Retained evidence conflicts at 22.94 ft vs 50 ft.',
+      }),
+      // Public water established; public sewer screened and unresolved.
+      probe({ itemId: 'public_water', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: 'Public water appears available.' }),
+      probe({
+        itemId: 'public_sewer',
+        attempted: true,
+        technicalSuccess: true,
+        usableEvidence: false,
+        unresolved: true,
+        lastAttemptAt: RECENT,
+        reason: 'Not established from the official sources checked.',
+      }),
+      // Water is established, so the well outlook is answered without research.
+      probe({ itemId: 'well_outlook', attempted: true, technicalSuccess: true, usableEvidence: true, lastSuccessAt: RECENT, reason: 'Not needed — public water available.' }),
+      // Sewer is not established, so the retained soils carry a mixed outlook.
+      probe({
+        itemId: 'septic_outlook',
+        attempted: true,
+        technicalSuccess: true,
+        usableEvidence: false,
+        unresolved: true,
+        lastAttemptAt: RECENT,
+        reason: 'Mixed across the retained soil units — preliminary screening only.',
+      }),
       probe({
         itemId: 'comps_collection',
         attempted: true,
@@ -179,26 +215,26 @@ describe('research readiness — old lead reconstruction', () => {
     const manifest = oldLeadManifest();
     expect(statusOf(manifest, 'property_resolution')).toBe('green');
     expect(statusOf(manifest, 'assessor_tax')).toBe('red');
-    expect(statusOf(manifest, 'utilities_septic')).toBe('red');
+    expect(statusOf(manifest, 'official_parcel_record')).toBe('red');
     expect(statusOf(manifest, 'current_zoning')).toBe('yellow');
     expect(statusOf(manifest, 'comps_collection')).toBe('yellow');
     expect(statusOf(manifest, 'market_statistics')).toBe('blue');
     expect(statusOf(manifest, 'seller_information')).toBe('gray');
     expect(manifest.counts).toEqual({
-      total: 15, ready: 9, needsMachineAttention: 2, unresolved: 2, stale: 1, expectedUnknown: 1,
+      total: 19, ready: 10, needsMachineAttention: 2, unresolved: 5, stale: 1, expectedUnknown: 1,
     });
-    expect(manifest.headline).toBe('9 / 15 ready');
+    expect(manifest.headline).toBe('10 / 19 ready');
   });
 
   it('only offers machine backfill where a registered capability owns the item', () => {
     const manifest = oldLeadManifest();
     const assessor = manifest.items.find((item) => item.id === 'assessor_tax')!;
-    const septic = manifest.items.find((item) => item.id === 'utilities_septic')!;
+    const parcelRecord = manifest.items.find((item) => item.id === 'official_parcel_record')!;
     expect(assessor.owner.capabilityId).toBe('assessor-tax');
     expect(assessor.machineBackfillAllowed).toBe(true);
     // Red, but nothing registered owns it — the manifest says so instead of inventing a runner.
-    expect(septic.owner.kind).toBe('operator_surface');
-    expect(septic.machineBackfillAllowed).toBe(false);
+    expect(parcelRecord.owner.kind).toBe('operator_surface');
+    expect(parcelRecord.machineBackfillAllowed).toBe(false);
     expect(manifest.backfillCandidates).toEqual(['assessor_tax']);
   });
 });
@@ -268,6 +304,65 @@ describe('research readiness — targeted backfill selection', () => {
     expect(zoningTarget?.itemIds.sort()).toEqual(['current_zoning', 'subdivision_rules']);
     expect(compTarget?.itemIds.sort()).toEqual(['comps_collection', 'valuation']);
     expect(new Set(targets.map((t) => t.capabilityId)).size).toBe(targets.length);
+  });
+});
+
+describe('research readiness — access, frontage and site services are separate items', () => {
+  it('carries access and frontage as two independent checklist items', () => {
+    expect(researchReadinessItem('access_frontage')).toBeNull();
+    expect(researchReadinessItem('access')?.label).toBe('Access');
+    expect(researchReadinessItem('road_frontage')?.label).toBe('Road Frontage');
+  });
+
+  it('CASE A — access can be ready while frontage is unresolved', () => {
+    const manifest = oldLeadManifest();
+    expect(statusOf(manifest, 'access')).toBe('green');
+    expect(statusOf(manifest, 'road_frontage')).toBe('yellow');
+    expect(manifest.items.find((item) => item.id === 'road_frontage')?.reason)
+      .toMatch(/22\.94 ft vs 50 ft/);
+  });
+
+  it('carries public water, public sewer, well and septic as four items a capability owns', () => {
+    expect(researchReadinessItem('utilities_septic')).toBeNull();
+    for (const id of ['public_water', 'public_sewer', 'well_outlook', 'septic_outlook']) {
+      const item = researchReadinessItem(id)!;
+      expect(item.owner.capabilityId).toBe('utility-service-screen');
+      // Never red merely because nobody owns them.
+      expect(item.machineBackfill).toBe(true);
+    }
+  });
+
+  it('CASE B — established public water answers the well outlook without research', () => {
+    const manifest = oldLeadManifest();
+    expect(statusOf(manifest, 'public_water')).toBe('green');
+    expect(statusOf(manifest, 'well_outlook')).toBe('green');
+    expect(selectResearchBackfill(manifest, { itemIds: ['well_outlook'] }).targets).toHaveLength(0);
+  });
+
+  it('screens water and sewer independently of one another', () => {
+    const manifest = oldLeadManifest();
+    expect(statusOf(manifest, 'public_water')).toBe('green');
+    expect(statusOf(manifest, 'public_sewer')).toBe('yellow');
+    expect(statusOf(manifest, 'septic_outlook')).toBe('yellow');
+  });
+
+  it('runs the utility screen once for however many site-service items are red', () => {
+    const manifest = buildResearchReadinessManifest({
+      dealCardId: 11, propertyCardId: 12, now: NOW, probes: [],
+    });
+    const target = selectResearchBackfill(manifest).targets
+      .find((entry) => entry.capabilityId === 'utility-service-screen');
+    expect(target?.itemIds.sort()).toEqual(['public_sewer', 'public_water', 'septic_outlook', 'well_outlook']);
+  });
+
+  it('never reruns a settled site-service item, whatever colour it settled at', () => {
+    const manifest = oldLeadManifest();
+    const forced = selectResearchBackfill(manifest, {
+      itemIds: ['public_water', 'public_sewer', 'well_outlook', 'septic_outlook'],
+    });
+    expect(forced.targets).toHaveLength(0);
+    expect(forced.skipped.map((skip) => skip.itemId).sort())
+      .toEqual(['public_sewer', 'public_water', 'septic_outlook', 'well_outlook']);
   });
 });
 
