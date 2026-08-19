@@ -26,6 +26,17 @@ interface OpportunityCard {
   leadContact: string;
   acres: number | null;
   duplicateCandidates: Array<{ opportunityId: number; dealCardId: number; title: string }>;
+  /** Compact quick-flip economic signal from the persisted Deal Intelligence.
+   *  Pending until a read prices the flip; never red for a missing seller price. */
+  quickFlip?: {
+    status: 'viable' | 'pending' | 'not_economic' | string;
+    label: string;
+    fmv: number | null;
+    cashMao: number | null;
+    resaleDays: number | null;
+    cashVerdict: string | null;
+    dealScore: number | null;
+  } | null;
 }
 
 interface BoardResponse { columns: Record<string, OpportunityCard[]>; statuses: string[]; }
@@ -104,6 +115,38 @@ export function PropertyBoard({ onOpenDeal, embedded = false }: { onOpenDeal?: (
   </div>;
 }
 
+const FLIP_BADGE_CLASS: Record<string, string> = {
+  viable: 'border-emerald-500/60 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  pending: 'border-amber-500/50 bg-amber-500/10 text-amber-800 dark:text-amber-200',
+  not_economic: 'border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-300',
+};
+
+const FLIP_VERDICT_LABEL: Record<string, string> = {
+  cash_deal_pass: 'Cash deal pass',
+  cash_deal_fails_at_seller_price: 'Cash fails at seller price',
+};
+
+const usdK = (value: number): string => (value >= 1_000 ? `$${Math.round(value / 1_000)}K` : `$${value.toLocaleString('en-US')}`);
+
+/** The quick-glance quick-flip economic signal — deliberately distinct from
+ *  the Research pill: research answers "what do we know", this answers "do the
+ *  base flip economics work". */
+function QuickFlipCardBadge({ flip }: { flip: NonNullable<OpportunityCard['quickFlip']> }) {
+  const tone = FLIP_BADGE_CLASS[flip.status] ?? FLIP_BADGE_CLASS.pending;
+  const headline = (flip.cashVerdict && FLIP_VERDICT_LABEL[flip.cashVerdict]) || flip.label;
+  const detail = [
+    flip.fmv != null ? `FMV ${usdK(flip.fmv)}` : flip.status === 'pending' ? 'FMV not established' : null,
+    flip.cashMao != null && flip.cashMao > 0 ? `Cash MAO ${usdK(flip.cashMao)}` : null,
+    flip.resaleDays != null ? `~${Math.round(flip.resaleDays)}d resale` : null,
+  ].filter(Boolean).join(' · ');
+  return (
+    <div data-testid="board-quick-flip" class={`mt-1.5 rounded border px-2 py-1 text-[10px] ${tone}`}>
+      <b class="font-semibold uppercase tracking-wide">{headline}</b>
+      {detail && <span class="ml-1 opacity-90">{detail}</span>}
+    </div>
+  );
+}
+
 function OpportunityPipelineCard({ card, statuses, moving, onOpen, onMoveStart, onMoveCancel, onMove, onDeleted, onError }: { card: OpportunityCard; statuses: string[]; moving: boolean; onOpen: () => void; onMoveStart: () => void; onMoveCancel: () => void; onMove: (stage: string) => void; onDeleted: () => void; onError: (message: string) => void }) {
   const place = [card.city, card.county, card.state].filter(Boolean).join(', ');
   const identity = card.address || (card.apn ? `APN ${card.apn}` : 'Parcel identity unresolved');
@@ -122,6 +165,7 @@ function OpportunityPipelineCard({ card, statuses, moving, onOpen, onMoveStart, 
         {card.owner ? `Owner of record: ${card.owner}` : 'Owner of record not confirmed'}
         {card.acres ? ` · ${card.acres} ac` : ''}
       </div>
+      {card.quickFlip && <QuickFlipCardBadge flip={card.quickFlip} />}
       {card.duplicateCandidates.length > 0 && <div data-testid="duplicate-candidate-warning" class="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-800 dark:text-amber-200">Possible duplicate ({card.duplicateCandidates.length}) — review before merging. Distinct parcels remain separate.</div>}
       <div class="mt-2 flex items-center gap-1 text-[10.5px] text-[var(--color-text-muted)]"><ArrowRight size={11} class="text-[var(--color-accent)]" />Open Lead Workspace</div>
     </button>

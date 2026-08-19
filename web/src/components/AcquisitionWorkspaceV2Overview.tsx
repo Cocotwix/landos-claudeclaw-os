@@ -25,6 +25,13 @@ import type {
 } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
 import { DealReadCard } from './AcquisitionWorkspaceV2DealRead';
 import {
+  DealBrainAsk,
+  IntelligenceScoreStrip,
+  type DealBrainThreadEntry,
+  type IntelligenceScoresView,
+  type QuickFlipScreenView,
+} from './AcquisitionWorkspaceV2IntelligenceStack';
+import {
   ResearchReadinessStrip,
   type ResearchReadinessManifestView,
 } from './AcquisitionWorkspaceV2ResearchReadiness';
@@ -208,6 +215,22 @@ interface OverviewSectionProps {
     error: string | null;
     onRun: () => void;
   } | null;
+  /** The four intelligence scores and the quick-flip economic status, from
+   *  the persisted Deal Intelligence. Rendering runs nothing. */
+  intelligence?: {
+    scores: IntelligenceScoresView | null;
+    quickFlip: QuickFlipScreenView | null;
+    cashVerdict: string | null;
+    phaseLabel: string | null;
+    whatChanged: string[] | null;
+  } | null;
+  /** The Deal Brain conversation: operator guidance in, grounded replies out. */
+  dealBrain?: {
+    thread: DealBrainThreadEntry[];
+    running: boolean;
+    error: string | null;
+    onAsk: (message: string) => void;
+  } | null;
 }
 
 const unique = (items: Array<string | null | undefined>) => Array.from(new Set(items.filter((item): item is string => !!item?.trim())));
@@ -315,6 +338,8 @@ export function OverviewSection({
   landPortalFacts,
   landUseIntelligence,
   acquisitionIntelligence,
+  intelligence,
+  dealBrain,
   researchReadiness,
 }: OverviewSectionProps) {
   const identity = snap.identity ?? {};
@@ -626,6 +651,22 @@ export function OverviewSection({
         {decisionSummary !== decisionHeadline && <details class="awv2-decision-rationale"><summary>Decision rationale</summary><p>{decisionSummary}</p></details>}
       </section>
 
+      {/* ── 1a. The four intelligence scores and the quick-flip status, right
+             at the decision area: PROPERTY / MARKET / SELLER / DEAL as compact
+             shorthand for the persisted intelligence products, with the
+             deterministic quick-flip economic screen beside them. SELLER shows
+             honestly Unknown pre-contact. Numbers are shorthand; the reads
+             behind them live in the Deal Read and on Page 2. ── */}
+      {intelligence && (
+        <IntelligenceScoreStrip
+          scores={intelligence.scores}
+          quickFlip={intelligence.quickFlip}
+          cashVerdict={intelligence.cashVerdict}
+          phaseLabel={intelligence.phaseLabel}
+          whatChanged={intelligence.whatChanged}
+        />
+      )}
+
       {/* ── 1b. Research readiness: the checklist underneath every judgment
              on this page. It sits directly under the decision band because a
              decision is only as good as the research it stands on, and this
@@ -666,6 +707,18 @@ export function OverviewSection({
             onOpenSection('property-intelligence');
             requestAnimationFrame(() => document.getElementById('full-acquisition-intelligence')?.scrollIntoView({ behavior: 'smooth' }));
           }}
+        />
+      )}
+
+      {/* ── 2b. Deal Brain: ask LandOS about this deal. Operator input is
+             stored as deal-specific guidance — never a canonical property
+             fact — and replies come from the current deal file. ── */}
+      {dealBrain && (
+        <DealBrainAsk
+          thread={dealBrain.thread}
+          running={dealBrain.running}
+          error={dealBrain.error}
+          onAsk={dealBrain.onAsk}
         />
       )}
 

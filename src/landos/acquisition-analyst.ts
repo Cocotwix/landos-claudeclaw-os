@@ -199,29 +199,24 @@ export interface VisualObservationDraft {
   basis: string;
 }
 
-/**
- * A model that did not actually look at the image still replies with SOMETHING
- * — usually its own standing instructions ("ready for assignment, provide the
- * dossier path"). Stored unchecked, that lands on the Deal Card labelled as an
- * observation from a named capture, which is the one thing visual evidence must
- * never be: a sentence that reads like it came from the picture and did not.
- *
- * So a reply is only an observation when it is long enough to be one and does
- * not read as an idle or refusing turn. Everything else is recorded as "this
- * capture produced no observation", which is true and useful.
- */
-const NON_OBSERVATION = /\b(?:ready (?:for|to)\b|please provide|provide the (?:dossier|output|json)|i am ready|awaiting (?:your|the)|i (?:cannot|can't|am unable to) (?:see|view|access|open)|no image (?:was )?(?:provided|attached))/i;
-
-export function isUsableVisualObservation(text: string): boolean {
-  const trimmed = text.replace(/\s+/g, ' ').trim();
-  if (trimmed.length < 60) return false;
-  return !NON_OBSERVATION.test(trimmed);
-}
+// The "reply is only an observation when it actually observes" filter now
+// lives on the contract, because BOTH passes need it: the per-image inspection
+// here, and any observation the judgment pass writes into its own JSON.
+import { isUsableVisualObservation } from './acquisition-intelligence-contract.js';
+export { isUsableVisualObservation };
 
 export interface AnalystRunInput {
   dossier: AcquisitionDossier;
   requestedProvider?: string | null;
   requestedModel?: string | null;
+  /** Build the judgment-pass prompt. Defaults to the V1 acquisition prompt, so
+   *  a caller with a different question (the Intelligence Stack's coordinated
+   *  layered pass) reuses the same analyst, passes and runtime unchanged. */
+  judgmentPromptBuilder?: (dossier: AcquisitionDossier, observations: VisualObservationDraft[]) => string;
+  /** Cap THIS run's visual inspections. 0 skips the visual pass entirely — a
+   *  dependency-aware refresh whose imagery has not changed reuses the
+   *  retained observations instead of paying three model calls again. */
+  maxVisuals?: number;
 }
 
 export interface AnalystRunOutput {
@@ -393,10 +388,11 @@ export function createHermesAcquisitionAnalyst(deps: HermesAnalystDeps = {}): Ac
       // Pass 1 — visual evidence. A failed image is a missing observation, not
       // a failed run: the judgment pass proceeds with what was actually seen.
       const observations: VisualObservationDraft[] = [];
-      const selected = prioritizeVisuals(input.dossier.visuals, maxVisuals);
+      const runMaxVisuals = input.maxVisuals ?? maxVisuals;
+      const selected = prioritizeVisuals(input.dossier.visuals, runMaxVisuals);
       const skipped = input.dossier.visuals.filter((visual) => visual.filePath && !selected.includes(visual as never));
-      if (skipped.length) {
-        warnings.push(`${skipped.length} retained image(s) were not inspected this run: the analyst inspects the ${maxVisuals} most informative captures.`);
+      if (skipped.length && runMaxVisuals > 0) {
+        warnings.push(`${skipped.length} retained image(s) were not inspected this run: the analyst inspects the ${runMaxVisuals} most informative captures.`);
       }
       for (const visual of selected) {
         if (!visual.filePath) continue;
@@ -426,7 +422,7 @@ export function createHermesAcquisitionAnalyst(deps: HermesAnalystDeps = {}): Ac
       // Pass 2 — the judgment.
       const raw = await invoke(
         analystInvocationArgs({
-          prompt: judgmentPrompt(input.dossier, observations),
+          prompt: (input.judgmentPromptBuilder ?? judgmentPrompt)(input.dossier, observations),
           model,
           toolsets: ANALYST_TOOLSETS,
           withSkill: true,

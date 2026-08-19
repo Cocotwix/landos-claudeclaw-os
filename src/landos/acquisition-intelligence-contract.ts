@@ -206,6 +206,34 @@ function severity(value: unknown): ConstraintSeverity {
   return 'medium';
 }
 
+/**
+ * A model that did not actually look at an image still replies with SOMETHING
+ * — its standing instructions, a refusal, or a request to upload the file.
+ * Persisted unchecked, that lands on the Deal Card labelled as an observation
+ * from a named capture, which is the one thing visual evidence must never be:
+ * a sentence that reads like it came from the picture and did not. The same
+ * filter guards both the per-image inspection pass and any observation the
+ * judgment pass writes into its own JSON.
+ */
+// Both apostrophes on purpose: models emit the typographic U+2019 as often as
+// the ASCII one, and "can’t inspect" slipping through is exactly this bug.
+const NON_OBSERVATION = /\b(?:ready (?:for|to)\b|please provide|please upload|upload the (?:image|png|file)|provide the (?:dossier|output|json)|i am ready|awaiting (?:your|the)|i (?:cannot|can['’]t|am unable to) (?:see|view|access|open|inspect)|no image (?:was )?(?:provided|attached)|no (?:file|image)[- ](?:or image[- ])?reading tool)/i;
+
+/** True when the text reads as a refusal or idle turn rather than something
+ *  seen in the picture. Applied to every observation, wherever it arrived. */
+export function readsAsNonObservation(text: string): boolean {
+  return NON_OBSERVATION.test(text.replace(/\s+/g, ' ').trim());
+}
+
+/** The stricter gate for RAW per-image replies: a real observation is also
+ *  long enough to be one. Structured JSON observations skip the length floor —
+ *  a short deliberate sentence is legitimate there — but never the refusal test. */
+export function isUsableVisualObservation(text: string): boolean {
+  const trimmed = text.replace(/\s+/g, ' ').trim();
+  if (trimmed.length < 60) return false;
+  return !readsAsNonObservation(trimmed);
+}
+
 /** LandOS-detected conflicts, in the shape the result carries them. */
 export interface CarriedConflict { subject: string; statement: string; resolution: string }
 
@@ -306,6 +334,7 @@ export function normalizeAcquisitionIntelligence(input: NormalizeInput): Normali
 
   const allowed = new Set(input.allowedVisualKeys);
   let droppedVisualCitations = 0;
+  let droppedNonObservations = 0;
   const visualObservations = (Array.isArray(field(parsed, 'visualObservations', 'visual_observations'))
     ? field(parsed, 'visualObservations', 'visual_observations') as unknown[]
     : [])
@@ -317,12 +346,18 @@ export function normalizeAcquisitionIntelligence(input: NormalizeInput): Normali
       const key = visual.replace(/\s+/g, '_').toLowerCase();
       const matched = allowed.has(visual) ? visual : allowed.has(key) ? key : null;
       if (!matched) { droppedVisualCitations += 1; return null; }
+      // A refusal or idle turn is not an observation, no matter which key it
+      // cites — model chatter never reaches an operator surface as evidence.
+      if (readsAsNonObservation(observation)) { droppedNonObservations += 1; return null; }
       return { visual: matched, observation, basis: line(field(item, 'basis', 'evidence', 'why'), 400) };
     })
     .filter((item): item is AcquisitionVisualObservation => !!item)
     .slice(0, 12);
   if (droppedVisualCitations > 0) {
     warnings.push(`${droppedVisualCitations} visual observation(s) cited an image that is not in this property's retained evidence and were dropped.`);
+  }
+  if (droppedNonObservations > 0) {
+    warnings.push(`${droppedNonObservations} visual entr${droppedNonObservations === 1 ? 'y' : 'ies'} carried no actual observation (a refusal or idle reply) and were dropped.`);
   }
 
   // LandOS conflicts are the floor. The analyst can add, never subtract.

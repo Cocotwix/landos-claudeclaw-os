@@ -43,6 +43,12 @@ import type {
   AcquisitionIntelligenceReadiness,
   AcquisitionIntelligenceRuntimeStatus,
 } from '../components/AcquisitionWorkspaceV2AcquisitionIntelligence';
+import type {
+  DealBrainThreadEntry,
+  IntelligenceScoresView,
+  QuickFlipScreenView,
+  SellerIntelligenceView,
+} from '../components/AcquisitionWorkspaceV2IntelligenceStack';
 import type { ResearchReadinessManifestView } from '../components/AcquisitionWorkspaceV2ResearchReadiness';
 import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
 import type { LandUseView, RetainedLandUseIntelligenceView } from '../components/AcquisitionWorkspaceV2LandUse';
@@ -60,14 +66,46 @@ interface DdItem {
   key: string; label: string; verdict: string; headline: string; detail?: string;
   missing?: string[];
 }
-interface AcqIntelResp {
-  acquisitionIntelligence?: AcquisitionIntelligenceView | null;
-  readiness?: AcquisitionIntelligenceReadiness | null;
+/** The Deal Intelligence product: the evolved Acquisition Intelligence read
+ *  plus the stack fields (scores, quick flip, phase, what changed). */
+type DealIntelligenceView = AcquisitionIntelligenceView & {
+  phase?: string;
+  scores?: IntelligenceScoresView;
+  reads?: { property?: string | null; market?: string | null; seller?: string | null };
+  quickFlip?: QuickFlipScreenView;
+  sellerPriceVerdict?: { verdict?: string | null } | null;
+  discoveryCallObjective?: string | null;
+  negotiationPosture?: string | null;
+  whatChanged?: string[];
+  guidanceConsidered?: string[];
+};
+
+interface IntelligenceStackResp {
+  products?: {
+    property?: { read?: string } | null;
+    market?: { read?: string } | null;
+    seller?: SellerIntelligenceView | null;
+    deal?: DealIntelligenceView | null;
+  };
+  stale?: { property?: boolean; market?: boolean; seller?: boolean; deal?: boolean };
+  quickFlip?: QuickFlipScreenView | null;
+  phase?: string | null;
+  sellerEstablished?: boolean;
+  sufficiency?: { ok?: boolean; reason?: string | null } | null;
+  guidance?: DealBrainThreadEntry[];
   runtime?: AcquisitionIntelligenceRuntimeStatus | null;
-  stale?: boolean;
-  /** Present while a read is being produced on the server. */
+  /** Present while a coordinated intelligence run is in flight. */
   run?: { startedAt?: string; error?: string | null } | null;
+  dealBrainRun?: { startedAt?: string; error?: string | null } | null;
 }
+
+const PHASE_LABEL: Record<string, string> = {
+  pre_call: 'Pre-call',
+  post_discovery: 'Post-discovery',
+  underwriting: 'Underwriting',
+  offer: 'Offer',
+  under_contract: 'Under contract',
+};
 interface SnapshotView extends OverviewSnapshotView {
   status?: string;
   dueDiligence?: DdItem[];
@@ -234,12 +272,21 @@ export function AcquisitionWorkspaceV2() {
   // Acquisition Intelligence. The read is FETCHED, never generated on render:
   // opening or reloading a Deal Card must not start a reasoning run, so the
   // only thing that produces a new read is the operator pressing refresh.
-  const [aiRead, setAiRead] = useState<AcquisitionIntelligenceView | null>(null);
+  const [aiRead, setAiRead] = useState<DealIntelligenceView | null>(null);
   const [aiReadiness, setAiReadiness] = useState<AcquisitionIntelligenceReadiness | null>(null);
   const [aiRuntime, setAiRuntime] = useState<AcquisitionIntelligenceRuntimeStatus | null>(null);
   const [aiStale, setAiStale] = useState(false);
   const [aiRunning, setAiRunning] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  // The rest of the Intelligence Stack: live quick-flip economics, seller
+  // product, phase and the Deal Brain conversation. All fetched, never
+  // generated on render.
+  const [intelQuickFlip, setIntelQuickFlip] = useState<QuickFlipScreenView | null>(null);
+  const [intelPhase, setIntelPhase] = useState<string | null>(null);
+  const [sellerIntel, setSellerIntel] = useState<SellerIntelligenceView | null>(null);
+  const [dealBrainThread, setDealBrainThread] = useState<DealBrainThreadEntry[]>([]);
+  const [dealBrainRunning, setDealBrainRunning] = useState(false);
+  const [dealBrainError, setDealBrainError] = useState<string | null>(null);
   // Research readiness. The manifest is RECONCILED on the server from retained
   // state and only fetched here: opening or reloading the card runs no research
   // at all. The backfill control below is the only thing that does.
@@ -268,7 +315,7 @@ export function AcquisitionWorkspaceV2() {
         const rr = await apiGet<{ manifest?: ResearchReadinessManifestView }>(
           `/api/landos/deal-cards/${dealId}/research-readiness`,
         ).catch(() => null);
-        const ai = await apiGet<AcqIntelResp>(`/api/landos/deal-cards/${dealId}/acquisition-intelligence`).catch(() => null);
+        const ai = await apiGet<IntelligenceStackResp>(`/api/landos/deal-cards/${dealId}/intelligence`).catch(() => null);
         if (dead) return;
         setDeal(d); setSnap(i?.propertyIntelligence?.snapshot ?? null); setMarket(i?.marketContext ?? null); setAcq(a); setActivity(act);
         setSoils(bu?.soilDetails ?? null);
@@ -287,14 +334,20 @@ export function AcquisitionWorkspaceV2() {
         setLandPortalFacts(i?.propertyIntelligence?.landPortalFacts ?? i?.landPortalFacts ?? null);
         setTaxStatus(i?.propertyIntelligence?.taxStatus ?? null);
         setReadiness(rr?.manifest ?? null);
-        setAiRead(ai?.acquisitionIntelligence ?? null);
-        setAiReadiness(ai?.readiness ?? null);
+        setAiRead(ai?.products?.deal ?? null);
+        setAiReadiness(ai?.sufficiency ? { ok: ai.sufficiency.ok, reason: ai.sufficiency.reason } : null);
         setAiRuntime(ai?.runtime ?? null);
-        setAiStale(ai?.stale === true);
+        setAiStale(ai?.stale?.deal === true);
         // A run started before this page load is still the operator's run:
         // reopening the card rejoins it rather than showing an idle section.
         setAiRunning(!!ai?.run && !ai.run.error);
         setAiError(ai?.run?.error ?? null);
+        setIntelQuickFlip(ai?.quickFlip ?? ai?.products?.deal?.quickFlip ?? null);
+        setIntelPhase(ai?.phase ?? ai?.products?.deal?.phase ?? null);
+        setSellerIntel(ai?.products?.seller ?? null);
+        setDealBrainThread(ai?.guidance ?? []);
+        setDealBrainRunning(!!ai?.dealBrainRun && !ai.dealBrainRun.error);
+        setDealBrainError(ai?.dealBrainRun?.error ?? null);
       } catch (e) {
         if (!dead) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -310,18 +363,38 @@ export function AcquisitionWorkspaceV2() {
     if (dealId == null || !aiRunning) return undefined;
     let dead = false;
     const timer = window.setInterval(async () => {
-      const ai = await apiGet<AcqIntelResp>(`/api/landos/deal-cards/${dealId}/acquisition-intelligence`).catch(() => null);
+      const ai = await apiGet<IntelligenceStackResp>(`/api/landos/deal-cards/${dealId}/intelligence`).catch(() => null);
       if (dead || !ai) return;
-      setAiReadiness(ai.readiness ?? null);
+      setAiReadiness(ai.sufficiency ? { ok: ai.sufficiency.ok, reason: ai.sufficiency.reason } : null);
       setAiRuntime(ai.runtime ?? null);
       if (ai.run && !ai.run.error) return;
       setAiRunning(false);
-      setAiRead(ai.acquisitionIntelligence ?? null);
-      setAiStale(ai.stale === true);
-      setAiError(ai.run?.error ?? (ai.acquisitionIntelligence ? null : 'The analyst did not produce a read for this property.'));
+      setAiRead(ai.products?.deal ?? null);
+      setAiStale(ai.stale?.deal === true);
+      setAiError(ai.run?.error ?? (ai.products?.deal ? null : 'The analyst did not produce a read for this property.'));
+      setIntelQuickFlip(ai.quickFlip ?? ai.products?.deal?.quickFlip ?? null);
+      setIntelPhase(ai.phase ?? ai.products?.deal?.phase ?? null);
+      setSellerIntel(ai.products?.seller ?? null);
     }, 5_000);
     return () => { dead = true; window.clearInterval(timer); };
   }, [dealId, aiRunning]);
+
+  // Poll the Deal Brain conversation only while a reply is being produced.
+  useEffect(() => {
+    if (dealId == null || !dealBrainRunning) return undefined;
+    let dead = false;
+    const timer = window.setInterval(async () => {
+      const resp = await apiGet<{ thread?: DealBrainThreadEntry[]; run?: { error?: string | null } | null }>(
+        `/api/landos/deal-cards/${dealId}/deal-brain`,
+      ).catch(() => null);
+      if (dead || !resp) return;
+      setDealBrainThread(resp.thread ?? []);
+      if (resp.run && !resp.run.error) return;
+      setDealBrainRunning(false);
+      setDealBrainError(resp.run?.error ?? null);
+    }, 4_000);
+    return () => { dead = true; window.clearInterval(timer); };
+  }, [dealId, dealBrainRunning]);
 
   if (dealId == null) return null;
   if (loading) return <div class="awv2"><div class="awv2-state">Loading the workspace…</div></div>;
@@ -350,10 +423,25 @@ export function AcquisitionWorkspaceV2() {
     setAiRunning(true);
     setAiError(null);
     try {
-      await apiPost(`/api/landos/deal-cards/${dealId}/acquisition-intelligence/run`, {});
+      await apiPost(`/api/landos/deal-cards/${dealId}/intelligence/run`, {});
     } catch (e) {
       setAiRunning(false);
       setAiError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // Ask the Deal Brain. The message is stored as deal-specific guidance and
+  // the grounded reply arrives via the poll above.
+  const askDealBrain = async (message: string) => {
+    if (dealId == null || dealBrainRunning) return;
+    setDealBrainRunning(true);
+    setDealBrainError(null);
+    setDealBrainThread((thread) => [...thread, { role: 'operator', text: message }]);
+    try {
+      await apiPost(`/api/landos/deal-cards/${dealId}/deal-brain`, { message });
+    } catch (e) {
+      setDealBrainRunning(false);
+      setDealBrainError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -579,6 +667,37 @@ export function AcquisitionWorkspaceV2() {
               <p>{seller?.phone || 'No phone retained'}{seller?.email ? ` · ${seller.email}` : ''}</p>
               <div class="awv2-activity-actions"><button type="button"><Phone size={15} /> Call</button><button type="button"><MessageSquare size={15} /> Text</button><button type="button"><Mail size={15} /> Email</button></div>
             </section>
+            {/* Seller Intelligence, once seller communication exists. Before
+                contact the honest state is a single pre-contact line. */}
+            <section class="awv2-activity-seller-intel" data-domain="action" data-testid="seller-intelligence">
+              <div class="awv2-dom-eyebrow" data-dom="action">Seller Intelligence</div>
+              {sellerIntel?.state === 'established' ? (
+                <div class="awv2-seller-intel-body">
+                  <h3>{sellerIntel.read}</h3>
+                  <div class="awv2-seller-intel-grid">
+                    {sellerIntel.score != null && <p><b>Workability</b> {sellerIntel.score}/100</p>}
+                    {sellerIntel.motivation && <p><b>Motivation</b> {sellerIntel.motivation}</p>}
+                    {sellerIntel.priceExpectation && <p><b>Price expectation</b> {sellerIntel.priceExpectation}</p>}
+                    {sellerIntel.timeline && <p><b>Timeline</b> {sellerIntel.timeline}</p>}
+                    {sellerIntel.decisionMakers && <p><b>Decision makers</b> {sellerIntel.decisionMakers}</p>}
+                    {sellerIntel.negotiationPosture && <p><b>Negotiation posture</b> {sellerIntel.negotiationPosture}</p>}
+                    {sellerIntel.bestApproach && <p><b>Best way to work this seller</b> {sellerIntel.bestApproach}</p>}
+                  </div>
+                  {!!sellerIntel.sellerReportedFacts?.length && (
+                    <div class="awv2-seller-intel-reported">
+                      <b>Seller-reported (attributed, not verified property facts)</b>
+                      {sellerIntel.sellerReportedFacts.map((fact) => <p>“{fact.statement}” — {fact.attribution}</p>)}
+                    </div>
+                  )}
+                  {!!sellerIntel.followUps?.length && <p class="awv2-seller-intel-follow"><b>Follow-ups:</b> {sellerIntel.followUps.join('; ')}</p>}
+                </div>
+              ) : (
+                <p class="awv2-seller-intel-precontact">
+                  Seller score: not established · Pre-contact. Seller Intelligence fills in from real
+                  communication — nothing is inferred from ownership records.
+                </p>
+              )}
+            </section>
             <section class="awv2-activity-next" data-domain="action">
               <div class="awv2-dom-eyebrow" data-dom="action">Next action</div>
               <h2>{nextActionLabel || 'Assign the next acquisition action'}</h2>
@@ -623,6 +742,19 @@ export function AcquisitionWorkspaceV2() {
             running: aiRunning,
             error: aiError,
             onRun: runAcquisitionIntelligence,
+          }}
+          intelligence={{
+            scores: aiRead?.scores ?? null,
+            quickFlip: intelQuickFlip,
+            cashVerdict: aiRead?.sellerPriceVerdict?.verdict ?? null,
+            phaseLabel: intelPhase ? PHASE_LABEL[intelPhase] ?? intelPhase : null,
+            whatChanged: aiRead?.whatChanged ?? null,
+          }}
+          dealBrain={{
+            thread: dealBrainThread,
+            running: dealBrainRunning,
+            error: dealBrainError,
+            onAsk: askDealBrain,
           }}
           compsValuation={compsValuation}
           valuationBasisLabel={valuationBasisLabel}

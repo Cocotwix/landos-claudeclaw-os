@@ -1,0 +1,122 @@
+/* LandOS Intelligence Stack — score strip, quick-flip badge, Deal Brain. */
+
+.awv2-intel-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+  padding: 12px 16px;
+  border: 1px solid var(--awv2-border, rgba(148, 163, 184, 0.25));
+  border-radius: 12px;
+  background: var(--awv2-panel, rgba(15, 23, 42, 0.35));
+}
+
+.awv2-intel-tiles { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.awv2-intel-tile {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  min-width: 84px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  text-align: center;
+}
+.awv2-intel-tile small { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.75; }
+.awv2-intel-tile b { font-size: 22px; line-height: 1.15; }
+.awv2-intel-tile span { font-size: 11px; opacity: 0.85; }
+.awv2-intel-tile.s-strong b { color: #34d399; }
+.awv2-intel-tile.s-moderate b { color: #fbbf24; }
+.awv2-intel-tile.s-weak b { color: #f87171; }
+.awv2-intel-tile.s-pending b { color: rgba(148, 163, 184, 0.9); }
+
+.awv2-intel-side { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.awv2-intel-phase {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  opacity: 0.85;
+}
+
+.awv2-intel-changed { flex-basis: 100%; margin: 0; font-size: 12px; opacity: 0.85; }
+.awv2-intel-changed b { opacity: 0.7; font-weight: 600; }
+
+/* Quick-flip badge — shared by the Overview strip and the board cards. */
+.awv2-flip-badge {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 5px 11px;
+  border-radius: 9px;
+  border: 1px solid;
+  font-size: 12px;
+}
+.awv2-flip-badge b { font-size: 12px; letter-spacing: 0.02em; }
+.awv2-flip-badge span { opacity: 0.9; }
+.awv2-flip-badge.f-green { border-color: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.1); color: #34d399; }
+.awv2-flip-badge.f-yellow { border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.08); color: #fbbf24; }
+.awv2-flip-badge.f-red { border-color: rgba(248, 113, 113, 0.55); background: rgba(248, 113, 113, 0.09); color: #f87171; }
+
+/* Deal Brain conversation. */
+.awv2-dealbrain {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--awv2-border, rgba(148, 163, 184, 0.25));
+  border-radius: 12px;
+  background: var(--awv2-panel, rgba(15, 23, 42, 0.35));
+}
+.awv2-dealbrain-thread { display: grid; gap: 8px; max-height: 320px; overflow-y: auto; }
+.awv2-dealbrain-turn { border-radius: 10px; padding: 8px 12px; border: 1px solid rgba(148, 163, 184, 0.18); }
+.awv2-dealbrain-turn small { display: block; font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.65; margin-bottom: 2px; }
+.awv2-dealbrain-turn p { margin: 0; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+.awv2-dealbrain-turn.t-operator { background: rgba(56, 189, 248, 0.07); }
+.awv2-dealbrain-turn.t-brain { background: rgba(148, 163, 184, 0.07); }
+.awv2-dealbrain-note { margin: 0; font-size: 12px; opacity: 0.85; }
+.awv2-dealbrain-note.bad { color: #f87171; }
+.awv2-dealbrain-input { display: flex; gap: 8px; }
+.awv2-dealbrain-input input {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(2, 6, 23, 0.35);
+  color: inherit;
+  font-size: 13px;
+}
+.awv2-dealbrain-input button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(56, 189, 248, 0.12);
+  color: inherit;
+  cursor: pointer;
+}
+.awv2-dealbrain-input button:disabled { opacity: 0.45; cursor: default; }
+.awv2-dealbrain-caveat { margin: 0; font-size: 11px; opacity: 0.6; }
+
+/* Board card badge stays compact. */
+.opportunity-card .awv2-flip-badge { font-size: 11px; padding: 4px 9px; gap: 3px 8px; }
+
+/* Seller Intelligence on Deal Activity. */
+.awv2-activity-seller-intel {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--awv2-border, rgba(148, 163, 184, 0.25));
+  border-radius: 12px;
+  background: var(--awv2-panel, rgba(15, 23, 42, 0.35));
+}
+.awv2-seller-intel-precontact { margin: 0; font-size: 13px; opacity: 0.8; }
+.awv2-seller-intel-body h3 { margin: 0 0 6px; font-size: 14px; line-height: 1.4; }
+.awv2-seller-intel-grid { display: grid; gap: 4px; }
+.awv2-seller-intel-grid p, .awv2-seller-intel-reported p, .awv2-seller-intel-follow { margin: 0; font-size: 12.5px; line-height: 1.45; }
+.awv2-seller-intel-grid b, .awv2-seller-intel-reported b, .awv2-seller-intel-follow b { opacity: 0.7; font-weight: 600; margin-right: 4px; }
+.awv2-seller-intel-reported { margin-top: 6px; display: grid; gap: 3px; }

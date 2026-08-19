@@ -215,7 +215,9 @@ describe('presentation only — no backend intelligence behavior changed', () =>
   it('renders no analyst run on page load', () => {
     // The workspace fetches the persisted projection; only the operator's
     // explicit control POSTs a run.
-    const runPosts = PAGE_SRC.match(/apiPost\([^)]*acquisition-intelligence\/run/g) ?? [];
+    // The Intelligence Stack evolved the endpoint; the contract is unchanged:
+    // exactly one explicit control starts a run, rendering never does.
+    const runPosts = PAGE_SRC.match(/apiPost\([^)]*\/intelligence\/run/g) ?? [];
     expect(runPosts).toHaveLength(1);
     expect(PAGE_SRC).toContain('const runAcquisitionIntelligence = async () => {');
   });

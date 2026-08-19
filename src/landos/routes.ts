@@ -171,6 +171,15 @@ import type { CapabilityEntity } from './capability-contract.js';
 import { researchReadinessItem } from './research-readiness.js';
 import { isReconcileError, reconcileResearchReadiness } from './research-readiness-reconcile.js';
 import { runResearchReadinessBackfill } from './research-readiness-backfill.js';
+import { readIntelligenceStackState, runIntelligenceStack } from './intelligence-stack.js';
+import {
+  DEAL_INTELLIGENCE_PRODUCT_TYPE,
+  dealBrainChatPrompt,
+  type DealIntelligenceProduct,
+  type IntelligenceLayerId,
+} from './intelligence-stack-contract.js';
+import { appendDealBrainGuidance, listDealBrainGuidance } from './deal-brain-guidance.js';
+import { readDerivedSnapshot } from './derived-intelligence-store.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
 import { browserLaneStatus } from './browser-retrieval.js';
@@ -2543,7 +2552,28 @@ export function registerLandosRoutes(app: Hono): void {
     const cards = listOpportunityBoardCards(entity);
     const columns: Record<string, unknown[]> = {};
     for (const s of OPPORTUNITY_PIPELINE_STAGES) columns[s] = [];
-    for (const card of cards) columns[card.pipelineStage].push(card);
+    for (const card of cards) {
+      // Compact quick-flip economic signal, from the PERSISTED Deal
+      // Intelligence read — a pure SELECT per card, never a computation run.
+      // Before a read exists (or on a pre-stack read) the honest state is
+      // pending, not red: the seller owing us a price is not a failure.
+      const deal = readDerivedSnapshot<DealIntelligenceProduct>(card.dealCardId, DEAL_INTELLIGENCE_PRODUCT_TYPE);
+      const flip = deal && 'quickFlip' in deal && deal.quickFlip ? deal.quickFlip : null;
+      columns[card.pipelineStage].push({
+        ...card,
+        quickFlip: deal && flip
+          ? {
+            status: flip.status,
+            label: flip.statusLabel,
+            fmv: flip.economics?.supportedFmv ?? null,
+            cashMao: flip.economics?.cashMao ?? null,
+            resaleDays: flip.resaleWindow?.expectedDays ?? null,
+            cashVerdict: deal.sellerPriceVerdict?.verdict ?? null,
+            dealScore: deal.scores?.deal?.score ?? null,
+          }
+          : { status: 'pending', label: 'Quick-flip pending', fmv: null, cashMao: null, resaleDays: null, cashVerdict: null, dealScore: null },
+      });
+    }
     return c.json({ columns, statuses: OPPORTUNITY_PIPELINE_STAGES });
   });
 
@@ -9852,6 +9882,157 @@ export function registerLandosRoutes(app: Hono): void {
     })();
 
     return c.json({ running: true, startedAt, runtime: acquisitionAnalystRuntimeStatus() }, 202);
+  });
+
+  // ── The Intelligence Stack ──────────────────────────────────────────────
+  //
+  // Four intelligence products over one shared property file: Property,
+  // Market + Area, Seller (honestly Unknown pre-contact) and the Deal Brain.
+  // Same fire-and-poll shape as Acquisition Intelligence: the GET is a pure
+  // SELECT plus fingerprint staleness; only the POST engages the analyst, in
+  // ONE coordinated pass over whichever layers are actually stale.
+
+  const intelligenceStackRuns = new Map<number, { startedAt: string; error: string | null }>();
+  const dealBrainRuns = new Map<number, { startedAt: string; error: string | null }>();
+
+  const readPipelineStage = (dealCardId: number): string | null => {
+    const row = getLandosDb().prepare(
+      'SELECT pipeline_stage FROM landos_opportunity WHERE legacy_deal_card_id=? LIMIT 1',
+    ).get(dealCardId) as { pipeline_stage?: string } | undefined;
+    return row?.pipeline_stage ?? null;
+  };
+
+  const intelligenceStackReadDeps = {
+    readPropertyFile: acquisitionPropertyFile,
+    reconcileReadiness: reconcileResearchReadiness,
+    readPipelineStage,
+  };
+
+  app.get('/api/landos/deal-cards/:id/intelligence', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const state = readIntelligenceStackState(id, intelligenceStackReadDeps);
+    return c.json({
+      ...state,
+      guidance: listDealBrainGuidance(id),
+      run: intelligenceStackRuns.get(id) ?? null,
+      dealBrainRun: dealBrainRuns.get(id) ?? null,
+      runtime: acquisitionAnalystRuntimeStatus(),
+    });
+  });
+
+  app.post('/api/landos/deal-cards/:id/intelligence/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const inFlight = intelligenceStackRuns.get(id);
+    if (inFlight && !inFlight.error) {
+      return c.json({ running: true, startedAt: inFlight.startedAt, runtime: acquisitionAnalystRuntimeStatus() }, 202);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const layerNames: IntelligenceLayerId[] = ['property', 'market', 'seller', 'deal'];
+    const layers = Array.isArray(body.layers)
+      ? body.layers.filter((value): value is IntelligenceLayerId => layerNames.includes(value as IntelligenceLayerId))
+      : undefined;
+    const startedAt = new Date().toISOString();
+    intelligenceStackRuns.set(id, { startedAt, error: null });
+
+    void (async () => {
+      try {
+        const result = await runIntelligenceStack({
+          dealCardId: id,
+          layers: layers?.length ? layers : undefined,
+          force: body.force === true,
+          requestedProvider: str(body.provider) ?? null,
+          requestedModel: str(body.model) ?? null,
+        }, {
+          ...intelligenceStackReadDeps,
+          analyst: createHermesAcquisitionAnalyst(),
+          runBackfill: async (itemIds: string[]) => {
+            const report = await runResearchReadinessBackfill(
+              id,
+              deal.entity as CapabilityEntity,
+              { itemIds },
+              { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
+            );
+            return 'error' in report ? null : report.after;
+          },
+        });
+        const failure = result.outcome === 'produced' || result.outcome === 'reused' ? null : result.reason;
+        intelligenceStackRuns.set(id, { startedAt, error: failure });
+        if (!failure) intelligenceStackRuns.delete(id);
+      } catch (error) {
+        const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
+        logger.error({ event: 'intelligence_stack_run_failed', dealCardId: id, msg: detail }, 'intelligence_stack_run_failed');
+        intelligenceStackRuns.set(id, { startedAt, error: `Intelligence run failed: ${detail}` });
+      }
+    })();
+
+    return c.json({ running: true, startedAt, runtime: acquisitionAnalystRuntimeStatus() }, 202);
+  });
+
+  // ── Deal Brain conversation ─────────────────────────────────────────────
+  //
+  // "Ask LandOS about this deal." The operator's message is stored as
+  // deal-specific GUIDANCE — never a canonical property fact — and the reply
+  // is reasoned from the CURRENT deal file. Input-mode neutral on purpose so
+  // dictation or live voice can feed the same seam later.
+
+  app.get('/api/landos/deal-cards/:id/deal-brain', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    return c.json({ thread: listDealBrainGuidance(id), run: dealBrainRuns.get(id) ?? null });
+  });
+
+  app.post('/api/landos/deal-cards/:id/deal-brain', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const message = str(body.message)?.trim();
+    if (!message) return c.json({ error: 'message required' }, 400);
+    const inFlight = dealBrainRuns.get(id);
+    if (inFlight && !inFlight.error) {
+      return c.json({ error: 'The Deal Brain is still answering the previous message.' }, 409);
+    }
+    appendDealBrainGuidance(id, 'operator', message);
+    const startedAt = new Date().toISOString();
+    dealBrainRuns.set(id, { startedAt, error: null });
+
+    void (async () => {
+      try {
+        const source = acquisitionPropertyFile(id);
+        if (!source) throw new Error('no canonical property file is available for this Deal Card');
+        const dossier = buildAcquisitionDossier(source);
+        const state = readIntelligenceStackState(id, intelligenceStackReadDeps);
+        const thread = listDealBrainGuidance(id).map((entry) => ({ role: entry.role, text: entry.text }));
+        const analyst = createHermesAcquisitionAnalyst();
+        const run = await analyst.run({
+          dossier,
+          maxVisuals: 0,
+          judgmentPromptBuilder: () => dealBrainChatPrompt({
+            dossier,
+            deal: state.products.deal,
+            quickFlip: state.quickFlip,
+            thread: thread.slice(0, -1),
+            question: message,
+          }),
+        });
+        const reply = run.raw.replace(/\s+/g, ' ').trim().slice(0, 2_000);
+        if (!reply) throw new Error('the Deal Brain returned an empty reply');
+        appendDealBrainGuidance(id, 'deal_brain', reply);
+        dealBrainRuns.delete(id);
+      } catch (error) {
+        const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
+        logger.error({ event: 'deal_brain_reply_failed', dealCardId: id, msg: detail }, 'deal_brain_reply_failed');
+        dealBrainRuns.set(id, { startedAt, error: `The Deal Brain could not answer: ${detail}` });
+      }
+    })();
+
+    return c.json({ thread: listDealBrainGuidance(id), running: true }, 202);
   });
 
   // Land use, zoning and by-right subdivision projection alone, for refresh

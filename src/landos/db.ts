@@ -2807,6 +2807,21 @@ function createLandosSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_capability_evidence_invocation
       ON landos_capability_evidence(invocation_id, created_at);
 
+    -- Deal Brain guidance: the operator's deal-specific hypotheses, priorities
+    -- and questions, with the Deal Brain's replies. Guidance is an input the
+    -- Deal Intelligence weighs; it is NEVER a canonical property fact and no
+    -- row here may establish one.
+    CREATE TABLE IF NOT EXISTS landos_deal_brain_guidance (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id  INTEGER NOT NULL REFERENCES landos_deal_card(id) ON DELETE CASCADE,
+      role          TEXT NOT NULL CHECK (role IN ('operator','deal_brain')),
+      text          TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired')),
+      created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_deal_brain_guidance_deal
+      ON landos_deal_brain_guidance(deal_card_id, id);
+
   `);
 
   // Boundary 1 shipped the invocation ledger before Deal Card-scoped reads
