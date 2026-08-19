@@ -47,9 +47,13 @@ function dossier(overrides: Partial<AcquisitionDossier> = {}): AcquisitionDossie
 }
 
 describe('the model is a setting, the analyst is not', () => {
-  it('defaults to Gemma 4 on the local Ollama runtime', () => {
+  it('defaults an ordinary read to GPT-5.6 Sol on the configured openai-codex provider', () => {
+    // Stated literally rather than against the constants: this is the assertion
+    // that would fail if the shipped default silently moved.
+    expect({ provider: DEFAULT_ANALYST_PROVIDER, model: DEFAULT_ANALYST_MODEL })
+      .toEqual({ provider: 'openai-codex', model: 'gpt-5.6-sol' });
     expect(resolveAnalystModel(undefined, settings())).toEqual({
-      provider: DEFAULT_ANALYST_PROVIDER, model: DEFAULT_ANALYST_MODEL, source: 'default',
+      provider: 'openai-codex', model: 'gpt-5.6-sol', source: 'default',
     });
   });
 
@@ -62,14 +66,25 @@ describe('the model is a setting, the analyst is not', () => {
   });
 
   it('lets one invocation pin a model without changing the setting', () => {
-    const store = settings({ [ANALYST_RUNTIME_KEYS.model]: 'gemma4:12b' });
+    const store = settings({ [ANALYST_RUNTIME_KEYS.model]: 'claude-sonnet-5' });
     expect(resolveAnalystModel({ provider: 'openai', model: 'gpt-5.6-sol' }, store).source).toBe('request');
-    expect(resolveAnalystModel(undefined, store).model).toBe('gemma4:12b');
+    expect(resolveAnalystModel(undefined, store).model).toBe('claude-sonnet-5');
+  });
+
+  it('still runs the local Gemma runtime when a request or a setting names it', () => {
+    // The default moving to Sol must not strand the model it replaced.
+    expect(resolveAnalystModel({ provider: 'ollama', model: 'gemma4:12b' }, settings()))
+      .toEqual({ provider: 'ollama', model: 'gemma4:12b', source: 'request' });
+    expect(resolveAnalystModel(undefined, settings({
+      [ANALYST_RUNTIME_KEYS.provider]: 'ollama',
+      [ANALYST_RUNTIME_KEYS.model]: 'gemma4:12b',
+    }))).toEqual({ provider: 'ollama', model: 'gemma4:12b', source: 'setting' });
   });
 
   it('keeps the profile, the skill and the toolset fixed across every model', () => {
     for (const model of [
-      { provider: 'ollama', model: 'gemma4:12b', source: 'default' as const },
+      { provider: 'openai-codex', model: 'gpt-5.6-sol', source: 'default' as const },
+      { provider: 'ollama', model: 'gemma4:12b', source: 'setting' as const },
       { provider: 'anthropic', model: 'claude-sonnet-5', source: 'setting' as const },
     ]) {
       const args = analystInvocationArgs({ prompt: 'p', model, toolsets: ANALYST_TOOLSETS, withSkill: true });
@@ -195,8 +210,8 @@ describe('running a read', () => {
     expect(run.runtime).toMatchObject({
       engine: ACQUISITION_ANALYST_ENGINE,
       agentProfile: ACQUISITION_ANALYST_PROFILE,
-      provider: 'ollama',
-      model: 'gemma4:12b',
+      provider: 'openai-codex',
+      model: 'gpt-5.6-sol',
       modelSource: 'default',
     });
     expect(run.raw).toContain('deal_read');

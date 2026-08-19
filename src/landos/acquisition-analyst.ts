@@ -12,10 +12,11 @@
 //   how-to-evaluate-land skill, and persistent memory. It accumulates method
 //   across properties and belongs to LandOS.
 //
-//   THE RUNTIME MODEL is a per-invocation flag. Gemma 4 on the local Ollama
-//   server is the V1 default; a different local model, or a hosted one, is a
-//   setting change. Swapping it never touches the profile, the skill or the
-//   memory, and no business logic anywhere is written against Gemma.
+//   THE RUNTIME MODEL is a per-invocation flag. GPT-5.6 Sol through the
+//   configured `openai-codex` provider is the default; the local Ollama runtime
+//   and any other model remain a setting change away. Swapping it never touches
+//   the profile, the skill or the memory, and no business logic anywhere is
+//   written against a particular model.
 //
 // Two bounded passes, deliberately, rather than one agentic loop:
 //
@@ -51,11 +52,12 @@ export const ACQUISITION_ANALYST_PROFILE = 'landos-acquisition-analyst';
 export const ACQUISITION_ANALYST_SKILL = 'landos-acquisition-analysis';
 export const ACQUISITION_ANALYST_ENGINE = 'hermes';
 
-/** V1 runtime: Gemma 4 through the local Ollama server. A DEFAULT, not a
- *  dependency — every consumer of Acquisition Intelligence is written against
- *  the capability contract, never against this model. */
-export const DEFAULT_ANALYST_PROVIDER = 'ollama';
-export const DEFAULT_ANALYST_MODEL = 'gemma4:12b';
+/** Default runtime: GPT-5.6 Sol through the already-configured `openai-codex`
+ *  provider. A DEFAULT, not a dependency — every consumer of Acquisition
+ *  Intelligence is written against the capability contract, never against this
+ *  model, and the local Ollama runtime is still one setting away below. */
+export const DEFAULT_ANALYST_PROVIDER = 'openai-codex';
+export const DEFAULT_ANALYST_MODEL = 'gpt-5.6-sol';
 
 /** Persisted operator overrides. Same `dashboard_settings` KV the model router
  *  already uses, so swapping the reasoning engine is a setting, not a rebuild. */
@@ -230,7 +232,7 @@ export interface AnalystRunOutput {
 }
 
 /** The seam every caller uses. Tests substitute a fake; nothing outside this
- *  module knows the executor is Hermes or the model is Gemma. */
+ *  module knows the executor is Hermes or which model reasoned. */
 export interface AcquisitionAnalyst {
   run(input: AnalystRunInput): Promise<AnalystRunOutput>;
 }
