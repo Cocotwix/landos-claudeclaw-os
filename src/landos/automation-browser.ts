@@ -188,6 +188,12 @@ export interface AutomationOwnership {
   browser: string;
   /** Why ownership was refused. Null only when `owned` is true. */
   reason: string | null;
+  /** True when the owned Chrome's own command line proves it was launched with
+   *  the OFFSCREEN window position (-32000,-32000). Activating a tab in such a
+   *  window can never appear over the operator's work — this is what lets a
+   *  session that ATTACHED (rather than launched) still activate lane tabs so
+   *  background pages actually lay out and paint. Null when unknown. */
+  offscreen?: boolean | null;
 }
 
 /** Normalise a Windows/POSIX path for comparison (case + separators). */
@@ -244,7 +250,7 @@ export function userDataDirFromCommandLine(commandLine: string | null | undefine
   return bare?.[1]?.trim() || null;
 }
 
-let ownershipCache: { port: number; pid: number; profileKey: string } | null = null;
+let ownershipCache: { port: number; pid: number; profileKey: string; offscreen: boolean | null } | null = null;
 
 /**
  * Prove the process answering our CDP port is OUR automation Chrome.
@@ -307,7 +313,7 @@ export async function verifyAutomationOwnership(
   }
   if (ownershipCache && ownershipCache.port === config.port && ownershipCache.pid === pid
     && ownershipCache.profileKey === pathKey(config.profileDir)) {
-    return { owned: true, answering: true, pid, browser, reason: null };
+    return { owned: true, answering: true, pid, browser, reason: null, offscreen: ownershipCache.offscreen };
   }
 
   const commandLine = await getCmd(pid);
@@ -322,8 +328,11 @@ export async function verifyAutomationOwnership(
       reason: `Process ${pid} on port ${config.port} is running profile "${userDataDir}", not the LandOS automation profile. Refusing to attach to a browser LandOS does not own.`,
     };
   }
-  ownershipCache = { port: config.port, pid, profileKey: pathKey(config.profileDir) };
-  return { owned: true, answering: true, pid, browser, reason: null };
+  // Proven from the process's OWN command line, not assumed: the single
+  // launch path always positions the automation window at -32000,-32000.
+  const offscreen = commandLine ? /--window-position=-32000,-32000/.test(commandLine) : null;
+  ownershipCache = { port: config.port, pid, profileKey: pathKey(config.profileDir), offscreen };
+  return { owned: true, answering: true, pid, browser, reason: null, offscreen };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

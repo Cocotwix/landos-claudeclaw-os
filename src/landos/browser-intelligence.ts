@@ -260,6 +260,41 @@ export interface BrowserDriver {
     mapReached: boolean;
     capturedAtIso: string;
   }>;
+  /** LANDPORTAL SUBJECT/COMP RECORD READ (no imagery, never enters comp-search
+   *  mode): authenticated parcel panel + internal endpoint + optional MLS
+   *  Details block with listing remarks and exact source listing links.
+   *  Optional; live driver only. */
+  readLandPortalRecord?(url: string, opts: { timeoutMs: number; includeMls?: boolean }): Promise<{
+    url: string;
+    authenticated: boolean;
+    panelReady: boolean;
+    apn: string | null;
+    fields: Record<string, string>;
+    mlsFields: Record<string, string>;
+    listingLinks: Array<{ text: string; href: string }>;
+    redfinUrl: string | null;
+    apiFactCount: number;
+    dismissedOverlays: number;
+    capturedAtIso: string;
+  }>;
+  /** LANDPORTAL TOP-BAR MAP SEARCH: applies the plan's Status/Details/Type
+   *  quick filters on the verified subject's map workspace, zooms out until
+   *  returned comps are spatially visible, and reads the structured List View
+   *  rows without clicking them. Optional; live driver only. */
+  runLandPortalMapSearch?(url: string, plan: import('./landportal-map-search.js').LandPortalMapSearchPlan, opts: { timeoutMs: number }): Promise<{
+    authenticated: boolean;
+    panelApn: string | null;
+    applied: boolean;
+    pills: string;
+    zoomStepsUsed: number;
+    noPropertiesFound: boolean | null;
+    resultCount: number | null;
+    rows: Array<{ attrs: Record<string, string>; text: string }>;
+    mapShotPath: string | null;
+    listShotPath: string | null;
+    dismissedOverlays: number;
+    capturedAtIso: string;
+  }>;
   /** Capture ONE screenshot of the current page. action='capture_screenshots'.
    *  fullPage captures the entire scrollable page (uncropped) when supported. */
   screenshot(purpose: string, opts: { timeoutMs: number; fullPage?: boolean }): Promise<BrowserScreenshot>;

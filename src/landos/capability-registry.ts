@@ -28,6 +28,21 @@ import {
   type LandPortalResearchRuntime,
 } from './landportal-research-capability.js';
 import {
+  LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY,
+  LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY_ID,
+  type LandPortalPropertyCharacteristicsRuntime,
+} from './landportal-property-characteristics-capability.js';
+import {
+  LANDPORTAL_VISUAL_CAPTURE_CAPABILITY,
+  LANDPORTAL_VISUAL_CAPTURE_CAPABILITY_ID,
+  type LandPortalVisualCaptureRuntime,
+} from './landportal-visual-capture-capability.js';
+import {
+  LANDPORTAL_COMP_SEARCH_CAPABILITY,
+  LANDPORTAL_COMP_SEARCH_CAPABILITY_ID,
+  type LandPortalCompSearchRuntime,
+} from './landportal-comp-search-capability.js';
+import {
   PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY,
   PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
   type PropertyDevelopmentHistoryRuntime,
@@ -51,12 +66,28 @@ import {
 /** Every runtime a registered LandOS capability accepts. */
 export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRuntime & LandPortalResearchRuntime
   & CompsValuationRuntime & ZoningSubdivisionRuntime & PropertyDevelopmentHistoryRuntime
-  & UtilityServiceScreenRuntime & AcquisitionIntelligenceRuntimeDeps;
+  & UtilityServiceScreenRuntime & AcquisitionIntelligenceRuntimeDeps
+  & LandPortalPropertyCharacteristicsRuntime & LandPortalVisualCaptureRuntime & LandPortalCompSearchRuntime;
 
 const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   [ASSESSOR_TAX_CAPABILITY_ID, ASSESSOR_TAX_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   [LANDPORTAL_RESEARCH_CAPABILITY_ID, LANDPORTAL_RESEARCH_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
+  // The LandPortal three-tool split: property characteristics, visual capture
+  // and comp search are DIFFERENT jobs with separate run states/results. Each
+  // ensures its own authenticated session and verifies the canonical subject.
+  [
+    LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY_ID,
+    LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
+  [
+    LANDPORTAL_VISUAL_CAPTURE_CAPABILITY_ID,
+    LANDPORTAL_VISUAL_CAPTURE_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
+  [
+    LANDPORTAL_COMP_SEARCH_CAPABILITY_ID,
+    LANDPORTAL_COMP_SEARCH_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
   [COMPS_VALUATION_CAPABILITY_ID, COMPS_VALUATION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   // Two SEPARATE business capabilities sharing search and official-document
   // infrastructure: the first answers what rules apply because of WHERE the

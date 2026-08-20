@@ -243,6 +243,9 @@ export function Tools() {
   const [history, setHistory] = useState<PropertyDevelopmentHistoryResult | null>(null);
   const [historyRunning, setHistoryRunning] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [lpToolResults, setLpToolResults] = useState<Record<string, { status?: string; facts?: Record<string, unknown> }>>({});
+  const [lpToolRunning, setLpToolRunning] = useState<string | null>(null);
+  const [lpToolError, setLpToolError] = useState<string | null>(null);
 
   const run = async (refresh = false) => {
     if (!rawInput.trim() || running) return;
@@ -364,6 +367,25 @@ export function Tools() {
     }
   };
 
+  // The LandPortal three-tool split: Property Characteristics, Visual Capture
+  // and Comp Search are separately callable capabilities with their own runs.
+  const runLandPortalTool = async (tool: 'landportal-property-characteristics' | 'landportal-visual-capture' | 'landportal-comp-search') => {
+    if (!rawInput.trim() || lpToolRunning) return;
+    setLpToolRunning(tool);
+    setLpToolError(null);
+    try {
+      const response = await apiPost<{ result: { status?: string; facts?: Record<string, unknown> } }>(
+        `/api/landos/capabilities/${tool}/invoke`,
+        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ' },
+      );
+      setLpToolResults((prior) => ({ ...prior, [tool]: response.result }));
+    } catch (caught) {
+      setLpToolError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLpToolRunning(null);
+    }
+  };
+
   const identity = result?.facts.canonicalIdentity ?? {};
   const parcel = (landPortal?.facts.parcel ?? {}) as Record<string, unknown>;
   return (
@@ -413,6 +435,15 @@ export function Tools() {
             <button type="button" data-testid="property-development-history-run" disabled={historyRunning || !rawInput.trim()} onClick={() => void runPropertyDevelopmentHistory(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {historyRunning ? 'Reading the parcel record…' : 'Run Property Development History'}
             </button>
+            <button type="button" data-testid="landportal-property-characteristics-run" disabled={!!lpToolRunning || !rawInput.trim()} onClick={() => void runLandPortalTool('landportal-property-characteristics')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {lpToolRunning === 'landportal-property-characteristics' ? 'Extracting LandPortal characteristics…' : 'Run LandPortal Property Characteristics'}
+            </button>
+            <button type="button" data-testid="landportal-visual-capture-run" disabled={!!lpToolRunning || !rawInput.trim()} onClick={() => void runLandPortalTool('landportal-visual-capture')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {lpToolRunning === 'landportal-visual-capture' ? 'Capturing LandPortal visuals…' : 'Run LandPortal Visual Capture'}
+            </button>
+            <button type="button" data-testid="landportal-comp-search-run" disabled={!!lpToolRunning || !rawInput.trim()} onClick={() => void runLandPortalTool('landportal-comp-search')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {lpToolRunning === 'landportal-comp-search' ? 'Running LandPortal comp search…' : 'Run LandPortal Comp Search'}
+            </button>
           </div>
           <p class="mt-2 text-xs text-[var(--color-text-muted)]">
             Assessor &amp; Tax resolves the subject first, then reads the assessor and taxing-jurisdiction record.
@@ -423,6 +454,17 @@ export function Tools() {
             Nothing here creates a lead or a Deal Card.
           </p>
           {error && <div class="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{error}</div>}
+          {lpToolError && <div class="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{lpToolError}</div>}
+          {Object.entries(lpToolResults).length > 0 && (
+            <div class="mt-3 space-y-2" data-testid="landportal-tool-results">
+              {Object.entries(lpToolResults).map(([tool, run]) => (
+                <div key={tool} class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-sm">
+                  <div class="font-semibold">{tool.replace(/landportal-/, 'LandPortal ').replace(/-/g, ' ')}</div>
+                  <div class="mt-1 text-[var(--color-text-muted)]">{String(run.facts?.summary ?? run.status ?? 'No summary returned.')}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         {result && (

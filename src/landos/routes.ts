@@ -199,6 +199,10 @@ import { defaultGovFetchText, extractLinks, htmlToText as htmlBodyToText } from 
 import { createHermesFreeSearch } from './hermes-free-search.js';
 import { createBackgroundBrowserFetchText } from './gov-browser-transport.js';
 import { withOwnedPages } from './browser-owned-pages.js';
+import { LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY_ID } from './landportal-property-characteristics-capability.js';
+import { LANDPORTAL_VISUAL_CAPTURE_CAPABILITY_ID } from './landportal-visual-capture-capability.js';
+import { LANDPORTAL_COMP_SEARCH_CAPABILITY_ID, type SecondarySearchResult } from './landportal-comp-search-capability.js';
+import { readResolverSubject } from './universal-property-resolution.js';
 import { CountyCapabilityRegistry } from './county-capability-registry.js';
 import { PUBLIC_INTELLIGENCE_TASKS, normalizeParcelIdentifier, type PublicIntelligenceRun, type PublicIntelligenceSubject } from './public-property-intelligence.js';
 import { runPropertyIntelligenceOrchestrator } from './property-intelligence-orchestrator.js';
@@ -6276,6 +6280,155 @@ export function registerLandosRoutes(app: Hono): void {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
+
+  // ── The LandPortal three-tool split ───────────────────────────────────────
+  // Property Characteristics, Visual Capture and Comp Search are separately
+  // callable capabilities with separate run states/results. Each ensures its
+  // own LandPortal authentication, runs on the dedicated LandOS browser, and
+  // closes every page it opened. Callable against a Deal Card subject
+  // (`{ dealCardId }`) or raw Tools input (`{ rawInput }`).
+  type LandPortalToolSubjectSpec =
+    | { kind: 'canonical_property'; entity: LandosEntity; propertyCardId: number; dealCardId: number }
+    | { kind: 'raw_property'; entity: LandosEntity; rawInput: string };
+  const landPortalToolSubject = (body: Record<string, unknown>): { subject: LandPortalToolSubjectSpec } | { error: string } => {
+    const dealCardId = Number(body.dealCardId);
+    if (Number.isFinite(dealCardId) && dealCardId > 0) {
+      const retained = readResolverSubject(dealCardId);
+      if (!retained?.propertyCardId) return { error: `Deal Card ${dealCardId} has no subject property card` };
+      return { subject: { kind: 'canonical_property', entity: retained.entity, propertyCardId: retained.propertyCardId, dealCardId } };
+    }
+    const rawInput = str(body.rawInput) ?? str(body.text);
+    if (!rawInput?.trim()) return { error: 'dealCardId or rawInput is required' };
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    return { subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() } };
+  };
+  interface LandPortalToolContext {
+    req: { json: () => Promise<unknown> };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    json: (data: any, status?: any) => any;
+  }
+  const invokeLandPortalTool = async (
+    c: LandPortalToolContext,
+    capabilityId: string,
+    tool: string,
+    runtimeFor: (driver: ReturnType<typeof makeLiveBrowserDriver>, subject: LandPortalToolSubjectSpec) => Record<string, unknown>,
+  ) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const parsed = landPortalToolSubject(body);
+    if ('error' in parsed) return c.json({ error: parsed.error }, 400);
+    const refresh = body.refresh !== false; // live browser tools default to a fresh run
+    const driver = makeLiveBrowserDriver('landportal');
+    let scopeToken: string | null = null;
+    let cleanup: { closed: number; failed: number; preserved: number } | null = null;
+    try {
+      const auth = await ensureLandPortalAuthenticated();
+      scopeToken = driver.beginOwnedPageScope ? await driver.beginOwnedPageScope() : null;
+      let resolveSubject: (() => Promise<unknown>) | undefined;
+      if (parsed.subject.kind === 'raw_property') {
+        const resolution = await runToolsPropertyResolution(body);
+        resolveSubject = async () => resolution;
+      }
+      const result = await invokeRuntimeCapability({
+        capabilityId,
+        caller: { type: parsed.subject.kind === 'canonical_property' ? 'deal_card' : 'tools', ref: `tools:${tool}` },
+        subject: parsed.subject,
+        mode: refresh ? 'refresh' : 'reuse',
+        ...(Array.isArray(body.captureLabels) ? { parameters: { captureLabels: body.captureLabels.map(String) } } : {}),
+        context: { surface: 'tools', tool },
+      }, {
+        ...(resolveSubject ? { resolveSubject } : {}),
+        ...runtimeFor(driver, parsed.subject),
+      } as Parameters<typeof invokeRuntimeCapability>[1]);
+      return c.json({ auth: { phase: auth.phase, authenticated: auth.authenticated }, result, cleanup });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    } finally {
+      if (scopeToken && driver.closeOwnedPageScope) {
+        try { cleanup = await driver.closeOwnedPageScope(scopeToken); } catch { cleanup = null; }
+      }
+    }
+  };
+  /** Zillow/Realtor adapters share the subject's locality read. */
+  const landPortalToolLocality = (subject: LandPortalToolSubjectSpec) => {
+    if (subject.kind !== 'canonical_property') return null;
+    const retained = readResolverSubject(subject.dealCardId);
+    if (!retained) return null;
+    return {
+      city: retained.city ?? undefined,
+      state: retained.state ?? undefined,
+      zip: retained.zip ?? undefined,
+      county: retained.county ?? undefined,
+      lat: retained.lat ?? undefined,
+      lng: retained.lng ?? undefined,
+      subjectAcres: retained.acres,
+    };
+  };
+
+  app.post('/api/landos/capabilities/landportal-property-characteristics/invoke', (c) =>
+    invokeLandPortalTool(c, LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY_ID, 'landportal-property-characteristics', (driver) => ({
+      readRecord: (url: string, opts: { timeoutMs: number; includeMls?: boolean }) => driver.readLandPortalRecord!(url, opts),
+    })));
+
+  app.post('/api/landos/capabilities/landportal-visual-capture/invoke', (c) =>
+    invokeLandPortalTool(c, LANDPORTAL_VISUAL_CAPTURE_CAPABILITY_ID, 'landportal-visual-capture', (driver) => ({
+      captureVisuals: async (url: string, opts: { timeoutMs: number; captureLabels: string[] }) => {
+        const capture = await driver.captureLandPortalVisuals!(url, opts);
+        return {
+          fields: capture.fields,
+          visualShots: capture.visualShots,
+          overlayMisses: capture.overlayMisses,
+          capturedAtIso: capture.capturedAtIso,
+        };
+      },
+    })));
+
+  app.post('/api/landos/capabilities/landportal-comp-search/invoke', (c) =>
+    invokeLandPortalTool(c, LANDPORTAL_COMP_SEARCH_CAPABILITY_ID, 'landportal-comp-search', (driver, subject) => ({
+      runMapSearch: (url: string, plan: Parameters<NonNullable<typeof driver.runLandPortalMapSearch>>[1], opts: { timeoutMs: number }) =>
+        driver.runLandPortalMapSearch!(url, plan, opts),
+      readCompRecord: (url: string, opts: { timeoutMs: number; includeMls?: boolean }) => driver.readLandPortalRecord!(url, opts),
+      zillowSearch: async (mode: 'sold' | 'active'): Promise<SecondarySearchResult> => {
+        const locality = landPortalToolLocality(subject);
+        if (!locality?.state) return { status: 'disabled', comps: [], note: 'No subject locality available for the Zillow flow.' };
+        const zillow = await fetchZillowLandComps({ ...locality, mode, propertyType: 'land' });
+        return {
+          status: zillow.status,
+          note: zillow.note,
+          comps: zillow.comps.map((row) => ({
+            address: row.address,
+            price: row.price,
+            acres: row.acres,
+            status: row.status === 'sold' ? 'sold' as const : row.status === 'active' ? 'for_sale' as const : 'unknown' as const,
+            url: row.url,
+            soldDate: row.soldDate ?? null,
+            lat: row.lat ?? null,
+            lng: row.lng ?? null,
+            homeSizeSqft: row.homeSizeSqft ?? null,
+          })),
+        };
+      },
+      realtorSearch: async (): Promise<SecondarySearchResult> => {
+        const locality = landPortalToolLocality(subject);
+        if (!locality?.state) return { status: 'disabled', comps: [], note: 'No subject locality available for the Realtor.com fallback.' };
+        const realtor = await fetchRealtorLandComps({
+          city: locality.city, state: locality.state, zip: locality.zip, county: locality.county,
+          subjectAcres: locality.subjectAcres, mode: 'sold',
+        });
+        return {
+          status: realtor.status,
+          note: realtor.note,
+          comps: realtor.comps.map((row) => ({
+            address: row.address,
+            price: row.price,
+            acres: row.acres,
+            status: row.status === 'sold' ? 'sold' as const : row.status === 'active' ? 'for_sale' as const : 'unknown' as const,
+            url: row.url,
+            soldDate: row.soldDate ?? null,
+            homeSizeSqft: row.homeSizeSqft ?? null,
+          })),
+        };
+      },
+    })));
 
   // Compatibility URL. It is now only an adapter over the canonical Capability.
   app.post('/api/landos/property/resolve', async (c) => {

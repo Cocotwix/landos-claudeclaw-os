@@ -104,6 +104,53 @@ export const OVERLAY_CAPTURE_PLAN: readonly PlannedOverlayCapture[] = [
   { overlay: 'Soil', candidates: ['Soil Type', 'Soil', 'Soils', 'Soil Survey'], purpose: 'landportal_overlay_soil' },
 ];
 
+export interface PlannedBoundaryContextCapture {
+  /** Stable capture label / inspection key. */
+  label: 'zip_boundary_context' | 'city_boundary_context' | 'county_boundary_context';
+  /** Operator-facing name for the geography. */
+  boundary: string;
+  /** Control-name candidates in the Basemaps & Overlays dialog ("Enable X"). */
+  candidates: string[];
+  /** Zoom steps OUT from the parcel Fit. Each step doubles the linear ground
+   *  extent, so these deliberately exceed MAX_STANDARD_ZOOM_OUT_STEPS: the
+   *  whole point is "where inside this geography does the subject sit". The
+   *  county frame needs the widest camera; the ZIP the narrowest. The subject
+   *  stays marked by LandPortal's own pin, so it remains identifiable. */
+  zoomOutSteps: number;
+  purpose: string;
+}
+
+/**
+ * Boundary-context captures: the subject's position INSIDE its ZIP, city and
+ * county, using LandPortal's own boundary overlays (control names proven live:
+ * "ZIP Boundaries", "City Limits", "County Boundaries"). Each is attempted,
+ * rendered distinctly, and captured — or honestly recorded as unavailable when
+ * LandPortal exposes no such boundary for the property. Never manufactured.
+ */
+export const BOUNDARY_CONTEXT_PLAN: readonly PlannedBoundaryContextCapture[] = [
+  {
+    label: 'zip_boundary_context',
+    boundary: 'ZIP code boundary',
+    candidates: ['ZIP Boundaries', 'Zip Boundaries', 'ZIP Codes', 'Zip Codes'],
+    zoomOutSteps: 4,
+    purpose: 'landportal_zip_boundary_context',
+  },
+  {
+    label: 'city_boundary_context',
+    boundary: 'City / municipal boundary',
+    candidates: ['City Limits', 'City Boundaries', 'Municipal Boundaries'],
+    zoomOutSteps: 5,
+    purpose: 'landportal_city_boundary_context',
+  },
+  {
+    label: 'county_boundary_context',
+    boundary: 'County boundary',
+    candidates: ['County Boundaries', 'County Lines'],
+    zoomOutSteps: 6,
+    purpose: 'landportal_county_boundary_context',
+  },
+];
+
 /**
  * Distinctness gate: an overlay screenshot that is byte-identical to the base
  * parcel capture — or to ANY earlier capture in the same pass — proves the

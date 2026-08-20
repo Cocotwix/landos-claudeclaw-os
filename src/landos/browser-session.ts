@@ -24,7 +24,8 @@ import { logger } from '../logger.js';
 import { automationBrowserConfig, launchAutomationBrowser, verifyAutomationOwnership } from './automation-browser.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 import { landosArtifactPath } from './storage-profile.js';
-import { assessMapViewportFrame, contextZoomOutSteps, surroundingAreaZoomOutSteps, parseAcresFromFields, inspectSavedParcelVisual, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN, type MapViewportClip, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
+import { assessMapViewportFrame, contextZoomOutSteps, surroundingAreaZoomOutSteps, parseAcresFromFields, inspectSavedParcelVisual, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN, BOUNDARY_CONTEXT_PLAN, type MapViewportClip, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
+import { LP_MAP_SEARCH, type LandPortalMapSearchPlan, type LandPortalMapSearchRow } from './landportal-map-search.js';
 import { evaluateThreeDCaptureEligibility, landPortalIdentityFromUrl } from './landportal-operating-rules.js';
 import {
   landPortalCompCardsFromApi,
@@ -482,6 +483,15 @@ export async function ensureBrowserSession(deps: SessionDeps = {}): Promise<Brow
       state.status = 'unreachable';
       return 'unreachable';
     }
+    // An ownership-verified attach to a Chrome whose OWN command line proves
+    // the offscreen -32000,-32000 launch position is the same window a
+    // self-launch would have produced: activating a lane tab there can never
+    // appear over the operator's work. Without this, a server that ATTACHED
+    // (the browser was started by `npm run landos:browser start` or a prior
+    // process) never activated its lane tabs, background pages never laid out
+    // a map canvas, and every capture failed with "no rendered map viewport
+    // could be isolated".
+    if (ownership.offscreen === true) state.launchedBackground = true;
   }
   try {
     // protocolTimeout 60s (default 180s): a wedged target/protocol call fails
@@ -2762,22 +2772,50 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           canvas.focus();
           return document.activeElement === canvas;
         }) as unknown as () => boolean);
+        const zoomOutControlRect = async (): Promise<{ x: number; y: number } | null> => page.evaluate<{ x: number; y: number } | null>((() => {
+          const el = document.querySelector('button[aria-label="Zoom out"], button.lp-map-controls__zoomOut, .mapboxgl-ctrl-zoom-out, .leaflet-control-zoom-out') as any;
+          if (!el || !el.getBoundingClientRect) return null;
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 4 || rect.height < 4) return null;
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        }) as unknown as () => { x: number; y: number } | null);
         const zoomOutParcelMap = async (steps: number): Promise<number> => {
           let completed = 0;
           for (let step = 0; step < steps; step++) {
             let driven = false;
-            if (page.keyboard && await focusMapCanvas()) {
+            // REAL mouse click on the map's own Zoom out control first: the
+            // proven live contract states synthetic .click() is unreliable for
+            // the map controls, and the keyboard '-' silently no-ops on some
+            // page states (an open map popup, lost canvas focus) while still
+            // being COUNTED as a completed step — which produced boundary and
+            // surrounding-area frames whose camera never actually moved.
+            if (page.mouse) {
+              const rect = await zoomOutControlRect();
+              if (rect) {
+                await page.mouse.move(rect.x, rect.y);
+                await page.mouse.down();
+                await page.mouse.up();
+                driven = true;
+              }
+            }
+            if (!driven && page.keyboard && await focusMapCanvas()) {
               await page.keyboard.press('-');
               driven = true;
-            } else {
-              driven = await clickNamedButton('Zoom out');
             }
+            if (!driven) driven = await clickNamedButton('Zoom out');
             if (!driven) break;
             completed++;
             await sleep(950);
           }
           return completed;
         };
+        /** Remove leftover map popups (e.g. the soils probe card) so a later
+         *  frame is never contaminated and keyboard zoom is never captured. */
+        const closeMapPopups = async (): Promise<number> => page.evaluate<number>((() => {
+          let removed = 0;
+          document.querySelectorAll('.mapboxgl-popup, .leaflet-popup').forEach((el: any) => { el.remove(); removed += 1; });
+          return removed;
+        }) as unknown as () => number).catch(() => 0);
         const orientRoadBelowParcel = async (): Promise<number> => {
           if (!page.keyboard || !(await focusMapCanvas())) return 0;
           // LandPortal uses Mapbox's 10-degree Shift+Arrow bearing step. The
@@ -2892,6 +2930,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           'surrounding_area_aerial',
           'wetlands_overlay', 'soil_overlay', 'contour_terrain_view', 'fema_flood_overlay',
           'front_side_3d', 'rear_side_3d',
+          'zip_boundary_context', 'city_boundary_context', 'county_boundary_context',
         ]);
         const fieldShowsImpact = (pattern: RegExp): boolean => Object.entries(fieldsOut.fields ?? {}).some(([key, raw]) => {
           if (!pattern.test(key)) return false;
@@ -3142,6 +3181,82 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         for (const planned of OVERLAY_CAPTURE_PLAN) {
           await captureOverlay(planned.overlay, [...planned.candidates], planned.purpose);
         }
+        // ── Boundary-context captures: ZIP / city / county ──────────────────
+        // Same overlay-dialog discipline as the thematic overlays, but with a
+        // deliberately wider camera: the question these frames answer is
+        // "where inside this geography does the subject actually sit". The
+        // subject stays marked by LandPortal's own pin. A boundary LandPortal
+        // does not expose is recorded as an honest miss, never substituted.
+        for (const planned of BOUNDARY_CONTEXT_PLAN) {
+          if (!requestedCaptureLabels.has(planned.label)) continue;
+          try {
+            await closeOverlayDialog();
+            await closeMapPopups();
+            await clickNamedButton('Reset map rotation to north');
+            await clickNamedButton('Fit');
+            await sleep(1400);
+            const stepsDone = await zoomOutParcelMap(planned.zoomOutSteps);
+            // The wide camera is the point; accept one missing step (deep zoom
+            // levels can saturate) but refuse a camera that never left parcel
+            // scale — that frame would answer nothing about the geography.
+            if (stepsDone < planned.zoomOutSteps - 1) {
+              overlayMisses.push({ overlay: planned.boundary, reason: `the boundary-context camera could not be driven (${stepsDone}/${planned.zoomOutSteps} zoom steps).` });
+              continue;
+            }
+            if (!(await openOverlayDialog())) {
+              overlayMisses.push({ overlay: planned.boundary, reason: 'the Basemaps and overlays dialog could not be opened.' });
+              continue;
+            }
+            let controlName: string | null = null;
+            for (const candidate of planned.candidates) {
+              if ((await buttonState(`Enable ${candidate}`)) || (await buttonState(`Disable ${candidate}`))) { controlName = candidate; break; }
+            }
+            if (!controlName) {
+              await closeOverlayDialog();
+              overlayMisses.push({ overlay: planned.boundary, reason: 'LandPortal exposes no toggle for this boundary in the current workspace.' });
+              continue;
+            }
+            if (await buttonState(`Enable ${controlName}`)) await clickNamedButton(`Enable ${controlName}`);
+            if (!(await buttonState(`Disable ${controlName}`))) {
+              await closeOverlayDialog();
+              overlayMisses.push({ overlay: planned.boundary, reason: 'the boundary toggle never reported an enabled state.' });
+              continue;
+            }
+            await sleep(4500);
+            if (!(await closeOverlayDialog())) {
+              overlayMisses.push({ overlay: planned.boundary, reason: 'the overlay dialog could not be closed for an unobstructed capture.' });
+              continue;
+            }
+            const file = path.join(dir, `${planned.purpose}-${Date.now()}.png`);
+            if (!(await captureMapViewport(file, 'overlay'))) {
+              overlayMisses.push({ overlay: planned.boundary, reason: 'a clean unobstructed map viewport could not be isolated at boundary scale.' });
+            } else {
+              let sha: string | null = null;
+              try { sha = fileSha256(file); } catch { sha = null; }
+              if (sha && !isDistinctOverlayCapture(sha, capturedShas)) {
+                try { fs.unlinkSync(file); } catch { /* best-effort cleanup */ }
+                overlayMisses.push({ overlay: planned.boundary, reason: 'the boundary layer produced no visible change over the base map — no distinct boundary-context image exists.' });
+              } else {
+                if (sha) capturedShas.push(sha);
+                overlayShots.push({ overlay: planned.boundary, path: file, purpose: planned.purpose });
+                visualShots.push({
+                  label: planned.label,
+                  path: file,
+                  kind: 'overlay',
+                  purpose: `${planned.boundary} context: the subject's position inside the geography`,
+                  overlay: planned.boundary,
+                });
+              }
+            }
+            if (await openOverlayDialog()) {
+              if (await buttonState(`Disable ${controlName}`)) await clickNamedButton(`Disable ${controlName}`);
+              await closeOverlayDialog();
+            }
+            await sleep(600);
+          } catch {
+            overlayMisses.push({ overlay: planned.boundary, reason: 'boundary-context capture errored; the geography frame is recorded absent, never substituted.' });
+          }
+        }
         let terrainShotPath: string | null = null;
         try {
           await closeOverlayDialog();
@@ -3366,6 +3481,484 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         return { url: page.url(), fields: out.fields ?? {}, snippets: out.snippets ?? [] };
       } finally {
         await releaseTempSessionPage(page);
+      }
+    },
+    // ── LANDPORTAL SUBJECT/COMP RECORD READ (no imagery, no comp mode) ──────
+    // The engine behind the LandPortal Property Characteristics tool and comp
+    // detail enrichment: opens the canonical parcel deep link in a fresh
+    // BACKGROUND tab, requires the authenticated property panel (the logged-out
+    // shell still renders APN text over a national map and is NOT a record),
+    // dismisses blocking promo/modal overlays, reads the structured sidebar
+    // rows plus the parcel's own internal endpoint, and optionally opens the
+    // MLS Details tab for listing remarks and the exact source listing links.
+    // Never enters comp-search mode; always closes the tab it opened.
+    async readLandPortalRecord(url: string, opts: { timeoutMs: number; includeMls?: boolean }) {
+      const readiness = await ensureBrowserSessionReady(deps);
+      if (!state.browser) {
+        throw new Error(`LandPortal record read cannot run: dedicated LandOS browser session is ${readiness.status}${readiness.error ? ` (${readiness.error})` : ''}. Check \`npm run landos:browser status\`.`);
+      }
+      const page = await openResearchTab(state.browser);
+      trackTempSessionPage(page, workflowOwner);
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const pollUntil = async (ready: () => Promise<boolean>, capMs: number): Promise<boolean> => {
+        const deadline = Date.now() + capMs;
+        for (;;) {
+          try { if (await Promise.race([ready(), new Promise<false>((r) => setTimeout(() => r(false), 5_000))])) return true; } catch { /* not ready */ }
+          if (Date.now() >= deadline) return false;
+          await sleep(1_500);
+        }
+      };
+      const READ_STATE = (): { authenticated: boolean; panelReady: boolean; apn: string | null } => {
+        const text = ((document.body && (document.body as any).innerText) || '').replace(/\s+/g, ' ');
+        const authenticated = /\blogout\b/i.test(text) && !/\blog\s*in\b/i.test(text.slice(0, 1200));
+        const panelReady = /property\s+(?:overview|details)/i.test(text) && /parcel\s+(?:id|address)/i.test(text);
+        const apn = (text.match(/Parcel ID\s+([\w.\-\/ ]{3,30}?)(?=\s+[A-Z][a-z])/) ?? text.match(/Parcel ID\s+(\S+)/) ?? [])[1] ?? null;
+        return { authenticated, panelReady, apn };
+      };
+      // Dismiss ONLY blocking promo/ad/modal overlays (skip-tracing offer et al)
+      // that cover the page center; the parcel sidebar's own Close button is
+      // deliberately never touched.
+      const DISMISS_BLOCKING = (): number => {
+        const rx = /skip.?trac|buy tokens|advert|special offer|upgrade|subscribe|promotion|report offer|enhance your leads/i;
+        let dismissed = 0;
+        document.querySelectorAll('[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="popup" i],[class*="advert" i],[class*="banner" i]').forEach((el: any) => {
+          const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+          if (!rect || rect.width < 120 || rect.height < 60) return;
+          const text = (el.innerText || '').slice(0, 600);
+          if (!rx.test(text)) return;
+          const closer = Array.from(el.querySelectorAll('button,a,[role="button"]'))
+            .find((b: any) => /^(close|dismiss|no thanks|not now|×|x)$/i.test((b.textContent || '').trim()));
+          if (closer) (closer as any).click(); else el.style.setProperty('display', 'none', 'important');
+          dismissed += 1;
+        });
+        return dismissed;
+      };
+      const TAB_ROWS = (): Record<string, string> => {
+        const fields: Record<string, string> = {};
+        document.querySelectorAll('p.tab-row,.tab-row').forEach((row: any) => {
+          const key = ((row.querySelector('.tab-row__title')?.textContent) || '').replace(/\s+/g, ' ').trim();
+          const value = ((row.querySelector('.tab-row__value')?.textContent) || '').replace(/\s+/g, ' ').trim();
+          if (key && value && !fields[key]) fields[key] = value;
+        });
+        return fields;
+      };
+      const LISTING_LINKS = (): Array<{ text: string; href: string }> => {
+        const out: Array<{ text: string; href: string }> = [];
+        document.querySelectorAll('a[href]').forEach((a: any) => {
+          const href = a.href || '';
+          if (!/^https?:/i.test(href)) return;
+          if (!/redfin\.com|zillow\.com|realtor\.com|mls/i.test(href)) return;
+          out.push({ text: (a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80), href: href.slice(0, 300) });
+        });
+        return out.slice(0, 12);
+      };
+      try {
+        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: 1600, height: 1000 }); } catch { /* best-effort */ }
+        try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs }); } catch { /* readiness gates decide */ }
+        let pageState = { authenticated: false, panelReady: false, apn: null as string | null };
+        await pollUntil(async () => {
+          pageState = await page.evaluate<{ authenticated: boolean; panelReady: boolean; apn: string | null }>(READ_STATE as unknown as () => { authenticated: boolean; panelReady: boolean; apn: string | null });
+          return pageState.panelReady;
+        }, 25_000);
+        if (!pageState.authenticated) {
+          state.auth = { authenticated: false, atIso: now() };
+          state.status = 'auth_needed';
+          return { url: page.url(), authenticated: false, panelReady: false, apn: null, fields: {}, mlsFields: {}, listingLinks: [], redfinUrl: null, apiFactCount: 0, dismissedOverlays: 0, capturedAtIso: now() };
+        }
+        const dismissedOverlays = await page.evaluate<number>(DISMISS_BLOCKING as unknown as () => number).catch(() => 0);
+        let fields = await page.evaluate<Record<string, string>>(TAB_ROWS as unknown as () => Record<string, string>).catch(() => ({} as Record<string, string>));
+        // The parcel's own internal endpoint: the stronger surface. Runs INSIDE
+        // the page so cookie and nonce never leave the browser. API wins on
+        // conflict; panel-only keys are preserved.
+        let apiFactCount = 0;
+        const identity = landPortalIdentityFromUrl(url);
+        if (identity?.propertyId && identity.fips) {
+          try {
+            const body = JSON.stringify({ property_id: Number(identity.propertyId), fips: String(identity.fips) });
+            const apiSubject = await page.evaluate<{ properties: Record<string, unknown> } | null>(`(async () => {
+              const nonce = (() => {
+                for (const k of ['wpApiSettings', 'lpInternal', 'lp_internal']) {
+                  const v = window[k] && window[k].nonce;
+                  if (typeof v === 'string' && v) return v;
+                }
+                const m = /"nonce"\\s*:\\s*"([A-Za-z0-9]+)"/.exec(document.documentElement.innerHTML);
+                return m ? m[1] : null;
+              })();
+              const headers = { 'content-type': 'application/json' };
+              if (nonce) headers['X-WP-Nonce'] = nonce;
+              const res = await fetch('/wp-json/lp-internal/v1/single-property', {
+                method: 'POST', credentials: 'include', headers, body: ${JSON.stringify(body)},
+              });
+              if (!res.ok) return null;
+              const payload = await res.json();
+              const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
+              return data && data.properties ? { properties: data.properties } : null;
+            })()`);
+            if (apiSubject?.properties) {
+              const apiFacts = landPortalFactsFromApi(apiSubject.properties);
+              apiFactCount = Object.keys(apiFacts).length;
+              fields = { ...fields, ...apiFacts };
+            }
+          } catch (error) {
+            logger.warn({ event: 'landportal_record_api_read_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_record_api_read_failed');
+          }
+        }
+        // MLS Details tab: listing remarks, status/price, MLS id, DOM, sold
+        // date, agent/broker, MLS lot acres, and the exact source listing link.
+        let mlsFields: Record<string, string> = {};
+        let listingLinks: Array<{ text: string; href: string }> = [];
+        if (opts.includeMls !== false) {
+          const tab = await page.evaluate<{ x: number; y: number; disabled: boolean } | null>((() => {
+            const el = Array.from(document.querySelectorAll('.mls-tab__heading, button, a, div, span'))
+              .find((node: any) => /^MLS Details$/i.test((node.textContent || '').trim()));
+            if (!el) return null;
+            const rect = (el as any).getBoundingClientRect();
+            if (!rect || rect.width < 4) return null;
+            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, disabled: /disabled/i.test(String((el as any).className || '')) };
+          }) as unknown as () => { x: number; y: number; disabled: boolean } | null).catch(() => null);
+          if (tab && !tab.disabled) {
+            if (page.mouse) { await page.mouse.move(tab.x, tab.y); await page.mouse.down(); await page.mouse.up(); }
+            else {
+              await page.evaluate((() => {
+                const el = Array.from(document.querySelectorAll('.mls-tab__heading, button, a, div, span'))
+                  .find((node: any) => /^MLS Details$/i.test((node.textContent || '').trim()));
+                if (el) (el as any).click();
+              }) as unknown as () => void).catch(() => undefined);
+            }
+            await sleep(3_000);
+            const afterTab = await page.evaluate<Record<string, string>>(TAB_ROWS as unknown as () => Record<string, string>).catch(() => ({} as Record<string, string>));
+            for (const [key, value] of Object.entries(afterTab)) {
+              if (!fields[key]) mlsFields[key] = value;
+              else if (/^(MLS|Listing|Days on Market|Agent|Broker|Lot Size)/i.test(key)) mlsFields[key] = value;
+            }
+            listingLinks = await page.evaluate<Array<{ text: string; href: string }>>(LISTING_LINKS as unknown as () => Array<{ text: string; href: string }>).catch(() => []);
+          }
+        }
+        const redfinUrl = listingLinks.find((link) => /redfin\.com/i.test(link.href))?.href ?? null;
+        return {
+          url: page.url(),
+          authenticated: pageState.authenticated,
+          panelReady: pageState.panelReady,
+          apn: fields['Parcel ID'] ?? pageState.apn,
+          fields,
+          mlsFields,
+          listingLinks,
+          redfinUrl,
+          apiFactCount,
+          dismissedOverlays,
+          capturedAtIso: now(),
+        };
+      } finally {
+        await releaseTempSessionPage(page);
+      }
+    },
+    // ── LANDPORTAL TOP-BAR MAP SEARCH (comp discovery) ──────────────────────
+    // Drives the NEW quick-filter map search (Status / Details / Type) on the
+    // driver's own lane page: verifies the authenticated subject panel first,
+    // dismisses blocking overlays, applies the plan's filters through the real
+    // controls, zooms out only until the returned comps become spatially
+    // visible around the still-identifiable subject, captures the map context,
+    // then reads the structured List View rows WITHOUT clicking them (a row
+    // click re-centers the map and re-filters the list). Selector contract and
+    // proven behaviors live in landportal-map-search.ts.
+    async runLandPortalMapSearch(url: string, plan: LandPortalMapSearchPlan, opts: { timeoutMs: number }) {
+      const readiness = await ensureBrowserSessionReady(deps);
+      if (!state.browser) {
+        throw new Error(`LandPortal map search cannot run: dedicated LandOS browser session is ${readiness.status}${readiness.error ? ` (${readiness.error})` : ''}. Check \`npm run landos:browser status\`.`);
+      }
+      const page = await getLanePage();
+      const dir = cfg.screenshotDir;
+      try { (await import('fs')).mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const pollUntil = async (ready: () => Promise<boolean>, capMs: number): Promise<boolean> => {
+        const deadline = Date.now() + capMs;
+        for (;;) {
+          try { if (await Promise.race([ready(), new Promise<false>((r) => setTimeout(() => r(false), 5_000))])) return true; } catch { /* not ready */ }
+          if (Date.now() >= deadline) return false;
+          await sleep(1_500);
+        }
+      };
+      const clickRect = async (rect: { x: number; y: number } | null): Promise<boolean> => {
+        if (!rect || !page.mouse) return false;
+        await page.mouse.move(rect.x, rect.y);
+        await page.mouse.down();
+        await page.mouse.up();
+        return true;
+      };
+      /** Center of the top-bar opener with this exact visible text. */
+      const openerRect = (label: string) => page.evaluate<{ x: number; y: number } | null>(`(() => {
+        const label = ${JSON.stringify(label)};
+        const els = Array.from(document.querySelectorAll('span,button'));
+        const el = els.find((s) => (s.textContent || '').trim().startsWith(label) && s.getBoundingClientRect().y < 60 && s.getBoundingClientRect().width > 5);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      })()`);
+      const doneRect = () => page.evaluate<{ x: number; y: number } | null>((() => {
+        const el = Array.from(document.querySelectorAll('button.btn_main'))
+          .find((b: any) => /^done$/i.test((b.textContent || '').trim()) && b.getBoundingClientRect().height > 10);
+        if (!el) return null;
+        const r = (el as any).getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      }) as unknown as () => { x: number; y: number } | null);
+      const readPills = () => page.evaluate<string>(`(() => (document.querySelector(${JSON.stringify(LP_MAP_SEARCH.bar)})?.innerText || '').replace(/\\s+/g, ' ').trim())()`);
+      const READ_SEARCH_STATE = (): { noProps: boolean; count: number | null } => {
+        const text = ((document.body && (document.body as any).innerText) || '').replace(/\s+/g, ' ');
+        const match = text.match(/(\d+)\s+propert(?:y|ies)/i);
+        return { noProps: /No properties found/i.test(text), count: match ? Number(match[1]) : null };
+      };
+      try {
+        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: 1600, height: 1000 }); } catch { /* best-effort */ }
+        if (state.launchedBackground) {
+          try { await (page as unknown as { bringToFront?: () => Promise<void> }).bringToFront?.(); } catch { /* best-effort */ }
+        }
+        try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs }); } catch { /* readiness gates decide */ }
+        // Subject preflight: authenticated panel + rendered map, then a visual
+        // sanity read of what is actually painted before any control is used.
+        let ready = { authenticated: false, panelReady: false, apn: null as string | null };
+        const READ_READY = (): { authenticated: boolean; panelReady: boolean; apn: string | null } => {
+          const text = ((document.body && (document.body as any).innerText) || '').replace(/\s+/g, ' ');
+          const authenticated = /\blogout\b/i.test(text) && !/\blog\s*in\b/i.test(text.slice(0, 1200));
+          const panelReady = /property\s+(?:overview|details)/i.test(text) && /parcel\s+id/i.test(text) && !!document.querySelector('canvas');
+          // Only an APN-shaped token counts: the sidebar renders the "Parcel ID"
+          // label before its value, and a label-word must never be read as the
+          // APN (that false mismatch aborted the first live comp search).
+          const apn = (text.match(/Parcel ID\s+([0-9][\w.\/\- ]{2,28}?)(?=\s{2,}|\s+[A-Z][a-z]|$)/) ?? text.match(/Parcel ID\s+([0-9][\w.\/\-]{2,28})/) ?? [])[1]?.trim() ?? null;
+          return { authenticated, panelReady, apn };
+        };
+        await pollUntil(async () => {
+          ready = await page.evaluate<{ authenticated: boolean; panelReady: boolean; apn: string | null }>(READ_READY as unknown as () => { authenticated: boolean; panelReady: boolean; apn: string | null });
+          // The panel heading paints before the Parcel ID value; identity
+          // verification needs the value, so readiness includes the APN.
+          return ready.panelReady && ready.apn != null;
+        }, 25_000);
+        if (!ready.authenticated || !ready.panelReady) {
+          if (!ready.authenticated) {
+            state.auth = { authenticated: false, atIso: now() };
+            state.status = 'auth_needed';
+          }
+          return {
+            authenticated: ready.authenticated, panelApn: ready.apn, applied: false, pills: '',
+            zoomStepsUsed: 0, noPropertiesFound: null, resultCount: null,
+            rows: [] as LandPortalMapSearchRow[], mapShotPath: null, listShotPath: null,
+            dismissedOverlays: 0, capturedAtIso: now(),
+          };
+        }
+        // Blocking-overlay pass (skip-tracing promo etc.) before touching controls.
+        const dismissedOverlays = await page.evaluate<number>((() => {
+          const rx = /skip.?trac|buy tokens|advert|special offer|upgrade|subscribe|promotion|report offer|enhance your leads/i;
+          let dismissed = 0;
+          document.querySelectorAll('[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="popup" i],[class*="advert" i],[class*="banner" i]').forEach((el: any) => {
+            const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            if (!rect || rect.width < 120 || rect.height < 60) return;
+            if (!rx.test((el.innerText || '').slice(0, 600))) return;
+            const closer = Array.from(el.querySelectorAll('button,a,[role="button"]'))
+              .find((b: any) => /^(close|dismiss|no thanks|not now|×|x)$/i.test((b.textContent || '').trim()));
+            if (closer) (closer as any).click(); else el.style.setProperty('display', 'none', 'important');
+            dismissed += 1;
+          });
+          return dismissed;
+        }) as unknown as () => number).catch(() => 0);
+        // ── Apply the plan through the real quick-filter panels ─────────────
+        const applyPanel = async (label: string, setter: string): Promise<boolean> => {
+          if (!(await clickRect(await openerRect(label)))) return false;
+          await sleep(1_100);
+          await page.evaluate<unknown>(setter).catch(() => undefined);
+          await sleep(400);
+          const done = await clickRect(await doneRect());
+          await sleep(1_400);
+          return done;
+        };
+        const statusSetter = plan.status === 'sold'
+          ? `(() => {
+              const sold = document.querySelector(${JSON.stringify(LP_MAP_SEARCH.status.soldCheckbox)});
+              if (sold && !sold.checked) sold.click();
+              const forSale = document.querySelector(${JSON.stringify(LP_MAP_SEARCH.status.forSaleCheckbox)});
+              if (forSale && forSale.checked) forSale.click();
+              ${plan.periodDays != null ? `{
+                const sel = document.querySelector(${JSON.stringify(LP_MAP_SEARCH.status.daysSoldSelect)});
+                const jq = window.jQuery || window.$;
+                if (sel && jq) jq(sel).val(${JSON.stringify(String(plan.periodDays))}).trigger('change');
+                else if (sel) { sel.value = ${JSON.stringify(String(plan.periodDays))}; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+              }` : ''}
+            })()`
+          : `(() => {
+              const forSale = document.querySelector(${JSON.stringify(LP_MAP_SEARCH.status.forSaleCheckbox)});
+              if (forSale && !forSale.checked) forSale.click();
+              const sold = document.querySelector(${JSON.stringify(LP_MAP_SEARCH.status.soldCheckbox)});
+              if (sold && sold.checked) sold.click();
+            })()`;
+        const typeSetter = `(() => {
+          const wanted = ${JSON.stringify(plan.typeSelectors)};
+          const all = ['input#mls_land','input#mls_house','input#mls_townhouse','input#mls_condo','input[id="mls_multi-family"]','input#mls_mobile'];
+          for (const selector of all) {
+            const el = document.querySelector(selector);
+            if (!el) continue;
+            const shouldCheck = wanted.includes(selector);
+            if (el.checked !== shouldCheck) el.click();
+          }
+        })()`;
+        // Fire 'change' ONLY on selects that carry a value: triggering the max
+        // select with '' cleared LandPortal's whole lot-size constraint (the
+        // "20 acres" pill stayed on while sub-acre sold results flowed back).
+        // The max select is explicitly cleared only on a broadened rerun,
+        // where a previous pass may have set it.
+        const detailsSetter = `(() => {
+          const jq = window.jQuery || window.$;
+          const set = (selector, value) => {
+            const el = document.querySelector(selector);
+            if (!el) return;
+            if (jq) jq(el).val(value).trigger('change');
+            else { el.value = value; el.dispatchEvent(new Event('change', { bubbles: true })); }
+          };
+          ${plan.lotSizeMinValue != null ? `set(${JSON.stringify(LP_MAP_SEARCH.details.lotSizeMinSelect)}, ${JSON.stringify(plan.lotSizeMinValue)});` : ''}
+          ${plan.lotSizeMaxValue != null
+            ? `set(${JSON.stringify(LP_MAP_SEARCH.details.lotSizeMaxSelect)}, ${JSON.stringify(plan.lotSizeMaxValue)});`
+            : plan.broadened
+              ? `set(${JSON.stringify(LP_MAP_SEARCH.details.lotSizeMaxSelect)}, '');`
+              : ''}
+        })()`;
+        await applyPanel('Status', statusSetter);
+        await applyPanel('Type', typeSetter);
+        if (plan.lotSizeMinValue != null || plan.lotSizeMaxValue != null || plan.broadened) {
+          await applyPanel('Details', detailsSetter);
+        }
+        let pills = await readPills().catch(() => '');
+        // One bounded retry per missing pill — never a loop.
+        if (plan.status === 'sold' && !/sold/i.test(pills)) { await applyPanel('Status', statusSetter); pills = await readPills().catch(() => ''); }
+        if (!/type\s*\(/i.test(pills)) { await applyPanel('Type', typeSetter); pills = await readPills().catch(() => ''); }
+        const applied = (plan.status === 'sold' ? /sold/i.test(pills) : /for sale|status/i.test(pills)) && /type\s*\(/i.test(pills);
+        await sleep(2_500);
+        // ── Zoom out only until the returned comps become visible ───────────
+        let zoomStepsUsed = 0;
+        let searchState: { noProps: boolean; count: number | null } = { noProps: true, count: null };
+        for (let step = 1; step <= plan.zoom.maxSteps; step += 1) {
+          const zoomRect = await page.evaluate<{ x: number; y: number } | null>(`(() => {
+            const el = document.querySelector(${JSON.stringify(LP_MAP_SEARCH.zoomOut)});
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            if (r.width < 4) return null;
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+          })()`);
+          if (!(await clickRect(zoomRect))) break;
+          zoomStepsUsed = step;
+          await sleep(1_900);
+          if (step >= plan.zoom.minSteps) {
+            searchState = await page.evaluate<{ noProps: boolean; count: number | null }>(READ_SEARCH_STATE as unknown as () => { noProps: boolean; count: number | null });
+            // A few nearby results are not "the relevant comps are visible":
+            // the proven live frame for this market needed six steps out from
+            // the parcel fit (a four-step stop hid the key 40-acre sale 2.5mi
+            // away). Zoom to six steps unless a rich set is already in frame,
+            // and keep going toward the hard ceiling only while nothing shows.
+            const count = searchState.count ?? 0;
+            if (!searchState.noProps && (count >= 6 || (count >= 1 && step >= Math.max(6, plan.zoom.minSteps + 2)))) break;
+          }
+        }
+        await sleep(2_000);
+        searchState = await page.evaluate<{ noProps: boolean; count: number | null }>(READ_SEARCH_STATE as unknown as () => { noProps: boolean; count: number | null });
+        let mapShotPath: string | null = null;
+        try {
+          const mapFile = path.join(dir, `landportal-mapsearch-${plan.lane}-${Date.now()}.png`);
+          await page.screenshot({ path: mapFile });
+          if (fs.statSync(mapFile).size >= 64_000) mapShotPath = mapFile;
+        } catch { /* map context shot is evidence, not a gate */ }
+        // ── List View: structured rows, read without clicking them ──────────
+        const listRect = await page.evaluate<{ x: number; y: number } | null>((() => {
+          const el = Array.from(document.querySelectorAll('button,a,div,span'))
+            .find((node: any) => (node.textContent || '').trim() === 'List' && node.getBoundingClientRect().y < 60 && node.getBoundingClientRect().width > 4);
+          if (!el) return null;
+          const r = (el as any).getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }) as unknown as () => { x: number; y: number } | null);
+        const rows: LandPortalMapSearchRow[] = [];
+        let listShotPath: string | null = null;
+        {
+          // The List View panel frequently opens ITSELF once a search applies,
+          // so the toggle click is best-effort and rows are read regardless.
+          const listClicked = await clickRect(listRect);
+          await sleep(listClicked ? 5_500 : 2_500);
+          const READ_ROWS = (): Array<{ attrs: Record<string, string>; text: string }> => {
+            const out: Array<{ attrs: Record<string, string>; text: string }> = [];
+            document.querySelectorAll('.property-info-visible-row').forEach((el: any) => {
+              // Only rendered result cards with a price: the DOM keeps hidden
+              // stale rows (and the subject's own estimate card) around.
+              const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+              if (!rect || rect.width < 10 || rect.height < 10) return;
+              if (!/\$[\d,]/.test(el.innerText || '')) return;
+              // Identity attrs come from the row ITSELF and its descendants
+              // only. An ancestor walk stamped one shared data-propertyid onto
+              // every row, and dedupe then collapsed distinct sales into one.
+              const attrs: Record<string, string> = {};
+              const collect = (node: any) => Array.from(node.attributes || []).forEach((attr: any) => {
+                if (/^data-/.test(attr.name) && !(attr.name in attrs)) attrs[attr.name] = String(attr.value).slice(0, 120);
+              });
+              collect(el);
+              Array.from(el.querySelectorAll('[data-propertyid],[data-apn],[data-fips],[data-mlsuuid],[data-mlsurl],[data-situslatitude],[data-property-address]')).slice(0, 6).forEach(collect);
+              // The row's own cell wrapper may carry the identity; take only
+              // the CLOSEST carrying ancestor, never a 4-level blind walk.
+              const closestCarrier = el.closest ? el.closest('[data-propertyid],[data-apn]') : null;
+              if (closestCarrier) collect(closestCarrier);
+              out.push({ attrs, text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 400) });
+            });
+            return out.slice(0, 60);
+          };
+          const collect = async () => {
+            const batch = await page.evaluate<Array<{ attrs: Record<string, string>; text: string }>>(READ_ROWS as unknown as () => Array<{ attrs: Record<string, string>; text: string }>).catch(() => []);
+            for (const row of batch) rows.push(row);
+          };
+          await collect();
+          // Bounded pagination: at most two extra pages of the List View.
+          for (let extra = 0; extra < 2; extra += 1) {
+            const nextRect = await page.evaluate<{ x: number; y: number } | null>((() => {
+              const text = ((document.body && (document.body as any).innerText) || '');
+              const match = text.match(/Showing\s+1\s+to\s+(\d+)\s+of\s+(\d+)\s+entr/i);
+              if (!match || Number(match[1]) >= Number(match[2])) return null;
+              const el = Array.from(document.querySelectorAll('button,a,span,div'))
+                .find((node: any) => (node.textContent || '').trim() === '›' && node.getBoundingClientRect().width > 3);
+              if (!el) return null;
+              const r = (el as any).getBoundingClientRect();
+              return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+            }) as unknown as () => { x: number; y: number } | null);
+            if (!(await clickRect(nextRect))) break;
+            await sleep(3_000);
+            await collect();
+          }
+          try {
+            const listFile = path.join(dir, `landportal-mapsearch-list-${plan.lane}-${Date.now()}.png`);
+            await page.screenshot({ path: listFile });
+            listShotPath = listFile;
+          } catch { /* best-effort */ }
+        }
+        logger.info({
+          event: 'landportal_map_search_completed',
+          lane: plan.lane,
+          applied,
+          zoomStepsUsed,
+          resultCount: searchState.count,
+          rows: rows.length,
+        }, 'landportal_map_search_completed');
+        return {
+          authenticated: true,
+          panelApn: ready.apn,
+          applied,
+          pills,
+          zoomStepsUsed,
+          noPropertiesFound: searchState.noProps,
+          resultCount: searchState.count,
+          rows,
+          mapShotPath,
+          listShotPath,
+          dismissedOverlays,
+          capturedAtIso: now(),
+        };
+      } catch (error) {
+        logger.warn({ event: 'landportal_map_search_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_map_search_failed');
+        return {
+          authenticated: false, panelApn: null, applied: false, pills: '',
+          zoomStepsUsed: 0, noPropertiesFound: null, resultCount: null,
+          rows: [] as LandPortalMapSearchRow[], mapShotPath: null, listShotPath: null,
+          dismissedOverlays: 0, capturedAtIso: now(),
+        };
       }
     },
     async readLinks() {

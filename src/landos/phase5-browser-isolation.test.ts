@@ -86,13 +86,14 @@ describe('browser isolation: source contract', () => {
     //     proves the answering Chrome is LandOS's own profile+port, so a page in
     //     this module can never belong to the operator's Chrome.
     //  2. automation-browser.ts is the only launcher, and it is always offscreen.
-    // Activation therefore survives in exactly TWO places: the research/capture
-    // path, still gated on state.launchedBackground, and the operator pressing
-    // "Open LandPortal" to log in. Research never reaches the second one, and
+    // Activation therefore survives in exactly THREE places: the two research
+    // paths (the one-pass capture and the LandPortal top-bar map search), both
+    // gated on state.launchedBackground, and the operator pressing
+    // "Open LandPortal" to log in. Research never reaches the last one, and
     // browser-session-candidate-selection.test.ts pins that exact split.
     expect(source).toContain('await verifyAutomationOwnership(automationBrowserConfig())');
     const callSites = [...source.matchAll(/bringToFront\?\.\(\)/g)].map((m) => m.index ?? 0);
-    expect(callSites).toHaveLength(2);
+    expect(callSites).toHaveLength(3);
 
     const openAt = source.indexOf('export async function openLandPortalInSession');
     expect(openAt).toBeGreaterThan(-1);
