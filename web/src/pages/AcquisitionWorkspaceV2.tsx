@@ -21,7 +21,7 @@ import {
 import { apiGet, apiPost, dashboardToken } from '@/lib/api';
 import {
   readSection, readPropertyMarketView, sectionHref, rememberWorkspaceDeal, lastWorkspaceDealId,
-  SECTION_SLUGS, type WorkspaceV2Section,
+  SECTION_SLUGS, type WorkspaceV2Section, type PropertyMarketView,
 } from '@/lib/workspace-v2-nav';
 import {
   PropertyIntelligenceSection,
@@ -218,9 +218,24 @@ export function AcquisitionWorkspaceV2() {
   // refetches the property record, or reruns research. pushState keeps the
   // URL shareable and back/forward working; popstate re-derives the section.
   const [section, setSection] = useState<WorkspaceV2Section>(() => readSection(window.location.search));
-  const propertyMarketView = readPropertyMarketView(window.location.search);
+  // The Property & Market inner view is STATE, not a value derived at render
+  // time from window.location. Both inner views live under the same top-level
+  // section, so switching between them leaves `section` unchanged; a derived
+  // read of window.location.search therefore never re-evaluated and the URL and
+  // the rendered view drifted apart — clicking "Valuation & comps" rewrote the
+  // URL while the Property & diligence view stayed mounted, so the comps
+  // workspace (and with it the whole persisted comparable universe) never
+  // rendered at all. Deriving it into state keeps the rendered view and the URL
+  // the same fact for every section change, forward, back, and inner tab.
+  const [propertyMarketView, setPropertyMarketView] = useState<PropertyMarketView>(
+    () => readPropertyMarketView(window.location.search),
+  );
+  const syncNavFromUrl = () => {
+    setSection(readSection(window.location.search));
+    setPropertyMarketView(readPropertyMarketView(window.location.search));
+  };
   useEffect(() => {
-    const onPop = () => setSection(readSection(window.location.search));
+    const onPop = () => syncNavFromUrl();
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
@@ -232,7 +247,7 @@ export function AcquisitionWorkspaceV2() {
     if (href !== window.location.pathname + window.location.search) {
       window.history.pushState(null, '', href);
     }
-    setSection(readSection(window.location.search));
+    syncNavFromUrl();
   };
 
   // Remember the deal + section the operator is using so every "back to the

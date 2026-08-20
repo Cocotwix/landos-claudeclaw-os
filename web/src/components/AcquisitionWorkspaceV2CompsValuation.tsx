@@ -21,7 +21,7 @@
 // unresolved locations show "Distance unavailable" and are never guessed onto
 // the map; every visual states its own provenance.
 
-import { useMemo, useState } from 'preact/hooks';
+import { useMemo, useRef, useState } from 'preact/hooks';
 import { apiPost, dashboardToken, ApiError } from '@/lib/api';
 import { CombinedCompMap } from './AcquisitionWorkspaceV2CompMap';
 import { CompVisualThumb, type CvVisual } from './CompVisualThumb';
@@ -576,6 +576,21 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
   onViewChange?: (view: CompsValuationViewData) => void;
 }) {
   const [view, setView] = useState<CompsValuationViewData | null>(initial);
+  // The canonical persisted comparable universe lives on the server; this
+  // section only ever RENDERS it. Seeding component state once at mount made
+  // the section keep whatever projection existed then, so a projection that
+  // arrived or was refreshed later (the workspace re-reads the record when a
+  // research run settles) was never adopted and the section could sit on an
+  // empty or stale universe while the canonical read model held the full set.
+  // Adopting the prop whenever the page hands down a DIFFERENT projection keeps
+  // one canonical comp universe on screen; the identity check means the view
+  // this section itself published back through onViewChange is not re-applied,
+  // so operator include/exclude decisions are never clobbered.
+  const seeded = useRef<CompsValuationViewData | null>(initial);
+  if (initial !== seeded.current) {
+    seeded.current = initial;
+    if (initial && initial !== view) setView(initial);
+  }
   const applyView = (next: (current: CompsValuationViewData | null) => CompsValuationViewData) => {
     setView((current) => {
       const merged = next(current);
