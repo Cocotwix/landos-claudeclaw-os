@@ -204,9 +204,10 @@ export function broadenLandPortalMapSearch(plan: LandPortalMapSearchPlan): LandP
 
 export interface LandPortalMapSearchCandidate {
   /** Which discovery flow produced this candidate. LandPortal's new top-bar
-   *  map search is the primary; zillow is the independent second flow; realtor
-   *  is fallback-only. The classifier is source-agnostic. */
-  source: 'landportal_map_search' | 'zillow' | 'realtor';
+   *  map search is the primary; zillow and redfin are independent second
+   *  flows; landwatch is the 30+ acre fallback; realtor is broad fallback
+   *  only. The classifier is source-agnostic. */
+  source: 'landportal_map_search' | 'zillow' | 'redfin' | 'landwatch' | 'realtor';
   propertyId: string | null;
   fips: string | null;
   apn: string | null;
@@ -232,6 +233,13 @@ export interface LandPortalMapSearchCandidate {
   soldBy: string | null;
   pricePerAcre: number | null;
   rawText: string;
+  /** True when the source card showed positive bed/bath counts but no usable
+   *  building square footage — an improvement signal that must survive into
+   *  classification rather than silently reading as vacant land. */
+  improvedHint?: boolean;
+  /** LISTING-REPORTED description text the source card exposed (never
+   *  verified fact; retained as directional comp evidence). */
+  remark?: string | null;
 }
 
 const numFrom = (text: string | null | undefined): number | null => {
@@ -358,6 +366,10 @@ export interface ClassifiedLandPortalComp {
   acresUsed: number | null;
   pricePerAcre: number | null;
   distanceMiles: number | null;
+  /** True for a Directional — improved sale: retained as visible market
+   *  evidence, but its full sale price never enters the clean vacant-land
+   *  median and it never counts toward sold-evidence sufficiency. */
+  improved?: boolean;
 }
 
 const EARTH_RADIUS_MILES = 3958.8;
@@ -403,8 +415,8 @@ export function classifyMapSearchCandidates(
     const pricePerAcre = candidate.price != null && acresUsed != null && acresUsed > 0
       ? Math.round((candidate.price / acresUsed) * 100) / 100
       : null;
-    const done = (tier: LandPortalCompTier, reason: string): ClassifiedLandPortalComp =>
-      ({ candidate, tier, reason, acresUsed, pricePerAcre, distanceMiles });
+    const done = (tier: LandPortalCompTier, reason: string, improved = false): ClassifiedLandPortalComp =>
+      ({ candidate, tier, reason, acresUsed, pricePerAcre, distanceMiles, improved });
 
     if (input.subjectApn && candidate.apn && apnIdentifiersEquivalent(input.subjectApn, candidate.apn)) {
       return done('excluded', 'This is the subject parcel itself; a subject is never its own comparable.');
@@ -418,8 +430,22 @@ export function classifyMapSearchCandidates(
     if (acresUsed == null || acresUsed <= 0) {
       return done('excluded', 'No usable acreage on the result, so no defensible price per acre exists.');
     }
-    if (candidate.buildingSqft != null && candidate.buildingSqft >= IMPROVED_BUILDING_SQFT_FLOOR) {
-      return done('excluded', `Improved sale (${candidate.buildingSqft.toLocaleString()} SqFt structure): the price paid for land plus improvements cannot enter the vacant-land $/acre calculation. Belongs to land+home analysis.`);
+    const improvedEvidence = candidate.buildingSqft != null && candidate.buildingSqft >= IMPROVED_BUILDING_SQFT_FLOOR
+      ? `${candidate.buildingSqft.toLocaleString()} SqFt structure`
+      : candidate.improvedHint ? 'positive bed/bath counts on the sale card' : null;
+    if (improvedEvidence) {
+      // An improved sale stays VISIBLE directional market evidence when its
+      // acreage is still relevant to the subject; it disappears from FMV math
+      // either way (the median is core-only), but it must never disappear
+      // from the evidence table just because a house sat on the land.
+      if (route && input.subjectAcres != null) {
+        const improvedRatio = acresUsed / input.subjectAcres;
+        const inSpan = (acresUsed >= route.pool.min && acresUsed <= route.pool.max) || (improvedRatio >= 0.2 && improvedRatio <= 4);
+        if (!inSpan) {
+          return done('excluded', `Improved sale (${improvedEvidence}) at ${acresUsed} ac — both improved and far outside the subject's comparability span (${Math.round(improvedRatio * 100) / 100}×).`, true);
+        }
+      }
+      return done('directional', `Directional — improved sale (${improvedEvidence}): the acreage is useful market evidence, but the improvements materially affect the sale price, so the full price never enters the clean vacant-land median unless the land contribution can reasonably be isolated.`, true);
     }
     if (!route || input.subjectAcres == null) {
       return done('directional', `Sold land at ${acresUsed} ac; the subject acreage is unknown so pool membership cannot be established.`);
@@ -440,8 +466,14 @@ export function classifyMapSearchCandidates(
 export type LandPortalCompSearchValuation = {
   coreCount: number;
   directionalCount: number;
+  /** Directional — improved sales (subset of directionalCount): visible
+   *  market evidence whose full price never enters the vacant-land median. */
+  improvedDirectionalCount: number;
   excludedCount: number;
   medianSoldPricePerAcre: number | null;
+  /** Low/high $/acre across the accepted core sold set (null without core). */
+  coreSoldPricePerAcreLow: number | null;
+  coreSoldPricePerAcreHigh: number | null;
   subjectAcres: number | null;
   landValueIndication: number | null;
   confidence: 'indicative' | 'insufficient';
@@ -466,10 +498,12 @@ export function landPortalCompSearchValuation(
 ): LandPortalCompSearchValuation {
   const core = classified.filter((row) => row.tier === 'core' && row.pricePerAcre != null);
   const directionalCount = classified.filter((row) => row.tier === 'directional').length;
+  const improvedDirectionalCount = classified.filter((row) => row.tier === 'directional' && row.improved).length;
   const excludedCount = classified.filter((row) => row.tier === 'excluded').length;
   const caveats: string[] = [];
   let medianPpa: number | null = null;
   let landValue: number | null = null;
+  const corePpas = core.map((row) => row.pricePerAcre as number).sort((a, b) => a - b);
   if (core.length >= 2 && subjectAcres != null && subjectAcres > 0) {
     medianPpa = median(core.map((row) => row.pricePerAcre as number));
     if (medianPpa != null) {
@@ -488,11 +522,25 @@ export function landPortalCompSearchValuation(
   } else {
     caveats.push('Subject acreage is unknown, so no whole-parcel land value can be computed.');
   }
+  if (improvedDirectionalCount > 0) {
+    caveats.push(`${improvedDirectionalCount} improved sale(s) retained as Directional — improved evidence only; their full sale prices never enter the vacant-land median.`);
+  }
+  const coreWithoutDistance = core.filter((row) => row.distanceMiles == null).length;
+  if (core.length >= 2 && coreWithoutDistance > core.length / 2) {
+    caveats.push(`${coreWithoutDistance} of ${core.length} core sales carry no coordinates, so submarket comparability (e.g. a premium town vs the subject's own area) is not distance-verified; treat the median as county-level evidence.`);
+  }
+  const coreWithoutDate = core.filter((row) => !row.candidate.saleDate).length;
+  if (core.length >= 2 && coreWithoutDate > core.length / 2) {
+    caveats.push(`${coreWithoutDate} of ${core.length} core sales carry no sale date (card-stated sold without a date), so recency is not verified; the strict workspace FMV set may hold them to a higher standard.`);
+  }
   return {
     coreCount: core.length,
     directionalCount,
+    improvedDirectionalCount,
     excludedCount,
     medianSoldPricePerAcre: medianPpa,
+    coreSoldPricePerAcreLow: corePpas.length ? Math.round(corePpas[0]) : null,
+    coreSoldPricePerAcreHigh: corePpas.length ? Math.round(corePpas[corePpas.length - 1]) : null,
     subjectAcres,
     landValueIndication: landValue,
     confidence: landValue != null ? 'indicative' : 'insufficient',
@@ -503,7 +551,7 @@ export function landPortalCompSearchValuation(
 // ── Source-level diagnostics ────────────────────────────────────────────────
 
 export type CompSourceDiagnostics = {
-  source: 'landportal' | 'zillow' | 'redfin' | 'realtor';
+  source: 'landportal' | 'zillow' | 'redfin' | 'landwatch' | 'realtor';
   searchAttempted: boolean;
   searchVerified: boolean;
   candidatesDiscovered: number;

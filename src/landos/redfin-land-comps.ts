@@ -523,3 +523,115 @@ export async function fetchRedfinLandComps(rawInput: RedfinFetchInput, deps: Red
     try { if (browser) await browser.close(); } catch { /* ignore */ }
   }
 }
+
+// ── Bounded per-listing detail read (comp enrichment) ───────────────────────
+
+export interface RedfinListingDetail {
+  status: 'retrieved' | 'blocked' | 'error' | 'disabled';
+  url: string;
+  /** LISTING-REPORTED marketing remarks (never verified fact). */
+  remarks: string | null;
+  yearBuilt: number | null;
+  buildingSqft: number | null;
+  lotAcres: number | null;
+  propertyType: string | null;
+  /** Utility / service statements exactly as the page words them. */
+  utilityStatements: string[];
+  /** Property-history rows (date + event + price text) — prior sales when the
+   *  page exposes them. Readily-visible history only; never a deep mission. */
+  priorEvents: Array<{ date: string | null; event: string; price: number | null }>;
+  note: string;
+}
+
+// Runs INSIDE the disposable context: pull the remarks block, key facts and
+// the property-history table off a single Redfin listing page.
+const EXTRACT_REDFIN_DETAIL = (): {
+  remarks: string | null; bodyText: string;
+  historyRows: string[];
+} => {
+  const remarksEl: any = (document as any).querySelector(
+    '#marketing-remarks-scroll, [data-rf-test-id="listingRemarks"], .remarks, [class*="marketingRemarks" i], [class*="ListingRemarks" i]');
+  const remarks = remarksEl ? String(remarksEl.textContent || '').replace(/\s+/g, ' ').trim() : null;
+  const historyRows = Array.from((document as any).querySelectorAll(
+    '[class*="PropertyHistory" i] tr, [class*="property-history" i] tr, [class*="HistoryRow" i], [id*="property-history" i] tr'))
+    .map((row: any) => String(row.textContent || '').replace(/\s+/g, ' ').trim())
+    .filter((text: string) => /\b(19|20)\d{2}\b/.test(text) && /sold|listed|price|pending|contingent|delisted/i.test(text))
+    .slice(0, 12);
+  return { remarks, bodyText: String((document as any).body?.innerText || '').slice(0, 20000), historyRows };
+};
+
+/** Pure projection of the raw page read (unit-tested without a browser).
+ *  Everything is read from the page ABOVE the "Nearby homes / Similar homes"
+ *  widgets: those cards carry other properties' beds and square footage, and
+ *  reading them made vacant land look improved (live 2026-08-20 failure: two
+ *  different vacant Fairview pages both "showed" a widget home's 2,100 SqFt). */
+export function parseRedfinListingDetail(url: string, raw: { remarks: string | null; bodyText: string; historyRows: string[] }): Omit<RedfinListingDetail, 'status' | 'note'> {
+  const fullBody = raw.bodyText ?? '';
+  const widgetStart = fullBody.search(/Nearby homes|Similar homes|Homes similar to|Nearby recently sold|Nearby similar/i);
+  const body = widgetStart > 0 ? fullBody.slice(0, widgetStart) : fullBody;
+  const numAfter = (re: RegExp): number | null => {
+    const match = body.match(re);
+    if (!match) return null;
+    const value = Number(match[1].replace(/,/g, ''));
+    return Number.isFinite(value) ? value : null;
+  };
+  const yearBuilt = numAfter(/Year Built[:\s]+((?:19|20)\d{2})/i) ?? numAfter(/Built in\s+((?:19|20)\d{2})/i);
+  // A structure is only evidence when the listing itself shows a positive
+  // bed/bath count; a bare Sq Ft figure on a land page is page noise.
+  const hasBedsOrBaths = /\b[1-9]\d*(?:\.\d+)?\s*(?:beds?|baths?|bd\b|ba\b)/i.test(body);
+  const buildingSqft = hasBedsOrBaths ? numAfter(/([\d,]{3,})\s*Sq\s*Ft(?!\s*lot)/i) : null;
+  const lotAcres = (() => {
+    const match = body.match(/Lot Size[:\s]+([\d,.]+)\s*(Acres?|Sq\.?\s*Ft\.?)/i)
+      ?? body.match(/([\d.]+)\s*acres?\s*lot/i);
+    if (!match) return null;
+    const value = Number(match[1].replace(/,/g, ''));
+    if (!Number.isFinite(value)) return null;
+    return /sq/i.test(match[2] ?? 'acres') ? Math.round((value / 43560) * 100) / 100 : value;
+  })();
+  const propertyType = body.match(/Property Type[:\s]+([A-Za-z /()-]{3,40})/i)?.[1]?.trim() ?? null;
+  const utilityStatements = [...new Set((body.match(
+    /[^.\n]{0,80}\b(public sewer|septic|sewer available|city water|public water|well water|water available|utilities available|electric(?:ity)? available|natural gas|no utilities)\b[^.\n]{0,60}/gi,
+  ) ?? []).map((text) => text.replace(/\s+/g, ' ').trim()).slice(0, 8))];
+  const priorEvents = raw.historyRows.map((row) => {
+    const date = row.match(/\b([A-Za-z]{3,9}\s+\d{1,2},?\s+(?:19|20)\d{2})\b/)?.[1] ?? row.match(/\b((?:19|20)\d{2})\b/)?.[1] ?? null;
+    const price = row.match(/\$(\d{1,3}(?:,\d{3})+)/)?.[1] ?? null;
+    const event = row.match(/\b(sold|listed|pending|contingent|delisted|price changed?)\b/i)?.[1] ?? 'event';
+    return { date, event: event.charAt(0).toUpperCase() + event.slice(1).toLowerCase(), price: price ? Number(price.replace(/,/g, '')) : null };
+  }).filter((row) => row.date || row.price);
+  return { url, remarks: raw.remarks, yearBuilt, buildingSqft, lotAcres, propertyType, utilityStatements, priorEvents };
+}
+
+/**
+ * Read one Redfin listing page for comp enrichment via a disposable context.
+ * Bounded and best-effort: blocked/error is reported, never thrown, and one
+ * unreachable page never fails a comp search.
+ */
+export async function fetchRedfinListingDetail(url: string, deps: RedfinFetchDeps = {}): Promise<RedfinListingDetail> {
+  const empty = { remarks: null, yearBuilt: null, buildingSqft: null, lotAcres: null, propertyType: null, utilityStatements: [], priorEvents: [] };
+  if (!deps.force && !deps.connect) {
+    try { if (!readSessionConfig().enabled) return { status: 'disabled', url, ...empty, note: 'Live browser mode off — Redfin detail not attempted.' }; } catch { /* fall through */ }
+  }
+  const connect = deps.connect ?? defaultConnect;
+  const timeoutMs = deps.timeoutMs ?? 30000;
+  const settleMs = deps.settleMs ?? 4000;
+  let browser: RedfinBrowserLike | null = null;
+  try {
+    browser = await connect(automationBrowserConfig().endpoint);
+    if (!browser) return { status: 'error', url, ...empty, note: 'The LandOS automation browser is not available for the Redfin detail read.' };
+    const page = await browser.newPage();
+    try { await page.setViewport?.({ width: 1400, height: 950 }); } catch { /* best-effort */ }
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    await sleep(settleMs);
+    const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
+    const raw = await page.evaluate<{ remarks: string | null; bodyText: string; historyRows: string[] }>(EXTRACT_REDFIN_DETAIL as unknown as () => { remarks: string | null; bodyText: string; historyRows: string[] });
+    if (blocked && !raw.remarks && !raw.historyRows.length) {
+      return { status: 'blocked', url, ...empty, note: 'Redfin served an anti-bot page on the listing detail read.' };
+    }
+    const parsed = parseRedfinListingDetail(url, raw);
+    return { status: 'retrieved', ...parsed, note: `Redfin listing detail read: ${parsed.remarks ? 'remarks captured' : 'no remarks block'}, ${parsed.priorEvents.length} history row(s).` };
+  } catch (e) {
+    return { status: 'error', url, ...empty, note: `Redfin detail read error: ${(e as Error)?.message ?? 'unknown'}.` };
+  } finally {
+    try { if (browser) await browser.close(); } catch { /* ignore */ }
+  }
+}

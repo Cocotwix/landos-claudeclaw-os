@@ -114,7 +114,8 @@ import { routeDukeRequest } from './duke-router.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
 import { runDukeVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
 import { distanceMiles, fetchZillowLandComps } from './zillow-land-comps.js';
-import { fetchRedfinLandComps } from './redfin-land-comps.js';
+import { fetchRedfinLandComps, fetchRedfinListingDetail } from './redfin-land-comps.js';
+import { fetchLandWatchLandComps } from './landwatch-land-comps.js';
 import { fetchRealtorLandComps } from './realtor-land-comps.js';
 import { runBrockovichDataCenterMap } from './brockovich-data-center.js';
 import {
@@ -6404,6 +6405,62 @@ export function registerLandosRoutes(app: Hono): void {
             lat: row.lat ?? null,
             lng: row.lng ?? null,
             homeSizeSqft: row.homeSizeSqft ?? null,
+          })),
+        };
+      },
+      redfinSearch: async (mode: 'sold' | 'active'): Promise<SecondarySearchResult> => {
+        const locality = landPortalToolLocality(subject);
+        if (!locality?.state) return { status: 'disabled', comps: [], note: 'No subject locality available for the Redfin flow.' };
+        const redfin = await fetchRedfinLandComps({ ...locality, mode, dateWindowMonths: 24 });
+        return {
+          status: redfin.status,
+          note: redfin.note,
+          comps: redfin.comps.map((row) => ({
+            address: row.address,
+            price: row.price,
+            acres: row.acres,
+            status: row.status === 'sold' ? 'sold' as const : row.status === 'active' ? 'for_sale' as const : 'unknown' as const,
+            url: row.url,
+            soldDate: row.soldDate ?? null,
+            lat: row.lat ?? null,
+            lng: row.lng ?? null,
+            homeSizeSqft: row.homeSizeSqft ?? null,
+            improvedHint: !!row.homeType,
+          })),
+        };
+      },
+      redfinDetail: async (url: string, opts: { timeoutMs: number }) => {
+        const detail = await fetchRedfinListingDetail(url, { timeoutMs: opts.timeoutMs });
+        return {
+          status: detail.status,
+          remarks: detail.remarks,
+          yearBuilt: detail.yearBuilt,
+          buildingSqft: detail.buildingSqft,
+          lotAcres: detail.lotAcres,
+          propertyType: detail.propertyType,
+          utilityStatements: detail.utilityStatements,
+          priorEvents: detail.priorEvents,
+          note: detail.note,
+        };
+      },
+      landwatchSearch: async (): Promise<SecondarySearchResult> => {
+        const locality = landPortalToolLocality(subject);
+        if (!locality?.state || !locality.county) return { status: 'disabled', comps: [], note: 'No subject county + state available for the LandWatch fallback.' };
+        const landwatch = await fetchLandWatchLandComps({
+          county: locality.county, state: locality.state, subjectAcres: locality.subjectAcres, mode: 'sold',
+        });
+        return {
+          status: landwatch.status,
+          note: landwatch.note,
+          comps: landwatch.comps.map((row) => ({
+            address: row.address,
+            price: row.price,
+            acres: row.acres,
+            status: row.status === 'sold' ? 'sold' as const : 'for_sale' as const,
+            url: row.url,
+            soldDate: row.soldDate,
+            improvedHint: row.improvedHint,
+            remark: row.remark,
           })),
         };
       },

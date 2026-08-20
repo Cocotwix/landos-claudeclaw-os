@@ -152,21 +152,41 @@ describe('classifyMapSearchCandidates', () => {
     expect(brushCreek?.distanceMiles).toBeGreaterThan(0);
   });
 
-  it('excludes improved sales from the vacant-land calculation', () => {
+  it('keeps an acreage-relevant improved sale as DIRECTIONAL — improved, out of the vacant-land median', () => {
     const overby = classified.find((row) => row.candidate.apn === '046-050.00-000');
-    expect(overby?.tier).toBe('excluded');
-    expect(overby?.reason).toMatch(/improved/i);
+    expect(overby?.tier).toBe('directional');
+    expect(overby?.improved).toBe(true);
+    expect(overby?.reason).toMatch(/improved sale/i);
+    expect(overby?.reason).toMatch(/never enters the clean vacant-land median/i);
   });
 
-  it('keeps a below-pool sale as DIRECTIONAL when improved evidence disqualifies it anyway', () => {
-    // DICE LAMPLEY carries 2,410 SqFt of structure, so it is excluded as
-    // improved even though its 24.18 ac would otherwise be directional.
+  it('classifies an improvement signal without square footage the same way', () => {
+    const hinted = classifyMapSearchCandidates(FAIRVIEW, [
+      { ...classified.find((row) => row.candidate.apn === '046-050.00-000')!.candidate, buildingSqft: null, improvedHint: true },
+    ]);
+    expect(hinted[0].tier).toBe('directional');
+    expect(hinted[0].improved).toBe(true);
+  });
+
+  it('still excludes an improved sale whose acreage is far outside the comparability span', () => {
+    const tinyImproved = classifyMapSearchCandidates(FAIRVIEW, [
+      { ...classified.find((row) => row.candidate.apn === '046-050.00-000')!.candidate, mlsAcres: 1.01, lotSqft: null },
+    ]);
+    expect(tinyImproved[0].tier).toBe('excluded');
+    expect(tinyImproved[0].reason).toMatch(/improved and far outside/i);
+  });
+
+  it('keeps a below-pool improved sale as DIRECTIONAL — improved', () => {
+    // DICE LAMPLEY carries 2,410 SqFt of structure on 24.18 ac: visible
+    // directional evidence, never part of the clean vacant-land median.
     const dice = classified.find((row) => row.candidate.apn === '021-068.03-000');
-    expect(dice?.tier).toBe('excluded');
+    expect(dice?.tier).toBe('directional');
+    expect(dice?.improved).toBe(true);
     const vacantVersion = classifyMapSearchCandidates(FAIRVIEW, [
       { ...classified.find((row) => row.candidate.apn === '021-068.03-000')!.candidate, buildingSqft: null },
     ]);
     expect(vacantVersion[0].tier).toBe('directional');
+    expect(vacantVersion[0].improved).toBeFalsy();
     expect(vacantVersion[0].reason).toMatch(/outside the .*pool/i);
   });
 
@@ -201,6 +221,28 @@ describe('landPortalCompSearchValuation', () => {
     expect(valuation.landValueIndication).toBeNull();
     expect(valuation.caveats[0]).toMatch(/single closed/i);
   });
+
+  it('states honesty caveats when core sales lack coordinates or sale dates', () => {
+    const undatedRemote = (ppa: number) => {
+      const base = core(ppa);
+      return { ...base, distanceMiles: null, candidate: { ...base.candidate, saleDate: null } };
+    };
+    const valuation = landPortalCompSearchValuation(75.91, [undatedRemote(20_000), undatedRemote(30_000), core(25_000)]);
+    expect(valuation.landValueIndication).not.toBeNull();
+    expect(valuation.caveats.join(' ')).toMatch(/not distance-verified/i);
+    expect(valuation.caveats.join(' ')).toMatch(/no sale date/i);
+  });
+
+  it('reports the core $/acre range and counts improved directional evidence outside the median', () => {
+    const improved = { ...core(60_000), tier: 'directional' as const, improved: true };
+    const valuation = landPortalCompSearchValuation(75.91, [core(15_000), core(25_000), core(20_000), improved]);
+    expect(valuation.medianSoldPricePerAcre).toBe(20_000); // improved 60k/ac never blends in
+    expect(valuation.coreSoldPricePerAcreLow).toBe(15_000);
+    expect(valuation.coreSoldPricePerAcreHigh).toBe(25_000);
+    expect(valuation.improvedDirectionalCount).toBe(1);
+    expect(valuation.directionalCount).toBe(1);
+    expect(valuation.caveats.join(' ')).toMatch(/improved sale\(s\) retained as Directional/i);
+  });
 });
 
 describe('cross-source dedupe and candidate detail', () => {
@@ -208,6 +250,27 @@ describe('cross-source dedupe and candidate detail', () => {
     const a = { address: 'BRUSH CREEK RD, TN, 37062', lat: 36.01184, lng: -87.08999, price: 900_000, saleDate: '2026-02-02' };
     expect(sameUnderlyingSale(a, { address: 'Brush Creek Rd TN 37062', lat: null, lng: null, price: null, saleDate: null })).toBe(true);
     expect(sameUnderlyingSale(a, { address: null, lat: 36.0119, lng: -87.0901, price: null, saleDate: null })).toBe(true);
+    // Live 2026-08-20 miss: LandPortal "BRUSH CREEK RD" vs Redfin's no-number
+    // "0 Brush Creek Rd, Fairview, TN 37062" at the same price = one sale.
+    expect(sameUnderlyingSale(
+      { address: 'BRUSH CREEK RD', lat: null, lng: null, price: 900_000, saleDate: '2026-02-02' },
+      { address: '0 Brush Creek Rd, Fairview, TN 37062', lat: null, lng: null, price: 900_000, saleDate: null },
+    )).toBe(true);
+    // Same numbered street address across sources = same property.
+    expect(sameUnderlyingSale(
+      { address: '7348 OVERBY RD', lat: null, lng: null, price: 2_500_000, saleDate: '2025-12-22' },
+      { address: '7348 Overby Rd, Fairview, TN 37062', lat: null, lng: null, price: 2_500_000, saleDate: null },
+    )).toBe(true);
+    // Different numbers on the same road are different properties.
+    expect(sameUnderlyingSale(
+      { address: '1 Ivey Rd, Fairview, TN 37062', lat: null, lng: null, price: 405_000, saleDate: null },
+      { address: '2 Ivey Rd, Fairview, TN 37062', lat: null, lng: null, price: 395_000, saleDate: null },
+    )).toBe(false);
+    // Two no-number listings on the same road only merge on a price match.
+    expect(sameUnderlyingSale(
+      { address: '0 Old Cox Pike, Fairview, TN 37062', lat: null, lng: null, price: 650_000, saleDate: null },
+      { address: 'OLD COX PIKE', lat: null, lng: null, price: 365_000, saleDate: null },
+    )).toBe(false);
     expect(sameUnderlyingSale(a, { address: null, lat: null, lng: null, price: 900_000, saleDate: '2026-02-15' })).toBe(true);
     expect(sameUnderlyingSale(a, { address: 'OVERBY RD', lat: 35.9479, lng: -87.1509, price: 2_500_000, saleDate: '2025-12-22' })).toBe(false);
   });

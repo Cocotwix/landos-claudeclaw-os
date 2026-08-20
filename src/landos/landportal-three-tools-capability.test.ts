@@ -8,9 +8,12 @@ import {
 import { LANDPORTAL_VISUAL_CAPTURE_CAPABILITY } from './landportal-visual-capture-capability.js';
 import {
   LANDPORTAL_COMP_SEARCH_CAPABILITY,
+  shouldRunLandWatchFallback,
+  usableSoldEvidenceCount,
   type LandPortalMapSearchRun,
   type SecondarySearchResult,
 } from './landportal-comp-search-capability.js';
+import type { ClassifiedLandPortalComp } from './landportal-map-search.js';
 
 const ENV = { invocationId: 'cap_test', researchSessionId: null, startedAt: '2026-08-19T00:00:00.000Z' };
 
@@ -204,17 +207,144 @@ describe('LandPortal Comp Search capability', () => {
     expect(brushCreek?.sources).toContain('zillow'); // the duplicate merged into ONE comp
     const freshZillow = classified.find((row) => row.address?.includes('100 New Rd'));
     expect(freshZillow?.tier).toBe('core');
-    expect(classified.find((row) => row.apn === '046-050.00-000')?.tier).toBe('excluded');
+    // The improved 52-acre Overby sale stays VISIBLE directional evidence —
+    // never in the vacant-land median, never silently dropped.
+    const overby = classified.find((row) => row.apn === '046-050.00-000') as { tier: string; improved: boolean; reason: string } | undefined;
+    expect(overby?.tier).toBe('directional');
+    expect(overby?.improved).toBe(true);
+    expect(overby?.reason).toMatch(/improved sale/i);
     const valuation = facts.valuation as { coreCount: number; medianSoldPricePerAcre: number | null; landValueIndication: number | null };
     expect(valuation.coreCount).toBe(2);
     expect(valuation.landValueIndication).not.toBeNull();
     const diagnostics = facts.diagnostics as Array<{ source: string; searchAttempted: boolean; candidatesDiscovered: number; notes: string[] }>;
     const realtor = diagnostics.find((row) => row.source === 'realtor');
     expect(realtor?.searchAttempted).toBe(true);
-    expect(realtor?.notes.join(' ')).toMatch(/fallback failed: realtor route unavailable/);
+    expect(realtor?.notes.join(' ')).toMatch(/fallback flow failed: realtor route unavailable/);
     const redfin = diagnostics.find((row) => row.source === 'redfin');
-    expect(redfin?.candidatesDiscovered).toBe(1);
+    // Brush Creek AND the (now directional-improved, still enriched) Overby
+    // sale each exposed an exact Redfin link.
+    expect(redfin?.candidatesDiscovered).toBe(2);
     expect((facts.readiness as { grade: string }).grade).toBe('green');
+  });
+
+  const acceptedComp = (over: Partial<ClassifiedLandPortalComp> = {}): ClassifiedLandPortalComp => ({
+    candidate: {
+      source: 'landportal_map_search', propertyId: 'p', fips: '47187', apn: 'x', mlsUuid: null, mlsUrl: null,
+      address: 'X RD', city: null, state: 'TN', zip: '37062', lat: null, lng: null, price: 900_000,
+      status: 'sold', mlsAcres: 40, lotSqft: null, buildingSqft: null, baths: null, saleDate: '2026-01-01',
+      soldBy: null, pricePerAcre: 22_500, rawText: 'x',
+    },
+    tier: 'core', reason: 'test', acresUsed: 40, pricePerAcre: 22_500, distanceMiles: null,
+    ...over,
+  });
+
+  describe('LandWatch large-acreage fallback gate', () => {
+    it('CASE A: a 20-acre subject never triggers LandWatch, however thin the evidence', () => {
+      expect(shouldRunLandWatchFallback(20, [])).toBe(false);
+      expect(shouldRunLandWatchFallback(20, [acceptedComp()])).toBe(false);
+    });
+
+    it('CASE B: a 50-acre subject with a strong primary sold set skips LandWatch', () => {
+      const strong = [acceptedComp(), acceptedComp(), acceptedComp()];
+      expect(usableSoldEvidenceCount(strong)).toBe(3);
+      expect(shouldRunLandWatchFallback(50, strong)).toBe(false);
+    });
+
+    it('CASE C: a 50-acre subject with a thin primary sold set triggers LandWatch', () => {
+      expect(shouldRunLandWatchFallback(50, [acceptedComp()])).toBe(true);
+    });
+
+    it('a set that cannot state a median is thin, however many directional rows it has', () => {
+      // Live Fairview shape: 1 core + 4 vacant directional = no statable
+      // median = low confidence, so the 30+ acre fallback runs.
+      const fairviewShape = [
+        acceptedComp(),
+        acceptedComp({ tier: 'directional' }), acceptedComp({ tier: 'directional' }),
+        acceptedComp({ tier: 'directional' }), acceptedComp({ tier: 'directional' }),
+      ];
+      expect(shouldRunLandWatchFallback(75.91, fairviewShape)).toBe(true);
+    });
+
+    it('improved directional evidence never makes a thin set look sufficient', () => {
+      const improvedHeavy = [acceptedComp(), acceptedComp({ tier: 'directional', improved: true }), acceptedComp({ tier: 'directional', improved: true })];
+      expect(usableSoldEvidenceCount(improvedHeavy)).toBe(1);
+      expect(shouldRunLandWatchFallback(50, improvedHeavy)).toBe(true);
+    });
+  });
+
+  it('CASES C/D/E live in the flow: thin evidence invokes LandWatch; sold rows enter the universe, actives stay context', async () => {
+    let landwatchInvoked = 0;
+    const outcome = await LANDPORTAL_COMP_SEARCH_CAPABILITY.execute(
+      rawRequest('landportal-comp-search'),
+      {
+        resolveSubject,
+        // Only the one Brush Creek core sale comes back from LandPortal.
+        runMapSearch: async (_url, plan) => (plan.status === 'sold'
+          ? { ...soldRun, rows: [soldRun.rows[0]], resultCount: 1 }
+          : { ...activeRun, rows: [] }),
+        landwatchSearch: async (): Promise<SecondarySearchResult> => {
+          landwatchInvoked += 1;
+          return {
+            status: 'retrieved',
+            note: 'LandWatch verified Williamson County, TN: 2 candidate(s).',
+            comps: [
+              { address: '7000 Big Tract Rd, Fairview, TN, 37062', price: 1_200_000, acres: 60, status: 'sold', url: 'https://www.landwatch.com/x/pid/1', remark: 'Rolling pasture, long county-road frontage.' },
+              // CASE D: an active LandWatch listing is market context only.
+              { address: '0 Active Ln, Fairview, TN, 37062', price: 2_000_000, acres: 55, status: 'for_sale', url: 'https://www.landwatch.com/x/pid/2' },
+            ],
+          };
+        },
+      },
+      ENV,
+    );
+    expect(outcome.status).toBe('SUCCEEDED');
+    expect(landwatchInvoked).toBe(1);
+    const classified = outcome.facts.classified as Array<{ source: string; address: string | null; tier: string; reason: string }>;
+    const landwatchSold = classified.find((row) => row.source === 'landwatch');
+    expect(landwatchSold?.address).toMatch(/Big Tract/);
+    expect(landwatchSold?.tier).toBe('core');
+    // The active listing never entered the sold candidate universe.
+    expect(classified.find((row) => row.address?.includes('Active Ln'))).toBeUndefined();
+    const diagnostics = outcome.facts.diagnostics as Array<{ source: string; searchAttempted: boolean; candidatesDiscovered: number; notes: string[] }>;
+    const landwatchDiag = diagnostics.find((row) => row.source === 'landwatch');
+    expect(landwatchDiag?.searchAttempted).toBe(true);
+    expect(landwatchDiag?.candidatesDiscovered).toBe(1);
+    expect(landwatchDiag?.notes.join(' ')).toMatch(/fallback triggered/i);
+    expect(landwatchDiag?.notes.join(' ')).toMatch(/market context only/i);
+    const valuation = outcome.facts.valuation as { coreCount: number; landValueIndication: number | null };
+    expect(valuation.coreCount).toBe(2);
+    expect(valuation.landValueIndication).not.toBeNull();
+  });
+
+  it('CASE B in the flow: sufficient primary evidence skips LandWatch with the reason recorded', async () => {
+    let landwatchInvoked = 0;
+    const strongZillow: SecondarySearchResult = {
+      status: 'retrieved',
+      note: 'Zillow sold search retrieved 3 rows.',
+      comps: [
+        { address: '1 Strong Rd, Fairview, TN 37062', price: 800_000, acres: 40, status: 'sold', url: 'https://www.zillow.com/1' },
+        { address: '2 Strong Rd, Fairview, TN 37062', price: 900_000, acres: 45, status: 'sold', url: 'https://www.zillow.com/2' },
+      ],
+    };
+    const outcome = await LANDPORTAL_COMP_SEARCH_CAPABILITY.execute(
+      rawRequest('landportal-comp-search'),
+      {
+        resolveSubject,
+        runMapSearch: async (_url, plan) => (plan.status === 'sold'
+          ? { ...soldRun, rows: [soldRun.rows[0]], resultCount: 1 }
+          : { ...activeRun, rows: [] }),
+        zillowSearch: async () => strongZillow,
+        landwatchSearch: async (): Promise<SecondarySearchResult> => {
+          landwatchInvoked += 1;
+          return { status: 'retrieved', note: 'should not run', comps: [] };
+        },
+      },
+      ENV,
+    );
+    expect(outcome.status).toBe('SUCCEEDED');
+    expect(landwatchInvoked).toBe(0);
+    const diagnostics = outcome.facts.diagnostics as Array<{ source: string; notes: string[] }>;
+    expect(diagnostics.find((row) => row.source === 'landwatch')?.notes.join(' ')).toMatch(/not needed.*sufficient/i);
   });
 
   it('reports a collection failure as RED, never as market absence', async () => {

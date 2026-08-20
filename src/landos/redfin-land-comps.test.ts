@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseRedfinCityPath, redfinLandFilterUrl, redfinSearchQueries, normalizeRedfinListings, fetchRedfinLandComps, verifyRedfinResolvedGeography, type RawRedfinListing } from './redfin-land-comps.js';
+import { parseRedfinCityPath, redfinLandFilterUrl, redfinSearchQueries, normalizeRedfinListings, fetchRedfinLandComps, parseRedfinListingDetail, verifyRedfinResolvedGeography, type RawRedfinListing } from './redfin-land-comps.js';
 
 describe('redfin URL + path helpers', () => {
   it('parses the /city/{id}/{ST}/{Name} path from search-suggestion hrefs', () => {
@@ -247,5 +247,34 @@ describe('place-path resolution refuses a same-state page that is not the subjec
     expect(result.searchVerified).toBe(true);
     expect(result.routes.some((route) => route.url.includes('/zipcode/49690/filter/property-type=land'))).toBe(true);
     expect(result.note).toMatch(/published no active candidate/);
+  });
+});
+
+describe('parseRedfinListingDetail', () => {
+  it('captures the improved story from a real home page above the widgets', () => {
+    const detail = parseRedfinListingDetail('https://www.redfin.com/x', {
+      remarks: 'Stunning custom estate on rolling acreage with public water available and 600 ft of road frontage.',
+      bodyText: '4 beds 3.5 baths 4,345 Sq Ft 31 acres lot Year Built: 1998 Property Type: Single Family Residential public water available at the road Nearby homes similar to this one 2,100 Sq Ft 3 beds',
+      historyRows: ['Mar 14, 2026 Sold $2,950,000', 'Oct 2, 2025 Listed $3,200,000'],
+    });
+    expect(detail.buildingSqft).toBe(4_345);
+    expect(detail.yearBuilt).toBe(1998);
+    expect(detail.lotAcres).toBe(31);
+    expect(detail.utilityStatements.join(' ')).toMatch(/public water/i);
+    expect(detail.priorEvents).toHaveLength(2);
+    expect(detail.priorEvents[0]).toEqual({ date: 'Mar 14, 2026', event: 'Sold', price: 2_950_000 });
+  });
+
+  it('never reads a widget home\'s square footage as the subject\'s structure', () => {
+    // Live 2026-08-20 failure: vacant land pages "showed" 2,100 Sq Ft that
+    // belonged to a Nearby homes card. Vacant pages have no positive bed/bath
+    // count above the widgets, so no structure may be read at all.
+    const detail = parseRedfinListingDetail('https://www.redfin.com/x', {
+      remarks: 'Beautiful 40 acre wooded tract.',
+      bodyText: '— beds — baths — Sq Ft 40.2 acres lot Land Nearby homes similar to this one 2,100 Sq Ft 3 beds 2 baths',
+      historyRows: [],
+    });
+    expect(detail.buildingSqft).toBeNull();
+    expect(detail.lotAcres).toBe(40.2);
   });
 });
