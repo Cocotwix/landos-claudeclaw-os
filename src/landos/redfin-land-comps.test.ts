@@ -30,29 +30,44 @@ describe('redfin URL + path helpers', () => {
 describe('normalizeRedfinListings', () => {
   const raw: RawRedfinListing[] = [
     { address: '900 Somewhere St, LEHIGH ACRES, FL 33971', price: 22000, acres: 0.28, sqftLot: null, residential: false, url: 'r1' },
-    { address: '901 Home Ave, LEHIGH ACRES, FL 33972', price: 240000, acres: 0.25, sqftLot: null, residential: true, url: 'r2' }, // residential home → dropped
+    { address: '901 Home Ave, LEHIGH ACRES, FL 33972', price: 240000, acres: 0.25, sqftLot: null, residential: true, url: 'r2' }, // residential home → RETAINED, tagged
     { address: '902 Lot Rd, LEHIGH ACRES, FL 33971', price: 20000, acres: null, sqftLot: 10890, residential: false, url: 'r3' }, // sqft→acres
-    { address: '903 Big Ranch, FL 33999', price: 350000, acres: 6, sqftLot: null, residential: false, url: 'r4' }, // out of band + price
+    { address: '903 Big Ranch, FL 33999', price: 350000, acres: 6, sqftLot: null, residential: false, url: 'r4' }, // large + expensive: RETAINED
     { address: '900 Somewhere St, LEHIGH ACRES, FL 33971', price: 22000, acres: 0.28, sqftLot: null, residential: false, url: 'r1' }, // dup
   ];
-  it('drops residential homes, converts sqft lot to acres, filters band, dedupes', () => {
+  it('retains and tags improved sales, converts sqft lot to acres, dedupes — no price or acreage filter', () => {
+    // BUSINESS RULES: an improved (beds/baths) card is retained as tagged
+    // market evidence, and price/acreage never gate candidate entry.
     const out = normalizeRedfinListings(raw, 0.25);
-    expect(out.map((c) => c.address)).toEqual(['900 Somewhere St, LEHIGH ACRES, FL 33971', '902 Lot Rd, LEHIGH ACRES, FL 33971']);
-    expect(out[1].acres).toBeCloseTo(0.25, 2); // 10890 / 43560
+    expect(out.map((c) => c.address)).toEqual([
+      '900 Somewhere St, LEHIGH ACRES, FL 33971',
+      '901 Home Ave, LEHIGH ACRES, FL 33972',
+      '902 Lot Rd, LEHIGH ACRES, FL 33971',
+      '903 Big Ranch, FL 33999',
+    ]);
+    expect(out[1].homeType).toContain('Residential');
+    expect(out[2].acres).toBeCloseTo(0.25, 2); // 10890 / 43560
+    expect(out[0].homeType ?? null).toBeNull();
     expect(out.every((c) => c.source === 'Redfin')).toBe(true);
   });
 
-  it('requires an explicit dated sale and retains the provider thumbnail', () => {
+  it('accepts a stated sold row without an explicit date, keeping the date when present', () => {
+    // A sold candidate must still STATE it is sold, but a missing printed date
+    // no longer erases it — that requirement manufactured false zero results.
     const out = normalizeRedfinListings([
       { address: '1 Verified Land Rd, Central, SC 29630', price: 500000, acres: 48.25, sqftLot: null, residential: false, url: 'r1', status: 'Sold on May 2, 2025', thumbnailUrl: 'https://img.test/land.jpg' },
       { address: '415 Silver Creek Rd, Central, SC 29630', price: 1500000, acres: 120, sqftLot: null, residential: false, url: 'r2', status: 'Sold' },
+      { address: '2 Ambiguous Rd, Central, SC 29630', price: 400000, acres: 30, sqftLot: null, residential: false, url: 'r3', status: null },
     ], 52.84, 'sold');
-    expect(out).toHaveLength(1);
+    expect(out.map((c) => c.address)).toEqual([
+      '1 Verified Land Rd, Central, SC 29630',
+      '415 Silver Creek Rd, Central, SC 29630',
+    ]);
     expect(out[0]).toMatchObject({
-      address: '1 Verified Land Rd, Central, SC 29630',
       soldDate: '2025-05-02',
       thumbnailUrl: 'https://img.test/land.jpg',
     });
+    expect(out[1].soldDate ?? null).toBeNull();
   });
 });
 
@@ -231,6 +246,6 @@ describe('place-path resolution refuses a same-state page that is not the subjec
     expect(result.status).toBe('none');
     expect(result.searchVerified).toBe(true);
     expect(result.routes.some((route) => route.url.includes('/zipcode/49690/filter/property-type=land'))).toBe(true);
-    expect(result.note).toMatch(/published no in-band/);
+    expect(result.note).toMatch(/published no active candidate/);
   });
 });

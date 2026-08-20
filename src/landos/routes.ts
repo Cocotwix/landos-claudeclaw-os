@@ -7714,10 +7714,12 @@ export function registerLandosRoutes(app: Hono): void {
       // The public active board and recently-sold board are distinct Zillow
       // surfaces. Read both explicitly; never relabel an active/unknown row as
       // sold merely because it came from a sold-search URL.
+      // Sold window matches the operator's own search: last 12 months.
       const soldResult = await fetchZillowLandComps({
         ...market,
         subjectAcres: input.subjectAcres,
         mode: 'sold',
+        dateWindowMonths: 12,
       });
       const activeResult = await fetchZillowLandComps({
         ...market,
@@ -7733,23 +7735,28 @@ export function registerLandosRoutes(app: Hono): void {
             : soldResult.status === 'disabled' && activeResult.status === 'disabled'
               ? 'disabled'
               : 'none';
+      const project = (comp: (typeof soldResult.comps)[number], lane: 'sold' | 'active') => ({
+        address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
+        url: comp.url, status: comp.status,
+        saleDate: lane === 'sold' ? comp.soldDate ?? null : comp.listingDate ?? null,
+        listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
+        thumbnailUrl: comp.thumbnailUrl ?? null,
+        lat: comp.lat ?? null, lng: comp.lng ?? null,
+        homeType: comp.homeType ?? null, yearBuilt: comp.yearBuilt ?? null, homeSizeSqft: comp.homeSizeSqft ?? null,
+        collectedAt: new Date().toISOString(),
+      });
       return {
         status: resultStatus,
         note: `Sold board: ${soldResult.note} Active board: ${activeResult.note}`,
-        sold: soldResult.comps.filter((comp) => comp.status === 'sold').map((comp) => ({
-          address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
-          url: comp.url, status: comp.status, saleDate: comp.soldDate ?? null,
-          listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
-          thumbnailUrl: comp.thumbnailUrl ?? null,
-          collectedAt: new Date().toISOString(),
-        })),
-        active: activeResult.comps.filter((comp) => comp.status === 'active').map((comp) => ({
-          address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
-          url: comp.url, status: comp.status, saleDate: comp.listingDate ?? null,
-          listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
-          thumbnailUrl: comp.thumbnailUrl ?? null,
-          collectedAt: new Date().toISOString(),
-        })),
+        laneRoutes: [...soldResult.routes, ...activeResult.routes],
+        searchVerified: soldResult.searchVerified || activeResult.searchVerified,
+        retrievalCounts: {
+          visible: soldResult.retrievalCounts.visible + activeResult.retrievalCounts.visible,
+          extracted: soldResult.retrievalCounts.extracted + activeResult.retrievalCounts.extracted,
+          normalized: soldResult.retrievalCounts.normalized + activeResult.retrievalCounts.normalized,
+        },
+        sold: soldResult.comps.filter((comp) => comp.status === 'sold').map((comp) => project(comp, 'sold')),
+        active: activeResult.comps.filter((comp) => comp.status === 'active').map((comp) => project(comp, 'active')),
       };
     },
     captureManufacturedHomeComps: async (input) => {
@@ -7809,10 +7816,12 @@ export function registerLandosRoutes(app: Hono): void {
         lat: input.lat ?? undefined,
         lng: input.lng ?? undefined,
       });
+      // Sold window matches the operator's own search: last 12 months.
       const soldResult = await fetchRedfinLandComps({
         ...market,
         subjectAcres: input.subjectAcres,
         mode: 'sold',
+        dateWindowMonths: 12,
       });
       const activeResult = await fetchRedfinLandComps({
         ...market,
@@ -7832,12 +7841,18 @@ export function registerLandosRoutes(app: Hono): void {
         status: resultStatus,
         laneRoutes: [...soldResult.routes, ...activeResult.routes],
         searchVerified: soldResult.searchVerified || activeResult.searchVerified,
+        retrievalCounts: {
+          visible: soldResult.retrievalCounts.visible + activeResult.retrievalCounts.visible,
+          extracted: soldResult.retrievalCounts.extracted + activeResult.retrievalCounts.extracted,
+          normalized: soldResult.retrievalCounts.normalized + activeResult.retrievalCounts.normalized,
+        },
         note: `Sold board: ${soldResult.note} Active board: ${activeResult.note}`,
         sold: soldResult.comps.filter((comp) => comp.status === 'sold').map((comp) => ({
           address: comp.address, price: comp.price, acres: comp.acres, pricePerAcre: comp.pricePerAcre,
           url: comp.url, status: comp.status, saleDate: comp.soldDate ?? null,
           listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
           thumbnailUrl: comp.thumbnailUrl ?? null,
+          homeType: comp.homeType ?? null, homeSizeSqft: comp.homeSizeSqft ?? null,
           collectedAt: new Date().toISOString(),
         })),
         active: activeResult.comps.filter((comp) => comp.status === 'active').map((comp) => ({
@@ -7845,6 +7860,7 @@ export function registerLandosRoutes(app: Hono): void {
           url: comp.url, status: comp.status, saleDate: comp.listingDate ?? null,
           listingDate: comp.listingDate ?? null, daysOnMarket: comp.daysOnMarket ?? null,
           thumbnailUrl: comp.thumbnailUrl ?? null,
+          homeType: comp.homeType ?? null, homeSizeSqft: comp.homeSizeSqft ?? null,
           collectedAt: new Date().toISOString(),
         })),
       };
@@ -9104,10 +9120,14 @@ export function registerLandosRoutes(app: Hono): void {
       // yield more operator-visible rows than the frozen snapshot. The stored
       // snapshot is never downgraded and never rewritten.
       {
+        // Same source universe as the mission collector: the four approved
+        // marketplaces including Realtor.com fallback rows. A row the collector
+        // persists must survive this read, or refresh silently shrinks the
+        // candidate universe.
         const persistedCompRows = listComps({ dealCardId }).filter((row) => {
           const source = `${row.canonical_source ?? ''} ${row.source_label ?? ''}`;
-          if (/home\s*harvest|homeharvest|realtor|realie|really\.?ai/i.test(source)) return false;
-          return /landportal|zillow|redfin/i.test(source);
+          if (/home\s*harvest|homeharvest|realie|really\.?ai/i.test(source)) return false;
+          return /landportal|zillow|redfin|realtor(?:\.com)?/i.test(source);
         });
         const visibleCompRowCount = (comps: SnapshotComps): number =>
           comps.sold.length + comps.active.length + (comps.askingReferences?.length ?? 0) + comps.landHomeOnly.length;

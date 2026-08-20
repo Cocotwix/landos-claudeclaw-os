@@ -131,6 +131,9 @@ export interface LandMarketplaceResult {
    */
   laneRoutes?: CompLaneRouteOutcome[];
   searchVerified?: boolean | null;
+  /** visible → extracted → normalized retrieval funnel, retained so a false
+   * zero (extraction/parsing loss) is distinguishable from an empty market. */
+  retrievalCounts?: { visible: number; extracted: number; normalized: number } | null;
 }
 
 export interface ExactAddressWebResult {
@@ -1786,6 +1789,7 @@ function marketplaceProviderAdapter(input: {
           // empty result was a fact about the market or about the retrieval.
           searchVerified: execution.searchVerified ?? null,
           laneRoutes: execution.laneRoutes ?? null,
+          retrievalCounts: execution.retrievalCounts ?? null,
         },
         subjectClassification: 'context_only',
         strength: 'provider_observed',
@@ -2108,8 +2112,10 @@ export async function collectComparables(
         (error: unknown) => ({ result: null, error }),
       )
     : null;
-  const realtorPromise = deps.captureRealtorComps && canonicalInput
-    ? executePropertyProvider({
+  // Realtor.com is FALLBACK ONLY: it runs after LandPortal, Zillow, and Redfin
+  // settle, and only when their combined sold evidence is materially thin.
+  const runRealtorFallback = deps.captureRealtorComps && canonicalInput
+    ? () => executePropertyProvider({
         runId: ctx.runId,
         property: canonicalInput,
         adapter: marketplaceProviderAdapter({ laneId: 'realtor', providerId: 'realtor', execute: () => deps.captureRealtorComps!(marketInput) }),
@@ -2266,13 +2272,23 @@ export async function collectComparables(
   }
 
   // ── Supplements: Zillow and Redfin public land comps ─────────────────────
-  const [zillowOutcome, redfinOutcome, realtorOutcome, manufacturedHomesOutcome, exactAddressOutcome] = await Promise.all([
+  const [zillowOutcome, redfinOutcome, manufacturedHomesOutcome, exactAddressOutcome] = await Promise.all([
     zillowPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     redfinPromise ?? Promise.resolve({ result: null, error: null as unknown }),
-    realtorPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     manufacturedHomesPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     exactAddressPromise ?? Promise.resolve({ result: null, error: null as unknown }),
   ]);
+  // Realtor.com fallback decision: the first three sources are "materially
+  // thin" when they produced fewer than three sold candidates between them.
+  const primarySoldCount = landPortalAccepted
+    + (zillowOutcome.result?.sold?.length ?? 0)
+    + (redfinOutcome.result?.sold?.length ?? 0);
+  const realtorOutcome = runRealtorFallback && primarySoldCount < 3
+    ? await runRealtorFallback()
+    : { result: null, error: null as unknown };
+  if (runRealtorFallback && primarySoldCount >= 3) {
+    notes.push(`Realtor.com fallback not needed: LandPortal/Zillow/Redfin returned ${primarySoldCount} sold candidate(s).`);
+  }
   if (zillowOutcome.error) notes.push(`Zillow supplement unavailable: ${(zillowOutcome.error as Error)?.message ?? String(zillowOutcome.error)}.`);
   if (redfinOutcome.error) notes.push(`Redfin supplement unavailable: ${(redfinOutcome.error as Error)?.message ?? String(redfinOutcome.error)}.`);
   if (realtorOutcome.error) notes.push(`Realtor.com supplement unavailable: ${(realtorOutcome.error as Error)?.message ?? String(realtorOutcome.error)}.`);
@@ -2288,7 +2304,10 @@ export async function collectComparables(
   candidates.push(...marketplaceCandidates(realtor, 'Realtor.com', state));
   if (manufacturedHomes) {
     for (const row of manufacturedHomes.sold ?? []) {
-      if ((row.price ?? 0) <= 200_000 || (row.distanceMiles ?? Number.POSITIVE_INFINITY) > 5) continue;
+      // BUSINESS RULE: price never gates candidate entry. The 5-mile boundary
+      // is the lane's geographic definition; whether these sales clear any
+      // price level is an analysis question answered from the retained rows.
+      if ((row.distanceMiles ?? Number.POSITIVE_INFINITY) > 5) continue;
       candidates.push({
         id: row.providerId ?? null,
         provider: 'Zillow manufactured-home sold',
@@ -2310,13 +2329,16 @@ export async function collectComparables(
         homeSizeSqft: row.homeSizeSqft ?? null,
       } as CompRegistryCandidate);
     }
-    notes.push(`Manufactured-home sold lane: ${manufacturedHomes.status} (${manufacturedHomes.sold?.length ?? 0} returned; only >$200,000 sales proven within 5 miles retained).`);
+    notes.push(`Manufactured-home sold lane: ${manufacturedHomes.status} (${manufacturedHomes.sold?.length ?? 0} returned; sales proven within 5 miles retained, no price filter).`);
   } else if (marketInput.lat == null || marketInput.lng == null) {
     notes.push('Manufactured-home sold lane not run: confirmed subject coordinates are required for the 5-mile boundary.');
   }
-  if (zillow) notes.push(`Zillow: ${zillow.status} (${(zillow.sold?.length ?? 0)} sold, ${(zillow.active?.length ?? 0)} active).`);
-  if (redfin) notes.push(`Redfin: ${redfin.status} (${(redfin.sold?.length ?? 0)} sold, ${(redfin.active?.length ?? 0)} active).`);
-  if (realtor) notes.push(`Realtor.com: ${realtor.status} (${(realtor.sold?.length ?? 0)} sold, ${(realtor.active?.length ?? 0)} active).`);
+  const funnel = (result: LandMarketplaceResult | null): string => result?.retrievalCounts
+    ? ` [${result.retrievalCounts.visible} visible → ${result.retrievalCounts.extracted} extracted → ${result.retrievalCounts.normalized} normalized]`
+    : '';
+  if (zillow) notes.push(`Zillow: ${zillow.status} (${(zillow.sold?.length ?? 0)} sold, ${(zillow.active?.length ?? 0)} active)${funnel(zillow)}.`);
+  if (redfin) notes.push(`Redfin: ${redfin.status} (${(redfin.sold?.length ?? 0)} sold, ${(redfin.active?.length ?? 0)} active)${funnel(redfin)}.`);
+  if (realtor) notes.push(`Realtor.com fallback: ${realtor.status} (${(realtor.sold?.length ?? 0)} sold, ${(realtor.active?.length ?? 0)} active).`);
   if (exactAddress) notes.push(`Exact-address web discovery: ${exactAddress.status}; ${exactAddress.pages.length} property-specific page(s) retained. Persistence: ${exactAddress.persistence?.persisted ? 'stored on the canonical subject' : exactAddress.persistence?.reason ?? 'not attempted'}. ${exactAddress.note}`);
 
   // ── Persisted rows already accepted onto this card ───────────────────────
@@ -2365,7 +2387,10 @@ export async function collectComparables(
       attemptStatus: zillow?.status ?? (zillowOutcome.error ? 'failed' : null),
       failureReason: zillowOutcome.error ? (zillowOutcome.error as Error)?.message ?? String(zillowOutcome.error) : null,
       blockedReason: /blocked|disabled|unavailable/i.test(zillow?.status ?? '') ? zillow?.note ?? 'Provider was blocked, disabled, or unavailable.' : null,
-      candidates: zillow ? (zillow.sold?.length ?? 0) + (zillow.active?.length ?? 0) : null,
+      // visible cards on the page, not the post-filter count — a lane that saw
+      // 40 cards and kept 0 must be legible as an extraction/normalization
+      // problem, never as an empty market.
+      candidates: zillow ? zillow.retrievalCounts?.visible ?? (zillow.sold?.length ?? 0) + (zillow.active?.length ?? 0) : null,
       retained: zillow ? (zillow.sold?.length ?? 0) + (zillow.active?.length ?? 0) : null,
     },
     {
@@ -2373,11 +2398,11 @@ export async function collectComparables(
       attemptStatus: redfin?.status ?? (redfinOutcome.error ? 'failed' : null),
       failureReason: redfinOutcome.error ? (redfinOutcome.error as Error)?.message ?? String(redfinOutcome.error) : null,
       blockedReason: /blocked|disabled|unavailable/i.test(redfin?.status ?? '') ? redfin?.note ?? 'Provider was blocked, disabled, or unavailable.' : null,
-      candidates: redfin ? (redfin.sold?.length ?? 0) + (redfin.active?.length ?? 0) : null,
+      candidates: redfin ? redfin.retrievalCounts?.visible ?? (redfin.sold?.length ?? 0) + (redfin.active?.length ?? 0) : null,
       retained: redfin ? (redfin.sold?.length ?? 0) + (redfin.active?.length ?? 0) : null,
     },
     {
-      lane: 'realtor', attempted: !!realtorPromise,
+      lane: 'realtor', attempted: !!runRealtorFallback && primarySoldCount < 3,
       attemptStatus: realtor?.status ?? (realtorOutcome.error ? 'failed' : null),
       failureReason: realtorOutcome.error ? (realtorOutcome.error as Error)?.message ?? String(realtorOutcome.error) : null,
       blockedReason: /blocked|disabled|unavailable/i.test(realtor?.status ?? '') ? realtor?.note ?? 'Provider was blocked, disabled, or unavailable.' : null,

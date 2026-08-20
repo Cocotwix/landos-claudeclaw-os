@@ -50,17 +50,28 @@ describe('parsePriceText / parseListingStatus / zillowStatusType', () => {
 
 describe('normalizeComps', () => {
   const base = (o: Partial<ExtractedComp>): ExtractedComp => ({ address: null, price: 20000, acres: 0.3, pricePerAcre: null, status: 'active', date: null, url: null, source: 'Zillow', ...o });
-  it('bands by acreage, sanity-checks price, dedupes, computes price/acre', () => {
+  it('dedupes and computes price/acre WITHOUT any price cap or default acreage band', () => {
+    // BUSINESS RULE: price never decides candidate entry, and discovery does
+    // not band by acreage by default — classification analyzes both later.
     const rows = [
       base({ address: 'A', price: 30000, acres: 0.3 }),
       base({ address: 'A', price: 30000, acres: 0.3 }), // dup
-      base({ address: 'B', price: 500000, acres: 0.3 }), // price too high
-      base({ address: 'C', price: 30000, acres: 9 }),    // out of band
+      base({ address: 'B', price: 500000, acres: 0.3 }), // high price is RETAINED
+      base({ address: 'C', price: 30000, acres: 9 }),    // off-band acreage is RETAINED
     ];
     const out = normalizeComps(rows, 0.3);
-    expect(out).toHaveLength(1);
-    expect(out[0].address).toBe('A');
+    expect(out).toHaveLength(3);
+    expect(out.map((r) => r.address)).toEqual(['A', 'B', 'C']);
     expect(out[0].pricePerAcre).toBe(100000);
+  });
+  it('still applies the acreage band when explicitly opted in', () => {
+    const rows = [base({ address: 'A', price: 30000, acres: 0.3 }), base({ address: 'C', price: 30000, acres: 9 })];
+    const out = normalizeComps(rows, 0.3, { applyBand: true });
+    expect(out.map((r) => r.address)).toEqual(['A']);
+  });
+  it('drops only rows without a real positive price', () => {
+    const out = normalizeComps([base({ address: 'A', price: 0 }), base({ address: 'B', price: 12_500_000 })], null);
+    expect(out.map((r) => r.address)).toEqual(['B']);
   });
 });
 
@@ -72,9 +83,14 @@ describe('parseZillowStructured (__NEXT_DATA__)', () => {
       { unformattedPrice: 500000, address: 'Big Ranch Rd', statusType: 'FOR_SALE', hdpData: { homeInfo: { lotAreaValue: 50, lotAreaUnit: 'acres' } } },
     ] } } } } },
   });
-  it('extracts in-band land comps with status, acres, price/acre, and absolute URLs', () => {
+  it('extracts land comps with status, acres, price/acre, and absolute URLs, retaining large/expensive rows', () => {
     const comps = parseZillowStructured(nextData, 0.3);
-    expect(comps).toHaveLength(2); // the 50-acre / $500k row is filtered
+    // BUSINESS RULE: the 50-acre / $500k row is a real candidate — no price cap
+    // and no acreage band at discovery time.
+    expect(comps).toHaveLength(3);
+    const ranch = comps.find((c) => c.address === 'Big Ranch Rd')!;
+    expect(ranch.price).toBe(500000);
+    expect(ranch.acres).toBe(50);
     const lee = comps.find((c) => c.address?.startsWith('5413 Lee'))!;
     expect(lee.status).toBe('active');
     expect(lee.acres).toBe(0.33);

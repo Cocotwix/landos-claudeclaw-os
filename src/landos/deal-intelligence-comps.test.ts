@@ -594,7 +594,7 @@ describe('policy verdicts travel with the row', () => {
     expect(set.evidence.some((b) => /supplement cap is 2/.test(b.reason))).toBe(true);
   });
 
-  it('retains only recent nearby $200k+ manufactured sales in the land-home lane', () => {
+  it('retains recent nearby manufactured sales in the land-home lane without a price gate', () => {
     const manufactured = (address: string, overrides: Partial<Decision['candidate']> = {}): Decision =>
       decision({
         role: 'land_home_only',
@@ -618,13 +618,14 @@ describe('policy verdicts travel with the row', () => {
     const set = select([
       manufactured('1 Qualifying Home Rd'),
       manufactured('2 Too Far Rd', { distanceMiles: 5.1 }),
-      manufactured('3 Too Cheap Rd', { price: 200_000 }),
+      // BUSINESS RULE: price never gates retention — a $200k sale stays.
+      manufactured('3 Lower Price Rd', { price: 200_000 }),
       manufactured('4 Too Old Rd', { saleOrListDate: '2022-01-01' }),
     ]);
 
-    expect(set.landHomeOnly).toHaveLength(1);
-    expect(set.landHomeOnly[0].address).toBe('1 Qualifying Home Rd');
-    expect(set.landHomeOnly[0].whyUseful).toMatch(/above \$200,000 within five miles/i);
+    expect(set.landHomeOnly).toHaveLength(2);
+    expect(set.landHomeOnly.map((row) => row.address)).toEqual(['1 Qualifying Home Rd', '3 Lower Price Rd']);
+    expect(set.landHomeOnly[0].whyUseful).toMatch(/within five miles/i);
     expect(set.landHomeOnly[0]).toMatchObject({ homeType: 'MANUFACTURED', yearBuilt: 2021, homeSizeSqft: 1568 });
     expect(set.sold).toHaveLength(0);
   });

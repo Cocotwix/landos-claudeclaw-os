@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { distanceMiles, zillowLandUrl, zillowSearchRoutes, normalizeZillowListings, fetchZillowLandComps, type RawZillowListing } from './zillow-land-comps.js';
+import { distanceMiles, zillowLandUrl, zillowSearchRoutes, zillowZipFilteredUrl, normalizeZillowListings, fetchZillowLandComps, type RawZillowListing } from './zillow-land-comps.js';
 
 describe('zillowLandUrl', () => {
   it('builds a public Lots/Land locality URL (geographic, not ZIP)', () => {
@@ -36,23 +36,28 @@ describe('normalizeZillowListings', () => {
     { address: '5413 Lee ST, LEHIGH ACRES, FL 33971', price: 31000, acres: 0.33, url: 'u1' },
     { address: '1013 Wells AVE, LEHIGH ACRES, FL 33972', price: 24500, acres: 0.5, url: 'u2' },
     { address: '5413 Lee ST, LEHIGH ACRES, FL 33971', price: 31000, acres: 0.33, url: 'u1' }, // dup
-    { address: 'Big Ranch Rd, FL', price: 350000, acres: 6, url: 'u3' }, // out of price + acre band
+    { address: 'Big Ranch Rd, FL', price: 350000, acres: 6, url: 'u3' }, // large + expensive: RETAINED
     { address: null, price: 20000, acres: 0.25, url: 'u4' }, // no address
   ];
-  it('normalizes, filters to acreage band, sanitizes price, dedupes by address', () => {
+  it('normalizes and dedupes by address WITHOUT any price cap or acreage band', () => {
+    // BUSINESS RULE: price and acreage never decide whether a candidate is
+    // discovered; classification analyzes them after retrieval.
     const out = normalizeZillowListings(raw, 0.25);
-    expect(out).toHaveLength(2);
+    expect(out).toHaveLength(3);
     expect(out[0].address).toContain('5413 Lee ST');
     expect(out[0].pricePerAcre).toBe(Math.round(31000 / 0.33));
+    expect(out.some((c) => c.price === 350000 && c.acres === 6)).toBe(true);
     expect(out.every((c) => c.source === 'Zillow')).toBe(true);
   });
 
-  it('keeps only sold manufactured-home rows above $200k without applying the vacant-land acreage band', () => {
+  it('keeps every sold manufactured-home row regardless of price', () => {
+    // The former $200k floor was a retrieval filter; price questions are now
+    // answered analytically from the retained candidates.
     const out = normalizeZillowListings([
       { address: '1 Home Rd, Easley, SC 29640', price: 250_000, acres: 2, url: 'a', status: 'sold', lat: 34.8, lng: -82.5, soldDate: '2025-10-01', homeType: 'MANUFACTURED', yearBuilt: 2021, homeSizeSqft: 1568 },
       { address: '2 Home Rd, Easley, SC 29640', price: 200_000, acres: 2, url: 'b', status: 'sold', lat: 34.81, lng: -82.51 },
     ], null, 'sold', 'manufactured');
-    expect(out).toHaveLength(1);
+    expect(out).toHaveLength(2);
     expect(out[0]).toMatchObject({ price: 250_000, lat: 34.8, lng: -82.5, soldDate: '2025-10-01', homeType: 'MANUFACTURED', yearBuilt: 2021, homeSizeSqft: 1568 });
     expect(distanceMiles({ lat: 34.8, lng: -82.5 }, { lat: 34.81, lng: -82.51 })).toBeLessThan(5);
   });
@@ -99,7 +104,7 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
       force: true, connect: fakeConnect(rows) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
     });
     expect(r.comps.map((comp) => comp.address)).toEqual(['1810 Wells AVE, LEHIGH ACRES, FL 33972']);
-    expect(r.note).toMatch(/rejected 3 row/i);
+    expect(r.note).toMatch(/3 row\(s\) screened out \(state\/status\), never on price or acreage/i);
   });
 
   it('reports blocked (never throws) when anti-bot fires with no listings', async () => {
@@ -164,9 +169,9 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
     expect(r.status).toBe('disabled');
   });
 
-  it('uses coordinates then city/county locality and retries a wrong resolved market', async () => {
+  it('uses ZIP then coordinates then city/county locality and retries wrong resolved markets', async () => {
     const input = { lat: 26.61, lng: -81.64, zip: '33971', city: 'Lehigh Acres', county: 'Lee', state: 'FL', subjectAcres: 0.25 };
-    expect(zillowSearchRoutes(input).map((route) => route.kind)).toEqual(['coordinates', 'locality']);
+    expect(zillowSearchRoutes(input).map((route) => route.kind)).toEqual(['zip', 'coordinates', 'locality']);
     let current = '';
     const connect = async () => ({
       async newPage() {
@@ -175,14 +180,17 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
           async goto(url: string) { current = url; },
           async evaluate(fn: unknown) {
             const src = String(fn);
+            if (src.includes('location.pathname')) return '/lehigh-acres-fl-33971/' as never;
             if (src.includes('press and hold')) return false as never;
             if (src.includes('property-card')) return {
-              listings: current.includes('/homes/for_sale/')
+              // Both searchQueryState routes (ZIP + coordinates) resolve to a
+              // wrong market in this scenario; the locality route recovers.
+              listings: current.includes('searchQueryState')
                 ? [{ address: '327 S 3rd St E, Magrath, AB T0K 1J0', price: 75_000, acres: 0.4, url: 'wrong' }]
                 : rawListings,
               nextData: null,
             } as never;
-            if (src.includes('document.title')) return { url: current, text: current.includes('/33971/') ? 'Land for sale ZIP 33971 FL' : 'Taber Municipal District AB' } as never;
+            if (src.includes('document.title')) return { url: current, text: current.includes('searchQueryState') ? 'Taber Municipal District AB' : 'Land for sale Lehigh Acres FL' } as never;
             return undefined as never;
           },
         };
@@ -192,6 +200,28 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
     const result = await fetchZillowLandComps(input, { force: true, connect: connect as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1 });
     expect(result.status).toBe('retrieved');
     expect(result.routeTried).toContain('/lehigh-acres-fl/');
-    expect(result.note).toMatch(/automatically correcting 1 wrong-geography route/i);
+    expect(result.note).toMatch(/automatically correcting 2 wrong-geography route/i);
+    expect(result.routes.filter((route) => !route.marketVerified)).toHaveLength(2);
+  });
+
+  it('derives an operator-style large-acreage ZIP search: lot minimum, houses included, no maximum and no price filter', () => {
+    const input = {
+      zip: '37062', state: 'TN', city: 'Fairview', county: 'Williamson',
+      subjectAcres: 76, mode: 'sold' as const, dateWindowMonths: 12 as const, lotMinAcres: 19,
+    };
+    const routes = zillowSearchRoutes(input);
+    // Step 1: the bare ZIP page, so Zillow resolves the region itself (a
+    // searchQueryState without a region is replaced by Zillow's default market).
+    expect(routes[0]?.kind).toBe('zip');
+    expect(routes[0]?.url).toBe('https://www.zillow.com/homes/37062_rb/');
+    // Step 2: operator-style filters applied on the resolved region path.
+    const decoded = decodeURIComponent(zillowZipFilteredUrl('/fairview-tn-37062/', input));
+    expect(decoded).toContain('https://www.zillow.com/fairview-tn-37062/sold/');
+    expect(decoded).toContain(`"lotSize":{"min":${Math.round(19 * 43_560)}}`);
+    expect(decoded).toContain('"house":{"value":true}');
+    expect(decoded).toContain('"isRecentlySold":{"value":true}');
+    expect(decoded).toContain('"doz":{"value":"12m"}');
+    expect(decoded).not.toMatch(/lotSize":\{[^}]*max/);
+    expect(decoded).not.toMatch(/price/i);
   });
 });

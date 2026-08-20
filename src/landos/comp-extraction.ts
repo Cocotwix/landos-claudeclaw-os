@@ -21,6 +21,11 @@ export interface ExtractedComp {
   date: string | null;
   url: string | null;
   source: CompSource;
+  lat?: number | null;
+  lng?: number | null;
+  homeType?: string | null;
+  yearBuilt?: number | null;
+  homeSizeSqft?: number | null;
 }
 
 const SQFT_PER_ACRE = 43560;
@@ -84,25 +89,26 @@ function acreBand(subjectAcres: number | null | undefined): { lo: number; hi: nu
     : { lo: 0.1, hi: 1.0 };
 }
 
-/** Sane-priced land band + dedupe + price-per-acre. Shared normalizer so every
- *  source produces identical, comparable rows. Never fabricates.
+/** Dedupe + price-per-acre. Shared normalizer so every source produces
+ *  identical, comparable rows. Never fabricates.
  *
- *  Scraped sources (Zillow/Redfin) default to a tight small-lot sanity band to
- *  drop garbage. Curated sources (LandPortal "similar sales") pass applyBand:false
- *  + a wide price range so real rural comps ($189k / 8ac) are NOT dropped. */
+ *  BUSINESS RULE: price never decides whether a comp enters the candidate
+ *  universe. There is deliberately no min/max price option here — a row with a
+ *  real price is retained regardless of amount, and downstream classification
+ *  (Core / Directional / Excluded) is where price is analyzed. The acreage band
+ *  is likewise a discovery-time option that defaults OFF; classification owns
+ *  acreage comparability. */
 export function normalizeComps(
   rows: ExtractedComp[],
   subjectAcres: number | null,
-  opts: { maxOut?: number; priceMin?: number; priceMax?: number; applyBand?: boolean } = {},
+  opts: { maxOut?: number; applyBand?: boolean } = {},
 ): ExtractedComp[] {
   const band = acreBand(subjectAcres);
-  const priceMin = opts.priceMin ?? 3000;
-  const priceMax = opts.priceMax ?? 150000;
-  const applyBand = opts.applyBand ?? true;
+  const applyBand = opts.applyBand ?? false;
   const seen = new Set<string>();
   const out: ExtractedComp[] = [];
   for (const r of rows) {
-    if (!(typeof r.price === 'number') || !Number.isFinite(r.price) || r.price < priceMin || r.price > priceMax) continue;
+    if (!(typeof r.price === 'number') || !Number.isFinite(r.price) || r.price <= 0) continue;
     const acres = typeof r.acres === 'number' && Number.isFinite(r.acres) && r.acres > 0 ? r.acres : null;
     if (applyBand && acres != null && (acres < band.lo || acres > band.hi)) continue;
     const key = (r.address || `${r.source}:${r.price}:${acres ?? '?'}`).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -117,9 +123,14 @@ export function normalizeComps(
       date: r.date ?? null,
       url: r.url ?? null,
       source: r.source,
+      lat: r.lat ?? null,
+      lng: r.lng ?? null,
+      homeType: r.homeType ?? null,
+      yearBuilt: r.yearBuilt ?? null,
+      homeSizeSqft: r.homeSizeSqft ?? null,
     });
   }
-  return out.slice(0, opts.maxOut ?? 8);
+  return out.slice(0, opts.maxOut ?? 40);
 }
 
 // ── Zillow structured (__NEXT_DATA__ / search results JSON) ──────────────────
@@ -203,7 +214,22 @@ export function parseZillowStructured(rawJsonOrObj: string | unknown, subjectAcr
       acres = /acre/.test(unit) ? info.lotAreaValue : Math.round((info.lotAreaValue / SQFT_PER_ACRE) * 100) / 100;
     }
     const url = it.detailUrl ? (it.detailUrl.startsWith('http') ? it.detailUrl : `https://www.zillow.com${it.detailUrl}`) : null;
-    rows.push({ address, price, acres, pricePerAcre: null, status: zillowStatusType(it.statusType ?? it.homeStatus), date: null, url, source: 'Zillow' });
+    const soldStamp = it.dateSold ?? it.soldDate ?? info?.dateSold;
+    const date = (() => {
+      if (soldStamp == null) return null;
+      const numeric = typeof soldStamp === 'number' ? soldStamp : /^\d{10,13}$/.test(String(soldStamp)) ? Number(soldStamp) : null;
+      const stamp = numeric != null ? (numeric < 10_000_000_000 ? numeric * 1000 : numeric) : Date.parse(String(soldStamp));
+      return Number.isFinite(stamp) ? new Date(stamp).toISOString().slice(0, 10) : null;
+    })();
+    rows.push({
+      address, price, acres, pricePerAcre: null,
+      status: zillowStatusType(it.statusType ?? it.homeStatus), date, url, source: 'Zillow',
+      lat: it.latLong?.latitude ?? it.latitude ?? info?.latitude ?? null,
+      lng: it.latLong?.longitude ?? it.longitude ?? info?.longitude ?? null,
+      homeType: info?.homeType ?? null,
+      yearBuilt: info?.yearBuilt ?? null,
+      homeSizeSqft: info?.livingArea ?? null,
+    });
   }
   return normalizeComps(rows, subjectAcres);
 }
@@ -239,7 +265,7 @@ export function parseLandPortalCompRows(rows: Array<string> | null | undefined, 
       source: 'LandPortal',
     });
   }
-  // LandPortal already curated these as "similar sales" — keep them (no tight
-  // small-lot band, wide price range) instead of re-filtering real rural comps.
-  return normalizeComps(out, subjectAcres, { applyBand: false, priceMin: 1000, priceMax: 5_000_000, maxOut: 12 });
+  // LandPortal already curated these as "similar sales" — keep them all;
+  // price never gates candidate entry.
+  return normalizeComps(out, subjectAcres, { applyBand: false, maxOut: 12 });
 }

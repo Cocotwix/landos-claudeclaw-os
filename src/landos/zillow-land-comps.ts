@@ -19,6 +19,7 @@ import { automationBrowserConfig, openDisposableContextHandle } from './automati
 import { parseZillowStructured, parseListingStatus, zillowListResults, type CompStatus } from './comp-extraction.js';
 import { addressStateCode } from './comp-registry.js';
 import { reconcileCompAddress } from './comp-location-reconciliation.js';
+import { laneSearchVerified, type CompLaneRouteOutcome } from './comp-lane-accountability.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
 // so DOM globals are declared as `any` purely to satisfy the Node typechecker.
@@ -52,6 +53,13 @@ export interface ZillowCompsResult {
   /** Present for the dedicated manufactured-home lane, including zero-result
    * searches, so the UI can prove what was searched and why rows were excluded. */
   searchProof?: ManufacturedHomeSearchProof;
+  /** What every route actually did (visible cards vs. what survived), so a
+   * false-zero retrieval is distinguishable from an empty market. */
+  routes: CompLaneRouteOutcome[];
+  searchVerified: boolean;
+  /** visible = result cards/structured rows the page exposed; extracted = rows
+   * with a readable price; normalized = rows that entered the candidate set. */
+  retrievalCounts: { visible: number; extracted: number; normalized: number };
 }
 
 export interface ManufacturedHomeSearchProof {
@@ -79,6 +87,10 @@ export interface ZillowFetchInput {
   radiusMiles?: 5 | 10 | 15 | 20;
   dateWindowMonths?: 12 | 24;
   propertyType?: 'land' | 'manufactured';
+  /** Minimum lot size for the search itself (operator-style "20+ acres"). When
+   * set, the search also includes improved (house) results so large-acreage
+   * improved sales are discovered; classification decides their role later. */
+  lotMinAcres?: number | null;
 }
 
 export interface RawZillowListing {
@@ -108,16 +120,92 @@ export function zillowLandUrl(city: string, state: string): string {
   return `https://www.zillow.com/${citySlug}-${st}/land/`;
 }
 
-export interface ZillowSearchRoute { kind: 'coordinates' | 'road' | 'locality' | 'parcel'; label: string; url: string }
+export interface ZillowSearchRoute { kind: 'zip' | 'coordinates' | 'road' | 'locality' | 'parcel'; label: string; url: string }
 
-/** Search the strongest subject geography first. Coordinates constrain Zillow's
- * map directly; ZIP, real city, and county are deterministic recovery routes. */
+/** The filterState shared by the ZIP and coordinates routes. A lot-size minimum
+ * reproduces the operator's own "20+ acres" search; when it is present the
+ * search also includes houses, because a large-acreage improved sale is market
+ * evidence that must be DISCOVERED first and classified later. There is never a
+ * maximum lot size and never a price filter of any kind. */
+function zillowFilterState(input: ZillowFetchInput): Record<string, unknown> {
+  const sold = input.mode === 'sold';
+  const manufactured = input.propertyType === 'manufactured';
+  const lotMinAcres = manufactured ? null : input.lotMinAcres ?? null;
+  const includeHouses = lotMinAcres != null;
+  return {
+    land: { value: !manufactured },
+    house: { value: !manufactured && includeHouses },
+    condo: { value: false },
+    townhouse: { value: false },
+    apartment: { value: false },
+    manufactured: { value: manufactured },
+    ...(lotMinAcres != null ? { lotSize: { min: Math.round(lotMinAcres * 43_560) } } : {}),
+    ...(sold ? { isRecentlySold: { value: true }, doz: { value: input.dateWindowMonths === 24 ? '24m' : '12m' } } : {}),
+  };
+}
+
+/** Zillow's own resolved region state, dug out of the ZIP page's __NEXT_DATA__.
+ * Carrying it into the filtered request pins the search to the subject's
+ * market; without it Zillow silently swaps in its default market. */
+export function zillowRegionQueryState(rawJsonOrObj: string | unknown): { mapBounds?: unknown; regionSelection?: unknown; usersSearchTerm?: string } | null {
+  let parsed: unknown = rawJsonOrObj;
+  if (typeof rawJsonOrObj === 'string') {
+    try { parsed = JSON.parse(rawJsonOrObj); } catch { return null; }
+  }
+  const anyp = parsed as Record<string, any> | null;
+  const qs = anyp?.props?.pageProps?.searchPageState?.queryState ?? anyp?.queryState ?? null;
+  if (!qs || typeof qs !== 'object') return null;
+  const out: { mapBounds?: unknown; regionSelection?: unknown; usersSearchTerm?: string } = {};
+  if (qs.mapBounds && typeof qs.mapBounds === 'object') out.mapBounds = qs.mapBounds;
+  if (Array.isArray(qs.regionSelection) && qs.regionSelection.length) out.regionSelection = qs.regionSelection;
+  if (typeof qs.usersSearchTerm === 'string' && qs.usersSearchTerm.trim()) out.usersSearchTerm = qs.usersSearchTerm;
+  return out.mapBounds || out.regionSelection ? out : null;
+}
+
+/** The operator-style filtered URL for a ZIP region Zillow itself resolved.
+ * The region (path plus, when available, Zillow's own regionSelection and
+ * mapBounds) carries the market, so the filterState (sold window, lot minimum,
+ * property types — never a price filter) is honored instead of being replaced
+ * by Zillow's default market. */
+export function zillowZipFilteredUrl(
+  regionPath: string,
+  input: ZillowFetchInput,
+  region?: { mapBounds?: unknown; regionSelection?: unknown; usersSearchTerm?: string } | null,
+): string {
+  const cleanPath = `/${regionPath.replace(/^\/+|\/+$/g, '')}`;
+  const board = input.mode === 'sold' ? '/sold' : '';
+  const searchQueryState = encodeURIComponent(JSON.stringify({
+    ...(region?.mapBounds ? { mapBounds: region.mapBounds } : {}),
+    ...(region?.regionSelection ? { regionSelection: region.regionSelection } : {}),
+    ...(region?.usersSearchTerm ? { usersSearchTerm: region.usersSearchTerm } : {}),
+    filterState: zillowFilterState(input),
+    isListVisible: true,
+  }));
+  return `https://www.zillow.com${cleanPath}${board}/?searchQueryState=${searchQueryState}`;
+}
+
+/** Search the strongest subject geography first. The bare ZIP reproduces the
+ * operator's own search; coordinates constrain Zillow's map directly; road,
+ * city, and county are deterministic recovery routes. */
 export function zillowSearchRoutes(input: ZillowFetchInput): ZillowSearchRoute[] {
   const state = (input.state ?? '').trim().toLowerCase();
   const sold = input.mode === 'sold';
   const radius = input.radiusMiles ?? 5;
   const routes: ZillowSearchRoute[] = [];
   const manufactured = input.propertyType === 'manufactured';
+  const soldBoard = sold ? 'recently_sold' : manufactured ? 'for_sale/manufactured_type' : 'for_sale/land_type';
+  const zip = (input.zip ?? '').match(/\b\d{5}\b/)?.[0];
+  if (zip) {
+    // Two-step route: Zillow must resolve the ZIP to its own region path first
+    // (a searchQueryState without a region is silently replaced by Zillow's
+    // default market). The fetch loop follows up with zillowZipFilteredUrl on
+    // the resolved region path.
+    routes.push({
+      kind: 'zip',
+      label: `ZIP ${zip}${input.lotMinAcres != null && !manufactured ? `, ${input.lotMinAcres}+ acres` : ''}${sold ? ', sold' : ''}`,
+      url: `https://www.zillow.com/homes/${zip}_rb/`,
+    });
+  }
   if (Number.isFinite(input.lat) && Number.isFinite(input.lng)) {
     const lat = input.lat as number;
     const lng = input.lng as number;
@@ -125,20 +213,11 @@ export function zillowSearchRoutes(input: ZillowFetchInput): ZillowSearchRoute[]
     const lngDelta = radius / Math.max(35, 69 * Math.cos(lat * Math.PI / 180));
     const searchQueryState = encodeURIComponent(JSON.stringify({
       mapBounds: { north: lat + latDelta, south: lat - latDelta, east: lng + lngDelta, west: lng - lngDelta },
-      filterState: {
-        land: { value: !manufactured },
-        house: { value: false },
-        condo: { value: false },
-        townhouse: { value: false },
-        apartment: { value: false },
-        manufactured: { value: manufactured },
-        ...(sold ? { isRecentlySold: { value: true }, doz: { value: input.dateWindowMonths === 24 ? '24m' : '12m' } } : {}),
-      },
+      filterState: zillowFilterState(input),
       isListVisible: true,
     }));
-    routes.push({ kind: 'coordinates', label: `${lat.toFixed(5)}, ${lng.toFixed(5)} within ${radius} miles`, url: `https://www.zillow.com/homes/${sold ? 'recently_sold' : manufactured ? 'for_sale/manufactured_type' : 'for_sale/land_type'}/?searchQueryState=${searchQueryState}` });
+    routes.push({ kind: 'coordinates', label: `${lat.toFixed(5)}, ${lng.toFixed(5)} within ${radius} miles`, url: `https://www.zillow.com/homes/${soldBoard}/?searchQueryState=${searchQueryState}` });
   }
-  const zip = (input.zip ?? '').match(/\b\d{5}\b/)?.[0];
   const road = (input.address ?? '').replace(/,.*$/, '').trim();
   if (road && input.city?.trim() && state) {
     const place = [road, input.city.trim(), state.toUpperCase(), zip].filter(Boolean).join(' ');
@@ -166,26 +245,22 @@ export function zillowSearchRoutes(input: ZillowFetchInput): ZillowSearchRoute[]
   return routes.filter((route, index, all) => all.findIndex((candidate) => candidate.url === route.url) === index);
 }
 
-/** Normalize + filter raw listings to same-acreage-band, sane-priced land comps,
- *  deduped by address. Never fabricates; drops rows without a price+address. */
+/** Normalize raw listings into deduped candidate rows. Never fabricates; drops
+ *  rows without a price+address. BUSINESS RULE: no price minimum, maximum, or
+ *  acreage band here — discovery retains every real candidate and downstream
+ *  classification (Core / Directional / Excluded) analyzes price and acreage. */
 export function normalizeZillowListings(
   raw: RawZillowListing[],
-  subjectAcres: number | null,
+  _subjectAcres: number | null,
   mode: 'sold' | 'active' = 'active',
-  propertyType: 'land' | 'manufactured' = 'land',
+  _propertyType: 'land' | 'manufactured' = 'land',
 ): ZillowLandComp[] {
-  const band = subjectAcres != null && subjectAcres > 0
-    ? { lo: Math.max(0.05, subjectAcres * 0.5), hi: subjectAcres * 2.5 }
-    : { lo: 0.1, hi: 1.0 };
   const seen = new Set<string>();
   const out: ZillowLandComp[] = [];
   for (const r of raw) {
     const price = typeof r.price === 'number' ? r.price : null;
     if (!r.address || price == null || price <= 0) continue;
-    if (price < 1000 || price > 5_000_000) continue; // broad land-price sanity band
     const acres = typeof r.acres === 'number' && Number.isFinite(r.acres) && r.acres > 0 ? r.acres : null;
-    if (propertyType === 'land' && acres != null && (acres < band.lo || acres > band.hi)) continue;
-    if (propertyType === 'manufactured' && price <= 200_000) continue;
     const key = r.address.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -216,7 +291,7 @@ export function normalizeZillowListings(
       homeSizeSqft: r.homeSizeSqft ?? null,
     });
   }
-  return out.slice(0, 8);
+  return out.slice(0, 40);
 }
 
 // ── Disposable-profile browser capture (injectable) ─────────────────────────
@@ -282,14 +357,19 @@ const EXTRACT_ZILLOW = (): RawZillowRead => {
     const link = ((c.querySelector('a[href*="/homedetails/"]') || {}) as any).href || null;
     const sm2 = txt.match(/\b(sold|pending|under contract|for sale|coming soon)\b/i);
     const status = sm2 ? sm2[1] : null;
-    if (price && address && !seen.has(address)) { seen.add(address); out.push({ price, acres, address, url: link, status }); }
+    // A positive bed/bath count marks the card as an improved sale so downstream
+    // classification can keep it as directional evidence instead of losing it.
+    const residential = /\b[1-9]\d*\s*(?:bds?|beds?)\b/i.test(txt) || /\b[1-9]\d*\s*(?:ba|baths?)\b/i.test(txt);
+    const hm = txt.match(/([\d,]{3,})\s*sqft\b(?!\s*lot)/i);
+    const homeSizeSqft = residential && hm ? Number(hm[1].replace(/,/g, '')) || null : null;
+    if (price && address && !seen.has(address)) { seen.add(address); out.push({ price, acres, address, url: link, status, homeType: residential ? 'Residential (beds/baths listed)' : null, homeSizeSqft }); }
   }
   const nd = (document as any).querySelector('#__NEXT_DATA__');
   const nextData = nd && nd.textContent ? String(nd.textContent) : null;
   return { listings: out, nextData };
 };
 
-const IS_BLOCKED = (): boolean => /press and hold|are you a human|captcha|verify you are|unusual traffic|pardon our interruption/i.test(((document as any).body?.innerText || '').slice(0, 4000));
+const IS_BLOCKED = (): boolean => /press and hold|are you a human|captcha|verify you are|unusual traffic|pardon our interruption|access to this page has been denied|access denied/i.test(`${(document as any).title ?? ''} ${((document as any).body?.innerText || '').slice(0, 4000)}`);
 const READ_PAGE_GEOGRAPHY = (): { url: string; text: string } => ({
   url: String((window as any).location?.href ?? ''),
   text: `${(document as any).title ?? ''} ${((document as any).body?.innerText ?? '').slice(0, 5000)}`,
@@ -377,14 +457,20 @@ export function verifyZillowResolvedGeography(
   const addressed = listings.filter((row) => !!row.address);
   if (expectedState && addressed.some((row) => addressStateCode(row.address ?? '') === expectedState)) return { valid: true, reason: 'listing addresses match the subject state' };
   if (expectedState && addressed.length > 0) return { valid: false, reason: `listing addresses do not match ${expectedState}` };
-  const haystack = normalizedGeo(`${page?.url ?? ''} ${page?.text ?? ''}`);
+  // The query string is the REQUEST, not the resolution: Zillow keeps the
+  // requested searchQueryState in the URL even when it silently swaps in its
+  // default market, so only the resolved path + page text may verify geography.
+  const pageUrlNoQuery = (page?.url ?? '').split('?')[0];
+  const haystack = normalizedGeo(`${pageUrlNoQuery} ${page?.text ?? ''}`);
   const zip = (input.zip ?? '').match(/\b\d{5}\b/)?.[0];
   const city = normalizedGeo(input.city ?? '');
   const county = normalizedGeo((input.county ?? '').replace(/\s+county$/i, ''));
   const state = normalizedGeo(expectedState);
   const routeRetained = route.kind === 'coordinates'
     ? /searchquerystate/i.test(page?.url ?? route.url)
-    : haystack.includes(normalizedGeo(route.url));
+    : route.kind === 'zip'
+      ? !!zip && normalizedGeo(pageUrlNoQuery).includes(zip)
+      : haystack.includes(normalizedGeo(route.url.split('?')[0]));
   const placeMatched = (!!zip && haystack.includes(zip)) || (!!city && haystack.includes(city)) || (!!county && haystack.includes(county));
   if (routeRetained && placeMatched && (!state || haystack.includes(state))) return { valid: true, reason: 'resolved page matches subject geography' };
   return { valid: false, reason: `resolved page did not verify ${[input.city, input.county, input.zip, expectedState].filter(Boolean).join(' / ')}` };
@@ -395,7 +481,20 @@ export function verifyZillowResolvedGeography(
  * Gated on live-browser mode (unless deps.force). Always resolves (never throws);
  * status is one of retrieved/blocked/none/error/disabled.
  */
-export async function fetchZillowLandComps(input: ZillowFetchInput, deps: ZillowFetchDeps = {}): Promise<ZillowCompsResult> {
+export async function fetchZillowLandComps(rawInput: ZillowFetchInput, deps: ZillowFetchDeps = {}): Promise<ZillowCompsResult> {
+  // A large-acreage subject gets an operator-style search: lot-size minimum
+  // derived from the subject (quarter of its acreage, never a maximum), houses
+  // included so improved large-acreage sales are discovered, and a wider
+  // coordinate radius approximating the subject's ZIP-scale market.
+  const largeAcreage = rawInput.propertyType !== 'manufactured'
+    && rawInput.subjectAcres != null && rawInput.subjectAcres >= 20;
+  const input: ZillowFetchInput = {
+    ...rawInput,
+    lotMinAcres: rawInput.lotMinAcres !== undefined
+      ? rawInput.lotMinAcres
+      : largeAcreage ? Math.max(10, Math.round((rawInput.subjectAcres as number) / 4)) : null,
+    radiusMiles: rawInput.radiusMiles ?? (largeAcreage ? 15 : 5),
+  };
   const state = (input.state ?? '').trim();
   const routes = zillowSearchRoutes(input);
   const url = routes[0]?.url ?? '';
@@ -409,8 +508,17 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
     qualifyingResults: 0,
     exclusionReasons: [],
   };
-  const finish = (result: ZillowCompsResult): ZillowCompsResult =>
-    manufacturedSearch ? { ...result, searchProof: { ...proof, exclusionReasons: [...proof.exclusionReasons] } } : result;
+  const routeOutcomes: CompLaneRouteOutcome[] = [];
+  const counts = { visible: 0, extracted: 0, normalized: 0 };
+  const finish = (result: Omit<ZillowCompsResult, 'routes' | 'searchVerified' | 'retrievalCounts'>): ZillowCompsResult => {
+    const base: ZillowCompsResult = {
+      ...result,
+      routes: [...routeOutcomes],
+      searchVerified: laneSearchVerified(routeOutcomes),
+      retrievalCounts: { ...counts },
+    };
+    return manufacturedSearch ? { ...base, searchProof: { ...proof, exclusionReasons: [...proof.exclusionReasons] } } : base;
+  };
   if (!deps.force && !deps.connect) {
     // Production gate: only browse when live-browser mode is enabled.
     try { if (!readSessionConfig().enabled) return finish({ status: 'disabled', comps: [], note: 'Live browser mode off — Zillow not attempted.', routeTried: url }); } catch { /* fall through */ }
@@ -438,21 +546,47 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
     const failedGeographies: string[] = [];
     let lastRoute = url;
     for (const route of routes) {
-      lastRoute = route.url;
-      proof.routesAttempted.push(`${route.label}: ${route.url}`);
+      let activeUrl = route.url;
       await page.goto(route.url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
       await sleep(settleMs);
-      for (let i = 0; i < 4; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
+      if (route.kind === 'zip') {
+        // Step 2 of the ZIP route: Zillow has now resolved the ZIP region in
+        // its app state; re-request with that region PLUS the operator-style
+        // filters, so the filters cannot be silently swapped for Zillow's
+        // default market.
+        const zipToken = (input.zip ?? '').match(/\b\d{5}\b/)?.[0] ?? '';
+        const resolvedPath = await page.evaluate<string>('window.location.pathname').catch(() => '');
+        const regionJson = await page.evaluate<string | null>('document.querySelector("#__NEXT_DATA__") ? document.querySelector("#__NEXT_DATA__").textContent : null').catch(() => null);
+        const region = regionJson ? zillowRegionQueryState(regionJson) : null;
+        if (zipToken && typeof resolvedPath === 'string' && resolvedPath.includes(zipToken)) {
+          activeUrl = zillowZipFilteredUrl(resolvedPath, input, region);
+          await page.goto(activeUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+          await sleep(settleMs);
+        }
+      }
+      lastRoute = activeUrl;
+      proof.routesAttempted.push(`${route.label}: ${activeUrl}`);
+      for (let i = 0; i < 8; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
       const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
       const read = await page.evaluate<RawZillowRead>(EXTRACT_ZILLOW as unknown as () => RawZillowRead);
       const raw = read?.listings ?? [];
-      if (blocked && raw.length === 0 && !read?.nextData) return finish({ status: 'blocked', comps: [], note: `Zillow served an anti-bot check on the ${route.label} route (no public listings returned).`, routeTried: route.url });
-      const pageGeo = await page.evaluate<{ url: string; text: string }>(READ_PAGE_GEOGRAPHY as unknown as () => { url: string; text: string }).catch(() => ({ url: route.url, text: '' }));
+      if (blocked && raw.length === 0 && !read?.nextData) {
+        routeOutcomes.push({ label: route.label, url: activeUrl, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: `Zillow served an anti-bot check on the ${route.label} route (no public listings returned).` });
+        return finish({ status: 'blocked', comps: [], note: `Zillow served an anti-bot check on the ${route.label} route (no public listings returned).`, routeTried: activeUrl });
+      }
+      const pageGeo = await page.evaluate<{ url: string; text: string }>(READ_PAGE_GEOGRAPHY as unknown as () => { url: string; text: string }).catch(() => ({ url: activeUrl, text: '' }));
       const verifiedGeo = verifyZillowResolvedGeography(input, route, pageGeo, raw);
-      if (!verifiedGeo.valid) { failedGeographies.push(`${route.label}: ${verifiedGeo.reason}`); continue; }
       const manufactured = manufacturedSearch;
       const structuredRaw = manufactured && read?.nextData ? structuredManufacturedListings(read.nextData) : [];
       const structured = !manufactured && read?.nextData ? parseZillowStructured(read.nextData, input.subjectAcres ?? null) : [];
+      const structuredListCount = read?.nextData ? (() => { try { return zillowListResults(JSON.parse(read.nextData as string)).length; } catch { return 0; } })() : 0;
+      const visibleOnRoute = Math.max(raw.length, structuredListCount);
+      if (!verifiedGeo.valid) {
+        failedGeographies.push(`${route.label}: ${verifiedGeo.reason}`);
+        routeOutcomes.push({ label: route.label, url: activeUrl, reached: true, blocked, cardsFound: visibleOnRoute, marketVerified: false, qualifying: 0, outcome: `Opened ${activeUrl} and saw ${visibleOnRoute} card(s), but ${verifiedGeo.reason}, so nothing from it was used.` });
+        continue;
+      }
+      counts.visible = Math.max(counts.visible, visibleOnRoute);
       const mode = input.mode ?? 'active';
       const normalized: ZillowLandComp[] = manufactured
         ? normalizeZillowListings(structuredRaw.length ? structuredRaw : raw, null, mode, 'manufactured')
@@ -460,10 +594,20 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
         ? structured.map((s) => {
             const rawAddress = s.address ?? '';
             const address = reconcileCompAddress({ capturedAddress: rawAddress, sourceUrl: s.url ?? null })?.postalAddress ?? rawAddress;
-            return { address, price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre, status: s.status === 'unknown' && mode === 'active' ? ('active' as const) : s.status, url: s.url, source: 'Zillow' as const, lat: null, lng: null };
+            return {
+              address, price: s.price, acres: s.acres, pricePerAcre: s.pricePerAcre,
+              status: s.status === 'unknown' && mode === 'active' ? ('active' as const) : s.status,
+              url: s.url, source: 'Zillow' as const,
+              lat: s.lat ?? null, lng: s.lng ?? null, soldDate: s.date ?? null,
+              homeType: s.homeType ?? null, yearBuilt: s.yearBuilt ?? null, homeSizeSqft: s.homeSizeSqft ?? null,
+            };
           })
           .filter((c) => c.address && (mode === 'sold' ? c.status === 'sold' : c.status !== 'sold'))
         : normalizeZillowListings(raw, input.subjectAcres ?? null, mode);
+      const extractedOnRoute = manufactured
+        ? (structuredRaw.length ? structuredRaw.length : raw.length)
+        : (structured.length ? structured.length : raw.length);
+      counts.extracted = Math.max(counts.extracted, extractedOnRoute);
       const expectedState = state.toUpperCase();
       const subjectPoint = Number.isFinite(input.lat) && Number.isFinite(input.lng)
         ? { lat: input.lat as number, lng: input.lng as number }
@@ -475,11 +619,14 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
       };
       if (manufactured) proof.candidatesReviewed += normalized.length;
       const cutoff = (deps.nowMs ?? Date.now()) - (input.dateWindowMonths ?? 24) * 30.4 * 86_400_000;
+      // BUSINESS RULE: price never excludes a candidate. The manufactured lane
+      // still proves geography, sold status, coordinates and time period;
+      // whether such sales clear any price level is an analysis question the
+      // retained candidates can answer.
       const comps = normalized.filter((comp) => {
-        if (addressStateCode(comp.address) !== expectedState) return manufactured ? exclude(`Outside subject state ${expectedState}`) : false;
+        if (addressStateCode(comp.address) !== expectedState) return exclude(`Outside subject state ${expectedState}`);
         if (!manufactured) return true;
         if (comp.status !== 'sold') return exclude('Not a confirmed closed sale');
-        if (comp.price <= 200_000) return exclude('Sale price is not above $200,000');
         if (!subjectPoint) return exclude('Subject coordinates unavailable');
         if (!Number.isFinite(comp.lat) || !Number.isFinite(comp.lng)) return exclude('Listing coordinates unavailable');
         if (distanceMiles(subjectPoint, { lat: comp.lat as number, lng: comp.lng as number }) > (input.radiusMiles ?? 5)) {
@@ -494,22 +641,29 @@ export async function fetchZillowLandComps(input: ZillowFetchInput, deps: Zillow
         proof.exclusionReasons = [...exclusionCounts.entries()].map(([reason, count]) => ({ reason, count }));
       }
       const rejectedOutsideMarket = normalized.length - comps.length;
+      routeOutcomes.push({
+        label: route.label, url: activeUrl, reached: true, blocked, cardsFound: visibleOnRoute, marketVerified: true, qualifying: comps.length,
+        outcome: comps.length
+          ? `Opened ${activeUrl}, verified it as this subject's market, saw ${visibleOnRoute} card(s), extracted ${extractedOnRoute}, and kept ${comps.length} ${mode} candidate(s).`
+          : `Opened ${activeUrl} and verified it as this subject's market; it exposed ${visibleOnRoute} card(s) and none survived extraction/status screening as a ${mode} candidate.`,
+      });
       if (!comps.length) continue;
+      counts.normalized = Math.max(counts.normalized, comps.length);
       const via = structured.length || structuredRaw.length ? 'structured __NEXT_DATA__' : 'visible cards';
       return finish({
         status: 'retrieved', comps,
         note: manufactured
-          ? `Zillow verified ${route.label} and returned ${comps.length} sold manufactured-home comp(s) above $200,000 with listing coordinates proven within 5 miles via ${via}.`
-          : `Zillow verified ${route.label} and returned ${comps.length} in-band ${expectedState} comp(s) via ${via}${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}${rejectedOutsideMarket ? `; rejected ${rejectedOutsideMarket} row(s) outside the verified state or without usable locality evidence` : ''}.`,
-        routeTried: route.url,
+          ? `Zillow verified ${route.label} and returned ${comps.length} sold manufactured-home candidate(s) with listing coordinates proven within ${input.radiusMiles ?? 5} miles via ${via}. No price filter was applied.`
+          : `Zillow verified ${route.label}: ${visibleOnRoute} visible card(s) → ${extractedOnRoute} extracted → ${comps.length} ${expectedState} candidate(s) via ${via}${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}${rejectedOutsideMarket ? `; ${rejectedOutsideMarket} row(s) screened out (state/status), never on price or acreage` : ''}.`,
+        routeTried: activeUrl,
       });
     }
     return finish({
       status: 'none',
       comps: [],
       note: manufacturedSearch
-        ? `Zillow reviewed ${proof.candidatesReviewed} manufactured-home candidate(s) within ${proof.radiusMiles} miles over ${proof.timePeriodMonths} months and retained no qualifying closed sale above $200,000.`
-        : `Zillow returned no verified in-band ${state.toUpperCase()} land comps across ${routes.length} subject-geography route(s)${failedGeographies.length ? `; ${failedGeographies.length} wrong-geography route(s) were automatically rejected` : ''}.`,
+        ? `Zillow reviewed ${proof.candidatesReviewed} manufactured-home candidate(s) within ${proof.radiusMiles} miles over ${proof.timePeriodMonths} months and retained no qualifying closed sale.`
+        : `Zillow returned no verified ${state.toUpperCase()} candidates across ${routes.length} subject-geography route(s)${failedGeographies.length ? `; ${failedGeographies.length} wrong-geography route(s) were automatically rejected` : ''}. Route diagnostics show visible-card counts per route.`,
       routeTried: lastRoute,
     });
   } catch (e) {

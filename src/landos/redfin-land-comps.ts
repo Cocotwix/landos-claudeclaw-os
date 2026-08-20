@@ -40,6 +40,10 @@ export interface RedfinLandComp {
   lat?: number | null;
   lng?: number | null;
   thumbnailUrl?: string | null;
+  /** Set when the card shows a positive bed/bath count — an improved sale kept
+   * as directional market evidence, never silently dropped. */
+  homeType?: string | null;
+  homeSizeSqft?: number | null;
 }
 
 export interface RedfinCompsResult {
@@ -58,6 +62,9 @@ export interface RedfinCompsResult {
   routes: CompLaneRouteOutcome[];
   /** True only when a readable, market-verified Redfin land page was reached. */
   searchVerified: boolean;
+  /** visible = cards the page exposed; extracted = cards with a readable
+   * price+address; normalized = rows that entered the candidate set. */
+  retrievalCounts: { visible: number; extracted: number; normalized: number };
 }
 
 export interface RedfinFetchInput {
@@ -75,6 +82,10 @@ export interface RedfinFetchInput {
   owner?: string;
   radiusMiles?: 5 | 10 | 15 | 20;
   dateWindowMonths?: 12 | 24;
+  /** Minimum lot size for the search itself (operator-style "20+ acres"). When
+   * set, houses are searched alongside land so improved large-acreage sales
+   * are discovered; classification decides their role later. */
+  lotMinAcres?: number | null;
 }
 
 export interface RawRedfinListing {
@@ -104,33 +115,47 @@ export function parseRedfinPlacePaths(responseText: string): string[] {
   return [...new Set(responseText.match(/\/(?:city|county)\/\d+\/[A-Z]{2}\/[A-Za-z0-9._-]+|\/zipcode\/\d{5}/g) ?? [])];
 }
 
-/** Public Redfin Lots/Land filter URL for a resolved city path. When sold=true,
- *  adds Redfin's public "include=sold" filter to pull recent SOLD land results. */
-export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; dateWindowMonths?: 12 | 24 } = {}): string {
-  const filter = opts.sold ? `property-type=land,include=sold-${opts.dateWindowMonths === 24 ? '2yr' : '1yr'}` : 'property-type=land';
-  return `https://www.redfin.com${cityPath}/filter/${filter}`;
+/** Redfin's supported minimum-lot-size steps in acres; the URL filter snaps
+ *  DOWN to the largest supported step at or below the requested minimum so the
+ *  search never hides a qualifying result behind an unsupported value. */
+const REDFIN_LOT_MIN_STEPS_ACRES = [0.25, 0.5, 1, 2, 3, 5, 10, 20, 40, 100];
+export function redfinLotMinFilter(lotMinAcres: number | null | undefined): string | null {
+  if (lotMinAcres == null || !Number.isFinite(lotMinAcres) || lotMinAcres <= 0) return null;
+  const step = [...REDFIN_LOT_MIN_STEPS_ACRES].reverse().find((s) => s <= lotMinAcres);
+  return step != null ? `min-lot-size=${step}-acre` : null;
 }
 
-/** Normalize + filter raw listings to same-acreage-band, sane-priced LAND comps,
- *  dropping residential homes and deduping by address. Never fabricates. */
+/** Public Redfin Lots/Land filter URL for a resolved city path. When sold=true,
+ *  adds Redfin's public "include=sold" filter to pull recent SOLD land results.
+ *  A lot-size minimum reproduces the operator's "20+ acres" search and widens
+ *  the property types to land+house so improved large-acreage sales are
+ *  discovered too. There is never a maximum lot size and never a price filter. */
+export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; dateWindowMonths?: 12 | 24; lotMinAcres?: number | null } = {}): string {
+  const lotMin = redfinLotMinFilter(opts.lotMinAcres);
+  const propertyType = lotMin ? 'property-type=land+house' : 'property-type=land';
+  const parts = [propertyType];
+  if (lotMin) parts.push(lotMin);
+  if (opts.sold) parts.push(`include=sold-${opts.dateWindowMonths === 24 ? '2yr' : '1yr'}`);
+  return `https://www.redfin.com${cityPath}/filter/${parts.join(',')}`;
+}
+
+/** Normalize raw listings into deduped candidate rows. Never fabricates.
+ *  BUSINESS RULES: no price minimum or maximum, no acreage band, and an
+ *  improved (residential) card is RETAINED and tagged rather than dropped —
+ *  discovery collects the market evidence; classification decides Core /
+ *  Directional / Excluded afterwards. */
 export function normalizeRedfinListings(
   raw: RawRedfinListing[],
-  subjectAcres: number | null,
+  _subjectAcres: number | null,
   mode: 'sold' | 'active' = 'active',
 ): RedfinLandComp[] {
-  const band = subjectAcres != null && subjectAcres > 0
-    ? { lo: Math.max(0.05, subjectAcres * 0.5), hi: subjectAcres * 2.5 }
-    : { lo: 0.1, hi: 1.0 };
   const seen = new Set<string>();
   const out: RedfinLandComp[] = [];
   for (const r of raw) {
-    if (r.residential) continue; // never compare vacant land against homes
     const price = typeof r.price === 'number' ? r.price : null;
     if (!r.address || price == null || price <= 0) continue;
-    if (price < 1000 || price > 5_000_000) continue; // broad land-price sanity band
     let acres = typeof r.acres === 'number' && Number.isFinite(r.acres) && r.acres > 0 ? r.acres : null;
     if (acres == null && typeof r.sqftLot === 'number' && r.sqftLot > 0) acres = Math.round((r.sqftLot / 43560) * 100) / 100;
-    if (acres != null && (acres < band.lo || acres > band.hi)) continue;
     const key = r.address.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -145,9 +170,11 @@ export function normalizeRedfinListings(
         })()
       : null;
     // A sold-filter URL is a search request, not transaction evidence. Redfin
-    // sometimes returns a current home, active or unlabeled card on that page.
-    // A closed land sale therefore needs its own explicit sold date.
-    if (mode === 'sold' && (status !== 'sold' || !explicitSoldDate)) continue;
+    // sometimes returns a current home, active or unlabeled card on that page,
+    // so a sold candidate must at least STATE it is sold; the explicit sold
+    // date is retained when present but its absence no longer erases the
+    // candidate (that requirement manufactured false zero-result conclusions).
+    if (mode === 'sold' && status !== 'sold') continue;
     if (mode === 'active' && status === 'sold') continue;
     out.push({
       address: r.address.replace(/\s+/g, ' ').trim(),
@@ -159,9 +186,10 @@ export function normalizeRedfinListings(
       source: 'Redfin',
       soldDate: explicitSoldDate,
       thumbnailUrl: r.thumbnailUrl ?? null,
+      homeType: r.residential ? 'Residential (beds/baths listed)' : null,
     });
   }
-  return out.slice(0, 8);
+  return out.slice(0, 40);
 }
 
 // ── Disposable-profile browser capture (injectable) ─────────────────────────
@@ -274,7 +302,7 @@ const EXTRACT_REDFIN = (): RawRedfinListing[] => {
   return out;
 };
 
-const IS_BLOCKED = (): boolean => /press and hold|are you a human|captcha|verify you are|unusual traffic|pardon our interruption|access denied|blocked/i.test(((document as any).body?.innerText || '').slice(0, 4000));
+const IS_BLOCKED = (): boolean => /press and hold|are you a human|captcha|verify you are|unusual traffic|pardon our interruption|access denied|blocked/i.test(`${(document as any).title ?? ''} ${((document as any).body?.innerText || '').slice(0, 4000)}`);
 const READ_PAGE_GEOGRAPHY = (): { url: string; text: string } => ({
   url: String((window as any).location?.href ?? ''),
   text: `${(document as any).title ?? ''} ${((document as any).body?.innerText ?? '').slice(0, 5000)}`,
@@ -374,14 +402,26 @@ export function verifyRedfinResolvedGeography(
  * page → extract (residential homes filtered out). Gated on live-browser mode
  * (unless deps.force). Always resolves (never throws).
  */
-export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: RedfinFetchDeps = {}): Promise<RedfinCompsResult> {
+export async function fetchRedfinLandComps(rawInput: RedfinFetchInput, deps: RedfinFetchDeps = {}): Promise<RedfinCompsResult> {
+  // A large-acreage subject gets an operator-style search: lot-size minimum
+  // derived from the subject (quarter of its acreage, never a maximum) with
+  // houses included so improved large-acreage sales are discovered.
+  const largeAcreage = rawInput.subjectAcres != null && rawInput.subjectAcres >= 20;
+  const input: RedfinFetchInput = {
+    ...rawInput,
+    lotMinAcres: rawInput.lotMinAcres !== undefined
+      ? rawInput.lotMinAcres
+      : largeAcreage ? Math.max(10, Math.round((rawInput.subjectAcres as number) / 4)) : null,
+  };
   const state = (input.state ?? '').trim();
   const queries = redfinSearchQueries(input);
   const sold = input.mode === 'sold';
-  const filtersUsed = sold ? 'property-type=land, include=sold' : 'property-type=land (active)';
+  const lotMin = redfinLotMinFilter(input.lotMinAcres);
+  const filtersUsed = `${lotMin ? 'property-type=land+house' : 'property-type=land'}${lotMin ? `, ${lotMin}` : ''}${sold ? ', include=sold' : ' (active)'}`;
   const routes: CompLaneRouteOutcome[] = [];
-  const done = (result: Omit<RedfinCompsResult, 'routes' | 'searchVerified'>): RedfinCompsResult =>
-    ({ ...result, routes: [...routes], searchVerified: laneSearchVerified(routes) });
+  const counts = { visible: 0, extracted: 0, normalized: 0 };
+  const done = (result: Omit<RedfinCompsResult, 'routes' | 'searchVerified' | 'retrievalCounts'>): RedfinCompsResult =>
+    ({ ...result, routes: [...routes], searchVerified: laneSearchVerified(routes), retrievalCounts: { ...counts } });
   if (!deps.force && !deps.connect) {
     try { if (!readSessionConfig().enabled) return done({ status: 'disabled', comps: [], note: 'Live browser mode off — Redfin not attempted.', routeTried: '', filtersUsed }); } catch { /* fall through */ }
   }
@@ -430,7 +470,7 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
         });
         continue;
       }
-      const landUrl = redfinLandFilterUrl(resolvedPath, { sold, dateWindowMonths: input.dateWindowMonths });
+      const landUrl = redfinLandFilterUrl(resolvedPath, { sold, dateWindowMonths: input.dateWindowMonths, lotMinAcres: input.lotMinAcres });
       routeTried = landUrl;
       await page.goto(landUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
       await sleep(settleMs);
@@ -449,17 +489,21 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
         routes.push({ label: query.label, url: landUrl, reached: true, blocked, cardsFound, marketVerified: false, qualifying: 0, outcome: `Opened ${landUrl} and read ${cardsFound} card(s), but ${verifiedGeo.reason}, so nothing from it was used.` });
         continue;
       }
+      const extracted = (rawList ?? []).filter((row) => !!row.address && typeof row.price === 'number' && row.price > 0).length;
       const comps = normalizeRedfinListings(rawList ?? [], input.subjectAcres ?? null, sold ? 'sold' : 'active');
+      counts.visible = Math.max(counts.visible, cardsFound);
+      counts.extracted = Math.max(counts.extracted, extracted);
       routes.push({
         label: query.label, url: landUrl, reached: true, blocked, cardsFound, marketVerified: true, qualifying: comps.length,
         outcome: comps.length
-          ? `Opened ${landUrl}, verified it as this subject's market, read ${cardsFound} card(s) and kept ${comps.length} in-band ${sold ? 'sold' : 'active'} land comp(s).`
-          : `Opened ${landUrl} and verified it as this subject's market; it exposed ${cardsFound} card(s) and none was an in-band ${sold ? 'sold' : 'active'} land comparable.`,
+          ? `Opened ${landUrl}, verified it as this subject's market: ${cardsFound} visible card(s) → ${extracted} extracted → ${comps.length} ${sold ? 'sold' : 'active'} candidate(s) retained (no price or acreage filter).`
+          : `Opened ${landUrl} and verified it as this subject's market; it exposed ${cardsFound} card(s) and none survived extraction/status screening as a ${sold ? 'sold' : 'active'} candidate.`,
       });
       if (!comps.length) continue;
+      counts.normalized = Math.max(counts.normalized, comps.length);
       return done({
         status: 'retrieved', comps,
-        note: `Redfin verified ${query.label} and returned ${comps.length} in-band ${sold ? 'sold' : 'active'} land comp(s)${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}.`,
+        note: `Redfin verified ${query.label}: ${cardsFound} visible card(s) → ${extracted} extracted → ${comps.length} ${sold ? 'sold' : 'active'} candidate(s)${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}.`,
         routeTried: landUrl, filtersUsed,
       });
     }
@@ -467,7 +511,7 @@ export async function fetchRedfinLandComps(input: RedfinFetchInput, deps: Redfin
     return done({
       status: 'none', comps: [],
       note: verified
-        ? `Redfin opened a verified land-search page for this subject's market across ${queries.length} route(s) and it published no in-band ${sold ? 'sold' : 'active'} land comp.`
+        ? `Redfin opened a verified land-search page for this subject's market across ${queries.length} route(s) and it published no ${sold ? 'sold' : 'active'} candidate (no price or acreage filter was applied).`
         : `Redfin never reached a verified land-search page for this subject: all ${queries.length} coordinate/ZIP/city/county route(s) failed to resolve or landed on the wrong geography, so no conclusion about the market's inventory is supported.`,
       routeTried, filtersUsed,
     });

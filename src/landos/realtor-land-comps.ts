@@ -173,27 +173,26 @@ const uniqueUrls = (values: Array<string | null | undefined>): string[] =>
   [...new Set(values.filter((value): value is string => typeof value === 'string' && /^https?:\/\//i.test(value.trim())).map((value) => value.trim()))].slice(0, 40);
 
 /** Normalize page cards without upgrading a sold-board search into transaction
- * evidence. Sold mode requires the card's own sold wording and an exact date. */
+ * evidence. Sold mode requires the card's own sold wording; the sold date is
+ * retained when present but never erases the candidate. BUSINESS RULES: no
+ * price minimum or maximum and no acreage band — discovery retains every real
+ * candidate and classification analyzes price and acreage afterwards. */
 export function normalizeRealtorListings(
   raw: RawRealtorListing[],
-  subjectAcres: number | null,
+  _subjectAcres: number | null,
   mode: 'sold' | 'active' = 'active',
 ): RealtorLandComp[] {
-  const band = subjectAcres != null && subjectAcres > 0
-    ? { lo: Math.max(0.05, subjectAcres * 0.5), hi: subjectAcres * 2.5 }
-    : null;
   const seen = new Set<string>();
   const out: RealtorLandComp[] = [];
   for (const row of raw) {
     const address = row.address?.replace(/\s+/g, ' ').trim() ?? '';
     const price = typeof row.price === 'number' && Number.isFinite(row.price) && row.price > 0 ? row.price : null;
-    if (!address || price == null || price < 1_000 || price > 5_000_000) continue;
+    if (!address || price == null) continue;
     let acres = typeof row.acres === 'number' && Number.isFinite(row.acres) && row.acres > 0 ? row.acres : null;
     if (acres == null && typeof row.lotSqft === 'number' && row.lotSqft > 0) acres = Math.round((row.lotSqft / 43_560) * 100) / 100;
-    if (band && acres != null && (acres < band.lo || acres > band.hi)) continue;
     const status = normalizedStatus(row.status);
     const soldDate = status === 'sold' ? isoDate(row.soldDate ?? row.status) : null;
-    if (mode === 'sold' && (status !== 'sold' || !soldDate)) continue;
+    if (mode === 'sold' && status !== 'sold') continue;
     if (mode === 'active' && status !== 'active') continue;
     const key = address.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (seen.has(key)) continue;
@@ -227,7 +226,7 @@ export function normalizeRealtorListings(
       features: [...new Set((row.features ?? []).filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()))],
     });
   }
-  return out.slice(0, 8);
+  return out.slice(0, 40);
 }
 
 /** Bridge direct Realtor.com results into the provider-neutral registry/policy

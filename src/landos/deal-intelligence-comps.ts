@@ -771,10 +771,13 @@ export function selectWorkingComps(input: {
   const rankedActive = applySourceCaps(activePool, 'active-competition');
   const rankedAsking = applySourceCaps(askingPool, 'asking-reference');
   const recentManufacturedCutoff = nowMs - 36 * 30.4 * 86_400_000;
+  // BUSINESS RULE: price never decides whether a comp stays visible. Whether
+  // these sales clear any price level is an analytical question the retained
+  // rows answer; retrieval and retention are price-blind.
   const landHomeOnly = dedupeCompRows(manufacturedHomeCandidates).rows
     .filter((row) =>
       row.statusBasis === 'closed_sale'
-      && row.price != null && row.price > 200_000
+      && row.price != null && row.price > 0
       && row.distanceMiles != null && row.distanceMiles <= 5
       && row.dateIso != null
       && Number.isFinite(Date.parse(row.dateIso))
@@ -786,7 +789,7 @@ export function selectWorkingComps(input: {
     .map((row) => toSnapshotComp(
       row,
       'sold',
-      `Manufactured-home closed sale above $200,000 within five miles, retained only to test finished land-home-package demand.`,
+      `Manufactured-home closed sale within five miles, retained to test finished land-home-package demand.`,
       subject,
       nowMs,
     ));

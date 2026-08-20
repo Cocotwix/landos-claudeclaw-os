@@ -884,7 +884,7 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
   } else if (improved && (priceKind === 'sale' || priceKind === 'list')) {
     category = 'improved_context';
     reason = priceKind === 'sale'
-      ? `Completed sale of an improved property (${improvedDetection.evidence ?? 'structure signal'}). The full sold price is retained as sold $/sqft evidence; no land component is estimated or removed.`
+      ? `Directional — improved sale (${improvedDetection.evidence ?? 'structure signal'}). Retained as visible market evidence of what buyers paid for acreage here; improvement value may materially influence the sale price, so it never enters the clean vacant-land median unless the land contribution can be reasonably isolated.`
       : `Active listing of an improved property (${improvedDetection.evidence ?? 'structure signal'}): retained as improved-property market context. Its asking price includes structure value and never enters the vacant-land sold-price median.`;
   } else if (priceKind === 'sale' && price != null && acres != null && UNVERIFIED_CONTEXT_CLASSIFICATION.test(row.classification)) {
     // A verified closed sale carrying an OPEN, unproven concern (suspected
@@ -1168,7 +1168,7 @@ function classifyEvidenceComp(
   const caveatText = caveatParts.length ? ` Provider caveat: ${caveatParts.join(' | ')}` : '';
   const reason = evidenceImproved.improved
     ? isSold
-      ? `Sold/closed improved-property evidence retained from ${source} (${evidenceImproved.evidence}); sold price is used directly for sold $/sqft and no land component is estimated.${caveatText}`
+      ? `Directional — improved sale retained from ${source} (${evidenceImproved.evidence}). Visible market evidence of what buyers paid for acreage here; improvement value may materially influence the sale price, so it never enters the clean vacant-land median unless the land contribution can be reasonably isolated.${caveatText}`
       : `Active improved-property context retained from ${source} (${evidenceImproved.evidence}); asking price never enters sold-improved or vacant-land medians.${caveatText}`
     : isActive
       ? `Active listing retained from ${source}: current competition context${price != null ? ` at an asking price of ${money(price)}` : ''}. An asking price does not establish fair market value.${acres == null ? ' The source did not publish acreage.' : ''}${caveatText}`
