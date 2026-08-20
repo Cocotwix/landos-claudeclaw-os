@@ -117,16 +117,21 @@ async function governedCandidate(state, repo, {
   return { ...allocation, taskId, attemptId, workspacePath, candidateSha, plan: inspectionVerificationPlan(state.db, attemptId) };
 }
 
+const BROWSER_ACCEPTANCE_EVIDENCE = 'surface=http://localhost:3141/fixture; expected=fixture change visible; '
+  + 'refresh=PASS still visible; console=no new errors; reruns=none observed; screenshot=docs/landos/evidence/fixture.png';
+
 async function passPlan(state, candidate) {
   let latest;
   for (const obligation of candidate.plan.obligations) {
-    if (obligation.kind === 'canonical_input_review' || obligation.kind === 'submission_evidence_review') {
+    if (obligation.obligation_type === 'MANUAL_REVIEW') {
       latest = recordManualReview(state.db, {
         attemptId: candidate.attemptId,
         obligationId: obligation.id,
         outcome: 'PASS',
         reviewer: 'fixture-reviewer',
-        reviewEvidence: `fixture-review:${obligation.kind}`,
+        reviewEvidence: obligation.kind === 'browser_visual_acceptance'
+          ? BROWSER_ACCEPTANCE_EVIDENCE
+          : `fixture-review:${obligation.kind}`,
         summary: `Independent gate review passed for ${obligation.kind}.`,
       });
     } else {
@@ -147,7 +152,9 @@ test('canonical inputs, exact Git diff, risk policy, and exact-commit capability
   const low = await governedCandidate(state, repo);
   assert.deepEqual(low.plan.actual_changed_paths, ['low-risk.txt']);
   assert.equal(low.plan.risk, 'low');
-  assert.equal(low.plan.mandatory_obligation_count, 3);
+  assert.equal(low.plan.mandatory_obligation_count, 4);
+  assert.ok(low.plan.obligations.some((item) => item.kind === 'browser_visual_acceptance'
+    && item.obligation_type === 'MANUAL_REVIEW' && item.mandatory === 1));
   assert.deepEqual(low.plan.planning_inputs.submissionBundle.changedPaths, ['forged-worker-path.ts']);
   assert.ok(low.plan.planning_inputs.taskContract.nonGoals.includes('Do not trust worker path claims.'));
   assert.equal(low.plan.actual_changed_paths.includes('forged-worker-path.ts'), false);
@@ -320,6 +327,67 @@ test('complete durable results verify and immutable results support only exact g
   assert.throws(() => prepareAcceptance(state.db, repo.dir, { attemptId: superseded.attemptId }), /FAILED|superseded/i);
 });
 
+test('browser visual acceptance is a mandatory completion invariant the normal path cannot bypass', async (t) => {
+  const repo = fixture();
+  const state = initializeControlState(repo.dir);
+  t.after(() => { state.close(); repo.cleanup(); });
+
+  const candidate = await governedCandidate(state, repo);
+  const browser = candidate.plan.obligations.find((item) => item.kind === 'browser_visual_acceptance');
+  assert.ok(browser, 'every canonical verification plan must contain the browser visual acceptance obligation');
+  assert.equal(browser.mandatory, 1);
+  assert.equal(browser.obligation_type, 'MANUAL_REVIEW');
+
+  // Every other obligation passes; the attempt still cannot become VERIFIED or reach the gate.
+  for (const obligation of candidate.plan.obligations.filter((item) => item.id !== browser.id)) {
+    if (obligation.obligation_type === 'MANUAL_REVIEW') {
+      recordManualReview(state.db, {
+        attemptId: candidate.attemptId, obligationId: obligation.id, outcome: 'PASS',
+        reviewer: 'fixture-reviewer', reviewEvidence: `fixture-review:${obligation.kind}`,
+        summary: `Review passed for ${obligation.kind}.`,
+      });
+    } else {
+      await runVerification(state.db, candidate.workspacePath, { attemptId: candidate.attemptId, obligationId: obligation.id });
+    }
+  }
+  assert.equal(state.db.prepare('SELECT status FROM development_attempt WHERE id = ?').get(candidate.attemptId).status, 'CANDIDATE');
+  assert.throws(() => prepareAcceptance(state.db, repo.dir, { attemptId: candidate.attemptId }), /VERIFIED candidate/i);
+
+  // Backend-style evidence without the visible operator assertions is refused.
+  assert.throws(() => recordManualReview(state.db, {
+    attemptId: candidate.attemptId, obligationId: browser.id, outcome: 'PASS',
+    reviewer: 'fixture-reviewer', reviewEvidence: 'HTTP 200 and database rows persisted',
+    summary: 'Deal Card loaded.',
+  }), /browser visual acceptance PASS requires labeled evidence fields/i);
+  assert.throws(() => recordManualReview(state.db, {
+    attemptId: candidate.attemptId, obligationId: browser.id, outcome: 'PASS',
+    reviewer: 'fixture-reviewer',
+    reviewEvidence: 'surface=http://localhost:9999/deal; expected=comps visible; refresh=PASS; console=clean; reruns=none; screenshot=proof.png',
+    summary: 'Wrong app origin.',
+  }), /localhost:3141/);
+
+  // A FAIL needs no full field set and durably fails the attempt.
+  const failed = await governedCandidate(state, repo);
+  const failedBrowser = failed.plan.obligations.find((item) => item.kind === 'browser_visual_acceptance');
+  recordManualReview(state.db, {
+    attemptId: failed.attemptId, obligationId: failedBrowser.id, outcome: 'FAIL',
+    reviewer: 'fixture-reviewer', reviewEvidence: 'Hard refresh of the Lead Card showed zero comps.',
+    summary: 'Persisted comps are not visible on the operator surface.',
+    rootCause: 'Read model does not surface persisted candidates.',
+  });
+  assert.equal(state.db.prepare('SELECT status FROM development_attempt WHERE id = ?').get(failed.attemptId).status, 'FAILED');
+
+  // Complete field-labeled visible-outcome evidence passes and unlocks the gate.
+  recordManualReview(state.db, {
+    attemptId: candidate.attemptId, obligationId: browser.id, outcome: 'PASS',
+    reviewer: 'fixture-reviewer', reviewEvidence: BROWSER_ACCEPTANCE_EVIDENCE,
+    summary: 'Operator surface visibly shows the changed behavior and survives hard refresh.',
+  });
+  assert.equal(state.db.prepare('SELECT status FROM development_attempt WHERE id = ?').get(candidate.attemptId).status, 'VERIFIED');
+  const operation = prepareAcceptance(state.db, repo.dir, { id: `gate-${candidate.attemptId}`, attemptId: candidate.attemptId });
+  assert.equal(operation.state, 'ACCEPTANCE_PENDING');
+});
+
 test('planning refuses a missing Submission Bundle and malformed bundle state', (t) => {
   const repo = fixture();
   const state = initializeControlState(repo.dir);
@@ -391,7 +459,9 @@ test('a resource-required executable result without governed resource events can
         obligationId: obligation.id,
         outcome: 'PASS',
         reviewer: 'fixture-reviewer',
-        reviewEvidence: `fixture-review:${obligation.kind}`,
+        reviewEvidence: obligation.kind === 'browser_visual_acceptance'
+          ? BROWSER_ACCEPTANCE_EVIDENCE
+          : `fixture-review:${obligation.kind}`,
         summary: `Review passed for ${obligation.kind}.`,
       });
     } else {

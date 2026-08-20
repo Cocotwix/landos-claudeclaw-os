@@ -127,13 +127,19 @@ async function candidate(state, repo, label, options = {}) {
   };
 }
 
+const BROWSER_ACCEPTANCE_EVIDENCE = 'surface=http://localhost:3141/fixture; expected=fixture change visible; '
+  + 'refresh=PASS still visible; console=no new errors; reruns=none observed; screenshot=docs/landos/evidence/fixture.png';
+
 async function passPlan(state, item) {
   let latest;
   for (const obligation of item.plan.obligations) {
-    if (obligation.kind === 'canonical_input_review' || obligation.kind === 'submission_evidence_review') {
+    if (obligation.obligation_type === 'MANUAL_REVIEW') {
       latest = recordManualReview(state.db, {
         attemptId: item.attemptId, obligationId: obligation.id, outcome: 'PASS',
-        reviewer: 'mandatory-reviewer', reviewEvidence: `mandatory-review:${obligation.kind}`,
+        reviewer: 'mandatory-reviewer',
+        reviewEvidence: obligation.kind === 'browser_visual_acceptance'
+          ? BROWSER_ACCEPTANCE_EVIDENCE
+          : `mandatory-review:${obligation.kind}`,
         summary: `Independent evaluator passed ${obligation.kind}.`,
       });
     } else {

@@ -6,7 +6,23 @@ import { createHash } from 'node:crypto';
 import { git } from '../dev/verify.mjs';
 import { normalizePhysicalResource } from './resource-ownership.mjs';
 
-export const VERIFICATION_POLICY_VERSION = 'landos-verification-v3';
+export const VERIFICATION_POLICY_VERSION = 'landos-verification-v4';
+
+// Permanent completion invariant: no LandOS build is complete until its result
+// is visibly verified on the real operator application. Backend, API, test,
+// build, and database evidence never substitute for this obligation.
+export const BROWSER_VISUAL_ACCEPTANCE_OBLIGATION_ID = 'browser-visual-acceptance';
+export const BROWSER_VISUAL_ACCEPTANCE_KIND = 'browser_visual_acceptance';
+export const OPERATOR_APP_ORIGIN = 'localhost:3141';
+export const BROWSER_VISUAL_ACCEPTANCE_FIELDS = Object.freeze([
+  'surface', 'expected', 'refresh', 'console', 'reruns', 'screenshot',
+]);
+export const BROWSER_VISUAL_ACCEPTANCE_SUMMARY = 'Mandatory browser visual acceptance on the live operator application at '
+  + `http://${OPERATOR_APP_ORIGIN}: open the real operator surface the build affected, visually verify the actual `
+  + 'changed behavior or data, hard refresh and verify it remains, check the console for new errors, confirm the page '
+  + 'load did not rerun research/model/browser workflows unintentionally, and capture screenshot or recorded page-text '
+  + 'evidence. A PASS review must record labeled evidence fields: '
+  + `${BROWSER_VISUAL_ACCEPTANCE_FIELDS.map((field) => `${field}=`).join(' ')}.`;
 
 const CAPABILITIES_PATH = '.landos/capabilities.json';
 const CONTROL_SPINE_PATHS = Object.freeze([
@@ -213,6 +229,7 @@ export function deriveVerificationPlan(root, input) {
     executableObligation('actual-git-diff', 'actual_git_diff', `git diff --check ${baseGitSha} ${candidateGitSha}`, 'Internally calculated base-to-candidate Git diff has no whitespace errors.'),
     manualReviewObligation('canonical-task-contract', 'canonical_input_review', 'A named reviewer must review the canonical objective, non-goals, invariants, scope, constraints, and acceptance policy.'),
     manualReviewObligation('submission-bundle-evidence', 'submission_evidence_review', 'A named reviewer must review normalized implementation claims, worker evidence, and limitations without treating them as verification results.'),
+    manualReviewObligation(BROWSER_VISUAL_ACCEPTANCE_OBLIGATION_ID, BROWSER_VISUAL_ACCEPTANCE_KIND, BROWSER_VISUAL_ACCEPTANCE_SUMMARY),
   ];
   for (const capability of touched) {
     for (const [index, command] of strings(capability.verificationCommands ?? capability.requiredVerification ?? [], `capability ${capability.id} commands`).entries()) {

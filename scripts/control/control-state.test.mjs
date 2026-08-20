@@ -143,10 +143,13 @@ async function runMandatoryPlan(state, attemptId, now) {
   const plan = inspectionVerificationPlan(state.db, attemptId);
   let result;
   for (const obligation of plan.obligations) {
-    if (obligation.kind === 'canonical_input_review' || obligation.kind === 'submission_evidence_review') {
+    if (obligation.obligation_type === 'MANUAL_REVIEW') {
       result = recordManualReview(state.db, {
         attemptId, obligationId: obligation.id, outcome: 'PASS', reviewer: 'fixture-reviewer',
-        reviewEvidence: `fixture-review:${obligation.kind}`,
+        reviewEvidence: obligation.kind === 'browser_visual_acceptance'
+          ? 'surface=http://localhost:3141/fixture; expected=fixture change visible; refresh=PASS still visible; '
+            + 'console=no new errors; reruns=none observed; screenshot=docs/landos/evidence/fixture.png'
+          : `fixture-review:${obligation.kind}`,
         summary: `Gate review passed for ${obligation.kind}.`,
       }, now);
     } else {

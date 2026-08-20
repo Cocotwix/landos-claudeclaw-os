@@ -21,7 +21,12 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { git, gitStatusText, runCheck, failureEvidence } from '../dev/verify.mjs';
-import { deriveVerificationPlan } from './verification-plan.mjs';
+import {
+  BROWSER_VISUAL_ACCEPTANCE_FIELDS,
+  BROWSER_VISUAL_ACCEPTANCE_KIND,
+  OPERATOR_APP_ORIGIN,
+  deriveVerificationPlan,
+} from './verification-plan.mjs';
 import { acquireResource, ensureProtectedPrimaryResources, releaseResource } from './resource-ownership.mjs';
 
 export const CONTROL_DB_PATH = 'landos/control/landos-control.db';
@@ -2245,10 +2250,36 @@ function recordCanonicalVerificationResult(db, input, mechanism, now) {
   return latestVerification(db, attempt.id);
 }
 
+// Permanent completion invariant: a PASS on the browser visual acceptance
+// obligation must durably record what was visibly proven on the live operator
+// application. A bare claim, an HTTP 200, or backend evidence is refused here,
+// so the normal completion path cannot omit browser visual acceptance.
+function requireBrowserVisualAcceptanceEvidence(input, reviewEvidence) {
+  const text = `${String(input.summary ?? '')}\n${reviewEvidence}`;
+  const missing = BROWSER_VISUAL_ACCEPTANCE_FIELDS.filter(
+    (field) => !new RegExp(`(?:^|[\\s;,|(])${field}\\s*[=:]\\s*\\S`, 'im').test(text),
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `browser visual acceptance PASS requires labeled evidence fields ${missing.map((field) => `${field}=`).join(', ')}: `
+      + 'record the operator surface tested, the expected visible outcome, the hard-refresh result, the console result, '
+      + 'the unintended-rerun check, and the screenshot/evidence location',
+    );
+  }
+  if (!text.includes(OPERATOR_APP_ORIGIN)) {
+    throw new Error(`browser visual acceptance PASS requires the live operator surface URL on ${OPERATOR_APP_ORIGIN}`);
+  }
+}
+
 export function recordManualReview(db, input, now) {
   const attempt = attemptFor(db, input.attemptId);
   const reviewer = required(input.reviewer, 'manual reviewer identity');
   const reviewEvidence = required(input.reviewEvidence ?? input.evidenceReference, 'manual review evidence');
+  const obligation = obligationFor(db, attempt.id, required(input.obligationId, 'verification obligation ID'));
+  if (obligation.kind === BROWSER_VISUAL_ACCEPTANCE_KIND
+      && String(input.outcome ?? '').toUpperCase() === 'PASS') {
+    requireBrowserVisualAcceptanceEvidence(input, reviewEvidence);
+  }
   return recordCanonicalVerificationResult(db, {
     ...input,
     gitSha: attempt.candidate_git_sha,

@@ -7,7 +7,11 @@ lives in the Control DB; generated `.landos/STATE.md` is the active handoff.
 ## Acceptance authority
 
 The live localhost owner experience decides completion; tests, builds, database
-rows, and HTTP 200 alone do not establish completion. Staged workstreams and
+rows, and HTTP 200 alone do not establish completion. Every build requires
+browser visual acceptance at `http://localhost:3141`: affected surface visibly
+verified, hard refresh survives, console clean, no unintended reruns, evidence
+captured; contract section 5 and the mandatory `browser-visual-acceptance`
+Control obligation enforce it. Staged workstreams and
 independent live browser QA are support only. Never claim completion while an
 owner-requested, decision-critical result is missing, unusable, or unverified by
 you. Only required new authority or a real external blocker may pause work;

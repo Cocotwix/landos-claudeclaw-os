@@ -90,8 +90,25 @@ visible blocker, never success.
 
 Acceptance work is set by change class, not habit.
 
+**Browser visual acceptance, every tier, permanent.** No LandOS build is
+complete until its result is visibly verified on the live operator application
+at `http://localhost:3141`: after implementation, focused verification, and a
+managed restart, open the real operator surface the build affected, visually
+verify the actual changed behavior or data (a page merely loading is not
+acceptance), hard refresh and verify the result remains and persisted state
+survived, confirm the load did not unintentionally rerun research, model
+calls, or other expensive workflows, check the console for new errors, capture
+screenshot (or recorded page-text) evidence, and record the surface and
+assertion proven. Tests, typecheck, build success, API responses, database
+rows, logs, and backend persistence never substitute. A failed browser
+acceptance means the build is not complete: identify the blocking UI,
+read-model, persistence, or wiring failure, repair only it, rerun the
+acceptance once; no broad QA. The Control DB enforces this as the mandatory
+`browser-visual-acceptance` obligation in every canonical verification plan.
+
 **Tier 1, no owner-visible change** (internal refactor, tests, comments, docs):
-focused tests plus typecheck. No production build, no restart, no browser.
+focused tests plus typecheck, then browser visual acceptance on the nearest
+operator surface that consumes the change.
 
 **Tier 2, one owner-visible section or control**: Tier 1 plus production build,
 managed restart, and the primary agent personally exercising it
