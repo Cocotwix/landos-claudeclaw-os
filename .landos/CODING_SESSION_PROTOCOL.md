@@ -104,7 +104,11 @@ rows, logs, and backend persistence never substitute. A failed browser
 acceptance means the build is not complete: identify the blocking UI,
 read-model, persistence, or wiring failure, repair only it, rerun the
 acceptance once; no broad QA. The Control DB enforces this as the mandatory
-`browser-visual-acceptance` obligation in every canonical verification plan.
+`browser-visual-acceptance` obligation in every canonical verification plan,
+and the sprint ledger refuses workstream acceptance and sprint completion
+without compliant `browser_visual_acceptance` evidence. There is no supported
+completion path around this gate: LandOS work either satisfies it in the
+governed Control attempt or sprint ledger, or is not reported complete.
 
 **Tier 1, no owner-visible change** (internal refactor, tests, comments, docs):
 focused tests plus typecheck, then browser visual acceptance on the nearest

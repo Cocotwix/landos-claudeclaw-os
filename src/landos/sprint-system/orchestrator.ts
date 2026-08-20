@@ -342,6 +342,41 @@ export interface RecurrenceGateView {
   patternsAwaitingRootCause: string[];
 }
 
+// Permanent completion invariant: no LandOS workstream or sprint completes
+// without browser visual acceptance on the live operator application. These
+// constants mirror scripts/control/verification-plan.mjs; governance.test.ts
+// asserts the two contracts stay identical. Do not fork them.
+export const BROWSER_VISUAL_ACCEPTANCE_FIELDS = [
+  'surface', 'expected', 'refresh', 'console', 'reruns', 'screenshot',
+] as const;
+export const OPERATOR_APP_ORIGIN = 'localhost:3141';
+
+export function browserVisualAcceptanceRefusals(ledger: SprintLedger, workstreamId: string): string[] {
+  const records = ledger.evidence.filter(
+    (e) => e.workstreamId === workstreamId && e.kind === 'browser_visual_acceptance',
+  );
+  if (!records.length) {
+    return [
+      `${workstreamId}: browser visual acceptance has not been recorded; add browser_visual_acceptance evidence `
+      + `proving the ${OPERATOR_APP_ORIGIN} operator surface with labeled fields `
+      + BROWSER_VISUAL_ACCEPTANCE_FIELDS.map((f) => `${f}=`).join(' '),
+    ];
+  }
+  const compliant = records.some((e) => {
+    const text = `${e.summary}\n${e.url ?? ''}\n${e.path ?? ''}`;
+    return BROWSER_VISUAL_ACCEPTANCE_FIELDS.every(
+      (field) => new RegExp(`(?:^|[\\s;,|(])${field}\\s*[=:]\\s*\\S`, 'im').test(text),
+    ) && text.includes(OPERATOR_APP_ORIGIN);
+  });
+  if (!compliant) {
+    return [
+      `${workstreamId}: browser visual acceptance evidence is incomplete; a single record must carry labeled fields `
+      + `${BROWSER_VISUAL_ACCEPTANCE_FIELDS.map((f) => `${f}=`).join(' ')} and name the live ${OPERATOR_APP_ORIGIN} operator surface`,
+    ];
+  }
+  return [];
+}
+
 export function workstreamAcceptanceRefusals(
   ledger: SprintLedger,
   workstreamId: string,
@@ -363,6 +398,7 @@ export function workstreamAcceptanceRefusals(
   const qa = ws.browserQaResult;
   if (!qa) refusals.push('independent browser QA has not run');
   else if (qa.result !== 'pass') refusals.push('latest independent browser QA did not pass');
+  refusals.push(...browserVisualAcceptanceRefusals(ledger, workstreamId));
   const open = openFindings(ledger, workstreamId);
   if (open.length) {
     refusals.push(`unresolved QA findings: ${open.map((f) => f.id).join(', ')}`);
@@ -485,6 +521,13 @@ export function completeSprintRefusals(ledger: SprintLedger): string[] {
   if (!ledger.finalReview) refusals.push('independent final review has not run');
   else if (ledger.finalReview.result !== 'pass') refusals.push('independent final review failed');
   refusals.push(...finalStageRefusals(ledger));
+  // Re-checked at completion so a hand-edited workstream status cannot bypass
+  // browser visual acceptance; only a Tyler-approved external block is exempt.
+  for (const ws of ledger.workstreams) {
+    if (ws.status !== 'externally_blocked') {
+      refusals.push(...browserVisualAcceptanceRefusals(ledger, ws.id));
+    }
+  }
   return refusals;
 }
 

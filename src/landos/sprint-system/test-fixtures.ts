@@ -66,6 +66,14 @@ export function passIndependentQa(ledger: SprintLedger, wsId: string): void {
   const journey = addEvidence(ledger, { kind: 'browser_journey', summary: 'journey pass', path: `.runtime/landos/qa/${wsId}.json`, workstreamId: wsId }, FIXED_NOW);
   const refresh = addEvidence(ledger, { kind: 'refresh_persistence', summary: 'data persisted across refresh', workstreamId: wsId }, FIXED_NOW);
   const qa = addEvidence(ledger, { kind: 'independent_browser_qa', summary: 'independent QA pass', workstreamId: wsId }, FIXED_NOW);
+  addEvidence(ledger, {
+    kind: 'browser_visual_acceptance',
+    summary: `surface=http://localhost:3141/landos?deal=7; expected=verified value visible on the Deal Card; `
+      + 'refresh=PASS still visible after hard refresh; console=no new errors; reruns=none observed; '
+      + `screenshot=.runtime/landos/qa/${wsId}-visual.png`,
+    path: `.runtime/landos/qa/${wsId}-visual.png`,
+    workstreamId: wsId,
+  }, FIXED_NOW);
   recordBrowserQaResult(
     ledger,
     wsId,

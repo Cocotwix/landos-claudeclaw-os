@@ -67,6 +67,7 @@ export const EVIDENCE_KINDS = [
   'refresh_persistence',
   'restart_persistence',
   'independent_browser_qa',
+  'browser_visual_acceptance',
   'final_regression',
 ] as const;
 export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];

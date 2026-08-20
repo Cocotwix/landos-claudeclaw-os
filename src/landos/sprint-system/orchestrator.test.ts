@@ -266,3 +266,66 @@ describe('final regression, final review, completion', () => {
     expect(() => completeSprint(ledger, FIXED_NOW)).toThrow(/independent final review failed/);
   });
 });
+
+describe('browser visual acceptance completion invariant (no bypass)', () => {
+  function stripVisualAcceptance(ledger: ReturnType<typeof makeLedger>, wsId: string): void {
+    ledger.evidence = ledger.evidence.filter(
+      (e) => !(e.workstreamId === wsId && e.kind === 'browser_visual_acceptance'),
+    );
+  }
+
+  it('refuses workstream acceptance without browser visual acceptance evidence', () => {
+    const ledger = makeLedger();
+    driveToAwaitingQa(ledger, 'ws1');
+    passIndependentQa(ledger, 'ws1');
+    stripVisualAcceptance(ledger, 'ws1');
+    const refusals = workstreamAcceptanceRefusals(ledger, 'ws1');
+    expect(refusals.join(' ')).toMatch(/browser visual acceptance has not been recorded/);
+    expect(() => acceptWorkstream(ledger, 'ws1', undefined, FIXED_NOW)).toThrow(/browser visual acceptance/);
+  });
+
+  it('refuses backend-only or wrong-origin evidence as visual acceptance', () => {
+    const ledger = makeLedger();
+    driveToAwaitingQa(ledger, 'ws1');
+    passIndependentQa(ledger, 'ws1');
+    stripVisualAcceptance(ledger, 'ws1');
+    addEvidence(ledger, {
+      kind: 'browser_visual_acceptance',
+      summary: 'HTTP 200 and database rows persisted for the Deal Card',
+      workstreamId: 'ws1',
+    }, FIXED_NOW);
+    expect(workstreamAcceptanceRefusals(ledger, 'ws1').join(' ')).toMatch(/evidence is incomplete/);
+    addEvidence(ledger, {
+      kind: 'browser_visual_acceptance',
+      summary: 'surface=http://localhost:9999/landos; expected=value visible; refresh=PASS; '
+        + 'console=clean; reruns=none; screenshot=proof.png',
+      workstreamId: 'ws1',
+    }, FIXED_NOW);
+    expect(workstreamAcceptanceRefusals(ledger, 'ws1').join(' ')).toMatch(/localhost:3141/);
+    expect(() => acceptWorkstream(ledger, 'ws1', undefined, FIXED_NOW)).toThrow(/browser visual acceptance/);
+  });
+
+  it('re-checks at sprint completion so a hand-edited workstream status cannot bypass the gate', () => {
+    const ledger = makeLedger();
+    driveToAwaitingQa(ledger, 'ws1');
+    passIndependentQa(ledger, 'ws1');
+    acceptWorkstream(ledger, 'ws1', undefined, FIXED_NOW);
+    driveToAwaitingQa(ledger, 'ws2');
+    passIndependentQa(ledger, 'ws2');
+    acceptWorkstream(ledger, 'ws2', undefined, FIXED_NOW);
+    stripVisualAcceptance(ledger, 'ws2'); // simulate a bypass after acceptance
+    const evidence = addEvidence(ledger, { kind: 'final_regression', summary: 'combined journey pass' }, FIXED_NOW);
+    recordFinalRegression(ledger, { result: 'pass', detail: 'combined pass', evidenceIds: [evidence.id] }, FIXED_NOW);
+    recordFinalReview(ledger, { result: 'pass', detail: 'reviewed live', evidenceIds: [evidence.id], reviewer: 'landos-final-reviewer' }, FIXED_NOW);
+    expect(completeSprintRefusals(ledger).join(' ')).toMatch(/ws2: browser visual acceptance/);
+    expect(() => completeSprint(ledger, FIXED_NOW)).toThrow(/browser visual acceptance/);
+  });
+
+  it('keeps the sprint contract identical to the Control spine contract', async () => {
+    const { BROWSER_VISUAL_ACCEPTANCE_FIELDS, OPERATOR_APP_ORIGIN } = await import('./orchestrator.js');
+    const controlPath = new URL('../../../scripts/control/verification-plan.mjs', import.meta.url).href;
+    const control = await import(controlPath);
+    expect([...BROWSER_VISUAL_ACCEPTANCE_FIELDS]).toEqual([...control.BROWSER_VISUAL_ACCEPTANCE_FIELDS]);
+    expect(OPERATOR_APP_ORIGIN).toBe(control.OPERATOR_APP_ORIGIN);
+  });
+});
