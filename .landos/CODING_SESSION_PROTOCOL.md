@@ -99,7 +99,11 @@ acceptance), hard refresh and verify the result remains and persisted state
 survived, confirm the load did not unintentionally rerun research, model
 calls, or other expensive workflows, check the console for new errors, capture
 screenshot (or recorded page-text) evidence, and record the surface and
-assertion proven. Tests, typecheck, build success, API responses, database
+assertion proven. The recorded `visible_assertion=` and `refresh=` must name
+the concrete on-screen outcome the build produced; generic claims ("page
+loaded", "HTTP 200", "UI visible", "feature works", "N records returned",
+"database rows exist", "screenshot captured") are refused by the gate, not
+accepted as proof. Tests, typecheck, build success, API responses, database
 rows, logs, and backend persistence never substitute. A failed browser
 acceptance means the build is not complete: identify the blocking UI,
 read-model, persistence, or wiring failure, repair only it, rerun the

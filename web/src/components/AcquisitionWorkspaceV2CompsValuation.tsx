@@ -719,6 +719,34 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
   const lowEvidence = byPpa[0] ?? null;
   const highEvidence = byPpa.length > 1 ? byPpa[byPpa.length - 1] : null;
 
+  // ── The named properties shown before any reasoning ──────────────────────
+  //
+  // Deliberately spans the evidence CLASSES rather than taking the top N of one
+  // ordering: the strict FMV comps first, then the improved sales that are
+  // retained context and never priced into the vacant-land median, then the
+  // remaining closed sales, then live competition. A preview that showed only
+  // qualifying sales would reproduce the original problem — a thin FMV set
+  // reading as "there are no comparables" while dozens of retained candidates
+  // sit below. Every record here is the same object the workspace renders.
+  const previewComps = useMemo(() => {
+    const picked: CvComp[] = [];
+    const take = (rows: CvComp[], max: number) => {
+      let added = 0;
+      for (const row of rows) {
+        if (picked.length >= 6 || added >= max) break;
+        if (picked.some((p) => p.key === row.key)) continue;
+        picked.push(row);
+        added += 1;
+      }
+    };
+    const byAcresDesc = (a: CvComp, b: CvComp) => (b.acres ?? 0) - (a.acres ?? 0);
+    take([...valuationSet].sort((a, b) => (b.valuationWeight ?? 0) - (a.valuationWeight ?? 0)), 2);
+    take(comps.filter(isImproved).sort(byAcresDesc), 2);
+    take(comps.filter((c) => c.category === 'accepted_closed_sale' && !c.inValuationSet).sort(byAcresDesc), 2);
+    take(comps.filter(isActive).sort(byAcresDesc), 6);
+    return picked.slice(0, 6);
+  }, [comps]);
+
   const excludeForm = (c: CvComp) => (
     <span class="awv2-cv-exclude-form">
       <input
@@ -745,7 +773,71 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
 
   return (
     <>
-      {/* ── 1. Decision strip ── */}
+      {/* ── 1. The actual comparable properties, first on the surface ──
+          The full workspace sits below several valuation panels, so opening
+          this surface used to show three screens of reasoning before a single
+          real property appeared: the operator read "1 accepted comp ·
+          insufficient" and reasonably concluded there were NO comparables. A
+          count is not evidence, and reasoning about evidence the operator
+          cannot see reads as an absence of it — so the named properties come
+          first, before the decision they support. This strip names them —
+          address, acreage, price, $/acre, date, classification — immediately,
+          and states the retained universe and the strict FMV-qualifying set as
+          two separate numbers so neither can be mistaken for the other. It is a
+          pointer into the canonical workspace below, never a second list: the
+          same records, the same projection, capped and linked. */}
+      {previewComps.length > 0 && (
+        <section
+          data-domain="evidence"
+          class="awv2-panel awv2-cv-actualcomps"
+          aria-label="Actual comparable properties"
+          id="actual-comparables"
+          data-testid="cv-actual-comps"
+        >
+          <div class="awv2-panel-title">
+            Actual comparable properties
+            <span class="awv2-src-tag" data-testid="cv-actual-comps-counts">
+              {comps.length} retained comp{comps.length === 1 ? '' : 's'} · {summary.acceptedCount} strict FMV qualifying
+            </span>
+          </div>
+          <div class="awv2-cv-actualrows">
+            {previewComps.map((c) => {
+              const identity = identityFor(c);
+              return (
+                <div class={`awv2-cv-actualrow kind-${identity.kind}`} key={c.key} data-testid="cv-actual-comp-row">
+                  <div class="awv2-cv-actualhead">
+                    <b class="addr">{c.address ?? 'Address not stated by the source'}</b>
+                    <CompKindBadge identity={identity} />
+                    {c.inValuationSet && <span class="chip ok" data-testid="cv-actual-comp-qualifying">Strict FMV comp</span>}
+                    <span class="chip dim">{c.propertyClass === 'improved' ? 'Improved' : c.propertyClass === 'land' ? 'Vacant land' : 'Property type unstated'}</span>
+                  </div>
+                  <div class="awv2-cv-actualfacts">
+                    <span><i>Acres</i><b>{c.acres != null ? c.acres : '—'}</b></span>
+                    <span><i>{c.priceKind === 'sale' ? 'Sold price' : c.priceKind === 'list' ? 'Asking price' : 'Price'}</i><b>{c.price != null ? usd(c.price) : '—'}</b></span>
+                    <span><i>$ / acre</i><b>{c.pricePerAcre != null ? usd(c.pricePerAcre) : '—'}</b></span>
+                    <span><i>{c.dateIso ? 'Date' : 'Date status'}</i><b>{c.dateIso ?? 'Not established'}</b></span>
+                    <span><i>Source</i><b>{providerSummary(c.source)}</b></span>
+                  </div>
+                  <p class="awv2-cv-actualwhy">{conciseReason(c)}</p>
+                </div>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            class="awv2-cv-link"
+            data-testid="cv-actual-comps-seeall"
+            onClick={() => {
+              setFilter('all');
+              document.getElementById('comparable-sales')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            }}
+          >
+            See all {comps.length} retained comparables →
+          </button>
+        </section>
+      )}
+
+      {/* ── 2. Decision strip ── */}
       <section data-domain="valuation" class={`awv2-panel awv2-cv-decisionpanel status-${summary.status}`} aria-label="Valuation decision" id="valuation-decision">
         <div class="awv2-panel-title">
           Comps &amp; Valuation <span class="awv2-src-tag">{summary.basisLabel}</span>

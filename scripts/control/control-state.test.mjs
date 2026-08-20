@@ -147,7 +147,9 @@ async function runMandatoryPlan(state, attemptId, now) {
       result = recordManualReview(state.db, {
         attemptId, obligationId: obligation.id, outcome: 'PASS', reviewer: 'fixture-reviewer',
         reviewEvidence: obligation.kind === 'browser_visual_acceptance'
-          ? 'surface=http://localhost:3141/fixture; expected=fixture change visible; refresh=PASS still visible; '
+          ? 'surface=http://localhost:3141/fixture; expected=fixture change visible; '
+            + 'visible_assertion=Fixture panel visibly reads "Fixture value 42"; '
+            + 'refresh=Fixture panel still visibly reads "Fixture value 42" after hard refresh; '
             + 'console=no new errors; reruns=none observed; screenshot=docs/landos/evidence/fixture.png'
           : `fixture-review:${obligation.kind}`,
         summary: `Gate review passed for ${obligation.kind}.`,

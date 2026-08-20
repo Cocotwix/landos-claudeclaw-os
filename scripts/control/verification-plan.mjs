@@ -15,14 +15,109 @@ export const BROWSER_VISUAL_ACCEPTANCE_OBLIGATION_ID = 'browser-visual-acceptanc
 export const BROWSER_VISUAL_ACCEPTANCE_KIND = 'browser_visual_acceptance';
 export const OPERATOR_APP_ORIGIN = 'localhost:3141';
 export const BROWSER_VISUAL_ACCEPTANCE_FIELDS = Object.freeze([
-  'surface', 'expected', 'refresh', 'console', 'reruns', 'screenshot',
+  'surface', 'expected', 'visible_assertion', 'refresh', 'console', 'reruns', 'screenshot',
 ]);
+
+// Fields whose recorded value must name the CONCRETE outcome that was on screen.
+// Presence of a label proved only that a builder typed something; these two carry
+// the claim itself, so a generic value here is a failed acceptance, not a PASS.
+export const BROWSER_VISUAL_ACCEPTANCE_CONCRETE_FIELDS = Object.freeze(['visible_assertion', 'refresh']);
+
+// Values that assert nothing about the build's own visible outcome. Each is
+// matched against the WHOLE recorded value, so a real assertion that happens to
+// mention a screenshot or a count is unaffected; only a value that says no more
+// than this is refused.
+export const GENERIC_VISUAL_EVIDENCE_PATTERNS = Object.freeze([
+  /^page (?:loaded|loads|rendered|renders|opened|opens)$/,
+  /^(?:http )?\d{3}(?: ok)?$/,
+  /^(?:the )?(?:ui|page|surface|section|component)(?: is)? (?:visible|rendered|renders|present|fine|ok)$/,
+  /^(?:it |the )?(?:feature|build|fix|change)?\s*works(?: as expected)?$/,
+  /^\d+ (?:records?|rows?|results?|items?|comps?) (?:returned|found|present|exist|existed)$/,
+  /^database rows exist(?:ed)?$/,
+  /^(?:db|database) (?:rows?|records?) (?:exist|existed|present|returned)$/,
+  /^screenshot (?:captured|taken|saved|attached)$/,
+  /^(?:api|endpoint|backend|server)(?: response)? (?:ok|200|returned data|works)$/,
+  /^(?:verified|confirmed|passed|pass|ok|done|green|good|looks good|no errors|clean)$/,
+  /^no (?:console )?errors$/,
+  /^tests? (?:pass|passed|green)$/,
+]);
+
+/**
+ * Extract one labeled field's recorded value (`field=…` / `field: …`), or null.
+ *
+ * The value ends at the NEXT labeled field or the end of the line, never at the
+ * first punctuation: a real assertion reads "Brush Creek Rd; 40.2 ac; $900,000",
+ * so splitting on `;` would truncate the very detail the gate exists to demand.
+ */
+export function readAcceptanceField(text, field) {
+  const nextLabel = `(?:${BROWSER_VISUAL_ACCEPTANCE_FIELDS.join('|')})\\s*[=:]`;
+  const match = new RegExp(
+    `(?:^|[\\s;,|(])${field}\\s*[=:]\\s*([^\\n]*?)(?=\\s*(?:[;,|]\\s*)?${nextLabel}|\\n|$)`,
+    'i',
+  ).exec(String(text ?? ''));
+  if (!match) return null;
+  const value = match[1].replace(/^["'\s]+|["'\s;,|]+$/g, '').trim();
+  return value || null;
+}
+
+/**
+ * Why a recorded acceptance value fails to state a concrete visible outcome, or
+ * null when it does. A concrete claim carries a specific token the operator
+ * could have read off the screen: a number, a money figure, or a stated code or
+ * status word ("PASS", "RS-15"). Prose alone ("the page looked right") does not.
+ */
+export function genericVisualEvidenceReason(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return 'is empty';
+  const normalized = text.toLowerCase().replace(/[.!;·—–-]+$/g, '').replace(/\s+/g, ' ').trim();
+  if (GENERIC_VISUAL_EVIDENCE_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return `is the generic claim "${text}", which states no outcome specific to this build`;
+  }
+  if (text.length < 12) return `is too short ("${text}") to state what was visibly proven`;
+  const hasConcreteSignal = /\d/.test(text) || /\b[A-Z][A-Z0-9/_-]{1,}\b/.test(text) || /["'“”]/.test(text);
+  if (!hasConcreteSignal) {
+    return `names no concrete on-screen value ("${text}"): state the visible text, figure, or status the surface showed`;
+  }
+  return null;
+}
+
+/**
+ * The one shared refusal set for a browser-visual-acceptance PASS. Both the
+ * Control DB manual-review path and the sprint ledger call this, so a claim
+ * refused on one path can never be accepted on the other.
+ */
+export function browserVisualAcceptanceEvidenceRefusals(text) {
+  const body = String(text ?? '');
+  const refusals = [];
+  const missing = BROWSER_VISUAL_ACCEPTANCE_FIELDS.filter((field) => readAcceptanceField(body, field) == null);
+  if (missing.length > 0) {
+    refusals.push(
+      `missing labeled evidence field(s) ${missing.map((field) => `${field}=`).join(', ')}: record the operator surface `
+      + 'tested, the expected visible outcome, the concrete visible assertion actually verified, the hard-refresh '
+      + 'result, the console result, the unintended-rerun check, and the screenshot location',
+    );
+  }
+  for (const field of BROWSER_VISUAL_ACCEPTANCE_CONCRETE_FIELDS) {
+    const value = readAcceptanceField(body, field);
+    if (value == null) continue;
+    const reason = genericVisualEvidenceReason(value);
+    if (reason) refusals.push(`${field}= ${reason}`);
+  }
+  if (!body.includes(OPERATOR_APP_ORIGIN)) {
+    refusals.push(`the live operator surface URL on ${OPERATOR_APP_ORIGIN} is not recorded`);
+  }
+  return refusals;
+}
+
 export const BROWSER_VISUAL_ACCEPTANCE_SUMMARY = 'Mandatory browser visual acceptance on the live operator application at '
   + `http://${OPERATOR_APP_ORIGIN}: open the real operator surface the build affected, visually verify the actual `
   + 'changed behavior or data, hard refresh and verify it remains, check the console for new errors, confirm the page '
   + 'load did not rerun research/model/browser workflows unintentionally, and capture screenshot or recorded page-text '
   + 'evidence. A PASS review must record labeled evidence fields: '
-  + `${BROWSER_VISUAL_ACCEPTANCE_FIELDS.map((field) => `${field}=`).join(' ')}.`;
+  + `${BROWSER_VISUAL_ACCEPTANCE_FIELDS.map((field) => `${field}=`).join(' ')}. `
+  + 'visible_assertion= and refresh= must name the concrete on-screen outcome this build was supposed to produce; '
+  + 'generic claims ("page loaded", "HTTP 200", "UI visible", "feature works", "N records returned", "database rows '
+  + 'exist", "screenshot captured") are refused.';
 
 const CAPABILITIES_PATH = '.landos/capabilities.json';
 const CONTROL_SPINE_PATHS = Object.freeze([

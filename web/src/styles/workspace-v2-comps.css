@@ -565,3 +565,55 @@
   .awv2-cv-expandwrap { padding: 0; }
   .awv2-cvd-galleryframe { max-width: 100%; }
 }
+
+/* ── Actual comparable properties, above the reasoning ───────────────────────
+   Named retained properties in the first viewport of the comps surface, and
+   the counts handoff on the diligence view. Both exist so a thin strict-FMV
+   set can never read as "this card has no comparables". */
+.awv2-cv-actualrows { display: grid; gap: 8px; margin-bottom: 10px; }
+.awv2-cv-actualrow {
+  background: var(--awv2-panel-2); border: 1px solid var(--awv2-line);
+  border-left: 3px solid var(--awv2-line-strong);
+  border-radius: 8px; padding: 10px 12px; min-width: 0;
+}
+.awv2-cv-actualrow.kind-closed { border-left-color: rgba(21, 128, 61, 0.75); }
+.awv2-cv-actualrow.kind-active { border-left-color: rgba(234, 115, 23, 0.75); }
+.awv2-cv-actualrow.kind-improved { border-left-color: rgba(138, 133, 119, 0.8); }
+.awv2-cv-actualrow.kind-zeroWeight,
+.awv2-cv-actualrow.kind-context { border-left-color: rgba(156, 163, 175, 0.5); }
+.awv2-cv-actualhead {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.awv2-cv-actualhead .addr { font-size: 14px; color: var(--awv2-bone); min-width: 0; }
+.awv2-cv-actualhead .chip {
+  font-family: var(--awv2-mono); font-size: 9.5px; letter-spacing: 0.08em;
+  text-transform: uppercase; padding: 3px 8px; border-radius: 4px;
+  border: 1px solid var(--awv2-line-strong); color: var(--awv2-bone-faint);
+}
+.awv2-cv-actualhead .chip.ok {
+  color: #86efac; background: rgba(21, 128, 61, 0.18); border-color: rgba(21, 128, 61, 0.55);
+}
+.awv2-cv-actualfacts { display: flex; flex-wrap: wrap; gap: 6px 22px; }
+.awv2-cv-actualfacts span { font-family: var(--awv2-mono); font-size: 13px; color: var(--awv2-bone); }
+.awv2-cv-actualfacts i {
+  display: block; font-style: normal; font-size: 9px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--awv2-bone-faint);
+}
+.awv2-cv-actualwhy {
+  font-size: 12.5px; line-height: 1.6; color: var(--awv2-bone-faint); margin: 8px 0 0;
+}
+
+.awv2-cv-handoffcounts { display: flex; flex-wrap: wrap; gap: 6px 28px; margin-bottom: 8px; }
+.awv2-cv-handoffcounts span { font-family: var(--awv2-mono); color: var(--awv2-bone); }
+.awv2-cv-handoffcounts b { font-size: 22px; }
+.awv2-cv-handoffcounts i {
+  display: block; font-style: normal; font-size: 9px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--awv2-bone-faint);
+}
+.awv2-cv-cta {
+  font-family: var(--awv2-mono); font-size: 12.5px; letter-spacing: 0.04em;
+  color: var(--awv2-brass-bright); background: var(--awv2-brass-soft);
+  border: 1px solid rgba(201, 164, 92, 0.5); border-radius: 6px;
+  padding: 8px 14px; cursor: pointer;
+}
+.awv2-cv-cta:hover { background: rgba(201, 164, 92, 0.22); }

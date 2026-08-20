@@ -347,9 +347,60 @@ export interface RecurrenceGateView {
 // constants mirror scripts/control/verification-plan.mjs; governance.test.ts
 // asserts the two contracts stay identical. Do not fork them.
 export const BROWSER_VISUAL_ACCEPTANCE_FIELDS = [
-  'surface', 'expected', 'refresh', 'console', 'reruns', 'screenshot',
+  'surface', 'expected', 'visible_assertion', 'refresh', 'console', 'reruns', 'screenshot',
 ] as const;
+export const BROWSER_VISUAL_ACCEPTANCE_CONCRETE_FIELDS = ['visible_assertion', 'refresh'] as const;
 export const OPERATOR_APP_ORIGIN = 'localhost:3141';
+
+// Values that assert nothing about this build's own visible outcome. Matched
+// against the WHOLE recorded value, so a real assertion that also mentions a
+// screenshot or a count is unaffected. Mirrors verification-plan.mjs.
+export const GENERIC_VISUAL_EVIDENCE_PATTERNS = [
+  /^page (?:loaded|loads|rendered|renders|opened|opens)$/,
+  /^(?:http )?\d{3}(?: ok)?$/,
+  /^(?:the )?(?:ui|page|surface|section|component)(?: is)? (?:visible|rendered|renders|present|fine|ok)$/,
+  /^(?:it |the )?(?:feature|build|fix|change)?\s*works(?: as expected)?$/,
+  /^\d+ (?:records?|rows?|results?|items?|comps?) (?:returned|found|present|exist|existed)$/,
+  /^database rows exist(?:ed)?$/,
+  /^(?:db|database) (?:rows?|records?) (?:exist|existed|present|returned)$/,
+  /^screenshot (?:captured|taken|saved|attached)$/,
+  /^(?:api|endpoint|backend|server)(?: response)? (?:ok|200|returned data|works)$/,
+  /^(?:verified|confirmed|passed|pass|ok|done|green|good|looks good|no errors|clean)$/,
+  /^no (?:console )?errors$/,
+  /^tests? (?:pass|passed|green)$/,
+] as const;
+
+/**
+ * Extract one labeled field's recorded value (`field=…` / `field: …`), or null.
+ * The value ends at the NEXT labeled field or end of line, never at the first
+ * punctuation — a real assertion reads "Brush Creek Rd; 40.2 ac; $900,000".
+ */
+export function readAcceptanceField(text: string, field: string): string | null {
+  const nextLabel = `(?:${BROWSER_VISUAL_ACCEPTANCE_FIELDS.join('|')})\\s*[=:]`;
+  const match = new RegExp(
+    `(?:^|[\\s;,|(])${field}\\s*[=:]\\s*([^\\n]*?)(?=\\s*(?:[;,|]\\s*)?${nextLabel}|\\n|$)`,
+    'i',
+  ).exec(String(text ?? ''));
+  if (!match) return null;
+  const value = match[1].replace(/^["'\s]+|["'\s;,|]+$/g, '').trim();
+  return value || null;
+}
+
+/** Why a recorded value fails to state a concrete visible outcome, or null. */
+export function genericVisualEvidenceReason(value: string | null | undefined): string | null {
+  const text = String(value ?? '').trim();
+  if (!text) return 'is empty';
+  const normalized = text.toLowerCase().replace(/[.!;·—–-]+$/g, '').replace(/\s+/g, ' ').trim();
+  if (GENERIC_VISUAL_EVIDENCE_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return `is the generic claim "${text}", which states no outcome specific to this build`;
+  }
+  if (text.length < 12) return `is too short ("${text}") to state what was visibly proven`;
+  const hasConcreteSignal = /\d/.test(text) || /\b[A-Z][A-Z0-9/_-]{1,}\b/.test(text) || /["'“”]/.test(text);
+  if (!hasConcreteSignal) {
+    return `names no concrete on-screen value ("${text}"): state the visible text, figure, or status the surface showed`;
+  }
+  return null;
+}
 
 export function browserVisualAcceptanceRefusals(ledger: SprintLedger, workstreamId: string): string[] {
   const records = ledger.evidence.filter(
@@ -362,16 +413,31 @@ export function browserVisualAcceptanceRefusals(ledger: SprintLedger, workstream
       + BROWSER_VISUAL_ACCEPTANCE_FIELDS.map((f) => `${f}=`).join(' '),
     ];
   }
+  // One record must carry the whole proof. A generic value in visible_assertion=
+  // or refresh= fails the same way a missing field does: the ledger must be able
+  // to show WHAT was on screen, not that a builder claimed something was.
+  let worst: string[] = [];
   const compliant = records.some((e) => {
     const text = `${e.summary}\n${e.url ?? ''}\n${e.path ?? ''}`;
-    return BROWSER_VISUAL_ACCEPTANCE_FIELDS.every(
-      (field) => new RegExp(`(?:^|[\\s;,|(])${field}\\s*[=:]\\s*\\S`, 'im').test(text),
-    ) && text.includes(OPERATOR_APP_ORIGIN);
+    const refusals: string[] = [];
+    const missing = BROWSER_VISUAL_ACCEPTANCE_FIELDS.filter((f) => readAcceptanceField(text, f) == null);
+    if (missing.length) refusals.push(`missing ${missing.map((f) => `${f}=`).join(', ')}`);
+    for (const field of BROWSER_VISUAL_ACCEPTANCE_CONCRETE_FIELDS) {
+      const value = readAcceptanceField(text, field);
+      if (value == null) continue;
+      const reason = genericVisualEvidenceReason(value);
+      if (reason) refusals.push(`${field}= ${reason}`);
+    }
+    if (!text.includes(OPERATOR_APP_ORIGIN)) refusals.push(`no live ${OPERATOR_APP_ORIGIN} operator surface recorded`);
+    if (!refusals.length) return true;
+    if (!worst.length || refusals.length < worst.length) worst = refusals;
+    return false;
   });
   if (!compliant) {
     return [
       `${workstreamId}: browser visual acceptance evidence is incomplete; a single record must carry labeled fields `
-      + `${BROWSER_VISUAL_ACCEPTANCE_FIELDS.map((f) => `${f}=`).join(' ')} and name the live ${OPERATOR_APP_ORIGIN} operator surface`,
+      + `${BROWSER_VISUAL_ACCEPTANCE_FIELDS.map((f) => `${f}=`).join(' ')}, state the concrete on-screen outcome in `
+      + `visible_assertion= and refresh=, and name the live ${OPERATOR_APP_ORIGIN} operator surface — ${worst.join('; ')}`,
     ];
   }
   return [];

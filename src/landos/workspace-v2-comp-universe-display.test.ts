@@ -66,6 +66,49 @@ describe('the comps surface renders the canonical persisted comp universe', () =
     expect(CV_SRC).toMatch(/key: 'improved', label: 'Improved context', match: isImproved/);
   });
 
+  it('names real comparable properties before any valuation reasoning', () => {
+    // A count is not evidence. The comps surface must open on actual retained
+    // properties — address, acreage, price, $/acre, date, classification — not
+    // on three screens of narrative with the records far below the fold.
+    const strip = CV_SRC.slice(CV_SRC.indexOf('id="actual-comparables"'));
+    expect(CV_SRC.indexOf('id="actual-comparables"')).toBeGreaterThan(-1);
+    // It renders BEFORE the full workspace, not after it.
+    expect(CV_SRC.indexOf('id="actual-comparables"')).toBeLessThan(CV_SRC.indexOf('id="comparable-sales"'));
+    const head = strip.slice(0, 4000);
+    expect(head).toMatch(/\{c\.address/);
+    expect(head).toMatch(/<i>Acres<\/i>/);
+    expect(head).toMatch(/<i>\$ \/ acre<\/i>/);
+    expect(head).toMatch(/c\.priceKind === 'sale' \? 'Sold price'/);
+    expect(head).toMatch(/CompKindBadge identity=\{identity\}/);
+    expect(head).toMatch(/conciseReason\(c\)/);
+  });
+
+  it('states the retained universe and the strict FMV set as two separate numbers', () => {
+    expect(CV_SRC).toMatch(/\{comps\.length\} retained comp[\s\S]{0,80}\{summary\.acceptedCount\} strict FMV qualifying/);
+    // The preview spans evidence classes, so a thin FMV set never reads as
+    // "no comparables": qualifying sales, then improved context, then the rest.
+    const preview = CV_SRC.slice(CV_SRC.indexOf('const previewComps'), CV_SRC.indexOf('const previewComps') + 1200);
+    expect(preview).toMatch(/take\(\[\.\.\.valuationSet\]/);
+    expect(preview).toMatch(/take\(comps\.filter\(isImproved\)/);
+    expect(preview).toMatch(/take\(comps\.filter\(isActive\)/);
+  });
+
+  it('gives Property & diligence an unmistakable handoff, not a duplicate list', () => {
+    expect(PAGE_SRC).toMatch(/data-testid="pi-comps-handoff"/);
+    expect(PAGE_SRC).toMatch(/data-testid="pi-comps-handoff-retained"/);
+    expect(PAGE_SRC).toMatch(/data-testid="pi-comps-handoff-qualifying"/);
+    expect(PAGE_SRC).toMatch(/data-testid="pi-comps-handoff-open"[\s\S]{0,120}onClick=\{openCompsValuation\}/);
+    // Counts and a link only — the diligence view must NOT render comp cards.
+    const handoff = PAGE_SRC.slice(PAGE_SRC.indexOf('data-testid="pi-comps-handoff"'));
+    expect(handoff.slice(0, 1400)).not.toMatch(/\.comps\.map\(/);
+  });
+
+  it('routes the handoff through the same nav sync, so the jump actually renders', () => {
+    const onOpen = PAGE_SRC.slice(PAGE_SRC.indexOf('const onOpenSection'));
+    expect(onOpen.slice(0, 700)).toMatch(/syncNavFromUrl\(\)/);
+    expect(onOpen.slice(0, 700)).not.toMatch(/setSection\(readSection/);
+  });
+
   it('never fetches or reruns research when the comps surface opens', () => {
     // Opening/refreshing the card READS. The only POSTs in the comps section
     // are explicit operator actions (valuation selection, location resolve).

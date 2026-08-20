@@ -543,7 +543,10 @@ export function AcquisitionWorkspaceV2() {
   const onOpenSection = (slug: 'property-intelligence' | 'comps-valuation') => {
     const href = sectionHref(window.location.pathname, window.location.search, slug);
     if (href !== window.location.pathname + window.location.search) window.history.pushState(null, '', href);
-    setSection(readSection(window.location.search));
+    // Same contract as switchSection: BOTH the section and the inner view are
+    // re-derived from the URL, or a jump between the two Property & Market
+    // views rewrites the URL and renders nothing.
+    syncNavFromUrl();
   };
   const openCompsValuation = () => onOpenSection('comps-valuation');
 
@@ -657,6 +660,28 @@ export function AcquisitionWorkspaceV2() {
                 <a href="#valuation-decision">Valuation</a><a href="#comparable-sales">Comparable sales</a><a href="#valuation-market-intelligence">Market</a><a href="#valuation-methodology">Methodology</a>
               </>}
             </nav>
+            {/* Comparable evidence handoff. The diligence view is NOT the comp
+                surface and must not restate the comparables, but it also must
+                not let a thin FMV set read as "there are no comps": the retained
+                universe and the strict FMV-qualifying set are stated as two
+                separate numbers, with one obvious way through to the real
+                records. Counts only — the named properties live one click away
+                on the canonical surface. */}
+            {propertyMarketView === 'property-intelligence' && compsValuation && (
+              <section class="awv2-panel awv2-cv-handoff" data-domain="evidence" aria-label="Comparable evidence" data-testid="pi-comps-handoff">
+                <div class="awv2-cv-handoffcounts">
+                  <span><i>Retained comparables</i><b data-testid="pi-comps-handoff-retained">{compsValuation.canonicalCompCount ?? compsValuation.comps.length}</b></span>
+                  <span><i>Strict FMV qualifying</i><b data-testid="pi-comps-handoff-qualifying">{compsValuation.summary.acceptedCount}</b></span>
+                </div>
+                <p class="awv2-pi-note">
+                  Retained comparable evidence is not the same set as the sales allowed to price the subject. Every retained
+                  candidate — core, directional and excluded alike — stays visible with its own reason on the comps surface.
+                </p>
+                <button type="button" class="awv2-cv-cta" data-testid="pi-comps-handoff-open" onClick={openCompsValuation}>
+                  View comps →
+                </button>
+              </section>
+            )}
             {propertyMarketView === 'comps-valuation' ? (
               <CompsValuationSection dealId={dealId} initial={compsValuation} onViewChange={setCompsValuation} />
             ) : (

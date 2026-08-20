@@ -69,7 +69,9 @@ export function passIndependentQa(ledger: SprintLedger, wsId: string): void {
   addEvidence(ledger, {
     kind: 'browser_visual_acceptance',
     summary: `surface=http://localhost:3141/landos?deal=7; expected=verified value visible on the Deal Card; `
-      + 'refresh=PASS still visible after hard refresh; console=no new errors; reruns=none observed; '
+      + 'visible_assertion=Deal Card 7 visibly reads "Verified value $120,000"; '
+      + 'refresh=Deal Card 7 still visibly reads "Verified value $120,000" after hard refresh; '
+      + 'console=no new errors; reruns=none observed; '
       + `screenshot=.runtime/landos/qa/${wsId}-visual.png`,
     path: `.runtime/landos/qa/${wsId}-visual.png`,
     workstreamId: wsId,

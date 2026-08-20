@@ -118,7 +118,9 @@ async function governedCandidate(state, repo, {
 }
 
 const BROWSER_ACCEPTANCE_EVIDENCE = 'surface=http://localhost:3141/fixture; expected=fixture change visible; '
-  + 'refresh=PASS still visible; console=no new errors; reruns=none observed; screenshot=docs/landos/evidence/fixture.png';
+  + 'visible_assertion=Fixture panel visibly reads "Fixture value 42" on the fixture surface; '
+  + 'refresh=Fixture panel still visibly reads "Fixture value 42" after hard refresh; '
+  + 'console=no new errors; reruns=none observed; screenshot=docs/landos/evidence/fixture.png';
 
 async function passPlan(state, candidate) {
   let latest;
@@ -358,7 +360,7 @@ test('browser visual acceptance is a mandatory completion invariant the normal p
     attemptId: candidate.attemptId, obligationId: browser.id, outcome: 'PASS',
     reviewer: 'fixture-reviewer', reviewEvidence: 'HTTP 200 and database rows persisted',
     summary: 'Deal Card loaded.',
-  }), /browser visual acceptance PASS requires labeled evidence fields/i);
+  }), /browser visual acceptance PASS refused: missing labeled evidence field\(s\)/i);
   assert.throws(() => recordManualReview(state.db, {
     attemptId: candidate.attemptId, obligationId: browser.id, outcome: 'PASS',
     reviewer: 'fixture-reviewer',

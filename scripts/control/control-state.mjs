@@ -22,9 +22,8 @@ import Database from 'better-sqlite3';
 
 import { git, gitStatusText, runCheck, failureEvidence } from '../dev/verify.mjs';
 import {
-  BROWSER_VISUAL_ACCEPTANCE_FIELDS,
   BROWSER_VISUAL_ACCEPTANCE_KIND,
-  OPERATOR_APP_ORIGIN,
+  browserVisualAcceptanceEvidenceRefusals,
   deriveVerificationPlan,
 } from './verification-plan.mjs';
 import { acquireResource, ensureProtectedPrimaryResources, releaseResource } from './resource-ownership.mjs';
@@ -2256,18 +2255,9 @@ function recordCanonicalVerificationResult(db, input, mechanism, now) {
 // so the normal completion path cannot omit browser visual acceptance.
 function requireBrowserVisualAcceptanceEvidence(input, reviewEvidence) {
   const text = `${String(input.summary ?? '')}\n${reviewEvidence}`;
-  const missing = BROWSER_VISUAL_ACCEPTANCE_FIELDS.filter(
-    (field) => !new RegExp(`(?:^|[\\s;,|(])${field}\\s*[=:]\\s*\\S`, 'im').test(text),
-  );
-  if (missing.length > 0) {
-    throw new Error(
-      `browser visual acceptance PASS requires labeled evidence fields ${missing.map((field) => `${field}=`).join(', ')}: `
-      + 'record the operator surface tested, the expected visible outcome, the hard-refresh result, the console result, '
-      + 'the unintended-rerun check, and the screenshot/evidence location',
-    );
-  }
-  if (!text.includes(OPERATOR_APP_ORIGIN)) {
-    throw new Error(`browser visual acceptance PASS requires the live operator surface URL on ${OPERATOR_APP_ORIGIN}`);
+  const refusals = browserVisualAcceptanceEvidenceRefusals(text);
+  if (refusals.length > 0) {
+    throw new Error(`browser visual acceptance PASS refused: ${refusals.join('; ')}`);
   }
 }
 
