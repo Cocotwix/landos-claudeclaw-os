@@ -476,6 +476,7 @@ import { isLeadType } from './db.js';
 import { addComp, enrichCompCoordinates, listComps, recommendCompSources, evaluateCompRecency } from './comps.js';
 import { buildCompsValuationView, setCompValuationSelection, resolveCompsValuationLocations, type CompSelectionAction } from './comps-valuation.js';
 import { enrichRetainedCompListings } from './comp-listing-enrichment.js';
+import { enrichCompTransactions } from './comp-transaction-enrichment.js';
 import { buildOfficialParcelGisView } from './official-parcel-gis-view.js';
 import {
   TAX_STATUS_FIELDS, buildTaxStatusRead, taxAuthorityFor, taxStatusAttemptsFromSources,
@@ -10497,6 +10498,35 @@ export function registerLandosRoutes(app: Hono): void {
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     const results = await enrichRetainedCompListings(id);
     return c.json({ results, compsValuation: buildCompsValuationView(id) });
+  });
+
+  // Transaction enrichment for comparables LandOS ALREADY retained.
+  //
+  // Marketplace SOLD result cards state a price but frequently no sale date,
+  // and the price they state is often the last asking price rather than the
+  // one the deal closed at. This revisits a bounded set of the strongest
+  // already-retained candidates at their OWN retained URLs and writes back the
+  // closed-sale facts those pages publish about themselves. It runs no search,
+  // adds no comparable, and never changes classification or valuation
+  // selection — the existing acreage-band and recency rules decide what the
+  // corrected facts qualify for.
+  app.post('/api/landos/deal-cards/:id/comps-valuation/enrich-transactions', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const requested = num(body.limit);
+    const limit = requested != null && requested > 0 ? Math.min(Math.floor(requested), 12) : 8;
+    const cardId = subjectCardId(deal);
+    const subject = cardId ? getPropertyCard(cardId) : undefined;
+    const subjectAcres = typeof subject?.acres === 'number' ? subject.acres : null;
+    const results = await enrichCompTransactions(id, { limit, subjectAcres });
+    return c.json({
+      results,
+      enrichedCount: results.filter((r) => r.enriched).length,
+      compsValuation: buildCompsValuationView(id),
+    });
   });
 
   // Operator valuation-comp selection: include / exclude (with reason) /
