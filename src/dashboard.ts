@@ -191,9 +191,11 @@ import {
   setMeetingPin,
   clearMeetingSessions,
   getOpenTextMeetingIds,
+  getOpenTextMeetingForDeal,
   getTextMeetings,
 } from './db.js';
 import { registerLandosRoutes } from './landos/routes.js';
+import { getDealWarRoomContext } from './landos/war-room-deal-context.js';
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
@@ -581,10 +583,15 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // by legacy fallbacks that DO embed the token in the page source.
   function requireToken(c: any): Response | null {
     const token = c.req.query('token');
-    if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
-      return c.json({ error: 'Unauthorized' }, 401) as Response;
-    }
-    return null;
+    if (DASHBOARD_TOKEN && token && tokensMatch(token, DASHBOARD_TOKEN)) return null;
+    // A paired local browser session carries the same operator authority the
+    // /api/* gate accepts. Without this, a cookie-paired browser (no ?token=
+    // in any URL) gets a hard 401 on every legacy page — e.g. entering the
+    // War Room from a Deal Card. The page then renders with an empty embedded
+    // token and its same-origin API/SSE calls authenticate via the HttpOnly
+    // session cookie instead.
+    if (hasLocalBrowserSession(c)) return null;
+    return c.json({ error: 'Unauthorized' }, 401) as Response;
   }
 
   // Mutation kill-switch middleware. When DASHBOARD_MUTATIONS_ENABLED is
@@ -906,7 +913,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (existing.chat_id !== '' && existing.chat_id !== chatId) {
       return c.redirect(pickerRedirect(chatId));
     }
-    return c.html(getWarRoomTextHtml(DASHBOARD_TOKEN, chatId, meetingId));
+    return c.html(getWarRoomTextHtml(DASHBOARD_TOKEN, chatId, meetingId, {
+      dealCardId: existing.deal_card_id,
+      dealLabel: existing.deal_label,
+    }));
   });
 
   // Serve War Room background music (user's custom music.mp3 first, then bundled entrance.mp3)
@@ -1207,11 +1217,33 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   app.post('/api/warroom/text/new', async (c) => {
-    let body: { chatId?: string } = {};
+    let body: { chatId?: string; dealCardId?: number } = {};
     try { body = await c.req.json(); } catch { /* empty */ }
     const chatId = (body.chatId || '').trim();
+    // Deal-scoped meeting: launched from a LandOS Deal Card. The deal is
+    // resolved through the read-only LandOS context provider so an id that
+    // matches no real deal card cannot create a mislabeled room.
+    let dealCardId: number | null = null;
+    let dealLabel: string | null = null;
+    if (body.dealCardId !== undefined) {
+      const requested = Number(body.dealCardId);
+      if (!Number.isInteger(requested) || requested <= 0) {
+        return c.json({ error: 'invalid dealCardId' }, 400);
+      }
+      const dealCtx = getDealWarRoomContext(requested);
+      if (!dealCtx) return c.json({ error: 'deal card not found' }, 404);
+      dealCardId = dealCtx.dealCardId;
+      dealLabel = dealCtx.dealLabel;
+      // One canonical room per deal: re-entering from the Deal Card resumes
+      // the open deliberation rather than force-ending it for a blank room.
+      const openForDeal = getOpenTextMeetingForDeal(dealCardId, chatId);
+      if (openForDeal) {
+        getChannel(openForDeal.id);
+        return c.json({ ok: true, meetingId: openForDeal.id, reused: true, dealCardId, dealLabel, autoEnded: [] });
+      }
+    }
     const id = `wr_${Math.floor(Date.now() / 1000).toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
-    createTextMeeting(id, chatId);
+    createTextMeeting(id, chatId, dealCardId, dealLabel);
     // Prime the channel so the SSE emit for meeting_state has a target.
     getChannel(id);
     // Force-end any prior open text meetings IN THE SAME CHAT so a refresh
@@ -1231,7 +1263,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         });
       }
     }
-    return c.json({ ok: true, meetingId: id, autoEnded: stale });
+    return c.json({ ok: true, meetingId: id, dealCardId, dealLabel, autoEnded: stale });
   });
 
   // Pre-warm the Claude Agent SDK path so the first user turn feels snappy.
@@ -1274,6 +1306,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       pinnedAgent: meeting.pinned_agent,
       meetingStartedAt: meeting.started_at,
       endedAt: meeting.ended_at,
+      dealCardId: meeting.deal_card_id,
+      dealLabel: meeting.deal_label,
       agents: getRoster(),
       latestSeq,
     });

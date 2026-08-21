@@ -40,6 +40,9 @@ import {
   getMissionTasks,
   getRecentMissionTasks,
   saveWarRoomConversationTurn,
+} from './db.js';
+import { getDealWarRoomContext } from './landos/war-room-deal-context.js';
+import {
   insertAuditLog,
   saveTokenUsage,
   getDashboardSetting,
@@ -1415,6 +1418,30 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
 
   const transcriptBlock = buildMeetingContextBlock(meetingId, agentId);
 
+  // Deal-scoped meeting: the room was opened from a LandOS Deal Card, so the
+  // agent enters already knowing the exact property. The full bounded deal
+  // context (dossier + current intelligence reads) is injected once per
+  // agent SDK session — its first turn in this meeting — and a one-line
+  // identity reminder rides every later turn so the scope survives long
+  // sessions. Read-only by construction: the provider is the same SELECT
+  // path the Deal Card GET endpoints use, so opening or speaking in the
+  // room never starts research, a model pass, or a provider call.
+  let dealIdentityLine = '';
+  let dealContextBlock = '';
+  try {
+    const meetingRow = getTextMeeting(meetingId);
+    if (meetingRow?.deal_card_id != null) {
+      const dealCtx = getDealWarRoomContext(meetingRow.deal_card_id);
+      const label = dealCtx?.dealLabel ?? meetingRow.deal_label ?? `Deal ${meetingRow.deal_card_id}`;
+      dealIdentityLine = `[This War Room meeting is scoped to ${label}. Treat every question as being about this deal unless the user clearly says otherwise. Do not ask the user to identify or re-describe the property.]`;
+      if (isFirstTurn && dealCtx) dealContextBlock = dealCtx.contextText;
+    }
+  } catch (err) {
+    // A deal-context failure must not take the turn down; the agent just
+    // speaks without the deal block, like a generic meeting.
+    logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'deal context assembly failed in war room');
+  }
+
   // Hive-mind context blocks. All keyed on the REAL Telegram chat id
   // (meetingChatId), never the synthetic SDK session key. Empty for
   // legacy meetings (chat_id = '') so the bridge gracefully no-ops.
@@ -1490,6 +1517,8 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
 
   const parts: string[] = [];
   if (isFirstTurn) parts.push(`[${hintToUse}]`);
+  if (dealIdentityLine) parts.push(dealIdentityLine);
+  if (dealContextBlock) parts.push(untrustedBlock('deal_context', dealContextBlock));
   if (memoryBlock) parts.push(untrustedBlock('memory', memoryBlock));
   if (telegramHistoryBlock) parts.push(untrustedBlock('telegram_history', telegramHistoryBlock));
   if (missionLine) parts.push(untrustedBlock('mission_queue', missionLine));

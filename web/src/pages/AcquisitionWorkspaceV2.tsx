@@ -16,9 +16,9 @@ import { useEffect, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
 import {
   Phone, MessageSquare, Mail, StickyNote, ListPlus, Pencil, ExternalLink,
-  LayoutDashboard, Map, Activity, UserRound, CalendarClock,
+  LayoutDashboard, Map, Activity, UserRound, CalendarClock, Users,
 } from 'lucide-preact';
-import { apiGet, apiPost, dashboardToken } from '@/lib/api';
+import { apiGet, apiPost, dashboardToken, chatId, legacyUrl } from '@/lib/api';
 import {
   readSection, readPropertyMarketView, sectionHref, rememberWorkspaceDeal, lastWorkspaceDealId,
   SECTION_SLUGS, type WorkspaceV2Section, type PropertyMarketView,
@@ -310,6 +310,7 @@ export function AcquisitionWorkspaceV2() {
   const [readinessError, setReadinessError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warRoomBusy, setWarRoomBusy] = useState(false);
   // Bumped when a research run settles, so the workspace re-reads the records
   // that run just rewrote instead of showing the operator a stale page next to
   // a "research complete" indicator.
@@ -550,6 +551,21 @@ export function AcquisitionWorkspaceV2() {
   };
   const openCompsValuation = () => onOpenSection('comps-valuation');
 
+  // Enter the existing text War Room already scoped to THIS deal. The server
+  // creates (or resumes) the deal's canonical meeting and the room opens with
+  // the deal context injected — the operator never re-explains the property.
+  const openWarRoom = async () => {
+    if (warRoomBusy) return;
+    setWarRoomBusy(true);
+    try {
+      const res = await apiPost<{ ok: boolean; meetingId: string }>('/api/warroom/text/new', { chatId, dealCardId: dealId });
+      window.location.href = legacyUrl(`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(res.meetingId)}&chatId=${encodeURIComponent(chatId)}`);
+    } catch (e) {
+      setWarRoomBusy(false);
+      alert('War Room failed to open: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+
   return (
     <div class="awv2" data-testid="acquisition-workspace-root">
       {/* ── CRM header ── */}
@@ -597,6 +613,16 @@ export function AcquisitionWorkspaceV2() {
           <button type="button" class="awv2-ctl"><StickyNote size={14} /> Add note</button>
           <button type="button" class="awv2-ctl"><ListPlus size={14} /> Add task</button>
           <button type="button" class="awv2-ctl"><Pencil size={14} /> Edit</button>
+          <button
+            type="button"
+            class="awv2-ctl"
+            data-testid="open-war-room"
+            onClick={openWarRoom}
+            disabled={warRoomBusy}
+            title="Open this deal's War Room — the agents enter already knowing this property"
+          >
+            <Users size={14} /> {warRoomBusy ? 'Opening…' : 'War Room'}
+          </button>
           {snap.subjectParcelUrl && (
             <a
               class="awv2-ctl awv2-lp-link"

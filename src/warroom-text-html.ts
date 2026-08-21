@@ -19,10 +19,22 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-export function getWarRoomTextHtml(token: string, chatId: string, meetingId: string): string {
+export function getWarRoomTextHtml(
+  token: string,
+  chatId: string,
+  meetingId: string,
+  deal?: { dealCardId: number | null; dealLabel: string | null },
+): string {
   const safeToken = escapeHtml(token);
   const safeChatId = escapeHtml(chatId);
   const safeMeetingId = escapeHtml(meetingId);
+  // Deal-scoped meeting header. Rendered server-side from the meeting row so
+  // the room identifies its deal before any API call resolves. The back link
+  // goes to the originating Deal Card workspace (v2 SPA, no token needed).
+  const dealCardId = deal?.dealCardId ?? null;
+  const dealChip = dealCardId != null
+    ? `<a class="meta-chip deal" id="dealChip" href="/dept/acquisitions/v2?deal=${dealCardId}" title="Back to this deal's card">${escapeHtml(deal?.dealLabel || `Deal ${dealCardId}`)} · open Deal Card ↗</a>`
+    : '';
   const jsToken = JSON.stringify(token);
   const jsChatId = JSON.stringify(chatId);
   const jsMeetingId = JSON.stringify(meetingId);
@@ -127,6 +139,15 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     width: 6px; height: 6px; border-radius: 50%; background: var(--indigo);
     box-shadow: 0 0 0 3px rgba(99,102,241,0.18);
   }
+  .header .meta-chip.deal {
+    background: rgba(245,158,11,0.12);
+    border-color: rgba(245,158,11,0.35);
+    color: #fcd34d;
+    text-decoration: none;
+    max-width: 420px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .header .meta-chip.deal:hover { border-color: rgba(245,158,11,0.6); }
   .header .meta-chip.fresh {
     background: rgba(34,197,94,0.12);
     border-color: rgba(34,197,94,0.3);
@@ -999,6 +1020,7 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
         <div class="brand-sub">Text mode</div>
       </div>
       <div class="meta">
+        ${dealChip}
         <span class="meta-chip timer" title="Elapsed time"><span id="elapsed">0:00</span></span>
         <span class="meta-chip pin" id="pinInfo" style="display:none"><span class="dot" aria-hidden="true"></span><span id="pinInfoAgent"></span> pinned</span>
         <span class="meta-chip fresh" id="freshBadge" style="display:none">fresh meeting</span>

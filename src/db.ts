@@ -747,6 +747,15 @@ function runMigrations(database: Database.Database): void {
   // to '' and the bridge no-ops for them.
   addColumnIfMissing(database, 'warroom_meetings', 'chat_id', `TEXT NOT NULL DEFAULT ''`);
 
+  // Deal-scoped War Room: a text meeting opened from a LandOS Deal Card
+  // carries the canonical deal_card_id so agents get that deal's context and
+  // the room can never leak another deal's file. deal_label is the
+  // operator-facing identity (address/APN), denormalized so the meeting
+  // header can render it without a cross-DB read into store/landos.db.
+  // Generic meetings keep NULL and behave exactly as before.
+  addColumnIfMissing(database, 'warroom_meetings', 'deal_card_id', `INTEGER`);
+  addColumnIfMissing(database, 'warroom_meetings', 'deal_label', `TEXT`);
+
   // Text War Room hive-mind: tag conversation_log rows that originated from
   // the war room so they can be deduped on retry and so memory ingestion
   // can scope by source if needed. Existing Telegram rows default to
@@ -2940,23 +2949,41 @@ export function getRecentWarRoomTranscriptForChat(
 // inherit the voice default of pinned_agent='main'. A text meeting starts
 // with NO pinned agent so the router is allowed to pick primary.
 
-export function createTextMeeting(id: string, chatId = ''): void {
+export function createTextMeeting(
+  id: string,
+  chatId = '',
+  dealCardId: number | null = null,
+  dealLabel: string | null = null,
+): void {
   db.prepare(
     `INSERT OR IGNORE INTO warroom_meetings
-       (id, started_at, mode, pinned_agent, meeting_type, chat_id)
-     VALUES (?, ?, 'direct', NULL, 'text', ?)`,
-  ).run(id, Math.floor(Date.now() / 1000), chatId);
+       (id, started_at, mode, pinned_agent, meeting_type, chat_id, deal_card_id, deal_label)
+     VALUES (?, ?, 'direct', NULL, 'text', ?, ?, ?)`,
+  ).run(id, Math.floor(Date.now() / 1000), chatId, dealCardId, dealLabel);
 }
 
 export function getTextMeeting(id: string): {
   id: string; started_at: number; ended_at: number | null; duration_s: number | null;
   mode: string; pinned_agent: string | null; entry_count: number; meeting_type: string;
-  chat_id: string;
+  chat_id: string; deal_card_id: number | null; deal_label: string | null;
 } | null {
   const row = db.prepare(
-    `SELECT id, started_at, ended_at, duration_s, mode, pinned_agent, entry_count, meeting_type, chat_id
+    `SELECT id, started_at, ended_at, duration_s, mode, pinned_agent, entry_count, meeting_type, chat_id,
+            deal_card_id, deal_label
        FROM warroom_meetings WHERE id = ? AND meeting_type = 'text'`,
   ).get(id) as any;
+  return row ?? null;
+}
+
+/** The open text meeting already scoped to a deal in this chat, if any.
+ *  One canonical room per deal: entering the deal's War Room again resumes
+ *  its deliberation history instead of spawning a parallel room. */
+export function getOpenTextMeetingForDeal(dealCardId: number, chatId: string): { id: string } | null {
+  const row = db.prepare(
+    `SELECT id FROM warroom_meetings
+      WHERE meeting_type = 'text' AND ended_at IS NULL AND deal_card_id = ? AND chat_id = ?
+      ORDER BY started_at DESC LIMIT 1`,
+  ).get(dealCardId, chatId) as { id: string } | undefined;
   return row ?? null;
 }
 

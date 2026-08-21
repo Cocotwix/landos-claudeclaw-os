@@ -151,6 +151,7 @@ import {
   acquisitionAnalystRuntimeStatus,
 } from './acquisition-analyst.js';
 import { readAcquisitionIntelligence } from './acquisition-intelligence-store.js';
+import { setDealWarRoomContextProvider, boundContextText } from './war-room-deal-context.js';
 import { ASSESSOR_TAX_CAPABILITY_ID } from './assessor-tax-capability.js';
 import {
   LANDPORTAL_RESEARCH_CAPABILITY_ID,
@@ -10143,6 +10144,59 @@ export function registerLandosRoutes(app: Hono): void {
     reconcileReadiness: reconcileResearchReadiness,
     readPipelineStage,
   };
+
+  // Deal-scoped War Room opening context. Registered here because every
+  // builder it reuses (property file, dossier, stack state, guidance) is a
+  // closure of this route module. SELECT-only: the same reads the Deal Card
+  // GET endpoints serve — a War Room turn must never start research, a model
+  // pass, or a provider call.
+  setDealWarRoomContextProvider((dealCardId) => {
+    const deal = getDealCard(dealCardId);
+    if (!deal) return null;
+    const source = acquisitionPropertyFile(dealCardId);
+    const dossier = source ? buildAcquisitionDossier(source) : null;
+    const identity = dossier?.identity ?? null;
+    const labelCore = identity?.displayAddress
+      ?? [
+        identity?.apn ? `APN ${identity.apn}` : null,
+        [identity?.county, identity?.stateCode ?? identity?.state].filter(Boolean).join(', ') || null,
+      ].filter(Boolean).join(' · ')
+      ?? null;
+    const dealTitle = ((deal as { title?: unknown }).title ?? null);
+    const dealLabel = `${labelCore || (typeof dealTitle === 'string' && dealTitle ? dealTitle : 'Property identity pending')} · Deal ${dealCardId}`;
+
+    const state = readIntelligenceStackState(dealCardId, intelligenceStackReadDeps);
+    const guidance = listDealBrainGuidance(dealCardId).slice(-6);
+    const readOf = (product: unknown): string | null => {
+      const read = (product as { read?: unknown } | null | undefined)?.read;
+      return typeof read === 'string' && read.trim() ? read.trim() : null;
+    };
+    const sections: string[] = [];
+    sections.push(`DEAL: ${dealLabel}`);
+    if (state.phase) sections.push(`Deal phase: ${state.phase}`);
+    if (state.sufficiency) sections.push(`Property file sufficiency: ${state.sufficiency.ok ? 'sufficient' : `insufficient — ${state.sufficiency.reason ?? 'unstated reason'}`}`);
+    const propertyRead = readOf(state.products.property);
+    const marketRead = readOf(state.products.market);
+    const sellerRead = readOf(state.products.seller);
+    const dealRead = readOf(state.products.deal);
+    if (propertyRead) sections.push(`PROPERTY INTELLIGENCE (current read):\n${propertyRead}`);
+    if (marketRead) sections.push(`MARKET INTELLIGENCE (current read):\n${marketRead}`);
+    if (sellerRead) sections.push(`SELLER INTELLIGENCE (current read):\n${sellerRead}`);
+    if (dealRead) sections.push(`DEAL INTELLIGENCE (current read):\n${dealRead}`);
+    if (state.quickFlip) sections.push(`QUICK FLIP ECONOMICS:\n${JSON.stringify(state.quickFlip)}`);
+    if (guidance.length > 0) {
+      sections.push(`RECENT DEAL BRAIN GUIDANCE (operator guidance is input, never fact):\n${guidance.map((entry) => `- ${entry.role}: ${entry.text}`).join('\n')}`);
+    }
+    if (dossier) {
+      // Same rule as the analyst's judgment prompt: image file paths are
+      // stripped — a path in prose invites "I inspected the image" claims.
+      const inline = { ...dossier, visuals: dossier.visuals.map(({ filePath: _filePath, ...visual }) => ({ ...visual, filePath: null })) };
+      sections.push(`CANONICAL DEAL DOSSIER (bounded, source-labeled; carries its own conflicts, open questions and coverage):\n${JSON.stringify(inline)}`);
+    } else {
+      sections.push('No canonical property file is available for this deal yet; only the deal record exists.');
+    }
+    return { dealCardId, dealLabel, contextText: boundContextText(sections.join('\n\n')) };
+  });
 
   app.get('/api/landos/deal-cards/:id/intelligence', (c) => {
     const id = Number(c.req.param('id'));

@@ -9,6 +9,7 @@ import {
   endWarRoomMeeting,
   pruneWarRoomMeetings,
   getTextMeeting,
+  getOpenTextMeetingForDeal,
   _testBackdateMeetingEnd,
 } from './db.js';
 
@@ -170,5 +171,44 @@ describe('pruneWarRoomMeetings', () => {
     expect(result.convLog).toBeGreaterThanOrEqual(1);
     expect(getTextMeeting('m_old')).toBeFalsy();
     expect(getTextMeeting('m_recent')).toBeTruthy();
+  });
+});
+
+describe('deal-scoped text meetings', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+  });
+
+  it('persists deal_card_id + deal_label on create and returns them on read', () => {
+    createTextMeeting('m_deal', 'chat1', 89, 'Fairview, TN · Deal 89');
+    const meeting = getTextMeeting('m_deal');
+    expect(meeting?.deal_card_id).toBe(89);
+    expect(meeting?.deal_label).toBe('Fairview, TN · Deal 89');
+  });
+
+  it('generic meetings stay unscoped: NULL deal columns, unchanged behavior', () => {
+    createTextMeeting('m_generic', 'chat1');
+    const meeting = getTextMeeting('m_generic');
+    expect(meeting?.deal_card_id).toBeNull();
+    expect(meeting?.deal_label).toBeNull();
+  });
+
+  it('finds the open meeting for a deal, scoped by chat, never across deals', () => {
+    createTextMeeting('m_89', 'chat1', 89, 'Deal 89');
+    createTextMeeting('m_88', 'chat1', 88, 'Deal 88');
+    expect(getOpenTextMeetingForDeal(89, 'chat1')?.id).toBe('m_89');
+    expect(getOpenTextMeetingForDeal(88, 'chat1')?.id).toBe('m_88');
+    // Another chat does not see this chat's deal meeting.
+    expect(getOpenTextMeetingForDeal(89, 'chat2')).toBeNull();
+    // A deal with no meeting has none.
+    expect(getOpenTextMeetingForDeal(90, 'chat1')).toBeNull();
+  });
+
+  it('an ended deal meeting is no longer the reusable open room', () => {
+    createTextMeeting('m_done', 'chat1', 89, 'Deal 89');
+    endWarRoomMeeting('m_done', 3);
+    expect(getOpenTextMeetingForDeal(89, 'chat1')).toBeNull();
+    // Scope survives the end: the archived row still knows its deal.
+    expect(getTextMeeting('m_done')?.deal_card_id).toBe(89);
   });
 });
