@@ -41,6 +41,10 @@ import { getLandosDb } from './db.js';
 import { listComps, type CompRow } from './comps.js';
 import { normalizeAddressMatchKey } from './address-normalize.js';
 import { normalizeSaleDateIso, valuationAcreageBand, inAcreageBand } from './comp-recency-window.js';
+import {
+  ageLabel, classifySaleRecency, recentSoldEvidenceSufficient,
+  MAX_SOLD_SEARCH_WINDOW_MONTHS, RECENT_SALE_WINDOW_MONTHS,
+} from './comp-sale-recency.js';
 import { routeAcreage, routedAcreageSimilarity } from './acreage-router.js';
 import { compGeoTier, type CompGeoTierId } from './comp-geography.js';
 import { openDisposableContextHandle } from './automation-browser.js';
@@ -88,6 +92,17 @@ export interface CompTransactionEvidence {
 
 // ── Bounded candidate selection ─────────────────────────────────────────────
 
+export interface TransactionEnrichmentRankOptions {
+  /** Clock, injected so the ranking stays pure and testable. */
+  nowMs?: number;
+  /**
+   * Whether the 0-to-12-month closed evidence is already sufficient. Left
+   * unset, it is measured from the same rows using the shared sufficiency
+   * threshold, so a caller never has to restate the rule to get it right.
+   */
+  recentEvidenceSufficient?: boolean;
+}
+
 export interface TransactionEnrichmentCandidate {
   row: CompRow;
   provider: TransactionEnrichmentProvider;
@@ -108,6 +123,69 @@ export function transactionEnrichmentProvider(row: CompRow): TransactionEnrichme
 /** A row this lane has nothing to add to: its sale date is already established. */
 function alreadyDated(row: CompRow): boolean {
   return normalizeSaleDateIso(row.sale_or_list_date) != null;
+}
+
+export interface EnrichmentRecencyVerdict {
+  /** May this row consume one of the run's bounded enrichment slots? */
+  selectable: boolean;
+  /** The stated reason, whichever way it went. */
+  reason: string;
+}
+
+/**
+ * The RECENCY GUARD on enrichment selection.
+ *
+ * Enrichment slots are scarce and each one costs a real page load. Two ways to
+ * waste one, both of which this closes:
+ *
+ *   1. A sale whose date LandOS ALREADY holds and which is already known to be
+ *      older than 24 months. Dating it again cannot make it current
+ *      fair-market-value evidence, so it is never selected for current-FMV
+ *      enrichment however good its geography or acreage is.
+ *   2. Dating dozens of undated fallback records indiscriminately when the
+ *      0-to-12-month set is ALREADY sufficient. Nothing they could establish
+ *      would change the valuation, so the run does not spend on them.
+ *
+ * A 13-to-24-month record is deliberately DEFERRED rather than refused: it is
+ * expanded-recency evidence that matters only once the recent set falls short.
+ *
+ * Pure: no database, no browser, no clock of its own.
+ */
+export function transactionEnrichmentRecencyVerdict(
+  row: CompRow,
+  nowMs: number,
+  recentEvidenceSufficient: boolean,
+): EnrichmentRecencyVerdict {
+  const recency = classifySaleRecency(row.sale_or_list_date, nowMs);
+  if (recency.state === 'unestablished') {
+    return recentEvidenceSufficient
+      ? {
+        selectable: false,
+        reason: 'Sale date not established, but the 0-to-12-month closed evidence is already sufficient, so no enrichment slot is spent dating this fallback record.',
+      }
+      : {
+        selectable: true,
+        reason: 'Sale date not established and the current qualified set is insufficient; its own retained source may establish the transaction.',
+      };
+  }
+  if (recency.state === 'historical') {
+    return {
+      selectable: false,
+      reason: `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}. Already known to be older than ${MAX_SOLD_SEARCH_WINDOW_MONTHS} months, so it is historical context and is never selected for current-FMV transaction enrichment.`,
+    };
+  }
+  if (recency.state === 'expanded_recency') {
+    return {
+      selectable: false,
+      reason: recentEvidenceSufficient
+        ? `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}, expanded-recency evidence deferred while the 0-to-12-month set is sufficient.`
+        : `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}; the transaction date is already established, so this lane has nothing to add to it.`,
+    };
+  }
+  return {
+    selectable: false,
+    reason: `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}, already dated inside the ${RECENT_SALE_WINDOW_MONTHS}-month window; this lane has no missing transaction fact to establish.`,
+  };
 }
 
 /** The persisted geographic tier, or `unresolved` when the lane never ran. */
@@ -157,14 +235,29 @@ export function rankCompsForTransactionEnrichment(
   rows: CompRow[],
   subjectAcres: number | null,
   limit: number,
+  opts: TransactionEnrichmentRankOptions = {},
 ): TransactionEnrichmentCandidate[] {
   const band = valuationAcreageBand(subjectAcres);
   const route = routeAcreage(subjectAcres);
+  const nowMs = opts.nowMs ?? Date.now();
+  // Sufficiency of the CURRENT recent evidence, measured on the same rule the
+  // valuation window uses. When it is already sufficient nothing here runs: an
+  // enrichment slot spent then cannot change the answer.
+  const recentEvidenceSufficient = opts.recentEvidenceSufficient
+    ?? recentSoldEvidenceSufficient(rows.filter((row) =>
+      row.price_kind === 'sale'
+      && inAcreageBand(row.acres, band)
+      && classifySaleRecency(row.sale_or_list_date, nowMs).state === 'recent').length);
 
   const scored = rows
     .map((row) => ({ row, provider: transactionEnrichmentProvider(row) }))
     .filter((c): c is { row: CompRow; provider: TransactionEnrichmentProvider } => c.provider != null)
     .filter((c) => c.row.price_kind === 'sale' && typeof c.row.price === 'number' && (c.row.price as number) > 0)
+    // RECENCY GUARD before anything else: never spend a slot on a sale already
+    // known to be ancient, and never date fallback records the valuation does
+    // not need. `alreadyDated` remains the structural test for "nothing to
+    // establish"; the guard states WHY each excluded row was excluded.
+    .filter((c) => transactionEnrichmentRecencyVerdict(c.row, nowMs, recentEvidenceSufficient).selectable)
     .filter((c) => !alreadyDated(c.row))
     .map((c) => {
       const inBand = inAcreageBand(c.row.acres, band);
@@ -770,6 +863,7 @@ export async function enrichCompTransactions(
     listComps({ dealCardId }),
     opts.subjectAcres ?? null,
     opts.limit ?? 8,
+    { nowMs: Date.parse(nowIso()) || Date.now() },
   );
 
   const results: CompTransactionEnrichmentResult[] = [];

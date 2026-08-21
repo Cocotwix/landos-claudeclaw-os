@@ -20,6 +20,7 @@ import { readSessionConfig } from './browser-session.js';
 import { automationBrowserConfig, openDisposableContextHandle } from './automation-browser.js';
 import { parseListingStatus, type CompStatus } from './comp-extraction.js';
 import { laneSearchVerified, type CompLaneRouteOutcome } from './comp-lane-accountability.js';
+import { MAX_SOLD_SEARCH_WINDOW_MONTHS, type SoldSearchWindowMonths } from './comp-sale-recency.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
 // so DOM globals are declared as `any` purely to satisfy the Node typechecker.
@@ -81,7 +82,9 @@ export interface RedfinFetchInput {
   apn?: string;
   owner?: string;
   radiusMiles?: 5 | 10 | 15 | 20;
-  dateWindowMonths?: 12 | 24;
+  /** Sold period to request: 12 on the first pass, 24 only on a deliberate
+   *  insufficiency expansion. There is never a price bound. */
+  dateWindowMonths?: SoldSearchWindowMonths;
   /** Minimum lot size for the search itself (operator-style "20+ acres"). When
    * set, houses are searched alongside land so improved large-acreage sales
    * are discovered; classification decides their role later. */
@@ -130,12 +133,15 @@ export function redfinLotMinFilter(lotMinAcres: number | null | undefined): stri
  *  A lot-size minimum reproduces the operator's "20+ acres" search and widens
  *  the property types to land+house so improved large-acreage sales are
  *  discovered too. There is never a maximum lot size and never a price filter. */
-export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; dateWindowMonths?: 12 | 24; lotMinAcres?: number | null } = {}): string {
+export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; dateWindowMonths?: SoldSearchWindowMonths; lotMinAcres?: number | null } = {}): string {
   const lotMin = redfinLotMinFilter(opts.lotMinAcres);
   const propertyType = lotMin ? 'property-type=land+house' : 'property-type=land';
   const parts = [propertyType];
   if (lotMin) parts.push(lotMin);
-  if (opts.sold) parts.push(`include=sold-${opts.dateWindowMonths === 24 ? '2yr' : '1yr'}`);
+  // Pass 1 is the trailing year. `sold-2yr` is only ever produced when a caller
+  // deliberately expanded after insufficient recent evidence; there is no
+  // longer-than-2yr option and no price segment at all.
+  if (opts.sold) parts.push(`include=sold-${opts.dateWindowMonths === MAX_SOLD_SEARCH_WINDOW_MONTHS ? '2yr' : '1yr'}`);
   return `https://www.redfin.com${cityPath}/filter/${parts.join(',')}`;
 }
 

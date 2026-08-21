@@ -50,6 +50,7 @@ import {
   type LandPortalMapSearchRow,
 } from './landportal-map-search.js';
 import { apnIdentifiersEquivalent } from './landportal-capability.js';
+import { nextSoldSearchWindow, RECENT_SALE_WINDOW_MONTHS, type SoldSearchWindowMonths } from './comp-sale-recency.js';
 import {
   assertNoCallerAssertions,
   resolveLandPortalToolSubject,
@@ -171,10 +172,12 @@ export interface LandPortalCompSearchRuntime extends LandPortalToolSubjectRuntim
   runMapSearch?: (url: string, plan: LandPortalMapSearchPlan, opts: { timeoutMs: number }) => Promise<LandPortalMapSearchRun>;
   /** Candidate-detail enrichment: the comp's OWN parcel page incl MLS block. */
   readCompRecord?: (url: string, opts: { timeoutMs: number; includeMls?: boolean }) => Promise<LandPortalRecordRead>;
-  /** Independent Zillow sold-land flow (route wires fetchZillowLandComps). */
-  zillowSearch?: (mode: 'sold' | 'active') => Promise<SecondarySearchResult>;
+  /** Independent Zillow sold-land flow (route wires fetchZillowLandComps).
+   *  `dateWindowMonths` is the sold period to ask the source for: 12 on the
+   *  first pass, 24 only on a deliberate insufficiency expansion. */
+  zillowSearch?: (mode: 'sold' | 'active', dateWindowMonths?: SoldSearchWindowMonths) => Promise<SecondarySearchResult>;
   /** Independent Redfin sold-land flow (route wires fetchRedfinLandComps). */
-  redfinSearch?: (mode: 'sold' | 'active') => Promise<SecondarySearchResult>;
+  redfinSearch?: (mode: 'sold' | 'active', dateWindowMonths?: SoldSearchWindowMonths) => Promise<SecondarySearchResult>;
   /** Exact Redfin listing-page read for comp enrichment. */
   redfinDetail?: (url: string, opts: { timeoutMs: number }) => Promise<SecondaryListingDetail>;
   /** LandWatch large-acreage fallback — 30+ acre subjects, thin evidence only. */
@@ -602,15 +605,40 @@ export const LANDPORTAL_COMP_SEARCH_CAPABILITY: LandosCapability<
       return fresh;
     };
 
+    // ── 3b. Independent secondary sold-land flows — 12 MONTHS FIRST ─────────
+    //
+    // Every source that can express a sold period is asked for the trailing
+    // twelve months on the FIRST pass. The 13-to-24-month pass is a deliberate
+    // response to a measured deficiency in that recent set, never the default:
+    // asking for two years up front is how 2013, 2020 and 2022 sales entered
+    // the candidate workflow and consumed enrichment effort before anything
+    // knew how old they were. No pass carries a price bound of any kind.
+    lpDiag.notes.push(nextSoldSearchWindow(null, 0).reason);
     if (runtime.zillowSearch) {
-      absorb(await runSecondary(zillowDiag, 'Zillow sold-land', 'zillow', () => runtime.zillowSearch!('sold')), zillowDiag);
+      absorb(await runSecondary(zillowDiag, 'Zillow sold-land (0–12 months)', 'zillow', () => runtime.zillowSearch!('sold', RECENT_SALE_WINDOW_MONTHS)), zillowDiag);
     } else {
       zillowDiag.notes.push('No Zillow flow was available in this environment.');
     }
     if (runtime.redfinSearch) {
-      absorb(await runSecondary(redfinDiag, 'Redfin sold-land', 'redfin', () => runtime.redfinSearch!('sold')), redfinDiag);
+      absorb(await runSecondary(redfinDiag, 'Redfin sold-land (0–12 months)', 'redfin', () => runtime.redfinSearch!('sold', RECENT_SALE_WINDOW_MONTHS)), redfinDiag);
     } else {
       redfinDiag.notes.push('No independent Redfin search flow was available in this environment; exact Redfin links from candidate pages are still recorded.');
+    }
+
+    // Sufficiency is measured on the SAME usable-sold-evidence rule the rest of
+    // the lane uses, so collection and valuation cannot disagree about what
+    // "enough recent evidence" means.
+    const recentUsable = usableSoldEvidenceCount(classifyMapSearchCandidates(subjectInput, mergedSold));
+    const expansion = nextSoldSearchWindow(RECENT_SALE_WINDOW_MONTHS, recentUsable);
+    lpDiag.notes.push(expansion.reason);
+    const expandedWindow = expansion.nextWindowMonths;
+    if (expandedWindow != null) {
+      if (runtime.zillowSearch) {
+        absorb(await runSecondary(zillowDiag, 'Zillow sold-land (13–24 month expansion)', 'zillow', () => runtime.zillowSearch!('sold', expandedWindow)), zillowDiag);
+      }
+      if (runtime.redfinSearch) {
+        absorb(await runSecondary(redfinDiag, 'Redfin sold-land (13–24 month expansion)', 'redfin', () => runtime.redfinSearch!('sold', expandedWindow)), redfinDiag);
+      }
     }
 
     // ── 4. Classification over the merged sold universe ──────────────────────

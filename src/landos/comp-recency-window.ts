@@ -174,7 +174,8 @@ export interface RecencyCandidate {
 export type RecencyBucket =
   | 'primary'                 // inside the selected window, full recency standing
   | 'supplemental_historical' // months 25–30, admitted only because 24 months was insufficient
-  | 'historical_context'      // outside the selected window — zero valuation weight
+  | 'historical_context'      // sold BEFORE the selected window — zero valuation weight
+  | 'recency_unverified'      // the source published no sale date at all — zero valuation weight
   | 'out_of_band'             // outside the acreage band — zero valuation weight
   | 'not_credible';           // failed validation before the window was applied
 
@@ -194,6 +195,17 @@ export interface RecencyWindowSelection {
   addedFrom25To30: number;
   /** Credible in-band sales pushed out of the valuation set by the window. */
   movedToHistoricalContext: number;
+  /**
+   * Credible in-band records whose source published NO sale date.
+   *
+   * These are counted and labeled separately from historical context on
+   * purpose. An undated "Sold" card — a LandWatch search result states sold and
+   * a price but no date at all — is not a sale that closed before the cutoff,
+   * it is a sale LandOS cannot date. Reporting it as "sold before <cutoff>"
+   * asserted a transaction fact the source never published, and it let an
+   * undated card sit beside genuinely old sales as if its age were known.
+   */
+  recencyUnverified: number;
   /** Credible sales rejected purely on acreage. */
   outOfAcreageBand: number;
   /** Final valuation-set size (primary + supplemental historical). */
@@ -250,11 +262,20 @@ export function selectRecencyWindow(
   let addedFrom13To24 = 0;
   let addedFrom25To30 = 0;
   let movedToHistoricalContext = 0;
+  let recencyUnverified = 0;
   let valuationSetCount = 0;
 
   for (const c of candidates) {
     if (!c.credible) { bucketByKey[c.key] = 'not_credible'; continue; }
     if (!inAcreageBand(c.acres, band)) { bucketByKey[c.key] = 'out_of_band'; continue; }
+    // An undated record is its own state. It has never been eligible for the
+    // valuation set — no date can satisfy a window — but calling it historical
+    // context claimed it closed before the cutoff, which the source never said.
+    if (normalizeSaleDateIso(c.dateIso) == null) {
+      bucketByKey[c.key] = 'recency_unverified';
+      recencyUnverified++;
+      continue;
+    }
     const in12 = withinExactMonths(c.dateIso, nowMs, 12);
     const in24 = withinExactMonths(c.dateIso, nowMs, 24);
     const in30 = withinExactMonths(c.dateIso, nowMs, 30);
@@ -285,6 +306,11 @@ export function selectRecencyWindow(
       `${movedToHistoricalContext} credible closed sale${movedToHistoricalContext === 1 ? '' : 's'} sold before ${cutoffIso} carr${movedToHistoricalContext === 1 ? 'ies' : 'y'} zero valuation weight: excluded from the cleaned average, cleaned median, weighted indication, adopted FMV, the 40/50/60 levels, the technical maximum, and the final range.`,
     );
   }
+  if (recencyUnverified > 0) {
+    explanation.push(
+      `${recencyUnverified} retained record${recencyUnverified === 1 ? '' : 's'} state${recencyUnverified === 1 ? 's' : ''} a closed sale but publish${recencyUnverified === 1 ? 'es' : ''} NO sale date. Recency is unverified, so ${recencyUnverified === 1 ? 'it carries' : 'they carry'} zero valuation weight and ${recencyUnverified === 1 ? 'is' : 'are'} NOT current fair-market-value evidence until a sale date is established.`,
+    );
+  }
   if (outOfAcreageBand > 0 && band) {
     explanation.push(
       `${outOfAcreageBand} credible closed sale${outOfAcreageBand === 1 ? '' : 's'} fall outside the ${band.label} band and cannot influence the cleaned FMV unless explicitly restored.`,
@@ -301,6 +327,7 @@ export function selectRecencyWindow(
     addedFrom13To24,
     addedFrom25To30,
     movedToHistoricalContext,
+    recencyUnverified,
     outOfAcreageBand,
     valuationSetCount,
     bucketByKey,

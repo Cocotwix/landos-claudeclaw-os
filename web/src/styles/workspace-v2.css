@@ -1651,7 +1651,30 @@ body:has(.awv2) .awv2 {
 .awv2-cv-head .role.boundary { color: var(--awv2-bone-dim); }
 .awv2-cv-head .role.historical_context { color: var(--awv2-bone-faint); border-style: dashed; }
 .awv2-cv-head .role.excluded { color: var(--awv2-rust); border-color: rgba(217, 118, 98, 0.45); background: var(--awv2-rust-soft); }
+.awv2-cv-head .role.geographic_context { color: var(--awv2-bone-faint); border-style: dashed; }
+.awv2-cv-head .role.recency_unverified { color: var(--awv2-amber); border-color: rgba(217, 161, 61, 0.45); border-style: dashed; }
 .awv2-cv-head .status { font-family: var(--awv2-mono); font-size: 10px; color: var(--awv2-bone-faint); }
+
+/* ── Sale-recency badge ──
+   A 2013 sale must not look like a current comp. The badge states the sale's
+   recency standing on the card itself; historical and undated records are
+   visually demoted (rust / dashed amber) so neither can read as current FMV. */
+.awv2-cv-recency {
+  display: inline-flex; flex-direction: column; gap: 1px; align-items: flex-start;
+  font-family: var(--awv2-mono); line-height: 1.25;
+  padding: 3px 8px; border-radius: 4px; white-space: nowrap;
+  border: 1px solid var(--awv2-line-strong); background: var(--awv2-panel-2);
+}
+.awv2-cv-recency b { font-size: 9.5px; letter-spacing: 0.07em; font-weight: 700; }
+.awv2-cv-recency i { font-size: 9px; font-style: normal; letter-spacing: 0.04em; color: var(--awv2-bone-faint); }
+.awv2-cv-recency.rec-recent { border-color: rgba(143, 174, 124, 0.55); background: var(--awv2-moss-soft); }
+.awv2-cv-recency.rec-recent b { color: var(--awv2-moss); }
+.awv2-cv-recency.rec-expanded { border-color: rgba(201, 164, 92, 0.5); background: var(--awv2-brass-soft); }
+.awv2-cv-recency.rec-expanded b { color: var(--awv2-brass-bright); }
+.awv2-cv-recency.rec-historical { border-color: rgba(217, 118, 98, 0.55); background: var(--awv2-rust-soft); }
+.awv2-cv-recency.rec-historical b { color: var(--awv2-rust); }
+.awv2-cv-recency.rec-unestablished { border-style: dashed; border-color: rgba(217, 161, 61, 0.5); background: var(--awv2-amber-soft); }
+.awv2-cv-recency.rec-unestablished b { color: var(--awv2-amber); }
 .awv2-cv-link {
   font-family: var(--awv2-mono); font-size: 11px; color: var(--awv2-brass-bright);
   background: transparent; border: none; border-bottom: 1px dotted var(--awv2-brass);

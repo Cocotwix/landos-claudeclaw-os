@@ -115,6 +115,7 @@ import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
 import { runDukeVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
 import { distanceMiles, fetchZillowLandComps } from './zillow-land-comps.js';
 import { fetchRedfinLandComps, fetchRedfinListingDetail } from './redfin-land-comps.js';
+import { RECENT_SALE_WINDOW_MONTHS, type SoldSearchWindowMonths } from './comp-sale-recency.js';
 import { fetchLandWatchLandComps } from './landwatch-land-comps.js';
 import { fetchRealtorLandComps } from './realtor-land-comps.js';
 import { runBrockovichDataCenterMap } from './brockovich-data-center.js';
@@ -6390,10 +6391,13 @@ export function registerLandosRoutes(app: Hono): void {
       runMapSearch: (url: string, plan: Parameters<NonNullable<typeof driver.runLandPortalMapSearch>>[1], opts: { timeoutMs: number }) =>
         driver.runLandPortalMapSearch!(url, plan, opts),
       readCompRecord: (url: string, opts: { timeoutMs: number; includeMls?: boolean }) => driver.readLandPortalRecord!(url, opts),
-      zillowSearch: async (mode: 'sold' | 'active'): Promise<SecondarySearchResult> => {
+      // The sold period the capability asks for: 12 months on the first pass,
+      // 24 only when it deliberately expanded on insufficient recent evidence.
+      // Never a price bound.
+      zillowSearch: async (mode: 'sold' | 'active', dateWindowMonths?: SoldSearchWindowMonths): Promise<SecondarySearchResult> => {
         const locality = landPortalToolLocality(subject);
         if (!locality?.state) return { status: 'disabled', comps: [], note: 'No subject locality available for the Zillow flow.' };
-        const zillow = await fetchZillowLandComps({ ...locality, mode, propertyType: 'land' });
+        const zillow = await fetchZillowLandComps({ ...locality, mode, propertyType: 'land', dateWindowMonths: dateWindowMonths ?? RECENT_SALE_WINDOW_MONTHS });
         return {
           status: zillow.status,
           note: zillow.note,
@@ -6410,10 +6414,10 @@ export function registerLandosRoutes(app: Hono): void {
           })),
         };
       },
-      redfinSearch: async (mode: 'sold' | 'active'): Promise<SecondarySearchResult> => {
+      redfinSearch: async (mode: 'sold' | 'active', dateWindowMonths?: SoldSearchWindowMonths): Promise<SecondarySearchResult> => {
         const locality = landPortalToolLocality(subject);
         if (!locality?.state) return { status: 'disabled', comps: [], note: 'No subject locality available for the Redfin flow.' };
-        const redfin = await fetchRedfinLandComps({ ...locality, mode, dateWindowMonths: 24 });
+        const redfin = await fetchRedfinLandComps({ ...locality, mode, dateWindowMonths: dateWindowMonths ?? RECENT_SALE_WINDOW_MONTHS });
         return {
           status: redfin.status,
           note: redfin.note,

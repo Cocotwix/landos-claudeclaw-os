@@ -45,7 +45,11 @@ export type CvCategory =
   | 'context_only';
 
 export type CvValuationRole =
-  | 'direct' | 'supporting' | 'supplemental_historical' | 'boundary' | 'historical_context';
+  | 'direct' | 'supporting' | 'supplemental_historical' | 'boundary' | 'historical_context'
+  | 'geographic_context'
+  /** The source states a closed sale but published no sale date. Distinct from
+   *  historical context: undated is not the same claim as old. */
+  | 'recency_unverified';
 
 export interface CvSubject {
   address: string | null;
@@ -239,6 +243,8 @@ export const VALUATION_ROLE_LABEL: Record<CvValuationRole, string> = {
   supplemental_historical: 'Supplemental historical comp',
   boundary: 'Boundary comp',
   historical_context: 'Historical context',
+  geographic_context: 'Broader-market context',
+  recency_unverified: 'Recency unverified — not current FMV',
 };
 
 const ROLE_BLURB: Record<CvValuationRole, string> = {
@@ -247,6 +253,8 @@ const ROLE_BLURB: Record<CvValuationRole, string> = {
   supplemental_historical: 'Sold 25–30 months ago, admitted only because the 24-month set was insufficient. Substantially reduced weight.',
   boundary: 'Defines an upper or lower limit through a documented difference.',
   historical_context: 'Older than the selected window. Zero valuation weight.',
+  geographic_context: 'Credible on acreage and recency, but farther out than the tier the valuation needed to reach. Zero valuation weight.',
+  recency_unverified: 'The source states a closed sale but published no sale date. Recency unverified, so it is not current FMV evidence. Zero valuation weight.',
 };
 
 export interface CvValuationWindow {
@@ -259,6 +267,8 @@ export interface CvValuationWindow {
   addedFrom13To24: number;
   addedFrom25To30: number;
   movedToHistoricalContext: number;
+  /** Retained closed sales whose source published no sale date at all. */
+  recencyUnverified: number;
   outOfAcreageBand: number;
   valuationSetCount: number;
   explanation: string[];
@@ -524,6 +534,79 @@ const propertyTypeLabel = (c: CvComp) => c.propertyClass === 'improved'
     ? 'Vacant land'
     : 'Property type unresolved';
 
+// ── Sale-recency badge ─────────────────────────────────────────────────────
+//
+// A thirteen-year-old sale must never visually resemble a current comp. The
+// card therefore states the sale's recency standing in its own right, in the
+// same four states the collection and enrichment lanes use:
+//
+//   RECENT                 0–12 months, normal current-FMV evidence
+//   EXPANDED RECENCY       13–24 months, used only where recent evidence is thin
+//   HISTORICAL SALE        older than 24 months, never current FMV
+//   RECENCY UNVERIFIED     the source published no sale date at all
+//
+// Undated is deliberately its own badge: "no date" is not a claim that the sale
+// is old, and an undated "Sold" card must not be able to pass as a current one.
+const RECENT_MONTHS = 12;
+const MAX_CURRENT_FMV_MONTHS = 24;
+
+type CvRecency = { state: 'recent' | 'expanded' | 'historical' | 'unestablished'; label: string; sub: string; title: string };
+
+const recencyAge = (months: number): string =>
+  months < MAX_CURRENT_FMV_MONTHS
+    ? `${months} month${months === 1 ? '' : 's'} ago`
+    : `${Math.round((months / 12) * 10) / 10} years ago`;
+
+export function saleRecency(c: { dateIso: string | null; monthsOld: number | null }): CvRecency {
+  if (!c.dateIso || c.monthsOld == null) {
+    return {
+      state: 'unestablished',
+      label: 'RECENCY UNVERIFIED — NOT CURRENT FMV',
+      sub: 'SALE DATE NOT ESTABLISHED',
+      title: 'The source states a closed sale but published no sale date, so its recency is unverified. It is retained and visible, but it is not current fair-market-value evidence until its own source establishes the transaction date.',
+    };
+  }
+  if (c.monthsOld <= RECENT_MONTHS) {
+    return {
+      state: 'recent',
+      label: 'RECENT',
+      sub: `SOLD ${c.dateIso} · ${recencyAge(c.monthsOld)}`,
+      title: `Closed inside the trailing ${RECENT_MONTHS}-month window. Normal current fair-market-value evidence.`,
+    };
+  }
+  if (c.monthsOld <= MAX_CURRENT_FMV_MONTHS) {
+    return {
+      state: 'expanded',
+      label: 'EXPANDED RECENCY',
+      sub: `SOLD ${c.dateIso} · ${recencyAge(c.monthsOld)}`,
+      title: `Closed 13–24 months ago. Used only where the ${RECENT_MONTHS}-month evidence is insufficient.`,
+    };
+  }
+  return {
+    state: 'historical',
+    label: 'HISTORICAL SALE — NOT CURRENT FMV',
+    sub: `SOLD ${c.dateIso} · ${recencyAge(c.monthsOld)}`,
+    title: `Closed more than ${MAX_CURRENT_FMV_MONTHS} months ago. Retained as historical context only; it is not current fair-market-value evidence.`,
+  };
+}
+
+/** The recency badge for a CLOSED sale. Active listings have no sale to date. */
+function RecencyBadge({ comp }: { comp: CvComp }) {
+  if (comp.category === 'active_competition' || comp.category === 'asking_reference') return null;
+  const r = saleRecency(comp);
+  return (
+    <span
+      class={`awv2-cv-recency rec-${r.state}`}
+      data-testid="cv-recency"
+      data-recency={r.state}
+      title={r.title}
+    >
+      <b>{r.label}</b>
+      <i>{r.sub}</i>
+    </span>
+  );
+}
+
 const RADIUS_TEXT: Record<string, string> = {
   initial_10: 'within 10 mi',
   expansion_20: '10–20 mi',
@@ -535,7 +618,7 @@ const RADIUS_TEXT: Record<string, string> = {
 // filtered records, so the two can never show different evidence.
 type FilterKey =
   | 'decision' | 'direct' | 'supporting' | 'supplemental' | 'boundary'
-  | 'historical' | 'active' | 'improved' | 'context' | 'excluded'
+  | 'historical' | 'recency_unverified' | 'active' | 'improved' | 'context' | 'excluded'
   | 'landportal' | 'other_providers' | 'all';
 
 /**
@@ -566,6 +649,7 @@ const FILTERS: Array<{ key: FilterKey; label: string; match: (c: CvComp) => bool
   { key: 'supplemental', label: 'Supplemental historical', match: (c) => hasRole(c, 'supplemental_historical'), identity: COMP_IDENTITIES.closed },
   { key: 'boundary', label: 'Boundary', match: (c) => hasRole(c, 'boundary'), identity: COMP_IDENTITIES.zeroWeight },
   { key: 'historical', label: 'Historical context', match: (c) => hasRole(c, 'historical_context'), identity: COMP_IDENTITIES.zeroWeight },
+  { key: 'recency_unverified', label: 'Recency unverified', match: (c) => hasRole(c, 'recency_unverified'), identity: COMP_IDENTITIES.zeroWeight },
   { key: 'active', label: 'Active competitors', match: isActive, identity: COMP_IDENTITIES.active },
   { key: 'improved', label: 'Improved context', match: isImproved, identity: COMP_IDENTITIES.improved },
   { key: 'context', label: 'Other context', match: isOtherContext, identity: COMP_IDENTITIES.context },
@@ -864,6 +948,10 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
                     >
                       {c.geography?.tierShortLabel ?? 'Location unresolved'}
                     </span>
+                    {/* WHEN this sale closed, in its own right. A 2013 sale and
+                        a sale five months ago are not the same evidence, and
+                        the card must not let the older one look current. */}
+                    <RecencyBadge comp={c} />
                   </div>
                   <div class="awv2-cv-actualfacts">
                     <span><i>Acres</i><b>{c.acres != null ? c.acres : '—'}</b></span>
@@ -1029,6 +1117,7 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
             <span><i>Added 13–24 mo</i>{win.addedFrom13To24}</span>
             <span><i>Added 25–30 mo</i>{win.addedFrom25To30}</span>
             <span><i>Moved to historical context</i>{win.movedToHistoricalContext}</span>
+            <span data-testid="cv-window-recency-unverified"><i>Recency unverified (undated)</i>{win.recencyUnverified ?? 0}</span>
             <span><i>Outside {win.acreageBand?.label ?? 'band'}</i>{win.outOfAcreageBand}</span>
           </div>
           {win.explanation.map((line) => <p class="awv2-pi-note" key={line.slice(0, 40)}>{line}</p>)}
@@ -1416,6 +1505,7 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
                         </span>
                       )}
                       {isExcluded(c) && <span class="role excluded">Excluded</span>}
+                      <RecencyBadge comp={c} />
                     </div>
                     {/* Reconciled provenance: who described this parcel, which
                         LandPortal surfaces carried it, and how many provider

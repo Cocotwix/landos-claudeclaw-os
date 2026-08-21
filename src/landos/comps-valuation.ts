@@ -36,6 +36,7 @@ import {
   selectRecencyWindow, valuationAcreageBand, exactMonthsOld,
   type AcreageBand, type RecencyCandidate, type RecencyWindowSelection,
 } from './comp-recency-window.js';
+import { ageLabel, classifySaleRecency, MAX_SOLD_SEARCH_WINDOW_MONTHS } from './comp-sale-recency.js';
 import {
   compDistanceMiles,
   resolveGeographicTier,
@@ -112,7 +113,12 @@ export type CompValuationRole =
   | 'direct' | 'supporting' | 'supplemental_historical' | 'boundary' | 'historical_context'
   /** Credible on acreage and recency, but its geography is outside the tier the
    *  valuation actually needed to reach. Visible, zero valuation weight. */
-  | 'geographic_context';
+  | 'geographic_context'
+  /** The source states a closed sale but published NO sale date. Distinct from
+   *  historical context, which is a record LandOS CAN date and dated as old:
+   *  this one is undated, so its recency is unverified rather than known-old.
+   *  Visible, retained, zero valuation weight, never current-FMV evidence. */
+  | 'recency_unverified';
 
 export const VALUATION_ROLE_LABELS: Readonly<Record<CompValuationRole, string>> = {
   direct: 'Direct comp',
@@ -121,6 +127,7 @@ export const VALUATION_ROLE_LABELS: Readonly<Record<CompValuationRole, string>> 
   boundary: 'Boundary comp',
   historical_context: 'Historical context',
   geographic_context: 'Broader-market context',
+  recency_unverified: 'Recency unverified — not current FMV',
 };
 
 /** Whether a record prices the subject is answered by `inValuationSet`, which
@@ -2638,9 +2645,17 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
       c.zeroWeightReason = band
         ? `${c.acres} acres sits outside the ${band.label} valuation band for the ${subjectAcres}-acre subject, so it defines an upper or lower limit rather than pricing the subject. It cannot influence the cleaned FMV unless it is explicitly restored.`
         : 'Outside the valuation acreage band.';
+    } else if (bucket === 'recency_unverified') {
+      // NOT "sold before the cutoff": the source never published a date, so
+      // LandOS states the absence rather than asserting an age it cannot know.
+      c.valuationRole = 'recency_unverified';
+      c.zeroWeightReason = `${c.source} states this closed sale but published no sale date, so its recency is unverified. It is retained and visible at zero valuation weight and is NOT current fair-market-value evidence until its own source establishes the transaction date.`;
     } else if (bucket === 'historical_context') {
+      const recency = classifySaleRecency(c.dateIso, nowMs);
       c.valuationRole = 'historical_context';
-      c.zeroWeightReason = `Sold ${c.dateIso ?? 'on an unstated date'}, before the ${valuationWindow.selectedMonths}-month cutoff of ${valuationWindow.cutoffIso}. Retained as historical context at zero valuation weight.`;
+      c.zeroWeightReason = recency.state === 'historical'
+        ? `Sold ${c.dateIso} — ${ageLabel(recency.monthsOld as number)}, more than ${MAX_SOLD_SEARCH_WINDOW_MONTHS} months ago. Historical sale, retained as context at zero valuation weight; it is not current fair-market-value evidence.`
+        : `Sold ${c.dateIso}, before the ${valuationWindow.selectedMonths}-month cutoff of ${valuationWindow.cutoffIso}. Retained as historical context at zero valuation weight.`;
     } else if (bucket === 'supplemental_historical') {
       c.valuationRole = 'supplemental_historical';
     } else if (d == null) {

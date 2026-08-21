@@ -1,7 +1,10 @@
 import { distanceMilesFromSubject } from './comp-orchestrator.js';
 
 export const COMP_RADIUS_LADDER_MILES = [5, 10, 15, 20] as const;
-export const COMP_SOLD_WINDOW_MONTHS = [12, 24] as const;
+/** Re-exported so this module keeps ONE definition of the sold-search ladder
+ *  with `comp-sale-recency`: 0–12 months first, 13–24 only on insufficiency,
+ *  and never anything older for normal current-FMV discovery. */
+export { SOLD_SEARCH_WINDOW_STEPS as COMP_SOLD_WINDOW_MONTHS } from './comp-sale-recency.js';
 
 export interface CanonicalCompSubject {
   lat: number | null;

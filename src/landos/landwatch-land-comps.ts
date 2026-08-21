@@ -44,6 +44,21 @@ export interface LandWatchLandComp {
   /** LandWatch sold cards expose no sold date; always null today, kept for
    *  shape parity so a future date read slots in without a contract change. */
   soldDate: string | null;
+  /**
+   * Whether this row's SALE RECENCY is established.
+   *
+   * LandWatch search cards state "Sold" and a price but publish no sale date
+   * and expose no sold-period filter, so a card that closed in 2013 is
+   * indistinguishable at collection time from one that closed last month. A
+   * card-stated "Sold" is therefore UNDATED FALLBACK CONTEXT: retained,
+   * persisted and visible, but never a current fair-market-value candidate on
+   * the strength of the word "Sold" alone. Transaction enrichment may
+   * establish the date later, and only for candidates the valuation set
+   * actually needs.
+   */
+  recencyState: 'unestablished' | 'established';
+  /** False whenever the sale date is unestablished — never current-FMV evidence. */
+  recencyQualified: boolean;
   /** Set when the card shows positive bed/bath counts — an improved sale kept
    *  as directional market evidence, never silently dropped. */
   improvedHint: boolean;
@@ -163,6 +178,10 @@ export function normalizeLandWatchListings(raw: RawLandWatchListing[], county: s
       url: r.url,
       source: 'LandWatch',
       soldDate: null,
+      // No LandWatch search card carries a sale date, so no row leaves this
+      // normalizer recency-qualified. A future date read sets these together.
+      recencyState: 'unestablished',
+      recencyQualified: false,
       improvedHint: !!r.residential,
       remark: r.remark ? r.remark.replace(/\s+/g, ' ').trim().slice(0, 600) : null,
       county,
@@ -337,7 +356,7 @@ export async function fetchLandWatchLandComps(input: LandWatchFetchInput, deps: 
     }
     return done({
       status: 'retrieved', comps,
-      note: `LandWatch verified ${county} County, ${state}: ${counts.visible} visible card(s) → ${counts.extracted} extracted → ${comps.length} candidate(s) (${soldCount} card-stated sold; sold status is LISTING-REPORTED and LandWatch exposes no sold date).`,
+      note: `LandWatch verified ${county} County, ${state}: ${counts.visible} visible card(s) → ${counts.extracted} extracted → ${comps.length} candidate(s). ${soldCount} card-stated sold — sold status is LISTING-REPORTED, and every one is retained as UNDATED SOLD — FALLBACK CONTEXT, NOT YET RECENCY-QUALIFIED: LandWatch publishes no sale date and exposes no sold-period filter, so none of them is current fair-market-value evidence on the word "Sold" alone.`,
       routeTried,
     });
   } catch (e) {

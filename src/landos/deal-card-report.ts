@@ -68,7 +68,8 @@ import type { ZillowFetchInput, ZillowCompsResult } from './zillow-land-comps.js
 import type { RedfinFetchInput, RedfinCompsResult } from './redfin-land-comps.js';
 import { runCompProvidersParallel, type CompProviderJob } from './comp-orchestrator.js';
 import { distanceMilesFromSubject } from './comp-orchestrator.js';
-import { buildCanonicalCompSubject, COMP_RADIUS_LADDER_MILES, COMP_SOLD_WINDOW_MONTHS, daysOnMarket } from './comp-subject.js';
+import { buildCanonicalCompSubject, COMP_RADIUS_LADDER_MILES, daysOnMarket } from './comp-subject.js';
+import { nextSoldSearchWindow, type SoldSearchWindowMonths } from './comp-sale-recency.js';
 import { researchBrowserComps, type CompResearchResult } from './browser-comp-research.js';
 import { parseLandPortalCompRows } from './comp-extraction.js';
 import type { BrowserDriver } from './browser-intelligence.js';
@@ -2356,14 +2357,25 @@ export async function runDealCardReport(
       const soldComps: BrowserComp[] = [];
       const activeComps: BrowserComp[] = [];
       let terminalStatus: BrowserCollection['status'] = 'none';
-      soldSearch: for (const dateWindowMonths of COMP_SOLD_WINDOW_MONTHS) {
+      // PROGRESSIVE SOLD RECENCY: 0–12 months first, everywhere. The
+      // 13-to-24-month window is entered only when the recent pass produced
+      // insufficient closed evidence, and normal discovery never reaches past
+      // 24 months. Radius still ladders inside each window; price is never a
+      // filter in either pass.
+      let completedWindow: SoldSearchWindowMonths | null = null;
+      soldSearch: for (;;) {
+        const step = nextSoldSearchWindow(completedWindow, soldComps.length);
+        notes.push(step.reason);
+        const dateWindowMonths = step.nextWindowMonths;
+        if (dateWindowMonths == null) break;
+        completedWindow = dateWindowMonths;
         for (const radiusMiles of COMP_RADIUS_LADDER_MILES) {
           const result = await capture({ ...loc, mode: 'sold', radiusMiles, dateWindowMonths });
           terminalStatus = result.status; routeTried = result.routeTried; notes.push(result.note);
           if (result.status === 'blocked' || result.status === 'disabled') break soldSearch;
           if (result.status === 'retrieved' && result.comps.length) {
             soldComps.push(...result.comps.map((comp) => ({ ...comp, radiusMiles, dateWindowMonths })));
-            break soldSearch;
+            break;
           }
         }
       }

@@ -146,7 +146,7 @@ function view(overrides: {
     valuationWindow: {
       selectedMonths: 24, cutoffIso: '2024-08-18', acreageBand: { label: '10 to 40 acres' } as never,
       credibleWithin12: 1, credibleWithin24: 1, credibleWithin30: 1, addedFrom13To24: 0, addedFrom25To30: 0,
-      movedToHistoricalContext: 0, outOfAcreageBand: 0, valuationSetCount: 1, bucketByKey: {},
+      movedToHistoricalContext: 0, recencyUnverified: 0, outOfAcreageBand: 0, valuationSetCount: 1, bucketByKey: {},
       explanation: ['24-month window selected.'],
     },
     visualCounts: {} as never,

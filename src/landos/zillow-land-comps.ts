@@ -20,6 +20,7 @@ import { parseZillowStructured, parseListingStatus, zillowListResults, type Comp
 import { addressStateCode } from './comp-registry.js';
 import { reconcileCompAddress } from './comp-location-reconciliation.js';
 import { laneSearchVerified, type CompLaneRouteOutcome } from './comp-lane-accountability.js';
+import { RECENT_SALE_WINDOW_MONTHS, MAX_SOLD_SEARCH_WINDOW_MONTHS, type SoldSearchWindowMonths } from './comp-sale-recency.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
 // so DOM globals are declared as `any` purely to satisfy the Node typechecker.
@@ -85,7 +86,11 @@ export interface ZillowFetchInput {
   owner?: string;
   mode?: 'sold' | 'active';
   radiusMiles?: 5 | 10 | 15 | 20;
-  dateWindowMonths?: 12 | 24;
+  /** Sold-period window. Defaults to the 12-month Pass 1 window: a sold search
+   *  that silently reached two years back was how ancient sales entered the
+   *  candidate workflow before anything deliberately expanded. 24 is Pass 2 and
+   *  must be asked for. Never a price bound: there is no price filter here. */
+  dateWindowMonths?: SoldSearchWindowMonths;
   propertyType?: 'land' | 'manufactured';
   /** Minimum lot size for the search itself (operator-style "20+ acres"). When
    * set, the search also includes improved (house) results so large-acreage
@@ -140,7 +145,7 @@ function zillowFilterState(input: ZillowFetchInput): Record<string, unknown> {
     apartment: { value: false },
     manufactured: { value: manufactured },
     ...(lotMinAcres != null ? { lotSize: { min: Math.round(lotMinAcres * 43_560) } } : {}),
-    ...(sold ? { isRecentlySold: { value: true }, doz: { value: input.dateWindowMonths === 24 ? '24m' : '12m' } } : {}),
+    ...(sold ? { isRecentlySold: { value: true }, doz: { value: input.dateWindowMonths === MAX_SOLD_SEARCH_WINDOW_MONTHS ? '24m' : '12m' } } : {}),
   };
 }
 
@@ -501,7 +506,7 @@ export async function fetchZillowLandComps(rawInput: ZillowFetchInput, deps: Zil
   const manufacturedSearch = input.propertyType === 'manufactured';
   const proof: ManufacturedHomeSearchProof = {
     radiusMiles: input.radiusMiles ?? 5,
-    timePeriodMonths: input.dateWindowMonths ?? 24,
+    timePeriodMonths: input.dateWindowMonths ?? RECENT_SALE_WINDOW_MONTHS,
     sourcesSearched: ['Zillow'],
     routesAttempted: [],
     candidatesReviewed: 0,
@@ -618,7 +623,7 @@ export async function fetchZillowLandComps(rawInput: ZillowFetchInput, deps: Zil
         return false;
       };
       if (manufactured) proof.candidatesReviewed += normalized.length;
-      const cutoff = (deps.nowMs ?? Date.now()) - (input.dateWindowMonths ?? 24) * 30.4 * 86_400_000;
+      const cutoff = (deps.nowMs ?? Date.now()) - (input.dateWindowMonths ?? RECENT_SALE_WINDOW_MONTHS) * 30.4 * 86_400_000;
       // BUSINESS RULE: price never excludes a candidate. The manufactured lane
       // still proves geography, sold status, coordinates and time period;
       // whether such sales clear any price level is an analysis question the
@@ -633,7 +638,7 @@ export async function fetchZillowLandComps(rawInput: ZillowFetchInput, deps: Zil
           return exclude(`Outside ${input.radiusMiles ?? 5}-mile radius`);
         }
         if (!comp.soldDate || !Number.isFinite(Date.parse(comp.soldDate))) return exclude('Verified sale date unavailable');
-        if (Date.parse(comp.soldDate) < cutoff) return exclude(`Outside ${input.dateWindowMonths ?? 24}-month time period`);
+        if (Date.parse(comp.soldDate) < cutoff) return exclude(`Outside ${input.dateWindowMonths ?? RECENT_SALE_WINDOW_MONTHS}-month time period`);
         return true;
       });
       if (manufactured) {
