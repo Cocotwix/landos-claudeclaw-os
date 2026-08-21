@@ -170,6 +170,7 @@ import {
 import { PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID } from './property-development-history-capability.js';
 import type { PropertyBackstory } from './property-backstory.js';
 import { CapabilityInvocationStore } from './capability-store.js';
+import { deriveOperatorDisplayLocation } from './operator-display-location.js';
 import type { CapabilityEntity } from './capability-contract.js';
 import { researchReadinessItem } from './research-readiness.js';
 import { isReconcileError, reconcileResearchReadiness } from './research-readiness-reconcile.js';
@@ -8843,6 +8844,7 @@ export function registerLandosRoutes(app: Hono): void {
           value.normalize('NFKC').replace(/[^a-zA-Z0-9]/g, '').toLocaleLowerCase('en-US');
         const situsStreet = snapshot.identity.situs ?? snapshot.identity.normalizedAddress;
         let displayAddress: string | null = null;
+        let displayAddressType: 'numbered_situs' | 'landos_road_only' | 'parcel_description' | null = null;
         // The RECONCILED record wins over the raw lead text. Intake is evidence,
         // not truth: when a feed supplied a wrong ZIP, echoing the lead string
         // back would keep showing the operator a locality that identity
@@ -8851,7 +8853,34 @@ export function registerLandosRoutes(app: Hono): void {
         const canonicalCity = str(subject.city);
         const canonicalState = str(subject.state);
         const canonicalZip = str(subject.zip);
-        if (situsStreet && canonicalZip && (canonicalCity || canonicalState)) {
+        // The OFFICIAL situs of record (retained assessor-tax capability
+        // ledger, a SELECT — never a research run) outranks the intake string
+        // for display. A road-only official situs displays under the LandOS
+        // "0 <Road>" convention: the leading 0 is LandOS-generated, never an
+        // official street number, and is never persisted onto identity.
+        const subjectCardIdForDisplay = subjectCardId(deal);
+        const retainedAssessor = subjectCardIdForDisplay != null
+          ? new CapabilityInvocationStore().latestForProperty(subjectCardIdForDisplay, dealCardId, ASSESSOR_TAX_CAPABILITY_ID)
+          : null;
+        const assessorFacts = retainedAssessor
+          && (retainedAssessor.facts as { recordStatus?: unknown }).recordStatus === 'official_record_retrieved'
+          ? (retainedAssessor.facts as { assessor?: { situsAddress?: unknown } }).assessor ?? null
+          : null;
+        const officialSitus = typeof assessorFacts?.situsAddress === 'string' ? assessorFacts.situsAddress : null;
+        if (officialSitus) {
+          const derived = deriveOperatorDisplayLocation({
+            sourceDescription: situsStreet ?? null,
+            officialSitus,
+            city: canonicalCity || null,
+            state: canonicalState || null,
+            zip: canonicalZip || null,
+          });
+          if (derived.displayType === 'numbered_situs' || derived.displayType === 'landos_road_only') {
+            displayAddress = derived.displayAddress;
+            displayAddressType = derived.displayType;
+          }
+        }
+        if (!displayAddress && situsStreet && canonicalZip && (canonicalCity || canonicalState)) {
           displayAddress = [
             situsStreet,
             [canonicalCity, [canonicalState, canonicalZip].filter(Boolean).join(' ')].filter(Boolean).join(', '),
@@ -8873,6 +8902,7 @@ export function registerLandosRoutes(app: Hono): void {
         snapshot.identity = {
           ...snapshot.identity,
           displayAddress: displayAddress ?? situsStreet ?? null,
+          displayAddressType,
           zip: canonicalZip || null,
           city: canonicalCity || null,
           lpPropertyId: str(subject.lp_property_id) || null,

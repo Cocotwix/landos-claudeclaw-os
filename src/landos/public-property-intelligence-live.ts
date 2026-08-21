@@ -901,6 +901,28 @@ export function tennesseeApnLookupClauses(
     ...alternates.map((alt) => alt.trim()),
   ])].filter(Boolean);
   for (const variant of raws) push('exact PARCELID/PARCEL equality', variant, `(PARCELID = '${sql(variant)}' OR PARCEL = '${sql(variant)}')`);
+  // Canonical map–parcel–SI decomposition FIRST: "042-123.00-000" is control
+  // map 042, parcel 123.00 (digits 12300) and SI 000. The digit-slicing
+  // fallback below would consume the SI suffix as parcel digits and generate
+  // clauses for a parcel that does not exist.
+  const canonical = tennesseeCanonicalApnParts(apn);
+  if (canonical) {
+    push(
+      'control map + parcel decomposition',
+      `map ${canonical.controlMap}, parcel ${canonical.parcelPrinted}`,
+      `(CMAP = '${sql(canonical.controlMap)}' AND PARCEL = '${sql(canonical.parcelPrinted)}')`,
+    );
+    push(
+      'GISLINK map+parcel pattern',
+      canonical.identityDigits,
+      `GISLINK LIKE '%${sql(canonical.controlMap)}%${sql(canonical.parcelDigits)}%'`,
+    );
+    push(
+      'PARCELID map+parcel pattern',
+      canonical.identityDigits,
+      `PARCELID LIKE '%${sql(canonical.controlMap)}%${sql(canonical.parcelDigits)}%${sql(canonical.specialInterest ?? '')}%'`,
+    );
+  }
   const groups = apn.toUpperCase().split(/[^0-9A-Z]+/).filter(Boolean);
   if (groups.length >= 2) {
     push('GISLINK ordered-group pattern', groups.join(' '), `GISLINK LIKE '${sql(groups.join('%'))}%'`);
@@ -913,7 +935,12 @@ export function tennesseeApnLookupClauses(
     // the digit identity guard below still applies to every hit.
     push('PARCELID ordered-group pattern', groups.join(' '), `PARCELID LIKE '${sql(groups.join('%'))}'`);
   }
-  const digits = apn.replace(/\D/g, '');
+  // The digit-slicing fallbacks below assume the LAST five digits are the
+  // parcel digits, which is only true for GISLINK-shaped pastes. An APN the
+  // canonical decomposition already parsed carries an SI suffix in those
+  // positions, so the fallback would generate clauses for a parcel that does
+  // not exist — the canonical clauses above already cover it.
+  const digits = canonical ? '' : apn.replace(/\D/g, '');
   if (groups.length === 1 && digits.length >= 8) {
     push('GISLINK map+parcel pattern', digits, `GISLINK LIKE '${sql(digits.slice(0, digits.length - 5))}%${sql(digits.slice(-5))}%'`);
   }
@@ -927,6 +954,42 @@ export function tennesseeApnLookupClauses(
     }
   }
   return clauses.slice(0, 8);
+}
+
+/**
+ * PURE: the canonical Tennessee map–parcel–special-interest decomposition of an
+ * APN written "042-123.00-000" (control map, parcel with printed decimals,
+ * three-digit special-interest suffix; an optional group letter may follow the
+ * map). The statewide layer prints PARCEL as "123.00" for digits "12300" and
+ * keys GISLINK/PARCELID on countyCode+map+parcelDigits — the SI suffix is NOT
+ * part of the parcel digits, so a digit-only decomposition that consumes the
+ * trailing "000" as parcel digits reads a real APN as a different parcel and
+ * silently fails to resolve it.
+ */
+export function tennesseeCanonicalApnParts(apn: string): {
+  controlMap: string;
+  group: string | null;
+  parcelPrinted: string;
+  parcelDigits: string;
+  specialInterest: string | null;
+  /** map digits + parcel digits — the GISLINK/PARCELID identity span. */
+  identityDigits: string;
+} | null {
+  const match = /^(\d{1,3})([A-Z])?(?:[-\s]+([A-Z]))?[-\s]+(\d{1,3})(?:\.(\d{2}))?(?:[-\s]+(\d{3}))?$/i
+    .exec(String(apn ?? '').trim().toUpperCase());
+  if (!match) return null;
+  const [, mapDigits, mapLetter, group, parcelWhole, parcelDecimals, specialInterest] = match;
+  const controlMap = `${mapDigits.padStart(3, '0')}${mapLetter ?? ''}`;
+  const parcelPrinted = `${parcelWhole}.${parcelDecimals ?? '00'}`;
+  const parcelDigits = `${parcelWhole.padStart(3, '0')}${parcelDecimals ?? '00'}`;
+  return {
+    controlMap,
+    group: group ?? null,
+    parcelPrinted,
+    parcelDigits,
+    specialInterest: specialInterest ?? null,
+    identityDigits: `${mapDigits.padStart(3, '0')}${parcelDigits}`,
+  };
 }
 
 const TN_OWNER_STOPWORDS = new Set(['ETUX', 'ETAL', 'ETVIR', 'ET', 'UX', 'AL', 'TRUSTEE', 'TRUSTEES', 'TRUST', 'LLC', 'INC', 'JR', 'SR', 'II', 'III']);
@@ -964,7 +1027,12 @@ async function tennesseeLookup(
   // ── Path 1: APN identity (primary when county/state + APN are available).
   // Jurisdiction-appropriate format variants are generated; the underlying
   // candidate value is never changed. Multiple candidates never substitute.
-  const apnDigits = (input.apn ?? '').replace(/\D/g, '');
+  // The identity-guard digits come from the canonical map+parcel decomposition
+  // when the APN carries one: the SI suffix ("-000") is not part of the
+  // GISLINK/PARCELID identity span, and leaving it in made a correct official
+  // hit fail the containment check.
+  const canonicalParts = input.apn ? tennesseeCanonicalApnParts(input.apn) : null;
+  const apnDigits = canonicalParts?.identityDigits ?? (input.apn ?? '').replace(/\D/g, '');
   if (input.apn) {
     for (const clause of tennesseeApnLookupClauses(input.apn, input.apnAlternates ?? [])) {
       const url = query(TN, `${countyWhere}${clause.where}`, true);

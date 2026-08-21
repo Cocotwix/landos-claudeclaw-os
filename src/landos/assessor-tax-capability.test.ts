@@ -156,7 +156,7 @@ describe('Assessor & Tax Capability', () => {
       caller: { type: 'deal_card', ref: `deal:${deal.id}` },
       subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
       mode: 'refresh',
-    }, { lookupParcel: async () => noMatch });
+    }, { lookupParcel: async () => noMatch, lookupCountyAssessor: async () => null });
 
     const view = facts(result);
     expect(result.status).toBe('NEEDS_INPUT');
@@ -168,6 +168,91 @@ describe('Assessor & Tax Capability', () => {
       note: 'The layer answered and held no record for this APN.',
     }]);
     expect(result.warnings.join(' ')).toContain('TN Comptroller statewide parcel layer');
+  });
+
+  it('falls through to the structured county assessor search when no parcel layer carries the county', async () => {
+    const { deal, card } = canonicalSubject();
+    const source = 'Williamson County Property Assessment Database (inigo.williamson-tn.org)';
+    const record = (field: string, value: string, classification: 'official_record' | 'recorded_instrument' = 'official_record') => ({
+      field, value, classification, source, sourceUrl: 'https://inigo.williamson-tn.org/property_search/', retrievedAt: '2026-08-21T00:00:00.000Z',
+    });
+    const result = await invokeRuntimeCapability({
+      capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+    }, {
+      lookupParcel: async () => noMatch,
+      lookupCountyAssessor: async () => ({
+        status: 'matched',
+        source,
+        sourceUrl: 'https://inigo.williamson-tn.org/property_search/',
+        note: 'The canonical APN matched exactly one official assessment record (parcel ID "042    12300 000").',
+        jurisdiction: 'Williamson County, TN',
+        summary: 'Official Williamson County assessment record retrieved for parcel 042    12300 000.',
+        officialParcelId: '042    12300 000',
+        records: [
+          record('APN', '042    12300 000'),
+          record('Owner of record', 'SMITH FAMILY TRUST'),
+          record('Situs address', 'KINGWOOD BLVD'),
+          record('Assessed acreage', '51.1100'),
+          record('Land use class', '110 Farm'),
+          record('Appraised value (land)', '$1,254,400'),
+          record('Improvement appraised value', '$0'),
+          record('Total appraised value', '$1,254,400'),
+          record('Improvements (assessor)', 'No buildings on record'),
+          record('Last recorded sale date', '2024-03-08', 'recorded_instrument'),
+          record('Deed book/page', '9433/325', 'recorded_instrument'),
+        ],
+      }),
+    });
+
+    const view = facts(result);
+    expect(result.status).toBe('SUCCEEDED');
+    expect(view.recordStatus).toBe('official_record_retrieved');
+    expect(view.jurisdiction).toBe('Williamson County, TN');
+    expect(view.assessor.ownerOfRecord).toBe('SMITH FAMILY TRUST');
+    // The road-only situs is retained exactly as the record prints it — no
+    // street number is invented on the official record.
+    expect(view.assessor.situsAddress).toBe('KINGWOOD BLVD');
+    expect(view.assessor.assessedAcres).toBe(51.11);
+    expect(view.assessor.landAppraisedValue).toBe(1_254_400);
+    expect(view.transfer.lastSaleDate).toBe('2024-03-08');
+    expect(view.records.some((entry) => entry.field === 'Improvements (assessor)' && entry.value === 'No buildings on record')).toBe(true);
+    // Both source attempts are on the record: the layer miss and the county match.
+    expect(view.sourceAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'TN Comptroller statewide parcel layer', status: 'no_match' }),
+      expect.objectContaining({ source, status: 'matched' }),
+    ]));
+    expect(result.evidence.some((item) => item.source === source)).toBe(true);
+  });
+
+  it('reports honestly when the county assessor search also holds no verified match', async () => {
+    const { deal, card } = canonicalSubject();
+    const result = await invokeRuntimeCapability({
+      capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+    }, {
+      lookupParcel: async () => noMatch,
+      lookupCountyAssessor: async () => ({
+        status: 'no_match',
+        source: 'Williamson County Property Assessment Database (inigo.williamson-tn.org)',
+        sourceUrl: 'https://inigo.williamson-tn.org/property_search/',
+        note: 'The county assessment database returned 2 candidate(s), and none matched the canonical parcel identifier segment for segment. No candidate was substituted.',
+        jurisdiction: 'Williamson County, TN',
+        summary: null,
+        officialParcelId: null,
+        records: [],
+      }),
+    });
+
+    const view = facts(result);
+    expect(result.status).toBe('NEEDS_INPUT');
+    expect(view.recordStatus).toBe('not_retrieved');
+    expect(view.records).toEqual([]);
+    expect(view.sourceAttempts.map((attempt) => attempt.source)).toContain('Williamson County Property Assessment Database (inigo.williamson-tn.org)');
   });
 
   it('consumes the canonical subject and refuses one that is not the Deal Card subject', async () => {

@@ -36,6 +36,7 @@ import type {
   LandosCapability,
   SubjectResolutionState,
 } from './capability-contract.js';
+import { lookupCountyAssessorRecord } from './county-assessor-search.js';
 import { getDealCardIdForPropertyCard } from './deal-card.js';
 import { listPublicRecordOutcomes } from './lead-card-intake.js';
 import type { SnapshotFact } from './property-intelligence-snapshot.js';
@@ -196,6 +197,9 @@ export interface AssessorTaxRuntime {
   resolveSubject?: (request: CapabilityInvocationRequest) => Promise<CapabilityResult>;
   /** The existing official parcel adapters. Overridden only by tests. */
   lookupParcel?: typeof lookupOfficialParcel;
+  /** The structured county assessor-search adapters (counties absent from
+   *  every statewide parcel layer). Overridden only by tests. */
+  lookupCountyAssessor?: typeof lookupCountyAssessorRecord;
   lookupTimeoutMs?: number;
 }
 
@@ -297,6 +301,37 @@ async function liveRecords(
   }, runtime.lookupTimeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS);
 
   if (!lookup.parcel) {
+    // Some counties are absent from every statewide parcel layer while the
+    // county assessor itself publishes a keyless structured search. That
+    // official source is the stronger current record for those jurisdictions,
+    // so a parcel-layer miss falls through to it rather than reporting the
+    // question unanswerable.
+    const countyOutcome = await (runtime.lookupCountyAssessor ?? lookupCountyAssessorRecord)(
+      { county: subject.county, state: subject.state, apn: subject.apn },
+      runtime.lookupTimeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS,
+    );
+    if (countyOutcome) {
+      const attempts: OfficialParcelAttempt[] = [
+        ...lookup.attempted,
+        { source: countyOutcome.source, status: countyOutcome.status, note: countyOutcome.note },
+      ];
+      if (countyOutcome.status === 'matched' && countyOutcome.records.length) {
+        return {
+          records: countyOutcome.records.map((record) => ({ ...record })),
+          evidence: [{
+            source: countyOutcome.source,
+            sourceUrl: countyOutcome.sourceUrl,
+            sourceType: 'official_county_state',
+            retrievedAt: countyOutcome.records[0]?.retrievedAt ?? new Date().toISOString(),
+            details: { adapter: 'county_assessor_search', officialParcelId: countyOutcome.officialParcelId },
+          }],
+          attempts,
+          summary: countyOutcome.summary,
+          jurisdiction: countyOutcome.jurisdiction,
+        };
+      }
+      return { records: [], evidence: [], attempts, summary: null, jurisdiction: null };
+    }
     return { records: [], evidence: [], attempts: lookup.attempted, summary: null, jurisdiction: null };
   }
 

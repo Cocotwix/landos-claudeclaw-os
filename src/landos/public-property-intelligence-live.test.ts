@@ -610,6 +610,28 @@ describe('Tennessee multi-path parcel lookup keys (pure)', () => {
     expect(clauses.length).toBeLessThanOrEqual(8);
   });
 
+  it('decomposes a canonical map–parcel–SI APN into the real control map and parcel, not the SI suffix', () => {
+    // "042-123.00-000" is control map 042, parcel 123.00 (digits 12300) and
+    // special-interest 000. The digit-slicing fallback used to consume the SI
+    // suffix as parcel digits and generate CMAP='123' AND PARCEL='000.00' — a
+    // parcel that does not exist — so a real canonical APN never resolved.
+    const clauses = tennesseeApnLookupClauses('042-123.00-000');
+    const wheres = clauses.map((clause) => clause.where);
+    expect(wheres.some((where) => where.includes("CMAP = '042' AND PARCEL = '123.00'"))).toBe(true);
+    expect(wheres.some((where) => where.includes("GISLINK LIKE '%042%12300%'"))).toBe(true);
+    expect(wheres.some((where) => where.includes("CMAP = '123'"))).toBe(false);
+    expect(clauses.length).toBeLessThanOrEqual(8);
+  });
+
+  it('resolves legitimate canonical-APN spellings to the same decomposition without cross-parcel patterns', () => {
+    for (const spelling of ['042-123.00-000', '042 123.00 000', '042-123.00']) {
+      const wheres = tennesseeApnLookupClauses(spelling).map((clause) => clause.where);
+      expect(wheres.some((where) => where.includes("CMAP = '042' AND PARCEL = '123.00'"))).toBe(true);
+      // The decomposition never emits a clause for a different parcel number.
+      expect(wheres.some((where) => /PARCEL = '(?!123\.00')/.test(where) && where.includes('CMAP'))).toBe(false);
+    }
+  });
+
   it('includes operator-supplied alternates without changing the underlying candidate', () => {
     const clauses = tennesseeApnLookupClauses('073090 04200', ['07309004200']);
     expect(clauses.some((clause) => clause.where.includes("PARCELID = '07309004200'"))).toBe(true);

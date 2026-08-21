@@ -95,6 +95,11 @@ export interface SnapshotIdentity {
    * when the retained lead input extends the confirmed situs street.
    * View-enriched at read time; never persisted onto the stored snapshot. */
   displayAddress?: string | null;
+  /** How the display address was established: a real numbered situs, the
+   * LandOS road-only "0 <Road>" display convention (the leading 0 is
+   * LandOS-generated, never an official street number), or the retained
+   * parcel/source description fallback. View-enriched at read time. */
+  displayAddressType?: 'numbered_situs' | 'landos_road_only' | 'parcel_description' | null;
   /** Canonical postal locality for the subject, from the reconciled property
    * record rather than parsed off the intake string. The two disagree whenever
    * a feed supplied a wrong ZIP, and the reconciled value is the one that must
