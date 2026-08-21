@@ -285,3 +285,51 @@ describe('bounded candidate ranking', () => {
     expect(rankCompsForTransactionEnrichment(rows, 75.91, 0)).toEqual([]);
   });
 });
+
+describe('geographic priority in candidate ranking', () => {
+  // Same acreage relevance and same class throughout, so geography is the only
+  // thing that can order these.
+  const tiered = [
+    comp({ id: 11, source_url: 'https://www.landwatch.com/x/pid/11', acres: 70, geo_tier: 'broader' }),
+    comp({ id: 12, source_url: 'https://www.landwatch.com/x/pid/12', acres: 70, geo_tier: 'local' }),
+    comp({ id: 13, source_url: 'https://www.landwatch.com/x/pid/13', acres: 70, geo_tier: '' }),
+    comp({ id: 14, source_url: 'https://www.landwatch.com/x/pid/14', acres: 70, geo_tier: 'expanded' }),
+  ];
+
+  it('attempts local, then expanded, then broader, then unresolved geography', () => {
+    expect(rankCompsForTransactionEnrichment(tiered, 75.91, 10).map((c) => c.row.id)).toEqual([12, 14, 11, 13]);
+  });
+
+  it('never reaches a broader-market candidate while closer ones fill the run', () => {
+    const chosen = rankCompsForTransactionEnrichment(tiered, 75.91, 2);
+    expect(chosen.map((c) => c.tierId)).toEqual(['local', 'expanded']);
+  });
+
+  it('prefers the closer market over the closer acreage match', () => {
+    const rowsByAcres = [
+      comp({ id: 21, source_url: 'https://www.landwatch.com/x/pid/21', acres: 76, geo_tier: 'broader' }),
+      comp({ id: 22, source_url: 'https://www.landwatch.com/x/pid/22', acres: 30, geo_tier: 'local' }),
+    ];
+    expect(rankCompsForTransactionEnrichment(rowsByAcres, 75.91, 10).map((c) => c.row.id)).toEqual([22, 21]);
+  });
+
+  it('keeps geography below whether the candidate can price the subject at all', () => {
+    const mixed = [
+      // Local, but its own retained evidence already states a residence: it can
+      // never enter the clean vacant-land set, so a dated sale would not price
+      // the subject.
+      comp({ id: 31, source_url: 'https://www.landwatch.com/x/pid/31', acres: 70, geo_tier: 'local', property_class: 'residential', classification: 'directional' }),
+      // Local, but far outside the subject's participation band.
+      comp({ id: 32, source_url: 'https://www.landwatch.com/x/pid/32', acres: 400, geo_tier: 'local' }),
+      // Broader, but a clean in-band vacant-land candidate.
+      comp({ id: 33, source_url: 'https://www.landwatch.com/x/pid/33', acres: 70, geo_tier: 'broader' }),
+    ];
+    expect(rankCompsForTransactionEnrichment(mixed, 75.91, 10).map((c) => c.row.id)).toEqual([33, 31, 32]);
+  });
+
+  it('states the tier it attempted on every candidate', () => {
+    const [first] = rankCompsForTransactionEnrichment(tiered, 75.91, 1);
+    expect(first.tierId).toBe('local');
+    expect(first.reason).toContain('Local market');
+  });
+});

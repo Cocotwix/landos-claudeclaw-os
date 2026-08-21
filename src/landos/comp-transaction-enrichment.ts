@@ -42,6 +42,7 @@ import { listComps, type CompRow } from './comps.js';
 import { normalizeAddressMatchKey } from './address-normalize.js';
 import { normalizeSaleDateIso, valuationAcreageBand, inAcreageBand } from './comp-recency-window.js';
 import { routeAcreage, routedAcreageSimilarity } from './acreage-router.js';
+import { compGeoTier, type CompGeoTierId } from './comp-geography.js';
 import { openDisposableContextHandle } from './automation-browser.js';
 
 export type TransactionEnrichmentProvider = 'LandWatch' | 'Redfin';
@@ -90,6 +91,8 @@ export interface CompTransactionEvidence {
 export interface TransactionEnrichmentCandidate {
   row: CompRow;
   provider: TransactionEnrichmentProvider;
+  /** Geographic tier the reconciliation lane established for this row. */
+  tierId: CompGeoTierId;
   /** Why this row was chosen, in the order the ranking applied. */
   reason: string;
 }
@@ -107,6 +110,17 @@ function alreadyDated(row: CompRow): boolean {
   return normalizeSaleDateIso(row.sale_or_list_date) != null;
 }
 
+/** The persisted geographic tier, or `unresolved` when the lane never ran. */
+function rowGeoTier(row: CompRow): CompGeoTierId {
+  const raw = (row.geo_tier || '').toLowerCase();
+  return raw === 'local' || raw === 'expanded' || raw === 'broader' ? raw : 'unresolved';
+}
+
+/** A row whose own retained evidence already states a structure on the parcel. */
+function statedImproved(row: CompRow): boolean {
+  return (row.property_class || '').toLowerCase() === 'residential';
+}
+
 /**
  * Rank the retained SOLD candidates whose transaction evidence is missing, and
  * return the bounded strongest set.
@@ -117,9 +131,25 @@ function alreadyDated(row: CompRow): boolean {
  *
  *   1. inside the subject's valuation acreage band before outside it — a sale
  *      outside the band cannot influence the cleaned FMV however well dated;
- *   2. `core` (clean vacant-land candidate) before `directional`;
- *   3. closest acreage to the subject, using the same routed similarity the
+ *   2. a candidate whose retained evidence does NOT already state a residence
+ *      before one that does — a stated improved sale cannot enter the clean
+ *      vacant-land set however well dated, so it is directional context only;
+ *   3. GEOGRAPHY: local, then expanded, then broader, then unresolved. Among
+ *      candidates equally able to price the subject, the closest market is
+ *      always attempted first, and a broader-market row is reached only when
+ *      the closer tiers do not fill the run. This outranks acreage: a broader
+ *      sale that matches the subject's acreage more closely is still farther
+ *      evidence, and dating it first would spend the budget teaching the
+ *      valuation more about a market the subject is not in;
+ *   4. `core` (clean vacant-land candidate) before `directional`;
+ *   5. closest acreage to the subject, using the same routed similarity the
  *      valuation weights sales by.
+ *
+ * Keys 1 and 2 sit above geography deliberately. They are not preferences about
+ * WHERE the evidence is, they are whether the candidate can price the subject
+ * at all: an out-of-band acreage and a stated residence are both excluded from
+ * the clean vacant-land set by rules that run before geography does, so a
+ * nearer one of those is still a candidate a sale date cannot promote.
  *
  * Pure: no database, no browser, no clock.
  */
@@ -140,10 +170,14 @@ export function rankCompsForTransactionEnrichment(
       const inBand = inAcreageBand(c.row.acres, band);
       const core = (c.row.classification || '').toLowerCase() === 'core';
       const similarity = route ? routedAcreageSimilarity(c.row.acres, route) : 0;
-      return { ...c, inBand, core, similarity };
+      const tierId = rowGeoTier(c.row);
+      return { ...c, inBand, core, similarity, tierId, improved: statedImproved(c.row) };
     })
     .sort((a, b) => {
       if (a.inBand !== b.inBand) return a.inBand ? -1 : 1;
+      if (a.improved !== b.improved) return a.improved ? 1 : -1;
+      const tierDelta = compGeoTier(a.tierId).rank - compGeoTier(b.tierId).rank;
+      if (tierDelta !== 0) return tierDelta;
       if (a.core !== b.core) return a.core ? -1 : 1;
       if (b.similarity !== a.similarity) return b.similarity - a.similarity;
       return a.row.id - b.row.id;
@@ -152,8 +186,11 @@ export function rankCompsForTransactionEnrichment(
   return scored.slice(0, Math.max(0, limit)).map((c) => ({
     row: c.row,
     provider: c.provider,
+    tierId: c.tierId,
     reason: [
+      compGeoTier(c.tierId).shortLabel,
       c.inBand ? `inside the ${band?.label ?? 'subject acreage band'}` : 'outside the subject acreage band',
+      c.improved ? 'retained evidence states a residence, directional context only' : 'no residence stated on the retained evidence',
       c.core ? 'clean vacant-land candidate' : 'directional candidate',
       c.row.acres != null ? `${c.row.acres} ac` : 'acreage not established',
       'sale date not established',
@@ -646,6 +683,9 @@ export interface CompTransactionEnrichmentResult {
   provider: TransactionEnrichmentProvider;
   address: string;
   sourceUrl: string;
+  /** Geographic tier this candidate was attempted from, closest market first. */
+  tierId: CompGeoTierId;
+  tierLabel: string;
   /** Evidence was identity-gated and written. */
   enriched: boolean;
   soldDateIso: string | null;
@@ -734,12 +774,14 @@ export async function enrichCompTransactions(
 
   const results: CompTransactionEnrichmentResult[] = [];
   for (const candidate of candidates) {
-    const { row, provider } = candidate;
+    const { row, provider, tierId } = candidate;
     const base = {
       compId: row.id,
       provider,
       address: row.address_desc,
       sourceUrl: row.source_url,
+      tierId,
+      tierLabel: compGeoTier(tierId).shortLabel,
       soldDateIso: null as string | null,
       soldPrice: null as number | null,
       acres: null as number | null,
