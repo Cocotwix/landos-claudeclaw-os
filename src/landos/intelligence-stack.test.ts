@@ -74,6 +74,7 @@ function baseDossier(): AcquisitionDossier {
     seller: { present: false, name: null, askingPrice: null },
     documents: [],
     visuals: [],
+    visualObservations: [],
     conflicts: [],
     openQuestions: [],
     blockers: [],
@@ -133,13 +134,13 @@ const LAYERED_REPLY = {
 };
 
 function fakeAnalyst(reply: Record<string, unknown> = LAYERED_REPLY) {
-  const calls: Array<{ prompt: string; maxVisuals: number | undefined }> = [];
+  const calls: Array<{ prompt: string }> = [];
   return {
     calls,
     analyst: {
       run: async (input: AnalystRunInput): Promise<AnalystRunOutput> => {
         const prompt = input.judgmentPromptBuilder?.(input.dossier, []) ?? '';
-        calls.push({ prompt, maxVisuals: input.maxVisuals });
+        calls.push({ prompt });
         return {
           raw: JSON.stringify(reply),
           observations: [],
@@ -223,7 +224,7 @@ describe('pre-call intelligence run', () => {
 });
 
 describe('dependency-aware refresh', () => {
-  it('refreshes only Seller and Deal when seller information changes, skipping the visual pass', async () => {
+  it('refreshes only Seller and Deal when seller information changes', async () => {
     const first = fakeAnalyst();
     await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: first.analyst }));
     writes.length = 0;
@@ -243,7 +244,6 @@ describe('dependency-aware refresh', () => {
     expect(result.refreshedLayers).toEqual(['seller', 'deal']);
     expect(result.reusedLayers).toEqual(['property', 'market']);
     expect(second.calls).toHaveLength(1);
-    expect(second.calls[0].maxVisuals).toBe(0);
     expect(second.calls[0].prompt).not.toContain('"property":{"score"');
     expect(second.calls[0].prompt).toContain('"seller":{');
     expect(writes.map((write) => write.snapshotType)).toEqual(['intelligence_seller_v1', 'acquisition_intelligence_v1']);
@@ -299,6 +299,64 @@ describe('readiness preflight', () => {
     expect(result.outcome).toBe('produced');
     // The unresolved yellow travels into the prompt as a named unknown.
     expect(fake.calls[0].prompt).toMatch(/still unresolved/i);
+  });
+
+  it('surfaces a model-detected visual/record conflict on the Property AND Deal products, with the bounded verification', async () => {
+    const conflicted = {
+      ...LAYERED_REPLY,
+      property: {
+        ...LAYERED_REPLY.property,
+        conflicts: [{
+          subject: 'Current improvement status',
+          record_claim: 'Provider reports a 1,534 sq ft dwelling built 1968.',
+          grounded_visual: 'No dwelling is visibly apparent in the retained aerial imagery.',
+          interpretation: 'The record may be stale or the structure removed; imagery could also be stale.',
+          recommended_verification: 'Current official assessor improvement record.',
+        }],
+      },
+    };
+    dossier = {
+      ...baseDossier(),
+      visualObservations: [{
+        key: 'vision_improvements', category: 'improvements',
+        observation: 'No dwelling or structure is visible on the parcel.',
+        signal: 'concern', confidence: 'medium', sourceImage: 'close parcel aerial',
+        model: 'gemini-3-flash-preview', analyzedAt: '2026-08-20T00:00:00.000Z', capturedAt: null,
+        pixelGrounded: true,
+      }],
+    };
+    const fake = fakeAnalyst(conflicted);
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: fake.analyst }));
+    expect(result.outcome).toBe('produced');
+    const property = result.products.property!;
+    const propertyConflict = property.conflicts.find((c) => /improvement/i.test(c.subject));
+    expect(propertyConflict?.statement).toContain('Record claim: Provider reports a 1,534 sq ft dwelling built 1968.');
+    expect(propertyConflict?.statement).toContain('Grounded visual observation: No dwelling is visibly apparent');
+    expect(propertyConflict?.resolution).toContain('Recommended verification: Current official assessor improvement record.');
+    // The Deal product carries it too — the "Conflicting evidence" surface
+    // shows it even when the deal layer's own JSON omitted it.
+    const deal = result.products.deal as DealIntelligenceProduct;
+    expect(deal.conflicts.some((c) => /improvement/i.test(c.subject))).toBe(true);
+  });
+
+  it('treats a NEW grounded vision run as new property evidence: the property layer goes stale and re-reasons', async () => {
+    const first = fakeAnalyst();
+    await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: first.analyst }));
+    writes.length = 0;
+
+    dossier = {
+      ...baseDossier(),
+      visualObservations: [{
+        key: 'vision_improvements', category: 'improvements',
+        observation: 'No dwelling or structure is visible on the parcel.',
+        signal: 'concern', confidence: 'medium', sourceImage: 'close parcel aerial',
+        model: 'gemini-3-flash-preview', analyzedAt: '2026-08-20T00:00:00.000Z', capturedAt: null,
+        pixelGrounded: true,
+      }],
+    };
+    const second = fakeAnalyst();
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: second.analyst }));
+    expect(result.refreshedLayers).toContain('property');
   });
 
   it('runs pre-call Deal Intelligence even when seller information is an expected unknown', async () => {

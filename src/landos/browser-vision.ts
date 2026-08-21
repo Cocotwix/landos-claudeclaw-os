@@ -132,7 +132,11 @@ Focus on what changes an offer decision:
 - wetlands_water: standing water, ponds, streams, marsh, wet/dark low ground.
 - terrain_slope: flat / rolling / steep; visible grade or drainage.
 - neighboring_development: nearby homes, subdivisions, commercial, construction.
-- improvements: any structures/utilities visible on the parcel itself.
+- improvements: any structures/utilities visible on the parcel itself. When the parcel itself is clearly
+  shown, state plainly whether a dwelling, manufactured/mobile home, or other structure is visible ON the
+  parcel — and a clear ABSENCE ("no dwelling or structure is visible on the parcel") is itself a material
+  observation, not a blank. If the imagery cannot settle it (obscured, cropped, ambiguous), say it is
+  uncertain rather than forcing either answer.
 
 Return STRICT JSON:
 {

@@ -273,6 +273,7 @@ import { readFanOutMission } from './mission-graph-runner.js';
 import { canonicalPropertyInputForDeal, governmentArtifactEvidence, makeLivePropertyIntelligenceCollectors, type ExactAddressWebResult } from './property-intelligence-live.js';
 import { executePropertyProvider, type NormalizedPropertyEvidence, type PropertyProviderAdapter } from './property-intelligence-contract.js';
 import { gatherCardImages, loadCardVisionAnalysis } from './browser-vision.js';
+import { sanitizeVisualIntelligenceRecord, type VisualIntelligenceRecord } from './visual-intelligence.js';
 import { buildDealOperatorAnalysis, emptyDealOperatorContext, runWholeCardOperatorAnalyst, type DealOperatorContext, type OperatorResearchAttempt, type ResearchAttemptStatus } from './deal-operator-analysis.js';
 import { ManagedIdentityRepository, EnvironmentManagedEmailProvider, managedIdentityStatus } from './managed-identity.js';
 import { WindowsCredentialVault } from './windows-credential-vault.js';
@@ -10009,6 +10010,58 @@ export function registerLandosRoutes(app: Hono): void {
         capturedAt: asset.timestamp ?? null,
         filePath: asset.storedPath ?? null,
       }));
+
+    // GROUNDED visual observations only. Both retained lanes below persist the
+    // output of the same analyzer that provably base64-encodes the image bytes
+    // to a vision model (`analyzeScreenshots` → Gemini `inlineData`), so each
+    // observation is marked pixelGrounded with its model and analysis time.
+    // Nothing else may claim grounding: a pass that only held a file path is
+    // not represented here at all.
+    const captureTimeFor = (label: string | null | undefined): string | null =>
+      (label ? visuals.find((visual) => visual.label === label)?.capturedAt ?? null : null);
+    const groundedVisualObservations = (() => {
+      if (cardId == null) return [];
+      const analysis = loadCardVisionAnalysis(cardId);
+      const fromAnalysis = analysis?.ok
+        ? analysis.observations.map((observation) => ({
+          category: observation.category,
+          observation: observation.observation,
+          signal: observation.signal,
+          confidence: observation.confidence,
+          sourceImage: observation.sourceImage,
+          model: analysis.model,
+          analyzedAt: analysis.generatedAt,
+          capturedAt: captureTimeFor(observation.sourceImage),
+          pixelGrounded: true,
+        }))
+        : [];
+      // The persisted Visual Intelligence record is read through the same
+      // eligibility sanitizer the operator surface uses.
+      const rawVi = loadVisualIntelligence(cardId) as VisualIntelligenceRecord | null;
+      const vi = rawVi
+        ? sanitizeVisualIntelligenceRecord(rawVi, { eligibleGoogle: loadEligibleCardVisualCapture(cardId), rawGoogle: loadCardVisualCapture(cardId) })
+        : null;
+      const fromVi = (vi?.observations ?? []).map((observation) => ({
+        category: observation.category,
+        observation: observation.observation,
+        signal: observation.signal,
+        confidence: observation.confidence,
+        sourceImage: observation.sourceImage,
+        model: vi?.visionModel ?? null,
+        analyzedAt: vi?.visionAnalyzedAt ?? vi?.generatedAt ?? null,
+        capturedAt: captureTimeFor(observation.sourceImage),
+        pixelGrounded: true,
+      }));
+      // Same analyzer behind both lanes — carry the newer run, not a merge of
+      // observations that may describe superseded imagery.
+      if (fromAnalysis.length && fromVi.length) {
+        const analysisAt = Date.parse(analysis?.generatedAt ?? '') || 0;
+        const viAt = Date.parse(vi?.visionAnalyzedAt ?? vi?.generatedAt ?? '') || 0;
+        return viAt > analysisAt ? fromVi : fromAnalysis;
+      }
+      return fromAnalysis.length ? fromAnalysis : fromVi;
+    })();
+
     return {
       dealCardId,
       propertyCardId: cardId,
@@ -10017,6 +10070,7 @@ export function registerLandosRoutes(app: Hono): void {
       documentRegistry: documentRegistryForCard(cardId, { dealCardId }) as unknown,
       dealCard: deal as unknown,
       visuals,
+      visualObservations: groundedVisualObservations,
     };
   };
 
@@ -10302,7 +10356,6 @@ export function registerLandosRoutes(app: Hono): void {
         const analyst = createHermesAcquisitionAnalyst();
         const run = await analyst.run({
           dossier,
-          maxVisuals: 0,
           judgmentPromptBuilder: () => dealBrainChatPrompt({
             dossier,
             deal: state.products.deal,

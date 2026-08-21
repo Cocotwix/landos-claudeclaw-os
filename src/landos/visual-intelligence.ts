@@ -146,6 +146,10 @@ export interface VisualIntelligenceRecord {
   heroReason: string;
   observations: VisualObservation[];
   observationSummary: string;
+  /** Vision-model provenance for the observations: which model actually
+   *  received the pixels, and when. Absent on records that predate it. */
+  visionModel?: string;
+  visionAnalyzedAt?: string;
   /** Always true — encodes the doctrine that static map is fallback only. */
   staticMapFallbackOnly: true;
   note: string;
@@ -439,6 +443,8 @@ export async function runVisualIntelligenceForCard(
 
   let observations: VisualObservation[] = [];
   let observationSummary = 'No captured imagery to analyze for visual observations.';
+  let visionModel: string | undefined;
+  let visionAnalyzedAt: string | undefined;
   if (images.length > 0) {
     const analysis = await deps.analyze(images, {
       address: ctx.address ?? undefined,
@@ -447,6 +453,10 @@ export async function runVisualIntelligenceForCard(
     });
     observations = analysis.observations;
     observationSummary = analysis.summary;
+    // Retained so downstream reasoning can attribute each observation to the
+    // vision model that actually received the pixels, and to when.
+    visionModel = analysis.model;
+    visionAnalyzedAt = analysis.generatedAt;
   }
 
   const record: VisualIntelligenceRecord = {
@@ -454,6 +464,8 @@ export async function runVisualIntelligenceForCard(
     ...base,
     observations,
     observationSummary,
+    ...(visionModel ? { visionModel } : {}),
+    ...(visionAnalyzedAt ? { visionAnalyzedAt } : {}),
   };
   deps.persist(ctx.cardId, record);
   return record;

@@ -214,7 +214,7 @@ export interface IntelligencePassContext {
 }
 
 const LAYER_SCHEMAS: Record<Exclude<IntelligenceLayerId, 'deal'>, string> = {
-  property: '"property":{"score":0,"read":"","strengths":[],"constraints":[{"title":"","why":"","severity":"high|medium|low"}],"potential":[],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}]}',
+  property: '"property":{"score":0,"read":"","strengths":[],"constraints":[{"title":"","why":"","severity":"high|medium|low"}],"potential":[],"conflicts":[{"subject":"","record_claim":"","grounded_visual":"","interpretation":"","recommended_verification":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}]}',
   market: '"market":{"score":0,"read":"","liquidity_read":"","area_story":"","buyer_pool":"","best_signals":[],"risks":[],"exit_implications":[],"unknowns":[{"question":"","why_it_matters":""}]}',
   seller: '"seller":{"score":0,"read":"","motivation":"","price_expectation":"","timeline":"","decision_makers":"","objections":[],"negotiation_posture":"","best_approach":"","seller_reported_facts":[{"statement":"","attribution":""}],"follow_ups":[]}',
 };
@@ -244,7 +244,7 @@ export function intelligenceStackPrompt(
   context: IntelligencePassContext,
 ): string {
   const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
-  const visualKeys = dossier.visuals.map((visual) => visual.key);
+  const visualKeys = [...new Set([...dossier.visuals.map((visual) => visual.key), ...observations.map((observation) => observation.visual)])];
   const inlined: AcquisitionDossier = {
     ...dossier,
     visuals: dossier.visuals.map(({ filePath: _filePath, ...visual }) => ({ ...visual, filePath: null })),
@@ -274,11 +274,23 @@ export function intelligenceStackPrompt(
     '',
     observations.length
       ? [
-        '=== VISUAL OBSERVATIONS (from the retained imagery, already inspected) ===',
-        ...observations.map((observation) => `[${observation.visual}] ${observation.observation}`),
-        '=== END VISUAL OBSERVATIONS ===',
+        '=== GROUNDED VISUAL OBSERVATIONS (a vision model actually received the image pixels; you did not) ===',
+        ...observations.map((observation) => `[${observation.visual}] ${observation.observation}${observation.basis ? ` (${observation.basis})` : ''}`),
+        '=== END GROUNDED VISUAL OBSERVATIONS ===',
+        '',
+        'These observations are EVIDENCE from the retained imagery, never canonical facts, and imagery may be stale',
+        '(where a capture date is unknown, say "retained imagery", never "current"). Ask of each: does what the',
+        'imagery shows agree with what the records claim? Where a record claim and a grounded observation materially',
+        'disagree — an improvement the record carries that no imagery shows, access the record asserts that the',
+        'imagery contradicts, a structure visible on land recorded vacant — report it in the property layer\'s',
+        '"conflicts" with the record claim, the grounded observation, the plausible explanations (stale record,',
+        'removed structure, stale/obscured/incomplete imagery), and ONE bounded verification that would settle it',
+        '(for example the current official assessor improvement record). Do not chase permits: a demolition permit',
+        'found while reading relevant records may support an explanation, but the ABSENCE of one proves nothing.',
+        'Never rewrite a record fact because of imagery, and where the imagery is genuinely ambiguous say so',
+        'rather than forcing a conclusion.',
       ].join('\n')
-      : 'No retained image could be inspected for this run; reason from the retained structured observations and facts instead.',
+      : 'No pixel-grounded visual observation is available for this run. Do not describe or characterize the imagery yourself: you have not seen it. Reason from the structured facts, and leave the property layer\'s "conflicts" empty unless the structured file itself conflicts.',
     '',
     '=== LANDOS DETERMINISTIC QUICK-FLIP SCREEN (CALCULATION — carry these numbers verbatim, never recompute or invent economics) ===',
     JSON.stringify({ quickFlip: context.quickFlip, sellerPriceVerdict: context.sellerPriceVerdict }),
@@ -473,12 +485,24 @@ function asConstraints(value: unknown, limit = 8): Array<{ title: string; why: s
     .slice(0, limit);
 }
 
+/** A material disagreement the analyst found between a record claim and a
+ *  grounded visual observation. Evidence on both sides, a plausible reading,
+ *  and the ONE bounded check that would settle it. */
+export interface ParsedVisualConflict {
+  subject: string;
+  recordClaim: string | null;
+  groundedVisual: string | null;
+  interpretation: string | null;
+  recommendedVerification: string | null;
+}
+
 export interface ParsedPropertyLayer {
   score: number | null;
   read: string | null;
   strengths: string[];
   constraints: Array<{ title: string; why: string | null; severity: ConstraintSeverity }>;
   potential: string[];
+  conflicts: ParsedVisualConflict[];
   unknowns: Array<{ question: string; whyItMatters: string | null }>;
   nextActions: Array<{ action: string; why: string | null }>;
 }
@@ -540,6 +564,24 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
       strengths: asLines(pick(propertySource, 'strengths'), 8),
       constraints: asConstraints(pick(propertySource, 'constraints')),
       potential: asLines(pick(propertySource, 'potential', 'propertyPotential', 'upside'), 6),
+      conflicts: (Array.isArray(pick(propertySource, 'conflicts')) ? pick(propertySource, 'conflicts') as unknown[] : [])
+        .map((item) => {
+          if (!isRecord(item)) return null;
+          const subject = asLine(pick(item, 'subject', 'title', 'fact'), 120);
+          const recordClaim = asLine(pick(item, 'recordClaim', 'record', 'providerClaim'), 500);
+          const groundedVisual = asLine(pick(item, 'groundedVisual', 'visualObservation', 'observed'), 500);
+          // A conflict needs both sides to be a conflict at all.
+          if (!subject || (!recordClaim && !groundedVisual)) return null;
+          return {
+            subject,
+            recordClaim,
+            groundedVisual,
+            interpretation: asLine(pick(item, 'interpretation', 'explanation', 'hypothesis'), 600),
+            recommendedVerification: asLine(pick(item, 'recommendedVerification', 'verification', 'boundedCheck'), 400),
+          };
+        })
+        .filter((item): item is ParsedVisualConflict => !!item)
+        .slice(0, 6),
       unknowns: asQuestions(pick(propertySource, 'unknowns', 'materialUnknowns')),
       nextActions: asActions(pick(propertySource, 'nextActions', 'nextPropertyActions')),
     }

@@ -3,11 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   analystInvocationArgs,
   createHermesAcquisitionAnalyst,
+  groundedObservationDrafts,
   isUsableVisualObservation,
   judgmentPrompt,
-  prioritizeVisuals,
   resolveAnalystModel,
-  visualInspectionPrompt,
   ACQUISITION_ANALYST_PROFILE,
   ACQUISITION_ANALYST_SKILL,
   ACQUISITION_ANALYST_ENGINE,
@@ -17,11 +16,13 @@ import {
   DEFAULT_ANALYST_PROVIDER,
   type SettingsReader,
 } from './acquisition-analyst.js';
-import { buildAcquisitionDossier, type AcquisitionDossier } from './acquisition-intelligence-dossier.js';
+import { buildAcquisitionDossier, type AcquisitionDossier, type PropertyFileSource } from './acquisition-intelligence-dossier.js';
 
 // The point of these tests is the durability promise: the ANALYST (persona,
 // skill, memory) is fixed and the MODEL is swappable, and no business behaviour
-// is written against whichever model is in use today.
+// is written against whichever model is in use today — plus the grounding
+// promise: this runtime has no proven image-attachment mechanism, so visual
+// evidence enters ONLY as pixel-grounded observations carried on the dossier.
 
 function settings(values: Record<string, string> = {}): SettingsReader {
   const store = { ...values };
@@ -31,7 +32,7 @@ function settings(values: Record<string, string> = {}): SettingsReader {
   };
 }
 
-function dossier(overrides: Partial<AcquisitionDossier> = {}): AcquisitionDossier {
+function dossier(source: Partial<PropertyFileSource> = {}, overrides: Partial<AcquisitionDossier> = {}): AcquisitionDossier {
   return {
     ...buildAcquisitionDossier({
       dealCardId: 89,
@@ -41,10 +42,23 @@ function dossier(overrides: Partial<AcquisitionDossier> = {}): AcquisitionDossie
         { key: 'close_parcel_aerial', label: 'close parcel aerial', purpose: 'Close aerial', filePath: 'C:/store/visuals/close.png' },
         { key: 'surrounding_area_aerial', label: 'surrounding area aerial', purpose: 'Surrounding aerial', filePath: 'C:/store/visuals/surrounding.png' },
       ],
+      ...source,
     }),
     ...overrides,
   };
 }
+
+const GROUNDED_OBSERVATION = {
+  category: 'improvements',
+  observation: 'No dwelling or structure is visible on the parcel; the tract is wooded with a cleared strip along the frontage.',
+  signal: 'concern',
+  confidence: 'medium',
+  sourceImage: 'close parcel aerial',
+  model: 'gemini-3-flash-preview',
+  analyzedAt: '2026-08-20T00:00:00.000Z',
+  capturedAt: null,
+  pixelGrounded: true,
+};
 
 describe('the model is a setting, the analyst is not', () => {
   it('defaults an ordinary read to GPT-5.6 Sol on the configured openai-codex provider', () => {
@@ -107,46 +121,64 @@ describe('the model is a setting, the analyst is not', () => {
   });
 });
 
-describe('prompts', () => {
-  it('names the image path, which is what actually shows the analyst the picture', () => {
-    const prompt = visualInspectionPrompt(
-      { key: 'close_parcel_aerial', label: 'close parcel aerial', purpose: 'Close aerial', filePath: 'C:\\store\\visuals\\close.png' },
-      '1 Test Rd',
-    );
-    expect(prompt).toContain('C:/store/visuals/close.png');
-    expect(prompt).toMatch(/Do not conclude that legal access/i);
+describe('grounded observations are the only visual evidence', () => {
+  it('maps pixel-grounded dossier observations into drafts with model and recency provenance', () => {
+    const drafts = groundedObservationDrafts(dossier({ visualObservations: [GROUNDED_OBSERVATION] }));
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].visual).toBe('vision_improvements');
+    expect(drafts[0].observation).toMatch(/No dwelling or structure is visible/);
+    expect(drafts[0].basis).toContain('Pixel-grounded gemini-3-flash-preview read of close parcel aerial');
+    expect(drafts[0].basis).toContain('capture date unknown');
   });
 
-  it('inlines the property file but NEVER an image path in the judgment turn', () => {
-    const prompt = judgmentPrompt(dossier(), [{ visual: 'close_parcel_aerial', observation: 'Narrow at the road.', basis: 'capture' }]);
-    expect(prompt).toContain('=== PROPERTY FILE (JSON) ===');
-    expect(prompt).not.toContain('C:/store/visuals/close.png');
-    expect(prompt).toContain('[close_parcel_aerial] Narrow at the road.');
-    // The analyst may cite only the images this property actually has.
-    expect(prompt).toContain('close_parcel_aerial, surrounding_area_aerial');
-    expect(prompt).toMatch(/do not research/i);
+  it('never lets filename/path-only input masquerade as a grounded observation', () => {
+    // The path-only entry is dropped at the dossier gate itself: it is not
+    // pixel-grounded, so no draft exists for the analyst to reason over.
+    const built = dossier({
+      visualObservations: [
+        { category: 'improvements', observation: 'store/visuals/landportal_5_close.png', pixelGrounded: false },
+        { category: 'access', observation: 'C:/store/visuals/close.png' },
+      ],
+    });
+    expect(built.visualObservations).toEqual([]);
+    expect(groundedObservationDrafts(built)).toEqual([]);
+    expect(built.truncation.join(' ')).toMatch(/2 entries without proven pixel grounding were excluded/);
   });
 
-  it('says plainly when no image could be inspected rather than implying one was', () => {
-    expect(judgmentPrompt(dossier(), [])).toMatch(/No retained image could be inspected/i);
+  it('screens refusal chatter even when a grounded lane persisted it', () => {
+    const built = dossier({
+      visualObservations: [{
+        ...GROUNDED_OBSERVATION,
+        observation: 'I cannot see the image you are referring to; no image was attached to this request.',
+      }],
+    });
+    expect(groundedObservationDrafts(built)).toEqual([]);
   });
 });
 
-describe('visual budget', () => {
-  it('spends the budget on the widest, most informative captures first', () => {
-    const visuals = [
-      { key: 'soil_overlay', filePath: 'a.png' },
-      { key: 'close_parcel_aerial', filePath: 'b.png' },
-      { key: 'surrounding_area_aerial', filePath: 'c.png' },
-      { key: 'comparables_map', filePath: 'd.png' },
-      { key: 'road_frontage_aerial', filePath: 'e.png' },
-    ];
-    expect(prioritizeVisuals(visuals, 3).map((visual) => visual.key))
-      .toEqual(['surrounding_area_aerial', 'close_parcel_aerial', 'road_frontage_aerial']);
+describe('prompts', () => {
+  it('inlines the property file but NEVER an image path in the judgment turn', () => {
+    const prompt = judgmentPrompt(dossier(), [{ visual: 'vision_improvements', observation: 'No dwelling visible.', basis: 'Pixel-grounded gemini read' }]);
+    expect(prompt).toContain('=== PROPERTY FILE (JSON) ===');
+    expect(prompt).not.toContain('C:/store/visuals/close.png');
+    expect(prompt).toContain('[vision_improvements] No dwelling visible. (Pixel-grounded gemini read)');
+    expect(prompt).toMatch(/a vision model actually received the image pixels; you did not/i);
+    // The analyst may cite the retained captures and the grounded observations.
+    expect(prompt).toContain('close_parcel_aerial, surrounding_area_aerial, vision_improvements');
+    expect(prompt).toMatch(/do not research/i);
   });
 
-  it('skips a retained visual with no file on this machine', () => {
-    expect(prioritizeVisuals([{ key: 'close_parcel_aerial', filePath: null }], 4)).toEqual([]);
+  it('carries the contradiction doctrine: observations are evidence, absence of a permit proves nothing', () => {
+    const prompt = judgmentPrompt(dossier(), [{ visual: 'vision_improvements', observation: 'No dwelling visible.', basis: 'Pixel-grounded read' }]);
+    expect(prompt).toMatch(/does what the imagery shows agree with what the records claim/i);
+    expect(prompt).toMatch(/never treat the absence\s+of a record \(for example a demolition permit\) as proof/i);
+    expect(prompt).toMatch(/never rewrite a record fact because of imagery/i);
+  });
+
+  it('says plainly when no grounded observation exists rather than implying vision happened', () => {
+    const prompt = judgmentPrompt(dossier(), []);
+    expect(prompt).toMatch(/No pixel-grounded visual observation is available/i);
+    expect(prompt).toMatch(/you have not seen it/i);
   });
 });
 
@@ -175,38 +207,23 @@ describe('what counts as having looked at the image', () => {
       + 'A paved two-lane road runs along the frontage and the rear of the tract is densely wooded.',
     )).toBe(true);
   });
-
-  it('keeps a non-observation out of the read entirely', async () => {
-    const analyst = createHermesAcquisitionAnalyst({
-      settings: settings(),
-      maxVisuals: 1,
-      invoke: async (args) => (args.some((arg) => arg.includes('PROPERTY FILE'))
-        ? '{"deal_read":{"headline":"h"}}'
-        : 'Ready for assignment. Please provide the dossier JSON path.'),
-    });
-    const run = await analyst.run({ dossier: dossier() });
-    expect(run.observations).toEqual([]);
-    expect(run.warnings.join(' ')).toMatch(/produced no usable observation/);
-  });
 });
 
 describe('running a read', () => {
-  it('inspects each image, then reasons once, and attributes the runtime', async () => {
+  it('makes exactly ONE model call — the judgment — and never a per-image call', async () => {
     const calls: string[][] = [];
     const analyst = createHermesAcquisitionAnalyst({
       settings: settings(),
       now: () => 1_000,
       invoke: async (args) => {
         calls.push(args);
-        return args.some((arg) => arg.includes('PROPERTY FILE'))
-          ? '{"deal_read":{"headline":"h"}}'
-          : 'The tract is wooded and narrows at the road end, with a cleared strip along the frontage and neighbouring lots to the east.';
+        return '{"deal_read":{"headline":"h"}}';
       },
     });
-    const run = await analyst.run({ dossier: dossier() });
-    expect(calls).toHaveLength(3); // two images, then the judgment
-    expect(run.observations.map((observation) => observation.visual))
-      .toEqual(['surrounding_area_aerial', 'close_parcel_aerial']);
+    const run = await analyst.run({ dossier: dossier({ visualObservations: [GROUNDED_OBSERVATION] }) });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].join(' ')).toContain('PROPERTY FILE');
+    expect(run.observations.map((observation) => observation.visual)).toEqual(['vision_improvements']);
     expect(run.runtime).toMatchObject({
       engine: ACQUISITION_ANALYST_ENGINE,
       agentProfile: ACQUISITION_ANALYST_PROFILE,
@@ -217,28 +234,13 @@ describe('running a read', () => {
     expect(run.raw).toContain('deal_read');
   });
 
-  it('treats a failed image as a missing observation, not a failed read', async () => {
+  it('warns when imagery exists but nothing pixel-grounded has looked at it yet', async () => {
     const analyst = createHermesAcquisitionAnalyst({
       settings: settings(),
-      invoke: async (args) => {
-        if (args.some((arg) => arg.includes('close.png'))) throw new Error('vision runtime refused the frame');
-        if (args.some((arg) => arg.includes('PROPERTY FILE'))) return '{"deal_read":{"headline":"h"}}';
-        return 'A newer subdivision borders the far side of the tract and a paved road stops close to that boundary.';
-      },
+      invoke: async () => '{"deal_read":{"headline":"h"}}',
     });
     const run = await analyst.run({ dossier: dossier() });
-    expect(run.observations.map((observation) => observation.visual)).toEqual(['surrounding_area_aerial']);
-    expect(run.warnings.join(' ')).toMatch(/could not be inspected: vision runtime refused the frame/);
-    expect(run.raw).toContain('deal_read');
-  });
-
-  it('reports when the budget left retained imagery uninspected', async () => {
-    const analyst = createHermesAcquisitionAnalyst({
-      settings: settings(),
-      maxVisuals: 1,
-      invoke: async () => 'The tract is wooded across its rear half with a cleared strip along the road frontage and open ground to the east.',
-    });
-    const run = await analyst.run({ dossier: dossier() });
-    expect(run.warnings.join(' ')).toMatch(/1 retained image\(s\) were not inspected/);
+    expect(run.observations).toEqual([]);
+    expect(run.warnings.join(' ')).toMatch(/no pixel-grounded visual observation has been produced/i);
   });
 });

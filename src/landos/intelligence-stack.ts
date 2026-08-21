@@ -83,6 +83,8 @@ export function propertyLayerFingerprint(dossier: AcquisitionDossier): string {
     history: dossier.history,
     utilities: dossier.utilities,
     visuals: dossier.visuals.map((visual) => ({ key: visual.key, capturedAt: visual.capturedAt })),
+    // A new grounded vision run is new property evidence: the layer re-reasons.
+    visualObservations: dossier.visualObservations,
     conflicts: dossier.conflicts,
   });
 }
@@ -467,9 +469,6 @@ export async function runIntelligenceStack(
         dossier,
         requestedProvider: input.requestedProvider ?? null,
         requestedModel: input.requestedModel ?? null,
-        // Imagery is re-inspected only when the Property layer itself is being
-        // re-reasoned; other refreshes reuse the retained observations.
-        maxVisuals: refreshProperty ? undefined : 0,
         judgmentPromptBuilder: (currentDossier, observations) => intelligenceStackPrompt(currentDossier, observations, {
           layers: modelLayers,
           phase,
@@ -511,6 +510,23 @@ export async function runIntelligenceStack(
   );
 
   // 7. Build and persist each refreshed product.
+  // Model-detected visual/record conflicts, rendered in the carried triple
+  // shape. Composed from the structured fields so the operator sees the record
+  // claim, the grounded observation, the plausible reading and the ONE bounded
+  // check — and folded into the deal layer's floor so the "Conflicting
+  // evidence" surface shows them even if the deal layer's own JSON omits them.
+  const propertyVisualConflicts = (layers?.property?.conflicts ?? []).map((conflict) => ({
+    subject: conflict.subject,
+    statement: [
+      conflict.recordClaim ? `Record claim: ${conflict.recordClaim}` : null,
+      conflict.groundedVisual ? `Grounded visual observation: ${conflict.groundedVisual}` : null,
+    ].filter(Boolean).join(' — '),
+    resolution: [
+      conflict.interpretation,
+      conflict.recommendedVerification ? `Recommended verification: ${conflict.recommendedVerification}` : null,
+    ].filter(Boolean).join(' ') || 'Unresolved.',
+  }));
+
   let propertyProduct = retained.property;
   if (refreshProperty) {
     if (!layers?.property) return failed('The analyst response carried no property layer.');
@@ -529,11 +545,14 @@ export async function runIntelligenceStack(
       strengths: layers.property.strengths,
       constraints: layers.property.constraints,
       potential: layers.property.potential,
-      conflicts: dossier.conflicts.map((conflict) => ({
-        subject: conflict.subject,
-        statement: conflict.statement,
-        resolution: conflict.resolution === 'resolved' ? conflict.reason : `Unresolved. ${conflict.reason}`.trim(),
-      })),
+      conflicts: [
+        ...dossier.conflicts.map((conflict) => ({
+          subject: conflict.subject,
+          statement: conflict.statement,
+          resolution: conflict.resolution === 'resolved' ? conflict.reason : `Unresolved. ${conflict.reason}`.trim(),
+        })),
+        ...propertyVisualConflicts,
+      ],
       unknowns: layers.property.unknowns,
       nextActions: layers.property.nextActions,
       visualObservations: observations.length
@@ -638,12 +657,18 @@ export async function runIntelligenceStack(
       dealCardId: input.dealCardId,
       runtime,
       dossierFingerprint: dossierFp,
-      allowedVisualKeys: dossier.visuals.map((visual) => visual.key),
-      landosConflicts: dossier.conflicts.map((conflict) => ({
-        subject: conflict.subject,
-        statement: conflict.statement,
-        resolution: conflict.resolution === 'resolved' ? conflict.reason : `Unresolved. ${conflict.reason} ${conflict.decisionAtRisk}`.trim(),
-      })),
+      allowedVisualKeys: [...new Set([
+        ...dossier.visuals.map((visual) => visual.key),
+        ...dossier.visualObservations.map((observation) => observation.key),
+      ])],
+      landosConflicts: [
+        ...dossier.conflicts.map((conflict) => ({
+          subject: conflict.subject,
+          statement: conflict.statement,
+          resolution: conflict.resolution === 'resolved' ? conflict.reason : `Unresolved. ${conflict.reason} ${conflict.decisionAtRisk}`.trim(),
+        })),
+        ...propertyVisualConflicts,
+      ],
       coveragePresent: dossier.coverage.present,
       coverageAbsent: dossier.coverage.absent,
       now: deps.now,

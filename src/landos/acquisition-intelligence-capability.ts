@@ -341,7 +341,10 @@ export const ACQUISITION_INTELLIGENCE_CAPABILITY: LandosCapability<AcquisitionIn
       dealCardId,
       runtime: run.runtime,
       dossierFingerprint: fingerprint,
-      allowedVisualKeys: dossier.visuals.map((visual) => visual.key),
+      allowedVisualKeys: [...new Set([
+        ...dossier.visuals.map((visual) => visual.key),
+        ...dossier.visualObservations.map((observation) => observation.key),
+      ])],
       landosConflicts: dossier.conflicts.map((conflict) => ({
         subject: conflict.subject,
         statement: conflict.statement,

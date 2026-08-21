@@ -236,7 +236,7 @@ export function AcquisitionIntelligenceSection({ read, readiness, runtime, stale
               <h3><ImageIcon size={15} /> What the imagery shows</h3>
               <ul class="awv2-ai-list">
                 {read.visualObservations.map((observation) => (
-                  <li><b>{label(observation.visual ?? '')}</b><span>{observation.observation}</span></li>
+                  <li><b>{label(observation.visual ?? '')}</b><span>{observation.observation}</span>{observation.basis && <i>{observation.basis}</i>}</li>
                 ))}
               </ul>
             </div>

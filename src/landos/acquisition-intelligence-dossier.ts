@@ -99,6 +99,37 @@ export interface DossierVisual {
   filePath: string | null;
 }
 
+/**
+ * A GROUNDED visual observation: something a vision model reported after
+ * actually receiving the underlying image pixels. This is the only kind of
+ * visual claim the dossier carries as an observation — a caller that merely
+ * held a filename, path, label, or alt text has not seen the image, and its
+ * text is refused below rather than dressed up as vision.
+ *
+ * An observation is EVIDENCE, never a canonical fact: "no dwelling visibly
+ * apparent" does not become "no house exists". The analyst reconciles it with
+ * the record claims and carries the conflict, both values intact.
+ */
+export interface DossierVisualObservation {
+  /** Stable citation key for this observation, distinct from capture keys. */
+  key: string;
+  category: string;
+  observation: string;
+  signal: 'positive' | 'concern' | 'neutral' | null;
+  confidence: string | null;
+  /** Label of the analyzed capture the observation came from. */
+  sourceImage: string | null;
+  /** The vision model that received the pixels. */
+  model: string | null;
+  /** When the vision analysis ran. */
+  analyzedAt: string | null;
+  /** When the underlying capture was taken — null means capture date unknown,
+   *  and the imagery must be described as "retained", never "current". */
+  capturedAt: string | null;
+  /** Always true in the dossier: the assembler drops anything else. */
+  pixelGrounded: true;
+}
+
 export interface AcquisitionDossier {
   dossierVersion: '1.0.0';
   dealCardId: number;
@@ -209,6 +240,9 @@ export interface AcquisitionDossier {
   };
   documents: Array<{ label: string; sourceUrl: string | null }>;
   visuals: DossierVisual[];
+  /** Pixel-grounded visual observations from the retained imagery. Evidence,
+   *  never canonical facts; ungrounded input never lands here. */
+  visualObservations: DossierVisualObservation[];
   /** Material disagreements across retained sources. Surfaced, never resolved
    *  here: the analyst is told to carry them, not to pick a winner. */
   conflicts: MaterialFactConflict[];
@@ -235,6 +269,20 @@ export interface PropertyFileSource {
   dealCard?: Unknown;
   /** Retained visual assets, resolved to files on this machine. */
   visuals?: Array<{ key: string; label?: string | null; purpose?: string | null; capturedAt?: string | null; filePath?: string | null }>;
+  /** Candidate visual observations. Only entries the caller can vouch for as
+   *  pixel-grounded (`pixelGrounded: true`) are carried; the rest are dropped
+   *  and counted. */
+  visualObservations?: Array<{
+    category?: string | null;
+    observation?: string | null;
+    signal?: string | null;
+    confidence?: string | null;
+    sourceImage?: string | null;
+    model?: string | null;
+    analyzedAt?: string | null;
+    capturedAt?: string | null;
+    pixelGrounded?: boolean;
+  }>;
   now?: () => Date;
 }
 
@@ -459,6 +507,45 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     truncation,
   );
 
+  // GROUNDING GATE. Only observations the caller marked pixel-grounded are
+  // carried; anything else (a path-only pass, a label, alt text) is dropped
+  // and the drop is counted rather than hidden. Keys are generated here so an
+  // observation is citable independently of the capture list.
+  const candidateObservations = source.visualObservations ?? [];
+  const groundedCandidates = candidateObservations.filter(
+    (candidate) => candidate.pixelGrounded === true && !!text(candidate.observation, 800),
+  );
+  const droppedUngrounded = candidateObservations.length - groundedCandidates.length;
+  if (droppedUngrounded > 0) {
+    truncation.push(`Visual observations: ${droppedUngrounded} entr${droppedUngrounded === 1 ? 'y' : 'ies'} without proven pixel grounding were excluded from the dossier.`);
+  }
+  const usedObservationKeys = new Set<string>();
+  const visualObservations = capped(
+    groundedCandidates.map((candidate, index): DossierVisualObservation => {
+      const category = text(candidate.category, 60) ?? 'other';
+      const base = `vision_${category.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`;
+      let key = base;
+      for (let n = 2; usedObservationKeys.has(key); n += 1) key = `${base}_${n}`;
+      usedObservationKeys.add(key);
+      const signalRaw = text(candidate.signal, 20);
+      return {
+        key,
+        category,
+        observation: text(candidate.observation, 800) ?? `observation ${index + 1}`,
+        signal: (signalRaw === 'positive' || signalRaw === 'concern' || signalRaw === 'neutral' ? signalRaw : null),
+        confidence: text(candidate.confidence, 40),
+        sourceImage: text(candidate.sourceImage, 120),
+        model: text(candidate.model, 80),
+        analyzedAt: text(candidate.analyzedAt, 40),
+        capturedAt: text(candidate.capturedAt, 40),
+        pixelGrounded: true as const,
+      };
+    }),
+    MAX_VISUALS,
+    'Grounded visual observations',
+    truncation,
+  );
+
   const conflicts = reconcileMaterialFacts(source);
 
   const openQuestions = strings(
@@ -491,6 +578,7 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
   record('Valuation', valuation.fairMarketValue != null);
   record('Market intelligence', !!market.headline);
   record('Retained visuals', visuals.length > 0);
+  record('Grounded visual observations', visualObservations.length > 0);
   record('Seller information', seller.present);
 
   return {
@@ -511,6 +599,7 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     seller,
     documents,
     visuals,
+    visualObservations,
     conflicts,
     openQuestions,
     blockers,

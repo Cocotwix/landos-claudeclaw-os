@@ -18,21 +18,26 @@
 //   the profile, the skill or the memory, and no business logic anywhere is
 //   written against a particular model.
 //
-// Two bounded passes, deliberately, rather than one agentic loop:
+// ONE bounded pass: JUDGMENT — one call carrying the dossier inline, with the
+// pixel-grounded visual observations folded in. The dossier travels IN the
+// prompt rather than as a file the model must remember to open, so the
+// reasoning pass cannot fail for want of a tool call.
 //
-//   1. VISUAL — one narrow call per retained image. A local model reliably
-//      describes an image it is pointed at; it does not reliably drive a
-//      multi-step tool loop. Each observation is attributed to its image.
-//   2. JUDGMENT — one call carrying the dossier inline, with the visual
-//      observations folded in. The dossier travels IN the prompt rather than as
-//      a file the model must remember to open, so the reasoning pass cannot
-//      fail for want of a tool call.
+// There is deliberately NO per-image "visual pass" here any more. That pass
+// placed an image FILE PATH into the prompt text on the premise that naming
+// the path attaches the picture. Inspection of the installed Hermes runtime
+// disproved the premise: in one-shot mode an image is attached only via the
+// `--image` flag, a message that IS a dropped file path, or a kanban task-body
+// scan — none of which this invocation uses — and the free-text path scanner
+// (`agent/image_routing.extract_image_refs`) anchors on `/` or `~/` and can
+// never match a Windows `C:/…` path. The model was receiving a filename, not
+// pixels, and a filename is not vision. Grounded observations now arrive on
+// `dossier.visualObservations`, produced by the vision path that provably
+// base64-encodes the image bytes (`browser-vision.ts` → Gemini `inlineData`).
 //
-// Neither pass can research. Both run with the minimal `clarify` toolset only:
+// The pass cannot research. It runs with the minimal `clarify` toolset only:
 // no web, no browser, no terminal, no file writes. That is a structural bound
-// rather than a promise in a prompt — and it is also what makes the visual pass
-// work at all, because attaching a full tool schema alongside an image is what
-// the local runtime refuses to tokenize.
+// rather than a promise in a prompt.
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -113,40 +118,18 @@ export function setAnalystModel(provider: string, model: string, settings: Setti
 // ── Prompts ───────────────────────────────────────────────────────────────
 
 /**
- * Bounded per-image inspection. One image, one question, plain text back.
- *
- * Naming the file path is what ATTACHES the image to the turn: the analyst is
- * shown the picture, not told about it.
- */
-export function visualInspectionPrompt(visual: { key: string; label: string; purpose: string | null; filePath: string }, subject: string): string {
-  return [
-    `Look at the retained LandOS property image at ${visual.filePath.replace(/\\/g, '/')}.`,
-    `It is the "${visual.label}" capture for ${subject}.`,
-    visual.purpose ? `It was taken to show: ${visual.purpose}.` : '',
-    '',
-    'In at most four short sentences, state only what the image itself shows that a data field would not:',
-    'the shape of the parcel and where its narrow and wide parts are, where roads run and whether any road',
-    'approaches or stops near a boundary, neighbouring development or subdivisions, adjoining vacant ground,',
-    'and how much of the tract looks cleared versus wooded.',
-    '',
-    'Describe only what is visible. Do not conclude that legal access, an easement, ownership, or an entitlement exists.',
-    'Plain text only, no JSON, no preamble.',
-  ].filter(Boolean).join('\n');
-}
-
-/**
  * The judgment pass. The dossier travels inline; the output contract is
  * restated here so it holds even if the skill were unavailable.
  *
- * Image FILE PATHS are stripped from the inlined dossier on purpose. A path in
- * a turn attaches that image, and attaching every retained capture to the
- * reasoning turn is both wasteful and the exact payload the local runtime
- * cannot tokenize. The pictures were already looked at in pass 1; this pass
- * reasons over what was seen.
+ * Image FILE PATHS are stripped from the inlined dossier on purpose: the
+ * reasoning runtime has no proven image-attachment mechanism, so a path in the
+ * prompt is dead weight at best and fake vision at worst. The pixels were
+ * already looked at by the grounded vision path; this pass reasons over what
+ * that path actually saw.
  */
 export function judgmentPrompt(dossier: AcquisitionDossier, observations: VisualObservationDraft[]): string {
   const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
-  const visualKeys = dossier.visuals.map((visual) => visual.key);
+  const visualKeys = [...new Set([...dossier.visuals.map((visual) => visual.key), ...observations.map((observation) => observation.visual)])];
   const inlined: AcquisitionDossier = {
     ...dossier,
     visuals: dossier.visuals.map(({ filePath: _filePath, ...visual }) => ({ ...visual, filePath: null })),
@@ -164,12 +147,16 @@ export function judgmentPrompt(dossier: AcquisitionDossier, observations: Visual
     '',
     observations.length
       ? [
-        '=== VISUAL OBSERVATIONS (from the retained imagery, already inspected) ===',
-        ...observations.map((observation) => `[${observation.visual}] ${observation.observation}`),
-        '=== END VISUAL OBSERVATIONS ===',
+        '=== GROUNDED VISUAL OBSERVATIONS (a vision model actually received the image pixels; you did not) ===',
+        ...observations.map((observation) => `[${observation.visual}] ${observation.observation}${observation.basis ? ` (${observation.basis})` : ''}`),
+        '=== END GROUNDED VISUAL OBSERVATIONS ===',
         '',
+        'These observations are EVIDENCE from the retained imagery, not canonical facts, and imagery may be stale.',
+        'Ask of each: does what the imagery shows agree with what the records claim? Carry any material disagreement',
+        'as a conflict with both values; never rewrite a record fact because of imagery, and never treat the absence',
+        'of a record (for example a demolition permit) as proof about the ground.',
       ].join('\n')
-      : 'No retained image could be inspected for this property.',
+      : 'No pixel-grounded visual observation is available for this property. Do not describe or characterize the imagery yourself: you have not seen it.',
     '',
     'Think across the whole file rather than section by section. Say what the combinations mean.',
     'Rank only the strategies THIS property actually supports and mark the ones it does not as rejected.',
@@ -199,10 +186,10 @@ export interface VisualObservationDraft {
   basis: string;
 }
 
-// The "reply is only an observation when it actually observes" filter now
-// lives on the contract, because BOTH passes need it: the per-image inspection
-// here, and any observation the judgment pass writes into its own JSON.
-import { isUsableVisualObservation } from './acquisition-intelligence-contract.js';
+// The "reply is only an observation when it actually observes" filter lives on
+// the contract: it screens the grounded drafts assembled here and any
+// observation the judgment pass writes into its own JSON.
+import { isUsableVisualObservation, readsAsNonObservation } from './acquisition-intelligence-contract.js';
 export { isUsableVisualObservation };
 
 export interface AnalystRunInput {
@@ -213,10 +200,6 @@ export interface AnalystRunInput {
    *  a caller with a different question (the Intelligence Stack's coordinated
    *  layered pass) reuses the same analyst, passes and runtime unchanged. */
   judgmentPromptBuilder?: (dossier: AcquisitionDossier, observations: VisualObservationDraft[]) => string;
-  /** Cap THIS run's visual inspections. 0 skips the visual pass entirely — a
-   *  dependency-aware refresh whose imagery has not changed reuses the
-   *  retained observations instead of paying three model calls again. */
-  maxVisuals?: number;
 }
 
 export interface AnalystRunOutput {
@@ -237,72 +220,44 @@ export interface HermesAnalystDeps {
   invoke?: (args: string[], timeoutMs: number) => Promise<string>;
   settings?: SettingsReader;
   now?: () => number;
-  /** How many retained images one run may inspect. Bounded because each image
-   *  is a full model call. */
-  maxVisuals?: number;
-  visualTimeoutMs?: number;
   judgmentTimeoutMs?: number;
 }
 
-/**
- * Ceilings, measured against the V1 runtime rather than guessed.
- *
- * On the local Gemma 4 runtime a warm image read lands in about two minutes and
- * the judgment pass over a full property file in about two. The FIRST call of a
- * run is the outlier: it pays for loading the model with its full context
- * window, and on an 8 GB GPU that spills to host memory. A 6-minute image
- * ceiling measurably clipped that first call, losing a capture the analyst was
- * otherwise about to describe, so the image ceiling is set above the cold call
- * rather than the warm one. Both still bound a stalled runtime.
- */
-export const ANALYST_VISUAL_TIMEOUT_MS = 10 * 60_000;
+/** Ceiling measured against the V1 runtime rather than guessed: the judgment
+ *  pass over a full property file lands in about two minutes warm, and the
+ *  first call of a run pays for loading the model. Still bounds a stalled
+ *  runtime. */
 export const ANALYST_JUDGMENT_TIMEOUT_MS = 20 * 60_000;
 
 /**
- * How many retained images one read inspects.
+ * The only toolset the pass runs with.
  *
- * Each image is a full model call, so this is the difference between a read an
- * operator waits through and one they abandon. Three covers the captures that
- * actually carry information no field holds — the surrounding area, the parcel
- * itself, and the road frontage — and `prioritizeVisuals` guarantees those are
- * the three that get spent.
- */
-export const ANALYST_MAX_VISUALS = 3;
-
-/**
- * The only toolset either pass runs with.
- *
- * `clarify` is a no-op question channel: it acts on nothing. Two things follow,
- * and both are wanted. The analyst cannot research, read the repository, or
- * write a file — the sandbox is structural, not a promise in a prompt. And the
- * turn carries no tool schema, which is what lets the local runtime accept an
- * attached image; with a full toolset attached the same request fails to
- * tokenize and the analyst never sees the picture at all.
+ * `clarify` is a no-op question channel: it acts on nothing. The analyst
+ * cannot research, read the repository, or write a file — the sandbox is
+ * structural, not a promise in a prompt.
  */
 export const ANALYST_TOOLSETS = 'clarify';
 
-/** Which captures earn a model call when a property has more images than the
- *  budget. The wide reads come first: they carry the context no field holds. */
-const VISUAL_PRIORITY = [
-  'surrounding_area_aerial',
-  'close_parcel_aerial',
-  'road_frontage_aerial',
-  'parcel_context',
-  'clean_parcel_aerial',
-  'front_side_3d',
-  'contour_terrain_view',
-  'rear_side_3d',
-];
-
-export function prioritizeVisuals<T extends { key: string; filePath: string | null }>(visuals: T[], limit: number): T[] {
-  const rank = (key: string) => {
-    const index = VISUAL_PRIORITY.indexOf(key);
-    return index === -1 ? VISUAL_PRIORITY.length : index;
-  };
-  return visuals
-    .filter((visual) => !!visual.filePath)
-    .sort((a, b) => rank(a.key) - rank(b.key))
-    .slice(0, Math.max(0, limit));
+/**
+ * Map the dossier's pixel-grounded observations into the draft shape the
+ * judgment prompt and the persisted products carry. The basis line IS the
+ * provenance the operator later reads: which model saw which capture, and how
+ * current the capture is known to be. Refusal/idle chatter is screened even
+ * here — a grounded lane can still have persisted a bad row under an older
+ * filter, and it must not resurface as evidence.
+ */
+export function groundedObservationDrafts(dossier: AcquisitionDossier): VisualObservationDraft[] {
+  return dossier.visualObservations
+    .filter((observation) => !readsAsNonObservation(observation.observation))
+    .map((observation) => ({
+      visual: observation.key,
+      observation: observation.observation,
+      basis: [
+        `Pixel-grounded ${observation.model ?? 'vision-model'} read of ${observation.sourceImage ?? 'a retained capture'}`,
+        observation.confidence ? `${observation.confidence} confidence` : null,
+        observation.capturedAt ? `captured ${observation.capturedAt}` : 'capture date unknown',
+      ].filter(Boolean).join(', '),
+    }));
 }
 
 function installedHermes(): { python: string; launcher: string; profileHome: string } {
@@ -347,15 +302,28 @@ export function analystInvocationArgs(input: {
 }
 
 export function createHermesAcquisitionAnalyst(deps: HermesAnalystDeps = {}): AcquisitionAnalyst {
-  const maxVisuals = deps.maxVisuals ?? ANALYST_MAX_VISUALS;
-  const visualTimeoutMs = deps.visualTimeoutMs ?? ANALYST_VISUAL_TIMEOUT_MS;
   const judgmentTimeoutMs = deps.judgmentTimeoutMs ?? ANALYST_JUDGMENT_TIMEOUT_MS;
   const now = deps.now ?? (() => Date.now());
 
   const invoke = deps.invoke ?? (async (args: string[], timeoutMs: number): Promise<string> => {
     const { python, launcher } = installedHermes();
+    // The judgment prompt carries the whole property file, and Windows caps a
+    // child's command line at ~32K characters — a full dossier as an argv
+    // element fails with spawn ENAMETOOLONG before the runtime ever starts
+    // (surfacing as "exited without output"). So the real argv travels in a
+    // temp JSON file, and a tiny bootstrap sets sys.argv IN the child process,
+    // where no such ceiling exists, then runs the launcher unchanged.
+    const specPath = path.join(os.tmpdir(), `landos-analyst-args-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(specPath, JSON.stringify(args), 'utf-8');
+    const bootstrap = [
+      'import sys, json, runpy',
+      "spec = json.load(open(sys.argv[1], encoding='utf-8'))",
+      'launcher = sys.argv[2]',
+      'sys.argv = [launcher] + spec',
+      "runpy.run_path(launcher, run_name='__main__')",
+    ].join('\n');
     try {
-      const { stdout } = await execFileAsync(python, [launcher, ...args], {
+      const { stdout } = await execFileAsync(python, ['-X', 'utf8', '-c', bootstrap, specPath, launcher], {
         cwd: process.cwd(),
         timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
@@ -372,6 +340,8 @@ export function createHermesAcquisitionAnalyst(deps: HermesAnalystDeps = {}): Ac
       }
       const reported = String(detail?.stderr || detail?.stdout || '').trim().split(/[\r\n]+/).find((line) => line.trim());
       throw new Error(reported?.slice(0, 300) || 'the local reasoning runtime exited without output');
+    } finally {
+      try { fs.unlinkSync(specPath); } catch { /* temp spec cleanup is best-effort */ }
     }
   });
 
@@ -383,43 +353,17 @@ export function createHermesAcquisitionAnalyst(deps: HermesAnalystDeps = {}): Ac
         deps.settings ?? realSettings,
       );
       const warnings: string[] = [];
-      const subject = input.dossier.identity.displayAddress ?? input.dossier.identity.apn ?? 'the subject parcel';
 
-      // Pass 1 — visual evidence. A failed image is a missing observation, not
-      // a failed run: the judgment pass proceeds with what was actually seen.
-      const observations: VisualObservationDraft[] = [];
-      const runMaxVisuals = input.maxVisuals ?? maxVisuals;
-      const selected = prioritizeVisuals(input.dossier.visuals, runMaxVisuals);
-      const skipped = input.dossier.visuals.filter((visual) => visual.filePath && !selected.includes(visual as never));
-      if (skipped.length && runMaxVisuals > 0) {
-        warnings.push(`${skipped.length} retained image(s) were not inspected this run: the analyst inspects the ${runMaxVisuals} most informative captures.`);
-      }
-      for (const visual of selected) {
-        if (!visual.filePath) continue;
-        try {
-          const text = await invoke(
-            analystInvocationArgs({
-              prompt: visualInspectionPrompt({ ...visual, filePath: visual.filePath }, subject),
-              model,
-              toolsets: ANALYST_TOOLSETS,
-              withSkill: false,
-            }),
-            visualTimeoutMs,
-          );
-          const observation = text.replace(/\s+/g, ' ').trim();
-          if (isUsableVisualObservation(observation)) {
-            observations.push({ visual: visual.key, observation: observation.slice(0, 1_200), basis: `Retained ${visual.label} capture` });
-          } else {
-            warnings.push(`The ${visual.label} capture produced no usable observation and was not carried into the read.`);
-          }
-        } catch (error) {
-          const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown error';
-          logger.warn({ event: 'acquisition_analyst_visual_failed', visual: visual.key, detail }, 'acquisition_analyst_visual_failed');
-          warnings.push(`The ${visual.label} capture could not be inspected: ${detail}.`);
-        }
+      // Visual evidence comes ONLY from the dossier's pixel-grounded
+      // observations. This runtime has no proven way to show the model an
+      // image, so it never pretends to; if no grounded observation exists,
+      // the judgment pass is told so explicitly.
+      const observations = groundedObservationDrafts(input.dossier);
+      if (!observations.length && input.dossier.visuals.length > 0) {
+        warnings.push('Retained imagery exists but no pixel-grounded visual observation has been produced for it yet; the read reasons without visual evidence.');
       }
 
-      // Pass 2 — the judgment.
+      // The judgment.
       const raw = await invoke(
         analystInvocationArgs({
           prompt: (input.judgmentPromptBuilder ?? judgmentPrompt)(input.dossier, observations),
