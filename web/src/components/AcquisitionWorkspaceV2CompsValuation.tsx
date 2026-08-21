@@ -176,6 +176,23 @@ export interface CvComp {
   county: string | null;
   state: string | null;
   distanceMiles: number | null;
+  /** Where this record sits relative to the SUBJECT'S OWN market — not merely
+   *  its county. Set for every retained record by the projection. */
+  geography?: {
+    tier: 'local' | 'expanded' | 'broader' | 'unresolved';
+    tierLabel: string;
+    tierShortLabel: string;
+    tierReason: string;
+    precision: 'exact' | 'approximate' | 'unresolved';
+    distanceMiles: number | null;
+    city: string | null;
+    zip: string | null;
+    sameSubmarket: boolean;
+    sameCounty: boolean;
+    source: string | null;
+    cardLine: string;
+    weightMultiplier: number;
+  };
   outsideInitialRadius: boolean | null;
   lat: number | null;
   lng: number | null;
@@ -258,6 +275,19 @@ export interface CvVisualCounts {
   withoutVisual: number;
 }
 
+/** How the priced set is composed geographically, and why it reached that far. */
+export interface CvGeoSelection {
+  tiersIncluded: Array<'local' | 'expanded' | 'broader' | 'unresolved'>;
+  outermostTier: 'local' | 'expanded' | 'broader' | 'unresolved' | null;
+  expandedBeyondLocal: boolean;
+  reliesOnBroaderGeography: boolean;
+  offered: { local: number; expanded: number; broader: number; unresolved: number };
+  admitted: { local: number; expanded: number; broader: number; unresolved: number };
+  admittedCount: number;
+  compositionLabel: string;
+  disclosure: string;
+}
+
 export interface CvCleaned {
   cleanedCount: number;
   directCount: number;
@@ -265,6 +295,9 @@ export interface CvCleaned {
   supplementalHistoricalCount: number;
   boundaryCount: number;
   historicalContextCount: number;
+  /** Credible sales held out of the priced set on geography alone. */
+  geographicContextCount?: number;
+  geography?: CvGeoSelection | null;
   excludedCount: number;
   cleanedAvgPpa: number | null;
   cleanedMedianPpa: number | null;
@@ -728,6 +761,12 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
   // qualifying sales would reproduce the original problem — a thin FMV set
   // reading as "there are no comparables" while dozens of retained candidates
   // sit below. Every record here is the same object the workspace renders.
+  // The priced set leads this strip, ordered OUTWARD from the subject's own
+  // market, so the first thing the operator sees is how local the evidence
+  // behind the adopted value actually is — local sales first, then whatever the
+  // search had to reach for. Weight breaks ties inside a tier. Improved context
+  // and the remaining evidence classes follow, so a thin FMV set never reads as
+  // "no comparables".
   const previewComps = useMemo(() => {
     const picked: CvComp[] = [];
     const take = (rows: CvComp[], max: number) => {
@@ -740,9 +779,12 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
       }
     };
     const byAcresDesc = (a: CvComp, b: CvComp) => (b.acres ?? 0) - (a.acres ?? 0);
-    take([...valuationSet].sort((a, b) => (b.valuationWeight ?? 0) - (a.valuationWeight ?? 0)), 2);
-    take(comps.filter(isImproved).sort(byAcresDesc), 2);
-    take(comps.filter((c) => c.category === 'accepted_closed_sale' && !c.inValuationSet).sort(byAcresDesc), 2);
+    const tierRank: Record<string, number> = { local: 0, expanded: 1, broader: 2, unresolved: 3 };
+    take([...valuationSet].sort((a, b) =>
+      (tierRank[a.geography?.tier ?? 'unresolved'] - tierRank[b.geography?.tier ?? 'unresolved'])
+      || ((b.valuationWeight ?? 0) - (a.valuationWeight ?? 0))), 4);
+    take(comps.filter(isImproved).sort(byAcresDesc), 1);
+    take(comps.filter((c) => c.category === 'accepted_closed_sale' && !c.inValuationSet).sort(byAcresDesc), 1);
     take(comps.filter(isActive).sort(byAcresDesc), 6);
     return picked.slice(0, 6);
   }, [comps]);
@@ -810,15 +852,37 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
                     <CompKindBadge identity={identity} />
                     {c.inValuationSet && <span class="chip ok" data-testid="cv-actual-comp-qualifying">Strict FMV comp</span>}
                     <span class="chip dim">{c.propertyClass === 'improved' ? 'Improved' : c.propertyClass === 'land' ? 'Vacant land' : 'Property type unstated'}</span>
+                    {/* Where this sale IS. A sale twenty-six miles away in a
+                        premium submarket and a sale two miles down the road are
+                        not the same evidence, and the card has to say which one
+                        the operator is reading. */}
+                    <span
+                      class={`chip geo-${c.geography?.tier ?? 'unresolved'}`}
+                      data-testid="cv-actual-comp-geo"
+                      data-geo-tier={c.geography?.tier ?? 'unresolved'}
+                      title={c.geography?.tierReason ?? 'Geography has not been reconciled for this record.'}
+                    >
+                      {c.geography?.tierShortLabel ?? 'Location unresolved'}
+                    </span>
                   </div>
                   <div class="awv2-cv-actualfacts">
                     <span><i>Acres</i><b>{c.acres != null ? c.acres : '—'}</b></span>
                     <span><i>{c.priceKind === 'sale' ? 'Sold price' : c.priceKind === 'list' ? 'Asking price' : 'Price'}</i><b>{c.price != null ? usd(c.price) : '—'}</b></span>
                     <span><i>$ / acre</i><b>{c.pricePerAcre != null ? usd(c.pricePerAcre) : '—'}</b></span>
                     <span><i>{c.dateIso ? 'Date' : 'Date status'}</i><b>{c.dateIso ?? 'Not established'}</b></span>
+                    <span data-testid="cv-actual-comp-distance">
+                      <i>From subject</i>
+                      <b>{c.distanceMiles != null
+                        ? `${c.distanceMiles} mi${c.geography?.precision === 'approximate' ? ' (approx.)' : ''}`
+                        : 'Unresolved'}</b>
+                    </span>
+                    <span><i>Market</i><b>{c.geography?.city ?? c.geography?.zip ?? (c.county ? `${c.county} County` : '—')}</b></span>
                     <span><i>Source</i><b>{providerSummary(c.source)}</b></span>
                   </div>
                   <p class="awv2-cv-actualwhy">{conciseReason(c)}</p>
+                  {c.geography?.tierReason && (
+                    <p class="awv2-cv-actualwhy geo" data-testid="cv-actual-comp-geo-reason">{c.geography.tierReason}</p>
+                  )}
                 </div>
               );
             })}
@@ -899,6 +963,35 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
             <div class="v">{cleaned.confidence}</div>
           </div>
         </div>
+        {/* WHERE the adopted value came from. County membership is not
+            comparability, so the operator has to be able to see at a glance
+            whether this figure is priced on the subject's own market or on
+            evidence the search had to reach outward for. */}
+        {cleaned.geography && (
+          <div
+            class={`awv2-cv-window geo-summary${cleaned.geography.reliesOnBroaderGeography ? ' broader' : ''}`}
+            aria-label="Geography of the priced comparable set"
+            data-testid="cv-geo-composition"
+          >
+            <div class="awv2-panel-title">
+              Geography of the priced set
+              <span class="awv2-src-tag" data-testid="cv-geo-composition-label">{cleaned.geography.compositionLabel}</span>
+            </div>
+            <p class="awv2-pi-note" data-testid="cv-geo-disclosure">{cleaned.geography.disclosure}</p>
+            {cleaned.geography.reliesOnBroaderGeography && (
+              <p class="awv2-cv-note" data-testid="cv-geo-broader-caveat">
+                <b>Adopted value relies on broader-market geography.</b> Confidence is reduced accordingly:
+                local evidence alone could not price this parcel.
+              </p>
+            )}
+            {!!cleaned.geographicContextCount && (
+              <p class="awv2-pi-note" data-testid="cv-geo-held-out">
+                {cleaned.geographicContextCount} credible closed sale{cleaned.geographicContextCount === 1 ? '' : 's'} stayed
+                retained as broader-market or location-unresolved context and carry no strict FMV weight. Nothing was deleted.
+              </p>
+            )}
+          </div>
+        )}
         {reconciledWarning && (
           <div class="awv2-cv-error" role="alert">{reconciledWarning}</div>
         )}

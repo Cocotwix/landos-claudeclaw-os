@@ -42,6 +42,15 @@ import {
   routeAcreage,
   routedAcreageSimilarity,
 } from './acreage-router.js';
+import {
+  assessCompGeography,
+  compGeoTier,
+  parseCompLocality,
+  selectGeographicValuationSet,
+  type CompGeoPrecision,
+  type CompGeoSelection,
+  type CompGeoTierId,
+} from './comp-geography.js';
 import { isListingPhotoUrl, resolveCompVisual, tallyCompVisuals, type CompVisual, type CompVisualCounts } from './comp-visual.js';
 import { parseListingDetail } from './comp-listing-store.js';
 import type { PersistedCompListingDetail } from './comp-listing-store.js';
@@ -100,7 +109,10 @@ export const MAX_COMP_SEARCH_RADIUS_MILES = 20;
  *                          acreage outside the routed pool. Zero valuation weight.
  *  historical_context:     older than the selected window. Zero valuation weight. */
 export type CompValuationRole =
-  | 'direct' | 'supporting' | 'supplemental_historical' | 'boundary' | 'historical_context';
+  | 'direct' | 'supporting' | 'supplemental_historical' | 'boundary' | 'historical_context'
+  /** Credible on acreage and recency, but its geography is outside the tier the
+   *  valuation actually needed to reach. Visible, zero valuation weight. */
+  | 'geographic_context';
 
 export const VALUATION_ROLE_LABELS: Readonly<Record<CompValuationRole, string>> = {
   direct: 'Direct comp',
@@ -108,6 +120,7 @@ export const VALUATION_ROLE_LABELS: Readonly<Record<CompValuationRole, string>> 
   supplemental_historical: 'Supplemental historical comp',
   boundary: 'Boundary comp',
   historical_context: 'Historical context',
+  geographic_context: 'Broader-market context',
 };
 
 /** Whether a record prices the subject is answered by `inValuationSet`, which
@@ -119,6 +132,87 @@ function radiusStageFor(distance: number | null): WorkspaceComp['radiusStage'] {
   if (distance <= INITIAL_COMP_RADIUS_MILES) return 'initial_10';
   if (distance <= MAX_COMP_SEARCH_RADIUS_MILES) return 'expansion_20';
   return 'beyond_20';
+}
+
+/**
+ * Where this record is, relative to the subject's own market.
+ *
+ * Carried on EVERY retained record, resolved or not. A record with no
+ * defensible location says so here rather than quietly inheriting the treatment
+ * of a geographically verified local sale.
+ */
+export interface CompGeoProjection {
+  tier: CompGeoTierId;
+  /** Full label: "Nearby / expanded market". */
+  tierLabel: string;
+  /** Card badge: "Expanded market". */
+  tierShortLabel: string;
+  /** Why this tier, naming the distance and submarket facts used. */
+  tierReason: string;
+  precision: CompGeoPrecision;
+  distanceMiles: number | null;
+  /** Municipality/ZIP the record's own retained evidence states. */
+  city: string | null;
+  zip: string | null;
+  sameSubmarket: boolean;
+  sameCounty: boolean;
+  /** Provenance of the point that produced the distance. */
+  source: string | null;
+  /** "19.4 miles from subject · Expanded market". */
+  cardLine: string;
+  /** Geographic weight multiplier this tier earns in the cleaned valuation. */
+  weightMultiplier: number;
+}
+
+const UNASSESSED_GEOGRAPHY: CompGeoProjection = {
+  tier: 'unresolved',
+  tierLabel: compGeoTier('unresolved').label,
+  tierShortLabel: compGeoTier('unresolved').shortLabel,
+  tierReason: compGeoTier('unresolved').rationale,
+  precision: 'unresolved',
+  distanceMiles: null,
+  city: null,
+  zip: null,
+  sameSubmarket: false,
+  sameCounty: false,
+  source: null,
+  cardLine: 'Distance unresolved · Location unresolved',
+  weightMultiplier: compGeoTier('unresolved').weightMultiplier,
+};
+
+/** Build one record's geographic projection from its resolved distance, the
+ *  precision of the point that produced it, and the two submarkets involved. */
+function projectCompGeography(input: {
+  distanceMiles: number | null;
+  precision: CompGeoPrecision;
+  source: string | null;
+  city: string | null;
+  zip: string | null;
+  county: string | null;
+  state: string | null;
+  subject: { city: string | null; zip: string | null; county: string | null; state: string | null };
+}): CompGeoProjection {
+  const assessment = assessCompGeography({
+    distanceMiles: input.distanceMiles,
+    precision: input.precision,
+    comp: { city: input.city, zip: input.zip, county: input.county, state: input.state },
+    subject: input.subject,
+  });
+  return {
+    tier: assessment.tierId,
+    tierLabel: assessment.tier.label,
+    tierShortLabel: assessment.tier.shortLabel,
+    tierReason: assessment.reason,
+    precision: assessment.precision,
+    distanceMiles: assessment.distanceMiles,
+    city: input.city,
+    zip: input.zip,
+    sameSubmarket: assessment.sameSubmarket,
+    sameCounty: assessment.sameCounty,
+    source: assessment.distanceMiles == null ? null : input.source,
+    cardLine: assessment.cardLine,
+    weightMultiplier: assessment.tier.weightMultiplier,
+  };
 }
 
 export interface WorkspaceComp {
@@ -149,6 +243,9 @@ export interface WorkspaceComp {
   state: string | null;
   /** Straight-line miles from the subject point; null when either location is unresolved. */
   distanceMiles: number | null;
+  /** Local / expanded / broader / unresolved geography relative to the subject's
+   *  own market. Set for every record by the projection. */
+  geography: CompGeoProjection;
   /** True when the resolved comp lies beyond the initial 10-mile radius. */
   outsideInitialRadius: boolean | null;
   lat: number | null;
@@ -390,6 +487,24 @@ export interface CompsValuationView {
   valuationWindow: RecencyWindowSelection;
   /** Visual provenance tallies across every retained record. */
   visualCounts: CompVisualCounts;
+  /**
+   * Geographic reconciliation across the whole retained universe, and the
+   * tiered selection that decided which of it priced the subject. This is what
+   * separates local subject-market evidence from broader county / premium-
+   * submarket context, and it says out loud when the value had to reach past
+   * the subject's own market to find enough sales.
+   */
+  geography: {
+    subjectResolved: boolean;
+    subjectCity: string | null;
+    subjectZip: string | null;
+    /** Every retained record, tallied by resolved tier. */
+    retainedByTier: Record<CompGeoTierId, number>;
+    /** Records with a defensible point vs an area centroid vs none at all. */
+    precisionCounts: Record<CompGeoPrecision, number>;
+    /** The tiered selection over the acreage/recency-qualified closed sales. */
+    selection: CompGeoSelection;
+  };
 }
 
 /**
@@ -772,6 +887,9 @@ function locationForPersisted(row: CompRow, lookup: LocationLookup): ResolvedLoc
 interface ClassifyContext {
   subjectAcres: number | null;
   subjectCounty: string | null;
+  /** The subject's OWN submarket. County is not a submarket — Williamson County
+   *  holds both Fairview and Franklin, and those are different markets. */
+  subjectPlace: { city: string | null; zip: string | null; county: string | null; state: string | null };
   subjectIdentity: SubjectParcelIdentity;
   subjectPoint: { lat: number; lng: number } | null;
   retainedInspection: LandPortalComparableRecord[];
@@ -860,8 +978,35 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
   const operatorIncluded = row.valuation_selected === 1;
   const operatorExcluded = row.valuation_selected === -1;
   const location = locationForPersisted(row, ctx.locations);
-  const distance = distanceFromSubject(ctx, location);
+  // A record with no parcel point may still have a reconciled AREA point. It
+  // stays UNPLACED — an area centroid is not a parcel location and must never
+  // be pinned or used as identity — but the market distance it supports is real
+  // evidence, and discarding it would report "unknown geography" for a record
+  // whose market LandOS can name.
+  const areaPoint = typeof row.geo_lat === 'number' && typeof row.geo_lng === 'number'
+    ? { lat: row.geo_lat, lng: row.geo_lng } : null;
+  const distance = distanceFromSubject(ctx, location)
+    ?? (areaPoint && ctx.subjectPoint ? compDistanceMiles(ctx.subjectPoint, areaPoint) : null);
   const recencyMonths = (() => { const m = monthsSince(dateIso, ctx.nowMs); return m == null ? null : Math.round(m); })();
+  // Locality the row's OWN retained evidence states. Providers glue it into one
+  // address run ("…, Franklin, TN, 37064"), so a blank column is a column
+  // nobody split, not a locality LandOS never had.
+  const parsedLocality = parseCompLocality(row.address_desc);
+  // A ZIP-centroid point is the right AREA, never the right parcel: the
+  // reconciliation lane records that as `approximate`, and it may never be
+  // promoted into local subject-market evidence.
+  const geoPrecision: CompGeoPrecision = distance == null ? 'unresolved'
+    : !location.resolved || row.geo_precision === 'approximate' ? 'approximate' : 'exact';
+  const geography = projectCompGeography({
+    distanceMiles: distance,
+    precision: geoPrecision,
+    source: row.geo_source || location.source,
+    city: (row.city || parsedLocality.city || '').trim() || null,
+    zip: (row.zip || parsedLocality.zip || '').trim().match(/^\d{5}/)?.[0] ?? null,
+    county: row.county || null,
+    state: (row.state || parsedLocality.state || '').trim() || null,
+    subject: ctx.subjectPlace,
+  });
 
   let category: WorkspaceCompCategory;
   let reason: string;
@@ -1016,6 +1161,7 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
     county: row.county || null,
     state: row.state || null,
     distanceMiles: distance,
+    geography,
     outsideInitialRadius: distance != null ? distance > INITIAL_COMP_RADIUS_MILES : null,
     lat: location.lat,
     lng: location.lng,
@@ -1259,6 +1405,21 @@ function classifyEvidenceComp(
     county: evidenceCounty,
     state: evidenceState,
     distanceMiles: distance,
+    geography: (() => {
+      const locality = parseCompLocality(address);
+      return projectCompGeography({
+        distanceMiles: distance,
+        // Research-evidence records carry no persisted precision, so a resolved
+        // point here is always a real address geocode or provider map point.
+        precision: location.resolved ? 'exact' : 'unresolved',
+        source: location.source,
+        city: locality.city,
+        zip: locality.zip,
+        county: evidenceCounty,
+        state: evidenceState ?? locality.state,
+        subject: ctx.subjectPlace,
+      });
+    })(),
     outsideInitialRadius: distance != null ? distance > INITIAL_COMP_RADIUS_MILES : null,
     lat: location.lat,
     lng: location.lng,
@@ -1555,6 +1716,10 @@ export interface CleanedValuation {
   boundaryCount: number;
   /** Sales older than the selected window: visible, zero valuation weight. */
   historicalContextCount: number;
+  /** Credible sales held out on geography alone: visible, zero valuation weight. */
+  geographicContextCount: number;
+  /** Geographic composition of the set that actually priced the subject. */
+  geography: CompGeoSelection | null;
   excludedCount: number;
   cleanedAvgPpa: number | null;
   cleanedMedianPpa: number | null;
@@ -1602,7 +1767,13 @@ export function cleanedWeight(
   const d = c.distanceMiles;
   const m = c.monthsOld;
   const baseDistanceWeight = d == null ? 1 : d <= 5 ? 3 : d <= 10 ? 2 : d <= 20 ? 1 : 1;
-  const wDist = baseDistanceWeight * resolveGeographicTier(d).weightMultiplier;
+  // Two geographic multipliers, and they answer different questions: the
+  // distance tier ranks how far the sale is, the market tier ranks whether it
+  // is the subject's market at all. A ZIP-centroid or different-submarket sale
+  // is discounted on the second even when the first is comfortable.
+  const wDist = baseDistanceWeight
+    * resolveGeographicTier(d).weightMultiplier
+    * c.geography.weightMultiplier;
   const wRec = m == null ? 0.5 : m <= 6 ? 3 : m <= 12 ? 2.5 : m <= 24 ? 1.5 : 0.75;
   const wAcre = 0.5 + 2.5 * routedAcreageSimilarity(c.acres, routeAcreage(subjectAcres));
   const base = wDist + wRec + wAcre;
@@ -1614,6 +1785,7 @@ export function computeCleanedValuation(
   subjectAcres: number | null,
   _nowMs: number,
   band: AcreageBand | null = valuationAcreageBand(subjectAcres),
+  geography: CompGeoSelection | null = null,
 ): CleanedValuation {
   // Only records the acreage band and the recency window actually selected can
   // price the subject. Boundary and historical-context sales stay visible with
@@ -1633,6 +1805,7 @@ export function computeCleanedValuation(
   // never tallied here, so no record appears under two labels.
   const boundaryCount = cleaned.filter((c) => c.valuationRole === 'boundary').length;
   const historicalCount = comps.filter((c) => c.valuationRole === 'historical_context').length;
+  const geographicContextCount = comps.filter((c) => c.valuationRole === 'geographic_context').length;
 
   const directEvidenceSufficient = cleaned.length >= 2;
   const insufficiencyWarning = directEvidenceSufficient ? null
@@ -1642,6 +1815,8 @@ export function computeCleanedValuation(
     cleanedCount: ppas.length, directCount, supportingCount,
     supplementalHistoricalCount: supplementalCount, boundaryCount,
     historicalContextCount: historicalCount,
+    geographicContextCount,
+    geography,
     excludedCount: excluded.length,
     cleanedAvgPpa: null, cleanedMedianPpa: null, avgIndication: null, medianIndication: null,
     weightedPpa: null, weightedIndication: null,
@@ -1725,6 +1900,11 @@ export function computeCleanedValuation(
   const cleanedAllSourceStated = cleaned.length > 0
     && cleaned.every((c) => c.saleVerification === 'source_stated');
   if (cleanedAllSourceStated && confidence !== 'unavailable') confidence = 'low';
+  // A value that had to reach past the subject's own market to find evidence is
+  // a weaker answer than the same value drawn from local sales. Say so, and cap
+  // the rating rather than letting a tidy broader-market spread read as
+  // confidence in this parcel's market.
+  if (geography?.reliesOnBroaderGeography && confidence !== 'unavailable') confidence = 'low';
 
   const lines: string[] = [
     `Cleaned average supports ${money(avgInd)} (${money(Math.round(avg))}/ac across ${ppas.length} sales).`,
@@ -1738,11 +1918,19 @@ export function computeCleanedValuation(
   if (directDispersion != null && directDispersion > 0.5) {
     lines.push(`Direct sales spread ${Math.round(directDispersion * 100)}% of their median per acre — a real range, not artificially narrowed.`);
   }
+  if (geography) {
+    lines.push(`Geography of the priced set — ${geography.compositionLabel}. ${geography.disclosure}`);
+    if (geographicContextCount) {
+      lines.push(`${geographicContextCount} credible closed sale${geographicContextCount === 1 ? '' : 's'} stayed retained as broader-market or location-unresolved context: geography alone kept ${geographicContextCount === 1 ? 'it' : 'them'} out of the priced set, and nothing was deleted.`);
+    }
+  }
 
   return {
     cleanedCount: ppas.length, directCount, supportingCount,
     supplementalHistoricalCount: supplementalCount, boundaryCount,
     historicalContextCount: historicalCount,
+    geographicContextCount,
+    geography,
     excludedCount: excluded.length,
     cleanedAvgPpa: Math.round(avg), cleanedMedianPpa: Math.round(med),
     avgIndication: avgInd, medianIndication: medInd,
@@ -2153,6 +2341,10 @@ function dedupeWorkspaceComps(input: WorkspaceComp[]): { comps: WorkspaceComp[];
       // that still carries an "unresolved" explanation.
       locationAddress: located.locationAddress ?? winner.locationAddress ?? loser.locationAddress,
       locationUnresolvedReason: located.locationUnresolvedReason,
+      // Geography travels with the located side for the same reason the
+      // reconciliation text does: a placed comp must not keep an "unresolved"
+      // tier, and an unresolved one must not inherit a tier nothing measured.
+      geography: located.geography,
       duplicatesMerged: (winner.duplicatesMerged ?? 0) + (loser.duplicatesMerged ?? 0) + 1,
       mergeStatus: `${origins.length} source observation(s) reconciled to one physical property; ${(winner.duplicatesMerged ?? 0) + (loser.duplicatesMerged ?? 0) + 1} duplicate row(s) merged.`,
       // Identity and structural facts: whichever provider actually published
@@ -2290,6 +2482,12 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const ctx: ClassifyContext = {
     subjectAcres,
     subjectCounty: subject.county,
+    subjectPlace: {
+      city: subjectCity,
+      zip: subjectCard ? String(subjectCard.zip ?? '') || null : null,
+      county: subject.county,
+      state: subjectState,
+    },
     subjectIdentity: {
       apn: subject.apn,
       county: subject.county,
@@ -2367,6 +2565,23 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const canonical = dedupeWorkspaceComps([...persisted, ...inspectionComps, ...evidenceComps]);
   const comps = canonical.comps;
 
+  // A merge can fill `distanceMiles` from the side that had one. Re-project any
+  // record whose merged distance no longer matches the geography carried with
+  // it, so the badge, the distance and the tier can never disagree on a card.
+  for (const c of comps) {
+    if (c.distanceMiles === c.geography.distanceMiles) continue;
+    c.geography = projectCompGeography({
+      distanceMiles: c.distanceMiles,
+      precision: c.distanceMiles == null ? 'unresolved' : c.geography.precision === 'approximate' ? 'approximate' : 'exact',
+      source: c.geography.source ?? c.locationSource,
+      city: c.geography.city,
+      zip: c.geography.zip,
+      county: c.county,
+      state: c.state,
+      subject: ctx.subjectPlace,
+    });
+  }
+
   // ── Acreage band + sale-recency window ────────────────────────────────────
   // Every credible closed vacant-land sale is offered to the selector; the
   // selector decides which of them may influence value, and the roles below are
@@ -2379,16 +2594,46 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const valuationWindow = selectRecencyWindow(candidates, subjectAcres, nowMs);
   const band = valuationWindow.acreageBand;
 
-  // Set membership is decided by the acreage band and the recency window ALONE.
-  // The role below is the comparability tier WITHIN that decision, so proximity
-  // can shade a sale's weight but can never quietly delete it, and an
-  // out-of-band or out-of-window sale can never price the subject.
+  // ── Geographic discipline over the acreage/recency-qualified set ──────────
+  //
+  // The acreage band and the recency window decide which sales are CREDIBLE.
+  // Geography then decides which of those credible sales may PRICE the subject,
+  // and it starts local: a sale is admitted from the closest tier that holds
+  // enough evidence, and the search only reaches outward when the closer tier
+  // genuinely cannot support a value.
+  //
+  // This is the difference between local subject-market evidence and broader
+  // county / premium-submarket context. Nothing is discovered, nothing is
+  // deleted: every candidate stays retained and visible, and a held-out record
+  // carries its own stated reason.
+  const geoCandidates = closedSales
+    .filter((c) => {
+      const bucket = valuationWindow.bucketByKey[c.key];
+      return bucket === 'primary' || bucket === 'supplemental_historical';
+    })
+    .map((c) => ({ key: c.key, tierId: c.geography.tier }));
+  const geoSelection = selectGeographicValuationSet(geoCandidates);
+  const geoAdmitted = new Set(geoSelection.admittedKeys);
+  const geoHeldOut = new Map(geoSelection.heldOut.map((item) => [item.key, item.reason]));
+
+  // Set membership is decided by the acreage band, the recency window, and the
+  // geographic tier the evidence actually reached. The role below is the
+  // comparability tier WITHIN that decision, so proximity can shade a sale's
+  // weight but can never quietly delete it, and an out-of-band or out-of-window
+  // sale can never price the subject.
   for (const c of closedSales) {
     const bucket = valuationWindow.bucketByKey[c.key];
     const d = c.distanceMiles;
-    c.inValuationSet = bucket === 'primary' || bucket === 'supplemental_historical';
+    const windowQualified = bucket === 'primary' || bucket === 'supplemental_historical';
+    c.inValuationSet = windowQualified && geoAdmitted.has(c.key);
 
-    if (bucket === 'out_of_band') {
+    if (windowQualified && !c.inValuationSet) {
+      // Credible on acreage and recency, held out on geography alone. It stays
+      // a fully visible retained comparable; it just does not price the subject
+      // while closer evidence already can.
+      c.valuationRole = 'geographic_context';
+      c.zeroWeightReason = `${geoHeldOut.get(c.key) ?? `${c.geography.tierLabel}: closer evidence already supports the value.`} ${c.geography.tierReason}`;
+    } else if (bucket === 'out_of_band') {
       c.valuationRole = 'boundary';
       c.zeroWeightReason = band
         ? `${c.acres} acres sits outside the ${band.label} valuation band for the ${subjectAcres}-acre subject, so it defines an upper or lower limit rather than pricing the subject. It cannot influence the cleaned FMV unless it is explicitly restored.`
@@ -2454,7 +2699,7 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
 
   // Cleaned FMV reconciliation, bounded quick-flip underwriting, and the final
   // negotiation reconciliation — all pure reads over the same classified set.
-  const cleaned = computeCleanedValuation(comps, subjectAcres, nowMs, band);
+  const cleaned = computeCleanedValuation(comps, subjectAcres, nowMs, band, geoSelection);
   const subjectResidentialStructure = subjectImprovement.improved
     && isResidentialStructureType(subjectImprovement.type);
   const improvementValuation = computeImprovementValuation(
@@ -2594,6 +2839,20 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     marketContext,
     valuationWindow,
     visualCounts: tallyCompVisuals(comps.map((c) => c.visual)),
+    geography: {
+      subjectResolved: subjectPoint != null,
+      subjectCity: ctx.subjectPlace.city,
+      subjectZip: ctx.subjectPlace.zip,
+      retainedByTier: comps.reduce((acc, c) => {
+        acc[c.geography.tier] += 1;
+        return acc;
+      }, { local: 0, expanded: 0, broader: 0, unresolved: 0 } as Record<CompGeoTierId, number>),
+      precisionCounts: comps.reduce((acc, c) => {
+        acc[c.geography.precision] += 1;
+        return acc;
+      }, { exact: 0, approximate: 0, unresolved: 0 } as Record<CompGeoPrecision, number>),
+      selection: geoSelection,
+    },
     explanation: {
       used,
       excluded,
@@ -2651,6 +2910,12 @@ export function setCompValuationSelection(opts: {
     const view = classifyPersistedComp(row, {
       subjectAcres,
       subjectCounty: subjectIdentity.county,
+      subjectPlace: {
+        city: subjectCard ? String(subjectCard.city ?? '') || null : null,
+        zip: subjectCard ? String(subjectCard.zip ?? '') || null : null,
+        county: subjectIdentity.county,
+        state: subjectIdentity.state,
+      },
       subjectIdentity,
       subjectPoint: null,
       retainedInspection: inspection ? currentComparables(inspection) : [],

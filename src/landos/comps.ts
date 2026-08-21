@@ -200,6 +200,17 @@ export interface CompRow {
    *  provenance, the dated listing history, the source description, and the
    *  reconciliation evidence that bound the page to this comparable. */
   listing_detail_json: string;
+  /** Geographic reconciliation over this ALREADY-RETAINED row. '' until the
+   *  reconciliation lane has run; an 'approximate' precision (ZIP/place
+   *  centroid) may never be treated as local subject-market evidence. */
+  geo_precision: string;
+  geo_source: string;
+  geo_tier: string;
+  geo_resolved_at: string;
+  /** AREA point (ZIP/place centroid). Measures a market distance; never pins or
+   *  identifies a parcel, which is why it is not `lat`/`lng`. */
+  geo_lat: number | null;
+  geo_lng: number | null;
 }
 
 export interface AddCompInput {

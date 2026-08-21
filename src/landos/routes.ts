@@ -477,6 +477,7 @@ import { addComp, enrichCompCoordinates, listComps, recommendCompSources, evalua
 import { buildCompsValuationView, setCompValuationSelection, resolveCompsValuationLocations, type CompSelectionAction } from './comps-valuation.js';
 import { enrichRetainedCompListings } from './comp-listing-enrichment.js';
 import { enrichCompTransactions } from './comp-transaction-enrichment.js';
+import { reconcileCompGeography } from './comp-geography-reconciliation.js';
 import { buildOfficialParcelGisView } from './official-parcel-gis-view.js';
 import {
   TAX_STATUS_FIELDS, buildTaxStatusRead, taxAuthorityFor, taxStatusAttemptsFromSources,
@@ -10525,6 +10526,26 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({
       results,
       enrichedCount: results.filter((r) => r.enriched).length,
+      compsValuation: buildCompsValuationView(id),
+    });
+  });
+
+  // Geographic reconciliation for comparables LandOS ALREADY retained.
+  //
+  // Discovery stays permissive; this is the discipline applied after it. Every
+  // retained record's city, ZIP, coordinate and distance from the subject are
+  // established from the evidence the record itself carries, then the
+  // local / expanded / broader / unresolved tier that measurement earns is
+  // persisted. It searches no marketplace, adds no comparable, revisits no
+  // provider listing page, and deletes nothing: weak geography lowers a
+  // record's weight and is stated on its card, never removes it.
+  app.post('/api/landos/deal-cards/:id/comps-valuation/reconcile-geography', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const reconciliation = await reconcileCompGeography(id);
+    return c.json({
+      reconciliation,
       compsValuation: buildCompsValuationView(id),
     });
   });

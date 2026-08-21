@@ -1357,6 +1357,42 @@ function createLandosSchema(db: Database.Database): void {
   // rewritten by a later listing-pair import. Empty means the ordinary
   // provider pair, which nothing here changes.
   addColumn('landos_comp', 'pricing_basis', `pricing_basis TEXT NOT NULL DEFAULT ''`);
+  // Geographic reconciliation for an ALREADY-RETAINED comparable. Discovery
+  // stays permissive; these columns are the discipline applied after it, so the
+  // surface can tell local subject-market evidence apart from broader county /
+  // premium-submarket context instead of treating county membership as
+  // comparability.
+  //   geo_precision — 'exact' (parcel/listing point or matched street geocode),
+  //     'approximate' (ZIP/place centroid: right area, wrong parcel), or
+  //     'unresolved'. An approximate point may never be called local evidence.
+  //   geo_source    — verbatim provenance for the point that was used.
+  //   geo_tier      — resolved local / expanded / broader / unresolved tier.
+  // Empty means geographic reconciliation has not run for the row; the
+  // projection then falls back to whatever the row's own coordinates support.
+  addColumn('landos_comp', 'geo_precision', `geo_precision TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'geo_source', `geo_source TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'geo_tier', `geo_tier TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_comp', 'geo_resolved_at', `geo_resolved_at TEXT NOT NULL DEFAULT ''`);
+  // The AREA point, kept deliberately apart from `lat`/`lng`.
+  //
+  // `lat`/`lng` are this record's PARCEL location: the map pins them and the
+  // canonical dedupe treats two records at the same point as candidates for
+  // being the same physical property. A ZIP centroid is neither — every
+  // Franklin listing shares one, so writing it into `lat`/`lng` pins nine
+  // distinct parcels on one dot and lets the dedupe collapse them into a
+  // single comparable that no source ever published. The area point therefore
+  // lives here: good enough to measure a market distance, never good enough to
+  // place or identify a parcel.
+  addColumn('landos_comp', 'geo_lat', `geo_lat REAL`);
+  addColumn('landos_comp', 'geo_lng', `geo_lng REAL`);
+  // One-time repair for rows written before that separation existed: an area
+  // centroid sitting in the parcel columns is moved to the area columns. Scoped
+  // to the exact provenance string this lane writes, so no provider or operator
+  // coordinate is touched.
+  db.exec(`UPDATE landos_comp
+             SET geo_lat = lat, geo_lng = lng, lat = NULL, lng = NULL,
+                 geo_precision = 'approximate'
+           WHERE geo_source LIKE 'US Census ZCTA%' AND lat IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_landos_comp_canonical
            ON landos_comp(deal_card_id, canonical_key)`);
   // Normalize provider-echoed county names to the LandOS bare-name convention

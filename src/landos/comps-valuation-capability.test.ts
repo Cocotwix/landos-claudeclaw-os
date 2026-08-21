@@ -8,6 +8,7 @@ import {
   type CompsValuationFacts,
 } from './comps-valuation-capability.js';
 import type { CompsValuationView, WorkspaceComp } from './comps-valuation.js';
+import { selectGeographicValuationSet } from './comp-geography.js';
 import { _initTestLandosDb } from './db.js';
 import { createDealCard, linkPropertyToDeal } from './deal-card.js';
 import { upsertPropertyCard } from './property-card.js';
@@ -130,7 +131,8 @@ function view(overrides: {
     explanation: { used: [], excluded: [], medianNote: null, neededEvidence: [], strongestEvidence: null, weakestEvidence: null },
     cleaned: {
       cleanedCount: 1, directCount: 1, supportingCount: 0, supplementalHistoricalCount: 0, boundaryCount: 0,
-      historicalContextCount: 0, excludedCount: 0, cleanedAvgPpa: 9_000, cleanedMedianPpa: 9_000,
+      historicalContextCount: 0, geographicContextCount: 0, geography: null,
+      excludedCount: 0, cleanedAvgPpa: 9_000, cleanedMedianPpa: 9_000,
       avgIndication: 193_500, medianIndication: 193_500, weightedPpa: 9_000, weightedIndication: 193_500,
       lowObservedPpa: 9_000, highObservedPpa: 9_000, lowObservedIndication: 193_500, highObservedIndication: 193_500,
       activeCompetition: null,
@@ -148,6 +150,16 @@ function view(overrides: {
       explanation: ['24-month window selected.'],
     },
     visualCounts: {} as never,
+    geography: {
+      subjectResolved: true,
+      subjectCity: 'Soddy-Daisy',
+      subjectZip: '37379',
+      retainedByTier: { local: comps.length, expanded: 0, broader: 0, unresolved: 0 },
+      precisionCounts: { exact: comps.length, approximate: 0, unresolved: 0 },
+      selection: selectGeographicValuationSet(
+        comps.filter((c) => c.inValuationSet).map((c) => ({ key: c.key, tierId: 'local' as const })),
+      ),
+    },
   } as CompsValuationView;
 }
 

@@ -599,9 +599,26 @@
   display: block; font-style: normal; font-size: 9px; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--awv2-bone-faint);
 }
+/* Geographic tier. The colour ladder runs inward-to-outward so the operator can
+   see at a glance whether a card is the subject's own market or context the
+   search had to reach for; the labels still say it in words. */
+.awv2-cv-actualhead .chip.geo-local {
+  color: #7dd3fc; background: rgba(2, 132, 199, 0.18); border-color: rgba(2, 132, 199, 0.55);
+}
+.awv2-cv-actualhead .chip.geo-expanded {
+  color: #fcd34d; background: rgba(180, 122, 12, 0.18); border-color: rgba(180, 122, 12, 0.55);
+}
+.awv2-cv-actualhead .chip.geo-broader {
+  color: #fdba74; background: rgba(194, 89, 20, 0.18); border-color: rgba(194, 89, 20, 0.6);
+}
+.awv2-cv-actualhead .chip.geo-unresolved {
+  color: var(--awv2-bone-faint); background: rgba(156, 163, 175, 0.12); border-color: rgba(156, 163, 175, 0.45);
+}
 .awv2-cv-actualwhy {
   font-size: 12.5px; line-height: 1.6; color: var(--awv2-bone-faint); margin: 8px 0 0;
 }
+.awv2-cv-actualwhy.geo { margin-top: 4px; font-style: italic; }
+.awv2-cv-window.geo-summary.broader { border-left: 3px solid rgba(194, 89, 20, 0.7); }
 
 .awv2-cv-handoffcounts { display: flex; flex-wrap: wrap; gap: 6px 28px; margin-bottom: 8px; }
 .awv2-cv-handoffcounts span { font-family: var(--awv2-mono); color: var(--awv2-bone); }

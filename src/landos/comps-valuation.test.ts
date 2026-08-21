@@ -695,7 +695,14 @@ describe('automatic provisional valuation and operator refinement', () => {
     expect(view.summary.fmv?.central).toBe(view.cleaned.adoptedFmv);
     expect(view.explanation.medianNote).toContain('Median of 3');
     expect(view.explanation.used).toHaveLength(3);
-    expect(view.summary.confidence === 'moderate' || view.summary.confidence === 'high').toBe(true);
+    // Three consistent in-band sales reach SUPPORTED status, but none of them
+    // has a resolved location, so nothing establishes that they are the
+    // subject's own market. Geography therefore holds the rating at low and
+    // says why, rather than letting a tidy per-acre spread read as confidence
+    // in this parcel's market.
+    expect(view.summary.confidence).toBe('low');
+    expect(view.geography.selection.reliesOnBroaderGeography).toBe(true);
+    expect(view.cleaned.reconciliationLines.join(' ')).toContain('Geography of the priced set');
     expect(view.summary.confidenceFactors.length).toBeGreaterThan(1);
   });
 
