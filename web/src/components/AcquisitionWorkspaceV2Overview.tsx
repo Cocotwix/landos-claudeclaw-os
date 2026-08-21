@@ -35,6 +35,7 @@ import {
   SpecialistReadsPanel,
   type MarketIntelligenceReadView,
   type PropertyIntelligenceReadView,
+  type AcreageExtentControls,
   type PropertyReconcileControls,
   type SellerIntelligenceReadView,
   type SpecialistStaleView,
@@ -241,6 +242,8 @@ interface OverviewSectionProps {
     stale: SpecialistStaleView | null;
     /** Explicit official-record verification controls + persisted record. */
     reconcile?: PropertyReconcileControls | null;
+    /** Official acreage / parcel-extent reconciliation controls + record. */
+    acreage?: AcreageExtentControls | null;
   } | null;
   /** The Deal Brain conversation: operator guidance in, grounded replies out. */
   dealBrain?: {
@@ -584,7 +587,14 @@ export function OverviewSection({
     ? fallback || 'Not retained'
     : `${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}%`;
   const subjectStructure = structureLabel(improvement?.type, !!improvement?.improved);
-  const subjectHeading = `${subjectStructure}${identity.acres != null ? ` • ${identity.acres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : ''}`;
+  // The reconciled canonical acreage governs the subject heading when the
+  // official-record reconciliation resolved it; a snapshot generated before
+  // the reconciliation must not keep presenting the superseded figure.
+  const acreageRecon = specialistReads?.acreage?.record?.decision ?? null;
+  const acreageReconResolved = acreageRecon?.status === 'resolved_current_canonical'
+    || acreageRecon?.status === 'resolved_current_vs_historical_extent';
+  const headingAcres = (acreageReconResolved ? acreageRecon?.canonicalAcres : null) ?? identity.acres ?? null;
+  const subjectHeading = `${subjectStructure}${headingAcres != null ? ` • ${headingAcres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : ''}`;
 
   const questionCards = (status?.openQuestions ?? []).map((question) => {
     if (typeof question !== 'string') return {
@@ -698,6 +708,7 @@ export function OverviewSection({
           seller={specialistReads.seller}
           stale={specialistReads.stale}
           reconcile={specialistReads.reconcile ?? null}
+          acreage={specialistReads.acreage ?? null}
         />
       )}
 

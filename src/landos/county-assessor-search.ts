@@ -250,6 +250,122 @@ const WILLIAMSON_ADAPTER: CountyAssessorAdapter = {
   },
 };
 
+export interface WilliamsonSiblingParcel {
+  officialParcelId: string;
+  owner: string | null;
+  situsAddress: string | null;
+  lastTransferDate: string | null;
+  /** Filled only for the bounded detail reads. */
+  legalAcres: number | null;
+  deedBookPage: string | null;
+}
+
+export interface WilliamsonParcelFamilyOutcome {
+  status: 'ok' | 'unavailable';
+  source: string;
+  sourceUrl: string;
+  note: string;
+  retrievedAt: string;
+  /** Sibling records in the subject's map + 3-digit parcel stem, subject excluded. */
+  siblings: WilliamsonSiblingParcel[];
+  /** How many bounded detail reads were spent (≤ maxDetailReads). */
+  detailReads: number;
+}
+
+/**
+ * ONE bounded parcel-family search against the current Williamson County
+ * assessment database: every parcel sharing the subject's control map and
+ * 3-digit parcel stem (a Tennessee split family — parcel 123.00's splits are
+ * numbered 123.01, 123.02, …). The subject itself is excluded. At most
+ * `maxDetailReads` sibling detail pages are read (legal acreage + last deed),
+ * prioritized by same situs street as the subject, then most recent transfer —
+ * exactly the records that can explain a recent split. This is the single
+ * permitted escalation for the acreage/parcel-extent reconciliation; it never
+ * walks title history and never searches the recorder.
+ */
+export async function searchWilliamsonParcelFamily(
+  input: { apn: string; subjectSitusStreet?: string | null; maxDetailReads?: number },
+  timeoutMs: number,
+  fetchImpl: FetchLike = fetch as unknown as FetchLike,
+  signal?: AbortSignal,
+): Promise<WilliamsonParcelFamilyOutcome> {
+  const retrievedAt = new Date().toISOString();
+  const maxDetailReads = Math.max(0, Math.min(input.maxDetailReads ?? 3, 3));
+  const base = (status: 'ok' | 'unavailable', note: string, siblings: WilliamsonSiblingParcel[] = [], detailReads = 0): WilliamsonParcelFamilyOutcome => ({
+    status, source: WILLIAMSON_ASSESSOR_SOURCE, sourceUrl: `${WILLIAMSON_BASE}/`, note, retrievedAt, siblings, detailReads,
+  });
+  const parts = tennesseeCanonicalApnParts(input.apn);
+  if (!parts) return base('unavailable', 'The canonical APN does not carry a Tennessee map–parcel decomposition.');
+  const stem = parts.parcelDigits.padStart(5, '0').slice(0, 3);
+
+  try {
+    const landing = await fetchWithTimeout(fetchImpl, `${WILLIAMSON_BASE}/`, {}, timeoutMs, signal);
+    const csrf = /name="csrf_token"[^>]*value="([^"]+)"/.exec(landing.body)?.[1];
+    if (!csrf) return base('unavailable', 'The county assessor search did not present its expected search form.');
+    const cookie = landing.setCookies.map((entry) => entry.split(';')[0]).join('; ');
+    const headers: Record<string, string> = cookie ? { cookie } : {};
+
+    const searchUrl = `${WILLIAMSON_BASE}/json/search?csrf_token=${encodeURIComponent(csrf)}&owner_name=&property_address=&subdivision=&city=&lot=&map_number=${encodeURIComponent(parts.controlMap)}&parcel=${encodeURIComponent(stem)}&sales_date_start=&sales_date_end=`;
+    const search = await fetchWithTimeout(fetchImpl, searchUrl, headers, timeoutMs, signal);
+    let hits: Array<Record<string, unknown>> = [];
+    try {
+      const parsed = JSON.parse(search.body) as { data?: Array<Record<string, unknown>> };
+      hits = Array.isArray(parsed.data) ? parsed.data : [];
+    } catch {
+      return base('unavailable', 'The county assessor family search returned an unreadable response.');
+    }
+
+    // Family = same control map + same 3-digit stem, subject excluded. Only
+    // active records; an inactive assessment row is a retired parcel identity.
+    const family = hits.filter((hit) => {
+      const id = String(hit['Parcel ID'] ?? '');
+      const tokens = id.trim().toUpperCase().split(/\s+/).filter(Boolean);
+      const parcelToken = /^[A-Z]$/.test(tokens[1] ?? '') ? tokens[2] : tokens[1];
+      return tokens[0] === parts.controlMap
+        && (parcelToken ?? '').padStart(5, '0').startsWith(stem)
+        && !williamsonParcelIdMatchesApn(id, input.apn)
+        && String(hit.Status ?? 'A').trim().toUpperCase() !== 'I';
+    });
+
+    const subjectStreet = trimmed(input.subjectSitusStreet)?.toUpperCase() ?? null;
+    const siblings: Array<WilliamsonSiblingParcel & { lrsn: string }> = family.map((hit) => ({
+      officialParcelId: trimmed(hit['Parcel ID']) ?? '',
+      owner: trimmed(hit.Owner),
+      situsAddress: trimmed(hit['Property Address']),
+      lastTransferDate: trimmed(hit['Last Transfer Date']),
+      legalAcres: null,
+      deedBookPage: null,
+      lrsn: String(hit.lrsn ?? hit.DT_RowId ?? '').trim(),
+    }));
+
+    // Bounded detail reads: same situs street first, then most recent transfer.
+    const prioritized = [...siblings].sort((a, b) => {
+      const aStreet = subjectStreet && (a.situsAddress ?? '').toUpperCase().includes(subjectStreet) ? 0 : 1;
+      const bStreet = subjectStreet && (b.situsAddress ?? '').toUpperCase().includes(subjectStreet) ? 0 : 1;
+      if (aStreet !== bStreet) return aStreet - bStreet;
+      return String(b.lastTransferDate ?? '').localeCompare(String(a.lastTransferDate ?? ''));
+    });
+    let detailReads = 0;
+    for (const sibling of prioritized) {
+      if (detailReads >= maxDetailReads) break;
+      if (!/^\d+$/.test(sibling.lrsn)) continue;
+      detailReads += 1;
+      const detail = await fetchWithTimeout(fetchImpl, `${WILLIAMSON_BASE}/parcel/${sibling.lrsn}?csrf=${encodeURIComponent(csrf)}`, headers, timeoutMs, signal);
+      const { fields, sales } = parseWilliamsonParcelDetail(detail.body);
+      const acres = Number.parseFloat(String(fields['Legal Acreage'] ?? '').replace(/,/g, ''));
+      sibling.legalAcres = Number.isFinite(acres) && acres > 0 ? acres : null;
+      if (sales[0] && (sales[0].deedBook || sales[0].deedPage)) {
+        sibling.deedBookPage = `${sales[0].deedBook}/${sales[0].deedPage}`.replace(/^\/|\/$/g, '');
+      }
+    }
+
+    const cleaned = siblings.map(({ lrsn: _lrsn, ...rest }) => rest);
+    return base('ok', `${cleaned.length} active sibling record(s) share map ${parts.controlMap} parcel stem ${stem}; ${detailReads} detail record(s) read.`, cleaned, detailReads);
+  } catch (error) {
+    return base('unavailable', `The county assessor family search could not answer: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 const COUNTY_ASSESSOR_ADAPTERS: CountyAssessorAdapter[] = [WILLIAMSON_ADAPTER];
 
 export function countyAssessorSearchSourceFor(

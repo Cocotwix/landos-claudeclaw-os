@@ -170,6 +170,7 @@ import {
 import { PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID } from './property-development-history-capability.js';
 import type { PropertyBackstory } from './property-backstory.js';
 import { CapabilityInvocationStore } from './capability-store.js';
+import { readAcreageExtentRecord, runOfficialAcreageExtentReconciliation } from './official-acreage-run.js';
 import { deriveOperatorDisplayLocation } from './operator-display-location.js';
 import type { CapabilityEntity } from './capability-contract.js';
 import { researchReadinessItem } from './research-readiness.js';
@@ -10237,6 +10238,7 @@ export function registerLandosRoutes(app: Hono): void {
   const intelligenceStackRuns = new Map<number, { startedAt: string; error: string | null }>();
   const dealBrainRuns = new Map<number, { startedAt: string; error: string | null }>();
   const intelligenceReconcileRuns = new Map<number, { startedAt: string; error: string | null }>();
+  const acreageExtentRuns = new Map<number, { startedAt: string; error: string | null }>();
 
   const readPipelineStage = (dealCardId: number): string | null => {
     const row = getLandosDb().prepare(
@@ -10328,6 +10330,9 @@ export function registerLandosRoutes(app: Hono): void {
       reconciliation: readDerivedSnapshot<IntelligenceReconciliationRecord>(id, INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE),
       reconcileRun: intelligenceReconcileRuns.get(id) ?? null,
       reconcileEligible,
+      // Official acreage / parcel-extent reconciliation: SELECT-only here.
+      acreageExtent: readAcreageExtentRecord(id),
+      acreageExtentRun: acreageExtentRuns.get(id) ?? null,
       runtime: acquisitionAnalystRuntimeStatus(),
     });
   });
@@ -10460,6 +10465,45 @@ export function registerLandosRoutes(app: Hono): void {
         const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
         logger.error({ event: 'intelligence_reconcile_failed', dealCardId: id, msg: detail }, 'intelligence_reconcile_failed');
         intelligenceReconcileRuns.set(id, { startedAt, error: `Reconciliation failed: ${detail}` });
+      }
+    })();
+
+    return c.json({ running: true, startedAt }, 202);
+  });
+
+  // ── Official acreage / parcel-extent reconciliation (explicit only) ─────
+  //
+  // The bounded run that settles WHAT THE CURRENT PARCEL'S ACREAGE/EXTENT IS:
+  // reuse the retained assessor record, one county-GIS parcel query, one
+  // assessment-database parcel-family search (≤3 sibling detail reads), a
+  // deterministic reconciliation, persistence with provenance, and — only when
+  // stronger identity-verified official evidence establishes it — adoption of
+  // the canonical acreage with acreage-dependent products marked stale (never
+  // rerun). Page loads read the persisted snapshot via the GET above.
+  app.post('/api/landos/deal-cards/:id/acreage-extent/reconcile', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const inFlight = acreageExtentRuns.get(id);
+    if (inFlight && !inFlight.error) {
+      return c.json({ running: true, startedAt: inFlight.startedAt }, 202);
+    }
+    const startedAt = new Date().toISOString();
+    acreageExtentRuns.set(id, { startedAt, error: null });
+
+    void (async () => {
+      try {
+        const record = await runOfficialAcreageExtentReconciliation(id);
+        if (record.refusalReason) {
+          acreageExtentRuns.set(id, { startedAt, error: record.refusalReason });
+        } else {
+          acreageExtentRuns.delete(id);
+        }
+      } catch (error) {
+        const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
+        logger.error({ event: 'acreage_extent_reconcile_failed', dealCardId: id, msg: detail }, 'acreage_extent_reconcile_failed');
+        acreageExtentRuns.set(id, { startedAt, error: `Acreage reconciliation failed: ${detail}` });
       }
     })();
 

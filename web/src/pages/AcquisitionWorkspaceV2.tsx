@@ -50,6 +50,7 @@ import type {
   SellerIntelligenceView,
 } from '../components/AcquisitionWorkspaceV2IntelligenceStack';
 import type {
+  AcreageExtentView,
   IntelligenceReconciliationView,
   MarketIntelligenceReadView,
   PropertyIntelligenceReadView,
@@ -110,6 +111,9 @@ interface IntelligenceStackResp {
   reconciliation?: IntelligenceReconciliationView | null;
   reconcileRun?: { startedAt?: string; error?: string | null } | null;
   reconcileEligible?: ReconcileEligibleView[];
+  /** Official acreage / parcel-extent reconciliation. SELECT-only projection. */
+  acreageExtent?: AcreageExtentView | null;
+  acreageExtentRun?: { startedAt?: string; error?: string | null } | null;
 }
 
 const PHASE_LABEL: Record<string, string> = {
@@ -323,6 +327,11 @@ export function AcquisitionWorkspaceV2() {
   const [reconcileEligible, setReconcileEligible] = useState<ReconcileEligibleView[]>([]);
   const [reconcileRunning, setReconcileRunning] = useState(false);
   const [reconcileError, setReconcileError] = useState<string | null>(null);
+  // Official acreage / parcel-extent reconciliation. Fetched and persisted
+  // server-side; only the explicit Reconcile action starts the bounded run.
+  const [acreageExtent, setAcreageExtent] = useState<AcreageExtentView | null>(null);
+  const [acreageRunning, setAcreageRunning] = useState(false);
+  const [acreageError, setAcreageError] = useState<string | null>(null);
   const [dealBrainThread, setDealBrainThread] = useState<DealBrainThreadEntry[]>([]);
   const [dealBrainRunning, setDealBrainRunning] = useState(false);
   const [dealBrainError, setDealBrainError] = useState<string | null>(null);
@@ -392,6 +401,9 @@ export function AcquisitionWorkspaceV2() {
         setReconcileEligible(ai?.reconcileEligible ?? []);
         setReconcileRunning(!!ai?.reconcileRun && !ai.reconcileRun.error);
         setReconcileError(ai?.reconcileRun?.error ?? null);
+        setAcreageExtent(ai?.acreageExtent ?? null);
+        setAcreageRunning(!!ai?.acreageExtentRun && !ai.acreageExtentRun.error);
+        setAcreageError(ai?.acreageExtentRun?.error ?? null);
         setDealBrainThread(ai?.guidance ?? []);
         setDealBrainRunning(!!ai?.dealBrainRun && !ai.dealBrainRun.error);
         setDealBrainError(ai?.dealBrainRun?.error ?? null);
@@ -450,6 +462,26 @@ export function AcquisitionWorkspaceV2() {
     }, 5_000);
     return () => { dead = true; window.clearInterval(timer); };
   }, [dealId, reconcileRunning]);
+
+  // Poll only while the bounded acreage reconciliation is in flight. SELECT-
+  // only: the poll just watches the one explicit run finish and re-reads the
+  // persisted record (and the possibly-updated deal identity) it produced.
+  useEffect(() => {
+    if (dealId == null || !acreageRunning) return undefined;
+    let dead = false;
+    const timer = window.setInterval(async () => {
+      const ai = await apiGet<IntelligenceStackResp>(`/api/landos/deal-cards/${dealId}/intelligence`).catch(() => null);
+      if (dead || !ai) return;
+      if (ai.acreageExtentRun && !ai.acreageExtentRun.error) return;
+      setAcreageRunning(false);
+      setAcreageError(ai.acreageExtentRun?.error ?? null);
+      setAcreageExtent(ai.acreageExtent ?? null);
+      // A resolved adoption changed the property card acreage — re-read the
+      // deal so the header shows the reconciled identity, not a stale one.
+      setReloadNonce((n) => n + 1);
+    }, 5_000);
+    return () => { dead = true; window.clearInterval(timer); };
+  }, [dealId, acreageRunning]);
 
   // Poll the Deal Brain conversation only while a reply is being produced.
   useEffect(() => {
@@ -517,6 +549,21 @@ export function AcquisitionWorkspaceV2() {
     }
   };
 
+  // The explicit bounded acreage / parcel-extent reconciliation: reuse the
+  // retained assessor record, one county-GIS parcel query, one assessment-
+  // database family search, then STOP. Nothing on page load reaches this.
+  const runAcreageReconcile = async () => {
+    if (dealId == null || acreageRunning) return;
+    setAcreageRunning(true);
+    setAcreageError(null);
+    try {
+      await apiPost(`/api/landos/deal-cards/${dealId}/acreage-extent/reconcile`, {});
+    } catch (e) {
+      setAcreageRunning(false);
+      setAcreageError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   // Ask the Deal Brain. The message is stored as deal-specific guidance and
   // the grounded reply arrives via the poll above.
   const askDealBrain = async (message: string) => {
@@ -571,7 +618,14 @@ export function AcquisitionWorkspaceV2() {
   const locality = addrParts.slice(1).join(',').trim();
   const zip = matchNum(address, /\b(\d{5})\s*$/) || deal?.dealCard?.propertyCards?.[0]?.zip || '';
   const owner = id.owner || deal?.dealCard?.propertyCards?.[0]?.owner || '';
-  const acres = id.acres ?? deal?.dealCard?.propertyCards?.[0]?.acres ?? null;
+  // The reconciled canonical acreage governs the header when the official-
+  // record reconciliation resolved it; the identity snapshot and property
+  // card figures are the fallbacks (and converge with it after adoption).
+  const acreageDecision = acreageExtent?.decision ?? null;
+  const acreageResolved = acreageDecision?.status === 'resolved_current_canonical'
+    || acreageDecision?.status === 'resolved_current_vs_historical_extent';
+  const acres = (acreageResolved ? acreageDecision?.canonicalAcres : null)
+    ?? id.acres ?? deal?.dealCard?.propertyCards?.[0]?.acres ?? null;
 
   // Hero preference: widest capture that still reads as the parcel. The tight
   // close crop is LAST — it is the one most likely to clip a long/narrow
@@ -898,6 +952,12 @@ export function AcquisitionWorkspaceV2() {
               running: reconcileRunning,
               error: reconcileError,
               onReconcile: runIntelligenceReconcile,
+            },
+            acreage: {
+              record: acreageExtent,
+              running: acreageRunning,
+              error: acreageError,
+              onReconcile: runAcreageReconcile,
             },
           }}
           dealBrain={{

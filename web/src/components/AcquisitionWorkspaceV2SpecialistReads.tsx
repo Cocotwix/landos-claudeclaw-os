@@ -121,6 +121,35 @@ export interface PropertyReconcileControls {
   onReconcile: (conflictSubject?: string | null) => void;
 }
 
+/** The persisted official acreage / parcel-extent reconciliation, as consumed. */
+export interface AcreageExtentView {
+  decision?: {
+    status?: string;
+    canonicalAcres?: number | null;
+    canonicalSource?: string | null;
+    confidence?: string;
+    parcelExtent?: string | null;
+    extentExplanation?: string | null;
+    retained?: Array<{ valueAcres?: number; valueType?: string; source?: string; vintage?: string; note?: string }>;
+    reasoning?: Array<{ classification?: string; statement?: string }>;
+    canonicalChanged?: boolean;
+    staleProducts?: string[];
+    unresolvedQuestions?: string[];
+  } | null;
+  adoption?: { adopted?: boolean; previousAcres?: number | null; newAcres?: number | null; note?: string } | null;
+  staleSince?: string | null;
+  completedAt?: string;
+  refusalReason?: string | null;
+}
+
+/** Explicit operator controls for the bounded acreage reconciliation run. */
+export interface AcreageExtentControls {
+  record: AcreageExtentView | null;
+  running: boolean;
+  error: string | null;
+  onReconcile: () => void;
+}
+
 // ── Shared pieces ──────────────────────────────────────────────────────────
 
 function ScoreChip({ score, quality }: { score: number | null | undefined; quality?: string | null }) {
@@ -191,10 +220,107 @@ function ReconciliationPanel({ record }: { record: IntelligenceReconciliationVie
   );
 }
 
-function PropertyReadCard({ product, stale, reconcile }: {
+const ACREAGE_STATUS_LABEL: Record<string, string> = {
+  resolved_current_canonical: 'Resolved — current canonical acreage',
+  resolved_current_vs_historical_extent: 'Resolved — current parcel vs historical extent',
+  partially_resolved: 'Partially resolved',
+  unresolved: 'Unresolved',
+};
+
+const VALUE_TYPE_LABEL: Record<string, string> = {
+  official_reported: 'official reported',
+  gis_reported: 'GIS attribute',
+  gis_calculated: 'GIS calculated',
+  historical_project: 'historical project',
+  provider_reported: 'provider reported',
+  provider_calculated: 'provider calculated',
+};
+
+/** CURRENT PARCEL / OTHER RETAINED ACREAGE / RECONCILIATION — the persisted
+ *  official acreage + parcel-extent reconciliation. Rendering runs nothing. */
+function AcreageExtentPanel({ acreage }: { acreage: AcreageExtentControls }) {
+  const record = acreage.record;
+  const decision = record?.decision ?? null;
+  const status = decision?.status ?? null;
+  const resolved = status === 'resolved_current_canonical' || status === 'resolved_current_vs_historical_extent';
+  const tone = resolved ? 'strong' : status === 'partially_resolved' ? 'moderate' : 'weak';
+  const retained = (decision?.retained ?? []).filter((item) => item.valueAcres != null);
+  const others = retained.filter((item) => !(resolved && item.valueType === 'official_reported'));
+  const staleProducts = decision?.staleProducts ?? [];
+  return (
+    <div class="awv2-specialist-reconcile" data-testid="specialist-acreage-extent">
+      <b>Acreage & parcel extent</b>
+      {!record ? (
+        <p>The conflicting acreage figures on this deal have not been reconciled against the current official parcel record yet.</p>
+      ) : (
+        <>
+          <p>
+            <i>Current parcel</i>{' '}
+            {resolved && decision?.canonicalAcres != null
+              ? <span data-testid="acreage-canonical"><b>{decision.canonicalAcres} AC</b> — {decision.canonicalSource}{decision.confidence ? ` (${decision.confidence.replace(/_/g, ' ')})` : ''}</span>
+              : 'Not established by the evidence in hand.'}
+          </p>
+          {others.length > 0 && (
+            <p data-testid="acreage-retained">
+              <i>Other retained acreage</i>{' '}
+              {others.map((item) => `${item.valueAcres} AC — ${item.source}${item.valueType ? ` (${VALUE_TYPE_LABEL[item.valueType] ?? item.valueType}${item.vintage === 'stale' ? ', stale vintage' : ''})` : ''}`).join(' · ')}
+            </p>
+          )}
+          <p data-testid="acreage-reconciliation-explanation">
+            <i>Reconciliation</i>{' '}
+            {decision?.extentExplanation
+              ?? decision?.parcelExtent
+              ?? (decision?.unresolvedQuestions?.length ? decision.unresolvedQuestions.join(' ') : '—')}
+          </p>
+          {record.adoption?.adopted && (
+            <p><i>Adopted</i> {record.adoption.note}</p>
+          )}
+          {staleProducts.length > 0 && (
+            <p class="awv2-specialist-error" data-testid="acreage-stale-products">
+              Marked STALE pending recompute on the reconciled acreage (not rerun automatically):{' '}
+              {staleProducts.map((item) => item.replace(/_/g, ' ')).join(', ')}
+              {record.staleSince ? ` — since ${new Date(record.staleSince).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}.
+            </p>
+          )}
+          <p class="awv2-specialist-reconcile-status">
+            <i>Status</i>{' '}
+            <span class={`awv2-reconcile-chip s-${tone}`} data-testid="acreage-status">{status ? ACREAGE_STATUS_LABEL[status] ?? status : '—'}</span>
+          </p>
+          {(decision?.reasoning ?? []).length > 0 && (
+            <details class="awv2-specialist-details">
+              <summary>Evidence reasoning ({(decision?.reasoning ?? []).length})</summary>
+              {(decision?.reasoning ?? []).map((line) => (
+                <p><i>{line.classification}</i> {line.statement}</p>
+              ))}
+            </details>
+          )}
+        </>
+      )}
+      {acreage.error && <p class="awv2-specialist-error" data-testid="acreage-error">{acreage.error}</p>}
+      {(!record || !resolved) && (
+        // Explicit action only: this click starts the ONE bounded run (reuse
+        // the retained assessor record, one county-GIS query, one family
+        // search). Page loads and refreshes never trigger it.
+        <button
+          type="button"
+          class="awv2-reconcile-btn"
+          data-testid="acreage-reconcile-run"
+          disabled={acreage.running}
+          onClick={() => acreage.onReconcile()}
+          title="Reconciles the conflicting acreage figures against the current official county parcel record and GIS depiction"
+        >
+          {acreage.running ? 'Reconciling official acreage…' : 'Reconcile official acreage & extent'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function PropertyReadCard({ product, stale, reconcile, acreage }: {
   product: PropertyIntelligenceReadView | null;
   stale?: boolean;
   reconcile?: PropertyReconcileControls | null;
+  acreage?: AcreageExtentControls | null;
 }) {
   return (
     <article class="awv2-panel awv2-specialist" data-domain="property" data-testid="specialist-read-property">
@@ -285,6 +411,7 @@ function PropertyReadCard({ product, stale, reconcile }: {
           )}
         </>
       )}
+      {acreage && <AcreageExtentPanel acreage={acreage} />}
       <ReadFooter generatedAt={product?.generatedAt} runtime={product?.runtime} stale={stale} />
     </article>
   );
@@ -402,16 +529,17 @@ function SellerReadCard({ product, stale }: { product: SellerIntelligenceReadVie
 
 // ── The strip ──────────────────────────────────────────────────────────────
 
-export function SpecialistReadsPanel({ property, market: marketProduct, seller, stale, reconcile }: {
+export function SpecialistReadsPanel({ property, market: marketProduct, seller, stale, reconcile, acreage }: {
   property: PropertyIntelligenceReadView | null;
   market: MarketIntelligenceReadView | null;
   seller: SellerIntelligenceReadView | null;
   stale: SpecialistStaleView | null;
   reconcile?: PropertyReconcileControls | null;
+  acreage?: AcreageExtentControls | null;
 }) {
   return (
     <section class="awv2-specialist-reads" aria-label="Specialist intelligence reads" data-testid="specialist-reads">
-      <PropertyReadCard product={property} stale={stale?.property === true && !!property} reconcile={reconcile} />
+      <PropertyReadCard product={property} stale={stale?.property === true && !!property} reconcile={reconcile} acreage={acreage} />
       <MarketReadCard product={marketProduct} stale={stale?.market === true && !!marketProduct} />
       <SellerReadCard product={seller} stale={stale?.seller === true && !!seller} />
     </section>
