@@ -10069,6 +10069,11 @@ export function registerLandosRoutes(app: Hono): void {
       marketContext: marketContextFor(deal) as unknown,
       documentRegistry: documentRegistryForCard(cardId, { dealCardId }) as unknown,
       dealCard: deal as unknown,
+      // The persisted seller evidence: Acquisitions CRM state (profile, comm
+      // log, discovery) plus seller-stated fact rows. SELECTs over existing
+      // stores — no new CRM, no research.
+      acquisition: getAcquisition(dealCardId) as unknown,
+      sellerStatedFacts: (cardId != null ? loadSellerStatedFacts(cardId) : []) as unknown,
       visuals,
       visualObservations: groundedVisualObservations,
     };

@@ -32,6 +32,13 @@ import {
   type QuickFlipScreenView,
 } from './AcquisitionWorkspaceV2IntelligenceStack';
 import {
+  SpecialistReadsPanel,
+  type MarketIntelligenceReadView,
+  type PropertyIntelligenceReadView,
+  type SellerIntelligenceReadView,
+  type SpecialistStaleView,
+} from './AcquisitionWorkspaceV2SpecialistReads';
+import {
   ResearchReadinessStrip,
   type ResearchReadinessManifestView,
 } from './AcquisitionWorkspaceV2ResearchReadiness';
@@ -224,6 +231,14 @@ interface OverviewSectionProps {
     phaseLabel: string | null;
     whatChanged: string[] | null;
   } | null;
+  /** The three persisted specialist intelligence products (Property, Market +
+   *  Area, Seller) and the per-layer staleness map. Rendering runs nothing. */
+  specialistReads?: {
+    property: PropertyIntelligenceReadView | null;
+    market: MarketIntelligenceReadView | null;
+    seller: SellerIntelligenceReadView | null;
+    stale: SpecialistStaleView | null;
+  } | null;
   /** The Deal Brain conversation: operator guidance in, grounded replies out. */
   dealBrain?: {
     thread: DealBrainThreadEntry[];
@@ -339,6 +354,7 @@ export function OverviewSection({
   landUseIntelligence,
   acquisitionIntelligence,
   intelligence,
+  specialistReads,
   dealBrain,
   researchReadiness,
 }: OverviewSectionProps) {
@@ -664,6 +680,20 @@ export function OverviewSection({
           cashVerdict={intelligence.cashVerdict}
           phaseLabel={intelligence.phaseLabel}
           whatChanged={intelligence.whatChanged}
+        />
+      )}
+
+      {/* ── 1a2. The three specialist reads behind those scores: what Property
+             thinks, what Market + Area thinks, what Seller thinks — the
+             persisted specialist products rendered as compact current
+             opinions, not the raw reports. Seller is honestly pre-contact
+             until real communication exists. Rendering runs nothing. ── */}
+      {specialistReads && (
+        <SpecialistReadsPanel
+          property={specialistReads.property}
+          market={specialistReads.market}
+          seller={specialistReads.seller}
+          stale={specialistReads.stale}
         />
       )}
 

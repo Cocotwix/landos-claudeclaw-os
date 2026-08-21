@@ -1,0 +1,93 @@
+/* LandOS specialist intelligence reads — three persisted specialist cards
+   (Property / Market + Area / Seller) on the Overview. Domain hue coding comes
+   from the lead-design layer's `data-domain` panel contract; this sheet adds
+   only the family's internal layout. */
+
+.awv2-specialist-reads {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 12px;
+}
+
+.awv2-specialist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--awv2-border, rgba(148, 163, 184, 0.25));
+  border-radius: 12px;
+  background: var(--awv2-panel, rgba(15, 23, 42, 0.35));
+}
+
+.awv2-specialist-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+.awv2-specialist-score {
+  display: inline-grid;
+  justify-items: center;
+  min-width: 58px;
+  padding: 3px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+.awv2-specialist-score b { font-size: 17px; line-height: 1.1; }
+.awv2-specialist-score small { font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.75; }
+.awv2-specialist-score.s-strong b { color: #34d399; }
+.awv2-specialist-score.s-moderate b { color: #fbbf24; }
+.awv2-specialist-score.s-weak b { color: #f87171; }
+.awv2-specialist-score.s-pending b { color: rgba(148, 163, 184, 0.9); }
+
+.awv2-specialist-read { margin: 0; font-size: 13px; line-height: 1.5; }
+.awv2-specialist-empty { margin: 0; font-size: 12.5px; line-height: 1.5; opacity: 0.8; }
+.awv2-specialist-line { margin: 0; font-size: 12.5px; line-height: 1.45; }
+.awv2-specialist-line b { opacity: 0.7; font-weight: 600; margin-right: 4px; }
+
+.awv2-specialist-list { display: grid; gap: 2px; font-size: 12.5px; line-height: 1.4; }
+.awv2-specialist-list b { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.65; }
+.awv2-specialist-list.good span { color: #6ee7b7; }
+.awv2-specialist-list.bad span { color: #fca5a5; }
+
+.awv2-specialist-conflicts {
+  display: grid;
+  gap: 4px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(217, 161, 61, 0.45);
+  background: rgba(217, 161, 61, 0.08);
+}
+.awv2-specialist-conflicts b { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #d9a13d; }
+.awv2-specialist-conflicts p { margin: 0; font-size: 12px; line-height: 1.45; }
+.awv2-specialist-conflicts i { font-style: normal; font-weight: 600; margin-right: 4px; }
+
+.awv2-specialist-reported { display: grid; gap: 4px; }
+.awv2-specialist-reported > b { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.75; }
+.awv2-specialist-reported > b em { font-style: normal; text-transform: none; letter-spacing: 0; opacity: 0.75; font-weight: 500; }
+.awv2-specialist-reported p { margin: 0; font-size: 12px; line-height: 1.5; }
+.awv2-specialist-reported .tag {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(201, 164, 92, 0.55);
+  background: rgba(201, 164, 92, 0.12);
+  color: #c9a45c;
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  font-weight: 700;
+}
+.awv2-specialist-reported small, .awv2-specialist-details small { opacity: 0.65; }
+
+.awv2-specialist-next { margin: 0; font-size: 12.5px; line-height: 1.45; }
+.awv2-specialist-next b { color: #c9a45c; font-weight: 600; margin-right: 4px; }
+
+.awv2-specialist-details summary { font-size: 12px; cursor: pointer; opacity: 0.8; }
+.awv2-specialist-details p { margin: 4px 0 0; font-size: 12px; line-height: 1.45; }
+
+.awv2-specialist-foot {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 10.5px;
+  opacity: 0.7;
+}
+.awv2-specialist-foot .stale { color: #fbbf24; opacity: 1; }

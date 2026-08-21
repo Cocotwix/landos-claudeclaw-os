@@ -141,3 +141,112 @@ describe('purity', () => {
     expect(JSON.stringify(source)).toBe(before);
   });
 });
+
+// ── Seller evidence assembly ─────────────────────────────────────────────
+//
+// The seller section is the bounded SELLER EVIDENCE record: assembled from the
+// deal's people, the Acquisitions CRM state and the seller-stated fact rows —
+// never from a new store. Statements stay SELLER-REPORTED with provenance, and
+// chronology survives bounding at both ends.
+
+function sellerFile(overrides: Partial<PropertyFileSource> = {}): PropertyFileSource {
+  return file({
+    dealCard: {
+      people: [
+        { name: 'Sam Seller', role: 'seller', authority_status: 'confirmed', primary_contact: true },
+        { name: 'Heir Two', role: 'heir', authority_status: 'unknown' },
+      ],
+      asking_price: 140_000,
+    },
+    acquisition: {
+      stage: 'needs_follow_up',
+      profile: {
+        name: 'Sam Seller', motivation: 'Relocating for work', timeline: 'Wants to close inside 90 days',
+        askingPrice: 'About $140,000', priceFlexibility: 'Some, with a fast close',
+        decisionMakers: 'Sam plus a sibling on the deed', sellerStatedFacts: ['The property is raw land'],
+        objections: ['Worried about lowball offers'], concerns: [], commitments: ['Will send the deed copy'],
+        unknowns: ['Whether the sibling agrees'],
+      },
+      commLog: [
+        { at: '2026-08-15T17:00:00.000Z', type: 'call', channel: 'call', direction: 'outbound', summary: 'Discovery call: motivation and price discussed', outcome: 'Positive', sentiment: 'positive', keyFacts: ['Seller says the tract has never been built on'], createdAt: '2026-08-15T17:30:00.000Z' },
+        { at: '2026-08-01T12:00:00.000Z', type: 'text', channel: 'text', direction: 'inbound', summary: 'Seller replied asking who we are', createdAt: '2026-08-01T12:01:00.000Z' },
+      ],
+      discovery: [{
+        rawNotes: 'notes', motivation: 'Relocation', timeline: '90 days', priceExpectation: '$140,000',
+        decisionMakers: 'Sam + sibling', sellerClaimedFacts: ['Septic perked in 2019'], objections: [],
+        emotionalTone: 'even', urgency: 'moderate', risks: [], followUpItems: ['Confirm deed names'],
+        unansweredQuestions: ['Any liens?'], capturedAt: '2026-08-15T18:00:00.000Z',
+      }],
+    },
+    sellerStatedFacts: [
+      { kind: 'improvements', value: 'No structures on the land', recordedAt: 1_755_300_000, recordedBy: 'tyler' },
+    ],
+    ...overrides,
+  });
+}
+
+describe('seller evidence assembly', () => {
+  it('assembles materially richer evidence than name + asking price from the existing sources', () => {
+    const seller = buildAcquisitionDossier(sellerFile()).seller;
+    expect(seller).toMatchObject({ present: true, name: 'Sam Seller', askingPrice: 140_000, stage: 'needs_follow_up' });
+    expect(seller.people).toHaveLength(2);
+    expect(seller.people[0]).toMatchObject({ role: 'seller', authorityStatus: 'confirmed', primaryContact: true });
+    expect(seller.profile).toMatchObject({ motivation: 'Relocating for work', decisionMakers: 'Sam plus a sibling on the deed' });
+    expect(seller.communications).toHaveLength(2);
+    expect(seller.discovery).toHaveLength(1);
+    expect(seller.evidenceCounts).toEqual({ communications: 2, discoveryExtractions: 1, reportedFacts: 4 });
+  });
+
+  it('keeps every seller statement SELLER-REPORTED with its provenance, deduplicated across sources', () => {
+    const seller = buildAcquisitionDossier(sellerFile()).seller;
+    const bySource = Object.fromEntries(seller.sellerReportedFacts.map((fact) => [fact.statement, fact.source]));
+    expect(bySource['improvements: No structures on the land']).toBe('seller_stated_fact record');
+    expect(bySource['Septic perked in 2019']).toBe('discovery call');
+    expect(bySource['Seller says the tract has never been built on']).toBe('call log');
+    expect(bySource['The property is raw land']).toBe('seller profile');
+    // Dedup: repeating the same statement in two sources carries it once.
+    const duplicated = sellerFile();
+    (duplicated.acquisition as { profile: { sellerStatedFacts: string[] } }).profile.sellerStatedFacts.push('Septic perked in 2019');
+    const facts = buildAcquisitionDossier(duplicated).seller.sellerReportedFacts;
+    expect(facts.filter((fact) => fact.statement === 'Septic perked in 2019')).toHaveLength(1);
+  });
+
+  it('carries communications oldest → newest and retains the earliest entries when bounding, so material older statements survive', () => {
+    const seller = buildAcquisitionDossier(sellerFile()).seller;
+    expect(seller.communications.map((entry) => entry.type)).toEqual(['text', 'call']);
+
+    const many = sellerFile();
+    (many.acquisition as { commLog: unknown[] }).commLog = Array.from({ length: 40 }, (_, index) => ({
+      at: `2026-07-${String((index % 28) + 1).padStart(2, '0')}T12:00:00.000Z`,
+      type: 'text', channel: 'text', direction: 'outbound', summary: `Message ${index + 1}`,
+      createdAt: `2026-07-${String((index % 28) + 1).padStart(2, '0')}T12:00:00.000Z`,
+    }));
+    (many.acquisition as { commLog: Array<{ at: string; summary: string }> }).commLog.push(
+      { at: '2026-06-01T09:00:00.000Z', summary: 'EARLIEST: seller first said they would take $95,000' } as never,
+    );
+    const bounded = buildAcquisitionDossier(many).seller;
+    expect(bounded.communications).toHaveLength(24);
+    expect(bounded.communications[0].summary).toContain('EARLIEST');
+    expect(bounded.evidenceCounts.communications).toBe(41);
+    expect(buildAcquisitionDossier(many).truncation.join(' ')).toMatch(/Seller communications: 17 of 41/);
+  });
+
+  it('is deal-scoped by construction: another deal\'s evidence never appears in this dossier', () => {
+    const dealA = buildAcquisitionDossier(sellerFile()).seller;
+    const dealB = buildAcquisitionDossier(file({ dealCard: { people: [], asking_price: null } })).seller;
+    expect(dealB.communications).toEqual([]);
+    expect(dealB.sellerReportedFacts).toEqual([]);
+    expect(dealA.communications.length).toBeGreaterThan(0);
+    const dealBText = JSON.stringify(dealB);
+    for (const entry of dealA.communications) expect(dealBText).not.toContain(entry.summary);
+  });
+
+  it('reports an honest empty seller record when nothing is persisted, and coverage says so', () => {
+    const dossier = buildAcquisitionDossier(file());
+    expect(dossier.seller).toMatchObject({ present: false, name: null, askingPrice: null, profile: null });
+    expect(dossier.seller.evidenceCounts).toEqual({ communications: 0, discoveryExtractions: 0, reportedFacts: 0 });
+    expect(dossier.coverage.absent).toEqual(expect.arrayContaining(['Seller communication record', 'Seller-reported property facts']));
+    const withEvidence = buildAcquisitionDossier(sellerFile());
+    expect(withEvidence.coverage.present).toEqual(expect.arrayContaining(['Seller information', 'Seller communication record', 'Seller-reported property facts']));
+  });
+});

@@ -179,6 +179,10 @@ function operatorScores(source: PropertyFileSource | null): { property: number |
 }
 
 function sellerEstablishedFrom(manifest: ResearchReadinessManifest | null, dossier: AcquisitionDossier): boolean {
+  // A real communication record IS seller contact: once the deal carries
+  // persisted communications or discovery extractions, the seller lane reasons
+  // over them regardless of what the readiness checklist has caught up to.
+  if (dossier.seller.communications.length > 0 || dossier.seller.discovery.length > 0) return true;
   const item = manifest?.items.find((candidate) => candidate.id === 'seller_information');
   if (item) return item.status === 'green' || item.status === 'blue';
   return dossier.seller.present && dossier.seller.askingPrice != null;
@@ -291,6 +295,9 @@ function preContactSellerProduct(input: {
     bestApproach: null,
     sellerReportedFacts: [],
     followUps: [],
+    contradictions: [],
+    unknowns: [],
+    nextQuestion: null,
   };
 }
 
@@ -633,6 +640,9 @@ export async function runIntelligenceStack(
       bestApproach: layers.seller.bestApproach,
       sellerReportedFacts: layers.seller.sellerReportedFacts,
       followUps: layers.seller.followUps,
+      contradictions: layers.seller.contradictions,
+      unknowns: layers.seller.unknowns,
+      nextQuestion: layers.seller.nextQuestion,
     };
   }
   if (refreshSeller && sellerProduct) {

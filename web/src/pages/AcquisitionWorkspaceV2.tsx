@@ -49,6 +49,12 @@ import type {
   QuickFlipScreenView,
   SellerIntelligenceView,
 } from '../components/AcquisitionWorkspaceV2IntelligenceStack';
+import type {
+  MarketIntelligenceReadView,
+  PropertyIntelligenceReadView,
+  SellerIntelligenceReadView,
+  SpecialistStaleView,
+} from '../components/AcquisitionWorkspaceV2SpecialistReads';
 import type { ResearchReadinessManifestView } from '../components/AcquisitionWorkspaceV2ResearchReadiness';
 import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
 import type { LandUseView, RetainedLandUseIntelligenceView } from '../components/AcquisitionWorkspaceV2LandUse';
@@ -82,9 +88,9 @@ type DealIntelligenceView = AcquisitionIntelligenceView & {
 
 interface IntelligenceStackResp {
   products?: {
-    property?: { read?: string } | null;
-    market?: { read?: string } | null;
-    seller?: SellerIntelligenceView | null;
+    property?: PropertyIntelligenceReadView | null;
+    market?: MarketIntelligenceReadView | null;
+    seller?: (SellerIntelligenceView & SellerIntelligenceReadView) | null;
     deal?: DealIntelligenceView | null;
   };
   stale?: { property?: boolean; market?: boolean; seller?: boolean; deal?: boolean };
@@ -298,7 +304,12 @@ export function AcquisitionWorkspaceV2() {
   // generated on render.
   const [intelQuickFlip, setIntelQuickFlip] = useState<QuickFlipScreenView | null>(null);
   const [intelPhase, setIntelPhase] = useState<string | null>(null);
-  const [sellerIntel, setSellerIntel] = useState<SellerIntelligenceView | null>(null);
+  const [sellerIntel, setSellerIntel] = useState<(SellerIntelligenceView & SellerIntelligenceReadView) | null>(null);
+  // The persisted Property and Market specialist products plus the per-layer
+  // staleness map. Fetched with the rest of the stack; rendering runs nothing.
+  const [propertyIntelRead, setPropertyIntelRead] = useState<PropertyIntelligenceReadView | null>(null);
+  const [marketIntelRead, setMarketIntelRead] = useState<MarketIntelligenceReadView | null>(null);
+  const [specialistStale, setSpecialistStale] = useState<SpecialistStaleView | null>(null);
   const [dealBrainThread, setDealBrainThread] = useState<DealBrainThreadEntry[]>([]);
   const [dealBrainRunning, setDealBrainRunning] = useState(false);
   const [dealBrainError, setDealBrainError] = useState<string | null>(null);
@@ -361,6 +372,9 @@ export function AcquisitionWorkspaceV2() {
         setIntelQuickFlip(ai?.quickFlip ?? ai?.products?.deal?.quickFlip ?? null);
         setIntelPhase(ai?.phase ?? ai?.products?.deal?.phase ?? null);
         setSellerIntel(ai?.products?.seller ?? null);
+        setPropertyIntelRead(ai?.products?.property ?? null);
+        setMarketIntelRead(ai?.products?.market ?? null);
+        setSpecialistStale(ai?.stale ?? null);
         setDealBrainThread(ai?.guidance ?? []);
         setDealBrainRunning(!!ai?.dealBrainRun && !ai.dealBrainRun.error);
         setDealBrainError(ai?.dealBrainRun?.error ?? null);
@@ -391,6 +405,9 @@ export function AcquisitionWorkspaceV2() {
       setIntelQuickFlip(ai.quickFlip ?? ai.products?.deal?.quickFlip ?? null);
       setIntelPhase(ai.phase ?? ai.products?.deal?.phase ?? null);
       setSellerIntel(ai.products?.seller ?? null);
+      setPropertyIntelRead(ai.products?.property ?? null);
+      setMarketIntelRead(ai.products?.market ?? null);
+      setSpecialistStale(ai.stale ?? null);
     }, 5_000);
     return () => { dead = true; window.clearInterval(timer); };
   }, [dealId, aiRunning]);
@@ -815,6 +832,12 @@ export function AcquisitionWorkspaceV2() {
             cashVerdict: aiRead?.sellerPriceVerdict?.verdict ?? null,
             phaseLabel: intelPhase ? PHASE_LABEL[intelPhase] ?? intelPhase : null,
             whatChanged: aiRead?.whatChanged ?? null,
+          }}
+          specialistReads={{
+            property: propertyIntelRead,
+            market: marketIntelRead,
+            seller: sellerIntel,
+            stale: specialistStale,
           }}
           dealBrain={{
             thread: dealBrainThread,

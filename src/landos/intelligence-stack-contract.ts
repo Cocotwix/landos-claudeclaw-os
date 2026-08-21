@@ -32,7 +32,7 @@ import {
 } from './acquisition-intelligence-contract.js';
 import type { CashDealVerdict, NovationGateResult, QuickFlipScreenResult } from './quick-flip-screen.js';
 
-export const INTELLIGENCE_STACK_VERSION = '2.0.0';
+export const INTELLIGENCE_STACK_VERSION = '2.1.0';
 
 // ── Shared vocabulary ──────────────────────────────────────────────────────
 
@@ -156,6 +156,12 @@ export interface SellerIntelligenceProduct extends ProductBase {
    *  property fact by appearing here. */
   sellerReportedFacts: Array<{ statement: string; attribution: string }>;
   followUps: string[];
+  /** Where the seller's own record disagrees with itself over time. A
+   *  contradiction is surfaced, never resolved into a fact. */
+  contradictions: Array<{ subject: string; earlier: string | null; later: string | null; interpretation: string | null }>;
+  unknowns: Array<{ question: string; whyItMatters: string | null }>;
+  /** The single next question most worth asking the seller. */
+  nextQuestion: string | null;
 }
 
 /** The Deal Brain read. A strict superset of the V1 Acquisition Intelligence
@@ -216,7 +222,7 @@ export interface IntelligencePassContext {
 const LAYER_SCHEMAS: Record<Exclude<IntelligenceLayerId, 'deal'>, string> = {
   property: '"property":{"score":0,"read":"","strengths":[],"constraints":[{"title":"","why":"","severity":"high|medium|low"}],"potential":[],"conflicts":[{"subject":"","record_claim":"","grounded_visual":"","interpretation":"","recommended_verification":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}]}',
   market: '"market":{"score":0,"read":"","liquidity_read":"","area_story":"","buyer_pool":"","best_signals":[],"risks":[],"exit_implications":[],"unknowns":[{"question":"","why_it_matters":""}]}',
-  seller: '"seller":{"score":0,"read":"","motivation":"","price_expectation":"","timeline":"","decision_makers":"","objections":[],"negotiation_posture":"","best_approach":"","seller_reported_facts":[{"statement":"","attribution":""}],"follow_ups":[]}',
+  seller: '"seller":{"score":0,"read":"","motivation":"","price_expectation":"","timeline":"","decision_makers":"","objections":[],"negotiation_posture":"","best_approach":"","seller_reported_facts":[{"statement":"","attribution":""}],"follow_ups":[],"contradictions":[{"subject":"","earlier":"","later":"","interpretation":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_question":""}',
 };
 
 const DEAL_SCHEMA = '"deal":{"score":0,"deal_read":{"headline":"","judgment":"","confidence":"Confirmed|Well supported|Likely|Unresolved"},'
@@ -291,6 +297,27 @@ export function intelligenceStackPrompt(
         'rather than forcing a conclusion.',
       ].join('\n')
       : 'No pixel-grounded visual observation is available for this run. Do not describe or characterize the imagery yourself: you have not seen it. Reason from the structured facts, and leave the property layer\'s "conflicts" empty unless the structured file itself conflicts.',
+    '',
+    (dossier.seller.communications.length || dossier.seller.discovery.length || dossier.seller.sellerReportedFacts.length)
+      ? [
+        'SELLER EVIDENCE DOCTRINE. The property file\'s "seller" section is the canonical seller communication',
+        'record for this deal: profile, chronological communications, discovery extractions and SELLER-REPORTED',
+        'statements with provenance. Rules:',
+        '- A SELLER-REPORTED statement is evidence attributed to the seller, never a canonical property fact.',
+        '  "The seller says the property is raw land" never becomes "no structure exists".',
+        '- In the seller layer, keep the information types separate: a RECORDED EVENT (a call happened on a date),',
+        '  a SELLER-REPORTED statement, your INTERPRETATION, a HYPOTHESIS, a CONFLICT, an UNKNOWN, and the NEXT',
+        '  QUESTION worth asking. Never promote a negotiation hypothesis into a fact.',
+        '- Read the record chronologically: where the seller\'s own statements changed or contradict over time',
+        '  (price, timing, motivation, authority), report it under "contradictions" with both statements. Where',
+        '  observed behavior (responsiveness, follow-through) differs from stated urgency, say so as interpretation.',
+        '- Every seller_reported_facts entry must carry its attribution: who said it, when, in which record.',
+        '- CROSS-DOMAIN REFERENCE: another layer may CITE a seller-reported statement as supporting evidence —',
+        '  for example, a seller-reported description that independently supports a record-vs-imagery conflict in',
+        '  the property layer — but it must stay labeled seller-reported, and no record fact is ever rewritten',
+        '  because of it. The seller layer likewise never mutates property facts.',
+      ].join('\n')
+      : '',
     '',
     '=== LANDOS DETERMINISTIC QUICK-FLIP SCREEN (CALCULATION — carry these numbers verbatim, never recompute or invent economics) ===',
     JSON.stringify({ quickFlip: context.quickFlip, sellerPriceVerdict: context.sellerPriceVerdict }),
@@ -531,6 +558,9 @@ export interface ParsedSellerLayer {
   bestApproach: string | null;
   sellerReportedFacts: Array<{ statement: string; attribution: string }>;
   followUps: string[];
+  contradictions: Array<{ subject: string; earlier: string | null; later: string | null; interpretation: string | null }>;
+  unknowns: Array<{ question: string; whyItMatters: string | null }>;
+  nextQuestion: string | null;
 }
 
 export interface ParsedDealExtras {
@@ -625,6 +655,20 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
         .filter((item): item is NonNullable<typeof item> => !!item)
         .slice(0, 8),
       followUps: asLines(pick(sellerSource, 'followUps', 'unknownFollowUpItems', 'followUpItems'), 6),
+      contradictions: (Array.isArray(pick(sellerSource, 'contradictions')) ? pick(sellerSource, 'contradictions') as unknown[] : [])
+        .map((item) => {
+          if (!isRecord(item)) return null;
+          const subject = asLine(pick(item, 'subject', 'title', 'topic'), 160);
+          const earlier = asLine(pick(item, 'earlier', 'earlierStatement', 'was'), 500);
+          const later = asLine(pick(item, 'later', 'laterStatement', 'now'), 500);
+          // A contradiction needs a subject and at least one side to carry.
+          if (!subject || (!earlier && !later)) return null;
+          return { subject, earlier, later, interpretation: asLine(pick(item, 'interpretation', 'explanation'), 600) };
+        })
+        .filter((item): item is NonNullable<typeof item> => !!item)
+        .slice(0, 6),
+      unknowns: asQuestions(pick(sellerSource, 'unknowns', 'unansweredQuestions')),
+      nextQuestion: asLine(pick(sellerSource, 'nextQuestion', 'nextSellerQuestion'), 500),
     }
     : null;
 

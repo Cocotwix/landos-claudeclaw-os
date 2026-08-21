@@ -34,6 +34,14 @@ vi.mock('./acquisition-intelligence-dossier.js', () => ({
 
 const { runIntelligenceStack } = await import('./intelligence-stack.js');
 
+function emptySeller(): AcquisitionDossier['seller'] {
+  return {
+    present: false, name: null, askingPrice: null, stage: null, people: [], profile: null,
+    sellerReportedFacts: [], communications: [], discovery: [],
+    evidenceCounts: { communications: 0, discoveryExtractions: 0, reportedFacts: 0 },
+  };
+}
+
 function baseDossier(): AcquisitionDossier {
   return {
     dossierVersion: '1.0.0',
@@ -71,7 +79,7 @@ function baseDossier(): AcquisitionDossier {
       monthsOfSupply: null, medianPricePerAcre: null, fastestBand: '5-10 acres', interpretation: null,
     },
     utilities: { septicAuthority: null, perLotApproval: null, unresolved: [] },
-    seller: { present: false, name: null, askingPrice: null },
+    seller: emptySeller(),
     documents: [],
     visuals: [],
     visualObservations: [],
@@ -229,7 +237,7 @@ describe('dependency-aware refresh', () => {
     await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: first.analyst }));
     writes.length = 0;
 
-    dossier = { ...baseDossier(), seller: { present: true, name: 'Sam Seller', askingPrice: 140_000 } };
+    dossier = { ...baseDossier(), seller: { ...emptySeller(), present: true, name: 'Sam Seller', askingPrice: 140_000 } };
     const sellerManifest = manifest([
       { id: 'seller_information', status: 'green' },
       { id: 'current_zoning', status: 'yellow' },
@@ -364,5 +372,69 @@ describe('readiness preflight', () => {
     const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: fake.analyst }));
     expect(result.outcome).toBe('produced');
     expect((result.products.deal as DealIntelligenceProduct).scores.seller.state).toBe('pre_contact');
+  });
+});
+
+describe('seller evidence reaches the seller layer', () => {
+  it('treats a real communication record as seller contact even before the readiness checklist catches up, and carries the seller evidence doctrine into the prompt', async () => {
+    dossier = {
+      ...baseDossier(),
+      seller: {
+        ...emptySeller(),
+        present: true,
+        name: 'Sam Seller',
+        stage: 'needs_follow_up',
+        communications: [{ at: '2026-08-15T17:00:00.000Z', type: 'call', direction: 'outbound', summary: 'Discovery call', outcome: null, sentiment: null, followUpDate: null }],
+        sellerReportedFacts: [{ statement: 'The property is raw land', source: 'seller profile', at: null }],
+        evidenceCounts: { communications: 1, discoveryExtractions: 0, reportedFacts: 1 },
+      },
+    };
+    const fake = fakeAnalyst();
+    // Readiness still says gray: the persisted communication record wins.
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: fake.analyst }));
+
+    expect(result.outcome).toBe('produced');
+    const seller = result.products.seller as SellerIntelligenceProduct;
+    expect(seller.state).toBe('established');
+    // The coordinated pass now asks for the seller layer too.
+    expect(fake.calls[0].prompt).toContain('"seller":{');
+    // The doctrine rides with the evidence: seller-reported stays seller-reported.
+    expect(fake.calls[0].prompt).toContain('SELLER EVIDENCE DOCTRINE');
+    expect(fake.calls[0].prompt).toContain('never becomes "no structure exists"');
+    // The evidence itself is in the property file the model receives.
+    expect(fake.calls[0].prompt).toContain('The property is raw land');
+  });
+
+  it('keeps the pre-contact product honest with the new fields empty, and never fabricates contradictions or a next question', async () => {
+    const fake = fakeAnalyst();
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: fake.analyst }));
+    const seller = result.products.seller as SellerIntelligenceProduct;
+    expect(seller.state).toBe('pre_contact');
+    expect(seller.contradictions).toEqual([]);
+    expect(seller.unknowns).toEqual([]);
+    expect(seller.nextQuestion).toBeNull();
+    // No seller evidence means no seller doctrine block in the prompt.
+    expect(fake.calls[0].prompt).not.toContain('SELLER EVIDENCE DOCTRINE');
+  });
+
+  it('marks only the seller layer stale when new seller communication lands', async () => {
+    const first = fakeAnalyst();
+    await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: first.analyst }));
+    writes.length = 0;
+
+    dossier = {
+      ...baseDossier(),
+      seller: {
+        ...emptySeller(),
+        present: true,
+        name: 'Sam Seller',
+        communications: [{ at: '2026-08-15T17:00:00.000Z', type: 'call', direction: 'outbound', summary: 'Discovery call', outcome: null, sentiment: null, followUpDate: null }],
+        evidenceCounts: { communications: 1, discoveryExtractions: 0, reportedFacts: 0 },
+      },
+    };
+    const second = fakeAnalyst();
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: second.analyst }));
+    expect(result.refreshedLayers).toEqual(['seller', 'deal']);
+    expect(result.reusedLayers).toEqual(['property', 'market']);
   });
 });

@@ -233,10 +233,59 @@ export interface AcquisitionDossier {
     perLotApproval: string | null;
     unresolved: string[];
   };
+  /** The bounded SELLER EVIDENCE record: everything LandOS has actually
+   *  persisted about the seller relationship for this deal. Every statement
+   *  sourced from the seller stays SELLER-REPORTED — evidence attributed to
+   *  the seller, never a canonical property fact. */
   seller: {
     present: boolean;
     name: string | null;
     askingPrice: number | null;
+    stage: string | null;
+    people: Array<{ name: string; role: string | null; authorityStatus: string | null; primaryContact: boolean | null }>;
+    profile: {
+      motivation: string | null;
+      timeline: string | null;
+      askingPriceStated: string | null;
+      priceFlexibility: string | null;
+      decisionMakers: string | null;
+      relationshipToProperty: string | null;
+      lastContactDate: string | null;
+      nextFollowUpDate: string | null;
+      objections: string[];
+      concerns: string[];
+      commitments: string[];
+      unknowns: string[];
+    } | null;
+    /** SELLER-REPORTED statements with provenance: what was said, where it was
+     *  recorded, and when. */
+    sellerReportedFacts: Array<{ statement: string; source: string; at: string | null }>;
+    /** Chronological (oldest → newest) communication record, bounded with the
+     *  earliest entries retained so evolution over time stays detectable. */
+    communications: Array<{
+      at: string | null;
+      type: string;
+      direction: string | null;
+      summary: string;
+      outcome: string | null;
+      sentiment: string | null;
+      followUpDate: string | null;
+    }>;
+    /** Structured discovery-call extractions, oldest → newest. */
+    discovery: Array<{
+      capturedAt: string | null;
+      motivation: string | null;
+      timeline: string | null;
+      priceExpectation: string | null;
+      decisionMakers: string | null;
+      urgency: string | null;
+      emotionalTone: string | null;
+      objections: string[];
+      followUpItems: string[];
+      unansweredQuestions: string[];
+    }>;
+    /** Honest totals before bounding — the record is larger than the dossier. */
+    evidenceCounts: { communications: number; discoveryExtractions: number; reportedFacts: number };
   };
   documents: Array<{ label: string; sourceUrl: string | null }>;
   visuals: DossierVisual[];
@@ -267,6 +316,11 @@ export interface PropertyFileSource {
   documentRegistry?: Unknown;
   /** Deal-level operator record: title, asking price, people. */
   dealCard?: Unknown;
+  /** The Acquisitions CRM state for this deal — seller profile, manual
+   *  communication log and discovery extractions — verbatim. */
+  acquisition?: Unknown;
+  /** Seller-stated fact rows recorded on the deal's subject Property Card. */
+  sellerStatedFacts?: Unknown;
   /** Retained visual assets, resolved to files on this machine. */
   visuals?: Array<{ key: string; label?: string | null; purpose?: string | null; capturedAt?: string | null; filePath?: string | null }>;
   /** Candidate visual observations. Only entries the caller can vouch for as
@@ -477,12 +531,7 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     unresolved: strings(at(landUse, 'septicWell.unresolved'), MAX_LIST, 'Septic/well unresolved items', truncation),
   };
 
-  const people = asArray(at(source.dealCard, 'people'));
-  const seller: AcquisitionDossier['seller'] = {
-    present: people.length > 0,
-    name: text(at(people[0], 'name'), 160),
-    askingPrice: num(at(source.dealCard, 'asking_price')),
-  };
+  const seller = buildSellerEvidence(source, truncation);
 
   const documents = capped(
     asArray(at(source.documentRegistry, 'documents')).map((doc) => ({
@@ -580,6 +629,8 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
   record('Retained visuals', visuals.length > 0);
   record('Grounded visual observations', visualObservations.length > 0);
   record('Seller information', seller.present);
+  record('Seller communication record', seller.communications.length > 0 || seller.discovery.length > 0);
+  record('Seller-reported property facts', seller.sellerReportedFacts.length > 0);
 
   return {
     dossierVersion: '1.0.0',
@@ -606,6 +657,172 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     missingInformation,
     coverage: { present, absent },
     truncation,
+  };
+}
+
+// ── Seller evidence assembly ──────────────────────────────────────────────
+//
+// The seller section is assembled from the sources LandOS already persists —
+// the deal's people, the Acquisitions CRM state (profile, communication log,
+// discovery extractions) and the seller-stated fact record — never from a new
+// store. Everything the seller said stays SELLER-REPORTED with its provenance;
+// chronology is preserved oldest → newest, and when the communication record
+// outgrows the bound the EARLIEST entries are retained alongside the most
+// recent so a material older statement is never truncated away merely for
+// being old.
+
+const MAX_SELLER_COMMS = 24;
+const MAX_SELLER_COMMS_HEAD = 4;
+const MAX_SELLER_FACTS = 16;
+const MAX_SELLER_DISCOVERY = 6;
+
+/** Keep chronological order under a cap: the earliest `head` entries plus the
+ *  most recent remainder, so both ends of the record survive bounding. */
+function boundedChronology<T>(items: T[], limit: number, head: number, what: string, truncation: string[]): T[] {
+  if (items.length <= limit) return items;
+  truncation.push(`${what}: ${items.length - limit} of ${items.length} not carried into the dossier (earliest ${head} and most recent ${limit - head} retained).`);
+  return [...items.slice(0, head), ...items.slice(items.length - (limit - head))];
+}
+
+function buildSellerEvidence(source: PropertyFileSource, truncation: string[]): AcquisitionDossier['seller'] {
+  const acquisition = source.acquisition;
+  const profileSource = at(acquisition, 'profile');
+
+  const people = capped(
+    asArray(at(source.dealCard, 'people'))
+      .map((person) => ({
+        name: text(at(person, 'name'), 160) ?? '',
+        role: text(at(person, 'role'), 60),
+        authorityStatus: text(at(person, 'authorityStatus') ?? at(person, 'authority_status'), 80),
+        primaryContact: bool(at(person, 'primaryContact') ?? at(person, 'primary_contact')),
+      }))
+      .filter((person) => person.name),
+    MAX_LIST,
+    'Deal people',
+    truncation,
+  );
+
+  const profile: AcquisitionDossier['seller']['profile'] = isRecord(profileSource) && Object.keys(profileSource).length
+    ? {
+      motivation: text(at(profileSource, 'motivation'), 600),
+      timeline: text(at(profileSource, 'timeline'), 400),
+      askingPriceStated: text(at(profileSource, 'askingPrice'), 120),
+      priceFlexibility: text(at(profileSource, 'priceFlexibility'), 400),
+      decisionMakers: text(at(profileSource, 'decisionMakers'), 400),
+      relationshipToProperty: text(at(profileSource, 'relationshipToProperty'), 300),
+      lastContactDate: text(at(profileSource, 'lastContactDate'), 40),
+      nextFollowUpDate: text(at(profileSource, 'nextFollowUpDate'), 40),
+      objections: strings(at(profileSource, 'objections'), MAX_LIST, 'Seller profile objections', truncation),
+      concerns: strings(at(profileSource, 'concerns'), MAX_LIST, 'Seller profile concerns', truncation),
+      commitments: strings(at(profileSource, 'commitments'), MAX_LIST, 'Seller profile commitments', truncation),
+      unknowns: strings(at(profileSource, 'unknowns'), MAX_LIST, 'Seller profile unknowns', truncation),
+    }
+    : null;
+
+  // Chronology: the CRM stores the log newest-first; the dossier carries it
+  // oldest → newest so evolution over time reads forward.
+  const commEntries = asArray(at(acquisition, 'commLog'))
+    .map((entry) => ({
+      at: text(at(entry, 'at') ?? at(entry, 'createdAt'), 40),
+      type: text(at(entry, 'type'), 20) ?? text(at(entry, 'channel'), 20) ?? 'note',
+      direction: text(at(entry, 'direction'), 20),
+      summary: text(at(entry, 'summary'), 500) ?? '',
+      outcome: text(at(entry, 'outcome'), 300),
+      sentiment: text(at(entry, 'sentiment'), 20),
+      followUpDate: text(at(entry, 'followUpDate'), 40),
+      keyFacts: strings(at(entry, 'keyFacts'), MAX_LIST, 'Communication key facts', truncation),
+    }))
+    .filter((entry) => entry.summary)
+    .sort((a, b) => (a.at ?? '').localeCompare(b.at ?? ''));
+  const communications = boundedChronology(
+    commEntries.map(({ keyFacts: _keyFacts, ...entry }) => entry),
+    MAX_SELLER_COMMS,
+    MAX_SELLER_COMMS_HEAD,
+    'Seller communications',
+    truncation,
+  );
+
+  const discoveryEntries = asArray(at(acquisition, 'discovery'))
+    .map((entry) => ({
+      capturedAt: text(at(entry, 'capturedAt'), 40),
+      motivation: text(at(entry, 'motivation'), 500),
+      timeline: text(at(entry, 'timeline'), 300),
+      priceExpectation: text(at(entry, 'priceExpectation'), 300),
+      decisionMakers: text(at(entry, 'decisionMakers'), 300),
+      urgency: text(at(entry, 'urgency'), 200),
+      emotionalTone: text(at(entry, 'emotionalTone'), 200),
+      objections: strings(at(entry, 'objections'), MAX_LIST, 'Discovery objections', truncation),
+      followUpItems: strings(at(entry, 'followUpItems'), MAX_LIST, 'Discovery follow-up items', truncation),
+      unansweredQuestions: strings(at(entry, 'unansweredQuestions'), MAX_LIST, 'Discovery unanswered questions', truncation),
+      sellerClaimedFacts: strings(at(entry, 'sellerClaimedFacts'), MAX_LIST, 'Discovery seller-claimed facts', truncation),
+    }))
+    .sort((a, b) => (a.capturedAt ?? '').localeCompare(b.capturedAt ?? ''));
+  const discovery = boundedChronology(
+    discoveryEntries.map(({ sellerClaimedFacts: _sellerClaimedFacts, ...entry }) => entry),
+    MAX_SELLER_DISCOVERY,
+    1,
+    'Discovery extractions',
+    truncation,
+  );
+
+  // SELLER-REPORTED facts from every persisted source, each with provenance.
+  // Deduplicated on the normalized statement; the first (earliest-sourced)
+  // provenance wins.
+  const factCandidates: Array<{ statement: string | null; source: string; at: string | null }> = [
+    ...asArray(source.sellerStatedFacts).map((fact) => ({
+      statement: [text(at(fact, 'kind'), 60), text(at(fact, 'value'), 500)].filter(Boolean).join(': ') || null,
+      source: 'seller_stated_fact record',
+      at: (() => {
+        const recordedAt = num(at(fact, 'recordedAt'));
+        return recordedAt ? new Date(recordedAt * 1000).toISOString().slice(0, 10) : null;
+      })(),
+    })),
+    ...discoveryEntries.flatMap((entry) => entry.sellerClaimedFacts.map((statement) => ({
+      statement,
+      source: 'discovery call',
+      at: entry.capturedAt,
+    }))),
+    ...commEntries.flatMap((entry) => entry.keyFacts.map((statement) => ({
+      statement,
+      source: `${entry.type} log`,
+      at: entry.at,
+    }))),
+    ...asArray(at(profileSource, 'sellerStatedFacts')).map((statement) => ({
+      statement: text(statement, 500),
+      source: 'seller profile',
+      at: null as string | null,
+    })),
+  ];
+  const seenStatements = new Set<string>();
+  const sellerReportedFacts = capped(
+    factCandidates
+      .filter((candidate): candidate is { statement: string; source: string; at: string | null } => !!candidate.statement)
+      .filter((candidate) => {
+        const key = candidate.statement.toLowerCase();
+        if (seenStatements.has(key)) return false;
+        seenStatements.add(key);
+        return true;
+      }),
+    MAX_SELLER_FACTS,
+    'Seller-reported facts',
+    truncation,
+  );
+
+  return {
+    present: people.length > 0 || !!profile || commEntries.length > 0,
+    name: people[0]?.name ?? text(at(profileSource, 'name'), 160),
+    askingPrice: num(at(source.dealCard, 'asking_price')),
+    stage: text(at(acquisition, 'stage'), 40),
+    people,
+    profile,
+    sellerReportedFacts,
+    communications,
+    discovery,
+    evidenceCounts: {
+      communications: commEntries.length,
+      discoveryExtractions: discoveryEntries.length,
+      reportedFacts: sellerReportedFacts.length,
+    },
   };
 }
 
