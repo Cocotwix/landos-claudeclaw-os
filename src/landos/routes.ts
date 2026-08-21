@@ -136,7 +136,7 @@ import { buildLeadCardTitle, streetReferenceFrom, unresolvedLeadStorageLabel, is
 import { planResolver, smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
 import { apnSearchVariants, ownerSearchVariants, lpResolveForPreflight, type LpResolveResult } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
-import { invokeRuntimeCapability, listRuntimeCapabilities } from './capability-registry.js';
+import { invokeRuntimeCapability, listRuntimeCapabilities, runtimeCapability } from './capability-registry.js';
 import {
   ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
   propertyFileIsSufficient,
@@ -177,12 +177,22 @@ import { runResearchReadinessBackfill } from './research-readiness-backfill.js';
 import { readIntelligenceStackState, runIntelligenceStack } from './intelligence-stack.js';
 import {
   DEAL_INTELLIGENCE_PRODUCT_TYPE,
+  PROPERTY_INTELLIGENCE_PRODUCT_TYPE,
   dealBrainChatPrompt,
   type DealIntelligenceProduct,
   type IntelligenceLayerId,
+  type PropertyIntelligenceProduct,
 } from './intelligence-stack-contract.js';
 import { appendDealBrainGuidance, listDealBrainGuidance } from './deal-brain-guidance.js';
-import { readDerivedSnapshot } from './derived-intelligence-store.js';
+import { readDerivedSnapshot, writeDerivedSnapshot } from './derived-intelligence-store.js';
+import {
+  INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE,
+  capabilityInvocationFor,
+  derivePropertyCapabilityRequests,
+  runIntelligenceReconciliation,
+  validateIntelligenceCapabilityRequest,
+  type IntelligenceReconciliationRecord,
+} from './intelligence-capability-reconcile.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { reconcileAttemptWithAcceptedIdentity } from './intake-resolution-reconciliation.js';
 import { browserLaneStatus } from './browser-retrieval.js';
@@ -10074,6 +10084,12 @@ export function registerLandosRoutes(app: Hono): void {
       // stores — no new CRM, no research.
       acquisition: getAcquisition(dealCardId) as unknown,
       sellerStatedFacts: (cardId != null ? loadSellerStatedFacts(cardId) : []) as unknown,
+      // The latest Assessor & Tax capability result from the invocation
+      // ledger: the CURRENT official-record answer (or its honest absence)
+      // that the reconciliation re-read reasons against. A SELECT.
+      assessorTax: (cardId != null
+        ? new CapabilityInvocationStore().latestForProperty(cardId, dealCardId, ASSESSOR_TAX_CAPABILITY_ID)
+        : null) as unknown,
       visuals,
       visualObservations: groundedVisualObservations,
     };
@@ -10190,6 +10206,7 @@ export function registerLandosRoutes(app: Hono): void {
 
   const intelligenceStackRuns = new Map<number, { startedAt: string; error: string | null }>();
   const dealBrainRuns = new Map<number, { startedAt: string; error: string | null }>();
+  const intelligenceReconcileRuns = new Map<number, { startedAt: string; error: string | null }>();
 
   const readPipelineStage = (dealCardId: number): string | null => {
     const row = getLandosDb().prepare(
@@ -10262,11 +10279,25 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     const state = readIntelligenceStackState(id, intelligenceStackReadDeps);
+    // Reconciliation state is SELECT-only here: the persisted record, whether
+    // a run is in flight, and which persisted conflicts the seam could act on.
+    // Nothing on this GET (or any page load) ever invokes a capability.
+    const reconcileEligible = state.products.property
+      ? derivePropertyCapabilityRequests(state.products.property, id)
+        .map((request) => ({
+          conflictSubject: request.evidenceConflictRefs[0] ?? null,
+          issueType: request.issueType,
+          requestedCapability: request.requestedCapability,
+        }))
+      : [];
     return c.json({
       ...state,
       guidance: listDealBrainGuidance(id),
       run: intelligenceStackRuns.get(id) ?? null,
       dealBrainRun: dealBrainRuns.get(id) ?? null,
+      reconciliation: readDerivedSnapshot<IntelligenceReconciliationRecord>(id, INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE),
+      reconcileRun: intelligenceReconcileRuns.get(id) ?? null,
+      reconcileEligible,
       runtime: acquisitionAnalystRuntimeStatus(),
     });
   });
@@ -10320,6 +10351,89 @@ export function registerLandosRoutes(app: Hono): void {
     })();
 
     return c.json({ running: true, startedAt, runtime: acquisitionAnalystRuntimeStatus() }, 202);
+  });
+
+  // ── Bounded intelligence → capability → reconciliation (explicit only) ──
+  //
+  // The ONE path that lets an intelligence product's unresolved material
+  // conflict drive a governed capability. Explicit operator action; page loads
+  // and refreshes never reach it (every GET above is SELECT-only). Per run:
+  // at most ONE allowlisted capability execution and ONE targeted re-read of
+  // the requesting layer, then STOP — remaining uncertainty is persisted, not
+  // chased.
+  app.post('/api/landos/deal-cards/:id/intelligence/reconcile', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const stackInFlight = intelligenceStackRuns.get(id);
+    if (stackInFlight && !stackInFlight.error) {
+      return c.json({ error: 'An intelligence run is already in flight for this deal.' }, 409);
+    }
+    const inFlight = intelligenceReconcileRuns.get(id);
+    if (inFlight && !inFlight.error) {
+      return c.json({ running: true, startedAt: inFlight.startedAt }, 202);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const conflictSubject = str(body.conflictSubject) ?? null;
+    const cardId = subjectCardId(deal);
+    if (!cardId) return c.json({ error: 'this Deal Card has no canonical subject Property Card yet' }, 409);
+    const startedAt = new Date().toISOString();
+    intelligenceReconcileRuns.set(id, { startedAt, error: null });
+
+    void (async () => {
+      try {
+        await runIntelligenceReconciliation({ dealCardId: id, conflictSubject }, {
+          readPropertyProduct: () =>
+            readDerivedSnapshot<PropertyIntelligenceProduct>(id, PROPERTY_INTELLIGENCE_PRODUCT_TYPE),
+          validate: (request, openConflictSubjects) => validateIntelligenceCapabilityRequest(request, {
+            dealCardId: id,
+            openConflictSubjects,
+            capabilityExists: (capabilityId) => runtimeCapability(capabilityId) != null,
+            latestResult: (capabilityId) => new CapabilityInvocationStore().latestForProperty(cardId, id, capabilityId),
+          }),
+          invokeCapability: (request) => invokeRuntimeCapability(
+            capabilityInvocationFor(request, { entity: deal.entity as 'LAND_ALLY' | 'TY_LAND_BIZ', propertyCardId: cardId }),
+          ),
+          // The targeted re-read: only the requesting layer is refreshed. The
+          // stack's own dependency rule folds the dependent Deal synthesis into
+          // the SAME single analyst pass; Market and Seller are reused, and no
+          // readiness backfill runs here.
+          rereadIntelligence: async () => {
+            const result = await runIntelligenceStack({ dealCardId: id, layers: ['property'] }, {
+              ...intelligenceStackReadDeps,
+              analyst: createHermesAcquisitionAnalyst(),
+            });
+            if (result.outcome !== 'produced' && result.outcome !== 'reused') {
+              throw new Error(result.reason ?? `re-read outcome ${result.outcome}`);
+            }
+            return { outcome: result.outcome, refreshedLayers: result.refreshedLayers };
+          },
+          persistRecord: (record) => {
+            writeDerivedSnapshot({
+              dealCardId: id,
+              snapshotType: INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE,
+              payload: record,
+              completeness: {
+                status: record.status,
+                executionCount: record.execution.executionCount,
+                rereadCount: record.reread.rereadCount,
+              },
+              changeReason: `Bounded intelligence reconciliation: ${record.status} — ${record.statusReason}`.slice(0, 600),
+              actor: 'intelligence-reconciliation',
+              auditEvent: 'intelligence_reconciliation',
+            });
+          },
+        });
+        intelligenceReconcileRuns.delete(id);
+      } catch (error) {
+        const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
+        logger.error({ event: 'intelligence_reconcile_failed', dealCardId: id, msg: detail }, 'intelligence_reconcile_failed');
+        intelligenceReconcileRuns.set(id, { startedAt, error: `Reconciliation failed: ${detail}` });
+      }
+    })();
+
+    return c.json({ running: true, startedAt }, 202);
   });
 
   // ── Deal Brain conversation ─────────────────────────────────────────────

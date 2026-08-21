@@ -298,6 +298,20 @@ export function intelligenceStackPrompt(
       ].join('\n')
       : 'No pixel-grounded visual observation is available for this run. Do not describe or characterize the imagery yourself: you have not seen it. Reason from the structured facts, and leave the property layer\'s "conflicts" empty unless the structured file itself conflicts.',
     '',
+    dossier.officialAssessorRecord
+      ? [
+        'OFFICIAL ASSESSOR RECORD DOCTRINE. The property file carries an "officialAssessorRecord" section:',
+        'the latest bounded Assessor & Tax capability answer for this subject. Where its recordStatus is',
+        '"official_record_retrieved", treat it as the CURRENT official record for improvement status, assessed',
+        'acreage and owner of record, and reconcile record-vs-imagery conflicts against it — an older provider',
+        'claim it contradicts is plausibly historical or stale, but it stays retained as source evidence and is',
+        'never erased or rewritten. Where the record could not be retrieved ("not_retrieved"), say that plainly:',
+        'the conflict remains unresolved, the official record may itself be unavailable, and the absence of a',
+        'record (or of a demolition permit) proves nothing about the structure either way. Never average',
+        'conflicting acreages, and never prefer a marketplace value over an official record arbitrarily.',
+      ].join('\n')
+      : '',
+    '',
     (dossier.seller.communications.length || dossier.seller.discovery.length || dossier.seller.sellerReportedFacts.length)
       ? [
         'SELLER EVIDENCE DOCTRINE. The property file\'s "seller" section is the canonical seller communication',

@@ -233,6 +233,28 @@ export interface AcquisitionDossier {
     perLotApproval: string | null;
     unresolved: string[];
   };
+  /** The latest Assessor & Tax capability answer for this subject, bounded.
+   *  This is what lets a targeted re-read reconcile a record-vs-imagery
+   *  conflict against the CURRENT official record instead of re-arguing the
+   *  provider claim. An honest "not retrieved" attempt is carried too — a
+   *  failed official lookup is evidence about availability, never about the
+   *  parcel. */
+  officialAssessorRecord: {
+    recordStatus: string | null;
+    retrievedAt: string | null;
+    jurisdiction: string | null;
+    source: string | null;
+    ownerOfRecord: string | null;
+    assessedAcres: number | null;
+    totalAppraisedValue: number | null;
+    improvements: {
+      structureType: string | null;
+      yearBuilt: number | null;
+      buildingSqft: number | null;
+    } | null;
+    summary: string | null;
+    attemptNote: string | null;
+  } | null;
   /** The bounded SELLER EVIDENCE record: everything LandOS has actually
    *  persisted about the seller relationship for this deal. Every statement
    *  sourced from the seller stays SELLER-REPORTED — evidence attributed to
@@ -321,6 +343,9 @@ export interface PropertyFileSource {
   acquisition?: Unknown;
   /** Seller-stated fact rows recorded on the deal's subject Property Card. */
   sellerStatedFacts?: Unknown;
+  /** The latest persisted Assessor & Tax capability RESULT for this subject,
+   *  verbatim from the invocation ledger. */
+  assessorTax?: Unknown;
   /** Retained visual assets, resolved to files on this machine. */
   visuals?: Array<{ key: string; label?: string | null; purpose?: string | null; capturedAt?: string | null; filePath?: string | null }>;
   /** Candidate visual observations. Only entries the caller can vouch for as
@@ -533,6 +558,35 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
 
   const seller = buildSellerEvidence(source, truncation);
 
+  // The latest Assessor & Tax capability result, projected into a bounded
+  // official-record section. Only a result whose facts are actually present is
+  // carried; a null ledger read leaves the section null and the coverage list
+  // says so honestly.
+  const officialAssessorRecord: AcquisitionDossier['officialAssessorRecord'] = (() => {
+    const at_ = source.assessorTax;
+    const facts = at(at_, 'facts');
+    if (!facts) return null;
+    const improvements = at(facts, 'improvements');
+    const structureType = text(at(improvements, 'structureType'), 160);
+    const yearBuilt = num(at(improvements, 'yearBuilt'));
+    const buildingSqft = num(at(improvements, 'buildingSqft'));
+    return {
+      recordStatus: text(at(facts, 'recordStatus'), 60),
+      retrievedAt: text(at(at_, 'timestamps.completedAt'), 40),
+      jurisdiction: text(at(facts, 'jurisdiction'), 120),
+      source: text(at(asArray(at(at_, 'evidence'))[0], 'source'), 200)
+        ?? text(at(asArray(at(facts, 'sourceAttempts'))[0], 'source'), 200),
+      ownerOfRecord: text(at(facts, 'assessor.ownerOfRecord'), 160),
+      assessedAcres: num(at(facts, 'assessor.assessedAcres')),
+      totalAppraisedValue: num(at(facts, 'assessor.totalAppraisedValue')),
+      improvements: structureType || yearBuilt != null || buildingSqft != null
+        ? { structureType, yearBuilt, buildingSqft }
+        : null,
+      summary: text(at(facts, 'summary'), 600),
+      attemptNote: text(asArray(at(at_, 'warnings'))[0], 600),
+    };
+  })();
+
   const documents = capped(
     asArray(at(source.documentRegistry, 'documents')).map((doc) => ({
       label: text(at(doc, 'title') ?? at(doc, 'label'), 200) ?? 'Retained document',
@@ -631,6 +685,7 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
   record('Seller information', seller.present);
   record('Seller communication record', seller.communications.length > 0 || seller.discovery.length > 0);
   record('Seller-reported property facts', seller.sellerReportedFacts.length > 0);
+  record('Official assessor record', officialAssessorRecord?.recordStatus === 'official_record_retrieved');
 
   return {
     dossierVersion: '1.0.0',
@@ -647,6 +702,7 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     comps,
     market,
     utilities,
+    officialAssessorRecord,
     seller,
     documents,
     visuals,

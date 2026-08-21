@@ -75,6 +75,52 @@ export interface SellerIntelligenceReadView {
 
 export interface SpecialistStaleView { property?: boolean; market?: boolean; seller?: boolean }
 
+/** The persisted bounded reconciliation record, as the card consumes it. */
+export interface IntelligenceReconciliationView {
+  request?: {
+    question?: string;
+    requestedCapability?: string;
+    issueType?: string;
+    reasonMaterial?: string;
+    evidenceConflictRefs?: string[];
+  } | null;
+  validation?: { decision?: string; refusalReason?: string | null };
+  execution?: {
+    executionCount?: number;
+    capabilityId?: string | null;
+    reusedExistingEvidence?: boolean;
+    status?: string | null;
+    recordStatus?: string | null;
+    summary?: string | null;
+    evidence?: Array<{ source?: string; sourceUrl?: string | null; retrievedAt?: string }>;
+    attemptNote?: string | null;
+  };
+  reread?: { rereadCount?: number; layers?: string[]; outcome?: string | null };
+  before?: { conflictStatement?: string | null; conflictResolution?: string | null; read?: string | null };
+  after?: { conflictStatement?: string | null; conflictResolution?: string | null; read?: string | null };
+  status?: string;
+  statusReason?: string;
+  readiness?: string;
+  recommendedNextAction?: string | null;
+  completedAt?: string;
+}
+
+export interface ReconcileEligibleView {
+  conflictSubject?: string | null;
+  issueType?: string;
+  requestedCapability?: string;
+}
+
+/** Explicit operator verification controls + the persisted record. Rendering
+ *  never runs anything; only the button's handler starts the bounded run. */
+export interface PropertyReconcileControls {
+  record: IntelligenceReconciliationView | null;
+  eligible: ReconcileEligibleView[];
+  running: boolean;
+  error: string | null;
+  onReconcile: (conflictSubject?: string | null) => void;
+}
+
 // ── Shared pieces ──────────────────────────────────────────────────────────
 
 function ScoreChip({ score, quality }: { score: number | null | undefined; quality?: string | null }) {
@@ -102,7 +148,54 @@ const lines = (items: Array<string | undefined> | undefined, limit: number): str
 
 // ── Property Intelligence ──────────────────────────────────────────────────
 
-function PropertyReadCard({ product, stale }: { product: PropertyIntelligenceReadView | null; stale?: boolean }) {
+const RECONCILE_STATUS_LABEL: Record<string, string> = {
+  resolved: 'Resolved',
+  partially_resolved: 'Partially resolved',
+  unresolved: 'Unresolved',
+  refused: 'Request refused',
+  no_material_request: 'No supported conflict',
+};
+
+/** CONFLICT / VERIFICATION / RESULT / CURRENT READ / STATUS — the persisted
+ *  outcome of one bounded intelligence → capability → re-read run. */
+function ReconciliationPanel({ record }: { record: IntelligenceReconciliationView }) {
+  const status = record.status ?? 'unresolved';
+  const tone = status === 'resolved' ? 'strong' : status === 'partially_resolved' ? 'moderate' : 'weak';
+  const evidence = (record.execution?.evidence ?? []).filter((item) => item.source);
+  const verification = [
+    record.execution?.capabilityId ? `Requested capability: ${record.execution.capabilityId}` : null,
+    record.execution?.reusedExistingEvidence
+      ? 'Fresh retained official evidence answered without a re-run'
+      : record.execution?.executionCount != null
+        ? `Executed ${record.execution.executionCount}×`
+        : null,
+    record.reread?.rereadCount != null ? `targeted re-read ${record.reread.rereadCount}×` : null,
+    record.validation?.refusalReason ? `Refused: ${record.validation.refusalReason}` : null,
+  ].filter(Boolean).join(' · ');
+  return (
+    <div class="awv2-specialist-reconcile" data-testid="specialist-property-reconciliation">
+      <b>Official-record verification</b>
+      <p><i>Conflict</i> {record.request?.reasonMaterial ?? record.before?.conflictStatement ?? '—'}</p>
+      <p><i>Verification</i> {verification || '—'}</p>
+      <p><i>Result</i> {record.execution?.summary ?? record.execution?.attemptNote ?? 'No capability result was produced.'}
+        {evidence.length > 0 && <small> — {evidence.map((item) => item.source).join('; ')}</small>}
+      </p>
+      <p><i>Current read</i> {record.after?.conflictResolution ?? record.after?.read ?? record.statusReason ?? '—'}</p>
+      <p class="awv2-specialist-reconcile-status">
+        <i>Status</i>{' '}
+        <span class={`awv2-reconcile-chip s-${tone}`} data-testid="reconcile-status">{RECONCILE_STATUS_LABEL[status] ?? status}</span>
+        {' '}{record.statusReason}
+      </p>
+      {record.recommendedNextAction && <p><i>Next</i> {record.recommendedNextAction}</p>}
+    </div>
+  );
+}
+
+function PropertyReadCard({ product, stale, reconcile }: {
+  product: PropertyIntelligenceReadView | null;
+  stale?: boolean;
+  reconcile?: PropertyReconcileControls | null;
+}) {
   return (
     <article class="awv2-panel awv2-specialist" data-domain="property" data-testid="specialist-read-property">
       <header class="awv2-specialist-head">
@@ -147,9 +240,28 @@ function PropertyReadCard({ product, stale }: { product: PropertyIntelligenceRea
                     ))}
                   </details>
                 )}
+                {reconcile && reconcile.eligible.length > 0 && (
+                  // The explicit action. Rendering runs nothing; only this
+                  // click starts the bounded capability → re-read loop, at
+                  // most one capability execution and one targeted re-read.
+                  <button
+                    type="button"
+                    class="awv2-reconcile-btn"
+                    data-testid="reconcile-run"
+                    disabled={reconcile.running}
+                    onClick={() => reconcile.onReconcile(reconcile.eligible[0]?.conflictSubject ?? null)}
+                    title={`Requests the ${reconcile.eligible[0]?.requestedCapability ?? 'official record'} capability for the "${reconcile.eligible[0]?.conflictSubject ?? ''}" conflict, then re-reads Property Intelligence once`}
+                  >
+                    {reconcile.running
+                      ? 'Verifying against the official record…'
+                      : `Verify "${reconcile.eligible[0]?.conflictSubject ?? 'conflict'}" against the official record`}
+                  </button>
+                )}
               </div>
             );
           })()}
+          {reconcile?.error && <p class="awv2-specialist-error" data-testid="reconcile-error">{reconcile.error}</p>}
+          {reconcile?.record && <ReconciliationPanel record={reconcile.record} />}
           {(product.visualObservations ?? []).filter((item) => item.observation).length > 0 && (
             <details class="awv2-specialist-details">
               <summary>Grounded visual observations ({(product.visualObservations ?? []).filter((item) => item.observation).length})</summary>
@@ -290,15 +402,16 @@ function SellerReadCard({ product, stale }: { product: SellerIntelligenceReadVie
 
 // ── The strip ──────────────────────────────────────────────────────────────
 
-export function SpecialistReadsPanel({ property, market: marketProduct, seller, stale }: {
+export function SpecialistReadsPanel({ property, market: marketProduct, seller, stale, reconcile }: {
   property: PropertyIntelligenceReadView | null;
   market: MarketIntelligenceReadView | null;
   seller: SellerIntelligenceReadView | null;
   stale: SpecialistStaleView | null;
+  reconcile?: PropertyReconcileControls | null;
 }) {
   return (
     <section class="awv2-specialist-reads" aria-label="Specialist intelligence reads" data-testid="specialist-reads">
-      <PropertyReadCard product={property} stale={stale?.property === true && !!property} />
+      <PropertyReadCard product={property} stale={stale?.property === true && !!property} reconcile={reconcile} />
       <MarketReadCard product={marketProduct} stale={stale?.market === true && !!marketProduct} />
       <SellerReadCard product={seller} stale={stale?.seller === true && !!seller} />
     </section>

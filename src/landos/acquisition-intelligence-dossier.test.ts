@@ -76,6 +76,50 @@ describe('what the dossier carries', () => {
     const dossier = buildAcquisitionDossier(file());
     expect(dossier.conflicts.map((conflict) => conflict.subject)).toContain('frontage');
   });
+
+  it('carries the latest official assessor answer — including an honest not-retrieved attempt — with its provenance', () => {
+    const retrieved = buildAcquisitionDossier(file({
+      assessorTax: {
+        status: 'SUCCEEDED',
+        facts: {
+          recordStatus: 'official_record_retrieved',
+          jurisdiction: 'Williamson County, TN',
+          assessor: { ownerOfRecord: 'LANDSOUTH LLC', assessedAcres: 75.91, totalAppraisedValue: 402_000 },
+          improvements: { structureType: null, yearBuilt: null, buildingSqft: null },
+          summary: 'Official record retrieved: land only.',
+          sourceAttempts: [],
+        },
+        evidence: [{ source: 'Williamson County assessor', sourceUrl: null, retrievedAt: '2026-08-21T00:00:00.000Z' }],
+        warnings: [],
+        timestamps: { startedAt: '2026-08-21T00:00:00.000Z', completedAt: '2026-08-21T00:00:05.000Z' },
+      },
+    }));
+    expect(retrieved.officialAssessorRecord).toMatchObject({
+      recordStatus: 'official_record_retrieved',
+      ownerOfRecord: 'LANDSOUTH LLC',
+      assessedAcres: 75.91,
+      source: 'Williamson County assessor',
+      summary: 'Official record retrieved: land only.',
+    });
+    expect(retrieved.coverage.present).toContain('Official assessor record');
+
+    const failed = buildAcquisitionDossier(file({
+      assessorTax: {
+        status: 'NEEDS_INPUT',
+        facts: { recordStatus: 'not_retrieved', summary: 'No assessor or tax record has been retrieved for this subject.', sourceAttempts: [{ source: 'Tennessee Comptroller public parcel layer' }] },
+        warnings: ['No official parcel source returned an assessor record.'],
+        timestamps: { completedAt: '2026-08-21T00:00:05.000Z' },
+      },
+    }));
+    expect(failed.officialAssessorRecord).toMatchObject({
+      recordStatus: 'not_retrieved',
+      attemptNote: 'No official parcel source returned an assessor record.',
+      source: 'Tennessee Comptroller public parcel layer',
+    });
+    expect(failed.coverage.absent).toContain('Official assessor record');
+
+    expect(buildAcquisitionDossier(file()).officialAssessorRecord).toBeNull();
+  });
 });
 
 describe('bounding', () => {

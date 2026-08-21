@@ -85,6 +85,9 @@ export function propertyLayerFingerprint(dossier: AcquisitionDossier): string {
     visuals: dossier.visuals.map((visual) => ({ key: visual.key, capturedAt: visual.capturedAt })),
     // A new grounded vision run is new property evidence: the layer re-reasons.
     visualObservations: dossier.visualObservations,
+    // A new (or first) official assessor answer is new property evidence too —
+    // this is what makes the bounded reconciliation re-read see it.
+    officialAssessorRecord: dossier.officialAssessorRecord,
     conflicts: dossier.conflicts,
   });
 }

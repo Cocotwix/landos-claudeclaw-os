@@ -79,6 +79,7 @@ function baseDossier(): AcquisitionDossier {
       monthsOfSupply: null, medianPricePerAcre: null, fastestBand: '5-10 acres', interpretation: null,
     },
     utilities: { septicAuthority: null, perLotApproval: null, unresolved: [] },
+    officialAssessorRecord: null,
     seller: emptySeller(),
     documents: [],
     visuals: [],
@@ -284,6 +285,35 @@ describe('dependency-aware refresh', () => {
     const deal = result.products.deal as DealIntelligenceProduct;
     expect(deal.guidanceConsidered).toEqual(['I think the rear road matters.']);
     expect(deal.whatChanged.join(' ')).toMatch(/Operator guidance added/);
+  });
+
+  it('a new official assessor answer stales the property layer, and a targeted layers:[property] re-read never reruns market or seller', async () => {
+    const first = fakeAnalyst();
+    await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: first.analyst }));
+    writes.length = 0;
+
+    // The bounded reconciliation just persisted a fresh assessor answer.
+    dossier = {
+      ...baseDossier(),
+      officialAssessorRecord: {
+        recordStatus: 'official_record_retrieved', retrievedAt: '2026-08-21T00:00:00.000Z',
+        jurisdiction: 'Williamson County, TN', source: 'County assessor', ownerOfRecord: 'Owner',
+        assessedAcres: 75.91, totalAppraisedValue: 400_000,
+        improvements: null, summary: 'Land only; no current improvement.', attemptNote: null,
+      },
+    };
+    const second = fakeAnalyst();
+    const result = await runIntelligenceStack({ dealCardId: 89, layers: ['property'] }, deps({ analyst: second.analyst }));
+
+    expect(result.outcome).toBe('produced');
+    // Only the requesting layer plus the dependent deal synthesis refresh, in
+    // ONE analyst pass; market and seller are reused untouched.
+    expect(result.refreshedLayers).toEqual(['property', 'deal']);
+    expect(result.reusedLayers).toEqual(['market', 'seller']);
+    expect(second.calls).toHaveLength(1);
+    expect(second.calls[0].prompt).toContain('OFFICIAL ASSESSOR RECORD DOCTRINE');
+    expect(second.calls[0].prompt).toContain('Land only; no current improvement.');
+    expect(writes.map((write) => write.snapshotType)).toEqual(['intelligence_property_v1', 'acquisition_intelligence_v1']);
   });
 });
 

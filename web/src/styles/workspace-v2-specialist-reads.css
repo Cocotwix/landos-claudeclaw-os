@@ -91,3 +91,48 @@
   opacity: 0.7;
 }
 .awv2-specialist-foot .stale { color: #fbbf24; opacity: 1; }
+
+/* ── Bounded official-record verification (reconciliation) ─────────────── */
+
+.awv2-reconcile-btn {
+  justify-self: start;
+  margin-top: 4px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.1);
+  color: #93c5fd;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.awv2-reconcile-btn:hover:not(:disabled) { background: rgba(96, 165, 250, 0.2); }
+.awv2-reconcile-btn:disabled { opacity: 0.6; cursor: default; }
+
+.awv2-specialist-reconcile {
+  display: grid;
+  gap: 4px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.06);
+}
+.awv2-specialist-reconcile > b { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #93c5fd; }
+.awv2-specialist-reconcile p { margin: 0; font-size: 12px; line-height: 1.45; }
+.awv2-specialist-reconcile i { font-style: normal; font-weight: 600; margin-right: 4px; opacity: 0.75; }
+.awv2-specialist-reconcile small { opacity: 0.65; }
+
+.awv2-reconcile-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.awv2-reconcile-chip.s-strong { border: 1px solid rgba(52, 211, 153, 0.5); background: rgba(52, 211, 153, 0.12); color: #34d399; }
+.awv2-reconcile-chip.s-moderate { border: 1px solid rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.12); color: #fbbf24; }
+.awv2-reconcile-chip.s-weak { border: 1px solid rgba(248, 113, 113, 0.5); background: rgba(248, 113, 113, 0.12); color: #f87171; }
+
+.awv2-specialist-error { margin: 0; font-size: 12px; color: #fca5a5; }

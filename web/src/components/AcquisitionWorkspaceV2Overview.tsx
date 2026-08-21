@@ -35,6 +35,7 @@ import {
   SpecialistReadsPanel,
   type MarketIntelligenceReadView,
   type PropertyIntelligenceReadView,
+  type PropertyReconcileControls,
   type SellerIntelligenceReadView,
   type SpecialistStaleView,
 } from './AcquisitionWorkspaceV2SpecialistReads';
@@ -238,6 +239,8 @@ interface OverviewSectionProps {
     market: MarketIntelligenceReadView | null;
     seller: SellerIntelligenceReadView | null;
     stale: SpecialistStaleView | null;
+    /** Explicit official-record verification controls + persisted record. */
+    reconcile?: PropertyReconcileControls | null;
   } | null;
   /** The Deal Brain conversation: operator guidance in, grounded replies out. */
   dealBrain?: {
@@ -694,6 +697,7 @@ export function OverviewSection({
           market={specialistReads.market}
           seller={specialistReads.seller}
           stale={specialistReads.stale}
+          reconcile={specialistReads.reconcile ?? null}
         />
       )}
 

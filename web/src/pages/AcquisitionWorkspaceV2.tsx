@@ -50,8 +50,10 @@ import type {
   SellerIntelligenceView,
 } from '../components/AcquisitionWorkspaceV2IntelligenceStack';
 import type {
+  IntelligenceReconciliationView,
   MarketIntelligenceReadView,
   PropertyIntelligenceReadView,
+  ReconcileEligibleView,
   SellerIntelligenceReadView,
   SpecialistStaleView,
 } from '../components/AcquisitionWorkspaceV2SpecialistReads';
@@ -103,6 +105,11 @@ interface IntelligenceStackResp {
   /** Present while a coordinated intelligence run is in flight. */
   run?: { startedAt?: string; error?: string | null } | null;
   dealBrainRun?: { startedAt?: string; error?: string | null } | null;
+  /** The persisted bounded reconciliation record plus in-flight state and the
+   *  conflicts the seam could act on. SELECT-only projection. */
+  reconciliation?: IntelligenceReconciliationView | null;
+  reconcileRun?: { startedAt?: string; error?: string | null } | null;
+  reconcileEligible?: ReconcileEligibleView[];
 }
 
 const PHASE_LABEL: Record<string, string> = {
@@ -310,6 +317,12 @@ export function AcquisitionWorkspaceV2() {
   const [propertyIntelRead, setPropertyIntelRead] = useState<PropertyIntelligenceReadView | null>(null);
   const [marketIntelRead, setMarketIntelRead] = useState<MarketIntelligenceReadView | null>(null);
   const [specialistStale, setSpecialistStale] = useState<SpecialistStaleView | null>(null);
+  // The bounded intelligence → capability → reconciliation state. Fetched and
+  // persisted server-side; only the explicit Verify action starts a run.
+  const [reconciliation, setReconciliation] = useState<IntelligenceReconciliationView | null>(null);
+  const [reconcileEligible, setReconcileEligible] = useState<ReconcileEligibleView[]>([]);
+  const [reconcileRunning, setReconcileRunning] = useState(false);
+  const [reconcileError, setReconcileError] = useState<string | null>(null);
   const [dealBrainThread, setDealBrainThread] = useState<DealBrainThreadEntry[]>([]);
   const [dealBrainRunning, setDealBrainRunning] = useState(false);
   const [dealBrainError, setDealBrainError] = useState<string | null>(null);
@@ -375,6 +388,10 @@ export function AcquisitionWorkspaceV2() {
         setPropertyIntelRead(ai?.products?.property ?? null);
         setMarketIntelRead(ai?.products?.market ?? null);
         setSpecialistStale(ai?.stale ?? null);
+        setReconciliation(ai?.reconciliation ?? null);
+        setReconcileEligible(ai?.reconcileEligible ?? []);
+        setReconcileRunning(!!ai?.reconcileRun && !ai.reconcileRun.error);
+        setReconcileError(ai?.reconcileRun?.error ?? null);
         setDealBrainThread(ai?.guidance ?? []);
         setDealBrainRunning(!!ai?.dealBrainRun && !ai.dealBrainRun.error);
         setDealBrainError(ai?.dealBrainRun?.error ?? null);
@@ -411,6 +428,28 @@ export function AcquisitionWorkspaceV2() {
     }, 5_000);
     return () => { dead = true; window.clearInterval(timer); };
   }, [dealId, aiRunning]);
+
+  // Poll only while a bounded reconciliation run is in flight. SELECT-only:
+  // the poll never invokes a capability or a model — it just watches the one
+  // explicit run finish and re-reads the persisted state it produced.
+  useEffect(() => {
+    if (dealId == null || !reconcileRunning) return undefined;
+    let dead = false;
+    const timer = window.setInterval(async () => {
+      const ai = await apiGet<IntelligenceStackResp>(`/api/landos/deal-cards/${dealId}/intelligence`).catch(() => null);
+      if (dead || !ai) return;
+      if (ai.reconcileRun && !ai.reconcileRun.error) return;
+      setReconcileRunning(false);
+      setReconcileError(ai.reconcileRun?.error ?? null);
+      setReconciliation(ai.reconciliation ?? null);
+      setReconcileEligible(ai.reconcileEligible ?? []);
+      setPropertyIntelRead(ai.products?.property ?? null);
+      setAiRead(ai.products?.deal ?? null);
+      setSpecialistStale(ai.stale ?? null);
+      setAiStale(ai.stale?.deal === true);
+    }, 5_000);
+    return () => { dead = true; window.clearInterval(timer); };
+  }, [dealId, reconcileRunning]);
 
   // Poll the Deal Brain conversation only while a reply is being produced.
   useEffect(() => {
@@ -460,6 +499,21 @@ export function AcquisitionWorkspaceV2() {
     } catch (e) {
       setAiRunning(false);
       setAiError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // The explicit bounded reconciliation action: the persisted material
+  // conflict drives ONE allowlisted governed capability, then ONE targeted
+  // Property re-read, then it STOPS. Nothing on page load reaches this.
+  const runIntelligenceReconcile = async (conflictSubject?: string | null) => {
+    if (dealId == null || reconcileRunning || aiRunning) return;
+    setReconcileRunning(true);
+    setReconcileError(null);
+    try {
+      await apiPost(`/api/landos/deal-cards/${dealId}/intelligence/reconcile`, conflictSubject ? { conflictSubject } : {});
+    } catch (e) {
+      setReconcileRunning(false);
+      setReconcileError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -838,6 +892,13 @@ export function AcquisitionWorkspaceV2() {
             market: marketIntelRead,
             seller: sellerIntel,
             stale: specialistStale,
+            reconcile: {
+              record: reconciliation,
+              eligible: reconcileEligible,
+              running: reconcileRunning,
+              error: reconcileError,
+              onReconcile: runIntelligenceReconcile,
+            },
           }}
           dealBrain={{
             thread: dealBrainThread,
