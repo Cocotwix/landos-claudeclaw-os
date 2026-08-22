@@ -7,11 +7,47 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-export function getWarRoomHtml(token: string, chatId: string, warroomPort: number): string {
+export interface WarRoomVoiceBoard {
+  meetingId: string;
+  dealCardId: number | null;
+  dealLabel: string | null;
+  seats: Array<{ id: string; name: string; description: string; chair?: boolean }>;
+}
+
+/**
+ * Cinematic voice page.
+ *
+ * With `board` supplied, this page is the audio interface for one existing
+ * deal-scoped War Room meeting: the same seats, the same transcript, the
+ * same turn engine. It binds the meeting for the Python audio server and
+ * deliberately does NOT create a meeting row of its own — a voice utterance
+ * and a typed message are events in one meeting. Without `board` it is the
+ * unchanged generic voice room.
+ */
+export function getWarRoomHtml(
+  token: string,
+  chatId: string,
+  warroomPort: number,
+  board?: WarRoomVoiceBoard | null,
+): string {
   const safeToken = escapeHtml(token);
   const safeChatId = escapeHtml(chatId);
   const jsToken = JSON.stringify(token);
   const jsChatId = JSON.stringify(chatId);
+  const jsBoard = JSON.stringify(board ?? null);
+  // Seats ring the table in the same geometry the legacy five used.
+  const BOARD_SEAT_POS = [
+    '--seat-x:0px;--seat-y:-150px',
+    '--seat-x:-250px;--seat-y:-40px',
+    '--seat-x:250px;--seat-y:-40px',
+    '--seat-x:0px;--seat-y:135px',
+  ];
+  const boardStageSeats = board
+    ? board.seats.slice(0, 4).map((seat, i) => `    <div class="stage-avatar" data-agent="${escapeHtml(seat.id)}" style="${BOARD_SEAT_POS[i] ?? BOARD_SEAT_POS[0]}">
+      <div class="stage-seat-initial">${escapeHtml((seat.name || seat.id).slice(0, 1).toUpperCase())}</div>
+      <div class="stage-nameplate">${escapeHtml((seat.name || seat.id).toUpperCase())}</div>
+    </div>`).join('\n')
+    : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -270,6 +306,18 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
     margin-bottom: 4px;
   }
 
+  .deal-chip {
+    font-size: 11px; color: #cfe4ff; padding: 4px 10px; border-radius: 999px;
+    border: 1px solid #2a4468; background: rgba(21,42,68,.55);
+    margin-left: 10px; white-space: nowrap;
+  }
+  .stage-seat-initial {
+    width: 100%; height: 100%; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px; font-weight: 700; letter-spacing: .04em;
+    color: #cfe4ff; background: linear-gradient(135deg,#152a44 0%,#0d1826 100%);
+    border: 1px solid #2a4468;
+  }
   .agent-card {
     background: rgba(255,255,255,0.02);
     border: 1px solid rgba(255,255,255,0.04);
@@ -699,11 +747,11 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
 <!-- Boardroom stage: shows the agents assembling around the table, then flying out to the sidebar -->
 <div class="stage" id="stage">
   <div class="stage-beam"></div>
-  <div class="stage-title">Assembling your war council</div>
+  <div class="stage-title">${board ? escapeHtml(board.dealLabel || 'Deal War Room') : 'Assembling your war council'}</div>
   <div class="table-wrap">
     <div class="table-surface"></div>
     <div class="table-rim"></div>
-    <div class="stage-avatar" data-agent="main" style="--seat-x:0px;--seat-y:-150px">
+${board ? boardStageSeats : `    <div class="stage-avatar" data-agent="main" style="--seat-x:0px;--seat-y:-150px">
       <img src="/api/agents/main/avatar?token=${safeToken}" alt="Main">
       <div class="stage-nameplate">MAIN</div>
     </div>
@@ -722,7 +770,7 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
     <div class="stage-avatar" data-agent="ops" style="--seat-x:165px;--seat-y:135px">
       <img src="/api/agents/ops/avatar?token=${safeToken}" alt="Ops">
       <div class="stage-nameplate">OPS</div>
-    </div>
+    </div>`}
   </div>
 </div>
 
@@ -738,26 +786,30 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
 <div class="app" id="app">
   <div class="header">
     <a href="/?token=${safeToken}&chatId=${safeChatId}" class="back-link">&larr; Mission Control</a>
-    <h1>War Room</h1>
+    <h1>War Room${board ? ' &middot; Voice mode' : ''}</h1>
+    ${board ? `<span class="deal-chip" id="dealChip">${escapeHtml(board.dealLabel || ('Deal ' + board.dealCardId))}</span>
+    <a class="back-link" id="btn-switch-text" href="/warroom/text?token=${safeToken}&meetingId=${escapeHtml(board.meetingId)}${safeChatId ? `&chatId=${safeChatId}` : ''}">Text mode &rarr;</a>` : ''}
     <div class="cost-display" id="costDisplay">$0.000</div>
   </div>
 
   <div class="main">
     <div class="agents-panel">
-      <div class="panel-label">Your Team</div>
+      <div class="panel-label">${board ? 'The Board' : 'Your Team'}</div>
 
       <!-- Agent cards rendered dynamically from /api/warroom/agents -->
       <div id="agent-cards-container"></div>
 
       <div style="margin-top:auto;padding-top:12px;border-top:1px solid rgba(255,255,255,0.04)">
-        <div class="panel-label" style="margin-bottom:8px">Meeting Mode</div>
+        ${board ? `<div style="font-size:10px;color:rgba(255,255,255,0.42);line-height:1.5">
+          Speak to the board the same way you type to it. Name a seat to hear only that seat; ask the room and the Deal Brain chairs it. Everything said here lands in this deal's War Room transcript.
+        </div>` : `<div class="panel-label" style="margin-bottom:8px">Meeting Mode</div>
         <div class="mode-selector">
           <button class="mode-btn active" id="mode-direct" onclick="setMode('direct',this)">Direct</button>
           <button class="mode-btn" id="mode-auto" onclick="setMode('auto',this)">Hand&nbsp;Up</button>
         </div>
         <div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:6px;line-height:1.4">
           <span id="mode-hint">Direct: talk to the pinned agent. Hand Up: the team listens, best-fit answers.</span>
-        </div>
+        </div>`}
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.04)">
           <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:rgba(255,255,255,0.4)">
             <span>&#9835; Entrance music</span>
@@ -803,6 +855,13 @@ const TOKEN = ${jsToken};
 const CHAT_ID = ${jsChatId};
 const WARROOM_PORT = ${warroomPort};
 const API_BASE = window.location.origin;
+// Deal-scoped board binding. Non-null means this page is the audio
+// interface for an existing War Room meeting rather than a standalone
+// voice room: no second meeting row, no client-side transcript writes
+// (the turn engine persists both sides), and the four specialist seats
+// come from that meeting's roster.
+const BOARD = ${jsBoard};
+const BOARD_MEETING_ID = BOARD ? BOARD.meetingId : null;
 
 // The dashboard /ws/warroom proxy enforces the same DASHBOARD_TOKEN gate
 // Hono uses for HTTP routes. The WS upgrade path can't read Authorization
@@ -1200,9 +1259,15 @@ function addTranscriptEntry(speaker, text, agentId) {
 
   if (agentId) setAgentSpeaking(agentId);
 
-  // Persist to database (fire-and-forget)
+  // Persist to database (fire-and-forget).
+  //
+  // Board rooms never write from the client. The recognized utterance and
+  // the board's answer are both persisted server-side by the War Room turn
+  // engine (POST /api/warroom/voice/turn), so writing here would duplicate
+  // every line in the shared transcript and desynchronize it from the SSE
+  // stream the text page is rendering from.
   transcriptEntryCount++;
-  if (currentMeetingId && speaker !== 'system') {
+  if (currentMeetingId && speaker !== 'system' && !BOARD) {
     fetch(API_BASE + '/api/warroom/meeting/transcript?token=' + TOKEN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1527,6 +1592,31 @@ function escapeHtmlClient(s) {
 // initial-pin loader can chain off it and call _renderPin AFTER cards
 // exist in the DOM.
 function loadAgentCards() {
+  // Board rooms render the meeting's four specialist seats. The generic
+  // agent roster is not the board, so it is never fetched here — and seats
+  // are not pinnable: the deal board's own router decides who answers.
+  if (BOARD) {
+    var boardContainer = document.getElementById('agent-cards-container');
+    if (boardContainer) {
+      boardContainer.innerHTML = '';
+      BOARD.seats.forEach(function(seat) {
+        var displayName = seat.name || seat.id;
+        AGENT_LABELS[seat.id] = displayName;
+        var card = document.createElement('div');
+        card.className = 'agent-card';
+        card.id = 'agent-' + seat.id;
+        card.setAttribute('data-agent', seat.id);
+        card.innerHTML = '<div class="agent-avatar"><div class="stage-seat-initial">'
+            + escapeHtmlClient(displayName.slice(0, 1).toUpperCase()) + '</div></div>'
+          + '<div class="agent-info"><div class="agent-name">' + escapeHtmlClient(displayName) + '</div>'
+          + '<div class="agent-role">' + escapeHtmlClient(seat.chair ? 'Chair' : (seat.description || 'Specialist')) + '</div></div>'
+          + '<div class="agent-indicator" id="status-' + escapeHtmlClient(seat.id) + '"></div>';
+        setTimeout(function(){ card.style.opacity = '1'; card.style.transform = 'translateX(0)'; }, 50);
+        boardContainer.appendChild(card);
+      });
+    }
+    return Promise.resolve();
+  }
   return fetch(API_BASE + '/api/warroom/agents?token=' + TOKEN)
     .then(function(r){ return r.json(); })
     .then(function(data) {
@@ -1562,7 +1652,40 @@ function loadAgentCards() {
 // Runs AFTER loadAgentCards() resolves so _renderPin has cards in the DOM
 // to mark. When these ran in parallel, a slow agents API + fast pin API
 // left the pinned agent visually unmarked until the user clicked something.
-loadAgentCards().then(function() {
+// Bind the audio server to this deal's meeting BEFORE the first Start
+// Meeting click. The Python server reads its binding at startup, so the
+// bind respawns it when the meeting changed; the Start Meeting readiness
+// probe already waits for the fresh process.
+function bindBoardSession() {
+  if (!BOARD) {
+    // Entering the generic voice room releases any deal binding, so a
+    // stale one can't quietly capture this meeting and route the
+    // operator's speech into somebody else's deal board.
+    return fetch(API_BASE + '/api/warroom/voice/unbind?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    }).catch(function(){});
+  }
+  return fetch(API_BASE + '/api/warroom/voice/bind?token=' + TOKEN, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ meetingId: BOARD_MEETING_ID, chatId: CHAT_ID }),
+  }).then(function(r){ return r.json(); }).then(function(d) {
+    if (!d || !d.ok) {
+      addTranscriptEntry('system', 'Could not attach voice to this deal room' + (d && d.error ? ': ' + d.error : '.'));
+    }
+  }).catch(function(e) {
+    console.error('[WarRoom] voice bind failed', e);
+    addTranscriptEntry('system', 'Could not attach voice to this deal room.');
+  });
+}
+
+bindBoardSession().then(function() {
+  return loadAgentCards();
+}).then(function() {
+  // Board seats are not pinnable, so the generic pin state is irrelevant.
+  if (BOARD) return null;
   return fetch(API_BASE + '/api/warroom/pin?token=' + TOKEN);
 }).then(function(r){ return r && r.json(); }).then(function(j) {
   if (!j) return;
@@ -1752,14 +1875,21 @@ async function toggleMeeting() {
         meetingActive = true;
         meetingStartTime = Date.now();
         transcriptEntryCount = 0;
-        // Create meeting record in DB
-        fetch(API_BASE + '/api/warroom/meeting/start?token=' + TOKEN, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: currentMode, agent: pinnedAgent || 'main' }),
-        }).then(function(r){ return r.json(); }).then(function(d){
-          if (d && d.meetingId) currentMeetingId = d.meetingId;
-        }).catch(function(){});
+        // Board rooms already HAVE a meeting: the deal-scoped War Room the
+        // operator came from. Creating another here is exactly the
+        // duplicate-voice-meeting defect this slice removes, so we simply
+        // adopt the bound meeting id.
+        if (BOARD) {
+          currentMeetingId = BOARD_MEETING_ID;
+        } else {
+          fetch(API_BASE + '/api/warroom/meeting/start?token=' + TOKEN, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: currentMode, agent: pinnedAgent || 'main' }),
+          }).then(function(r){ return r.json(); }).then(function(d){
+            if (d && d.meetingId) currentMeetingId = d.meetingId;
+          }).catch(function(){});
+        }
         btn.textContent = 'End Meeting';
         btn.className = 'btn end';
         btn.disabled = false;
@@ -1991,8 +2121,10 @@ async function toggleMeeting() {
     // End meeting
     clearConnectTimeout();
     meetingActive = false;
-    // Persist meeting end to DB
-    if (currentMeetingId) {
+    // Persist meeting end to DB. A board room's meeting outlives the audio
+    // session — leaving Voice Mode is not ending the deal's War Room, and
+    // the conversation must still be there in Text Mode.
+    if (currentMeetingId && !BOARD) {
       fetch(API_BASE + '/api/warroom/meeting/end?token=' + TOKEN, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

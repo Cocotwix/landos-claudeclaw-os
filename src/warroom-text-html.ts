@@ -1507,7 +1507,7 @@ function appendUserBubble(text, opts) {
   ts.className = 'ts';
   // When rendering history, callers pass opts.createdAt so the stamp
   // reflects when the message was originally sent — not "now".
-  ts.textContent = fmtTs(opts && opts.createdAt);
+  ts.textContent = ((opts && opts.origin === 'voice') ? '\u{1F3A4} ' : '') + fmtTs(opts && opts.createdAt);
   body.appendChild(ts);
   wrap.appendChild(body);
   if (opts && opts.clientMsgId) wrap.dataset.clientMsgId = opts.clientMsgId;
@@ -1948,6 +1948,7 @@ function handleSSE(payload) {
             clientMsgId: ev.clientMsgId,
             transcriptRowId: ev.userTranscriptRowId,
             createdAt: ev.userTs,
+            origin: ev.origin,
           });
         }
       }
@@ -2455,7 +2456,9 @@ function renderTranscriptRow(row) {
     body.appendChild(content);
     const ts = document.createElement('div');
     ts.className = 'ts';
-    ts.textContent = fmtTs(row.created_at);
+    // Voice-originated turns read exactly like typed ones; the only
+    // difference the operator sees is a small mic mark on the stamp.
+    ts.textContent = (row.origin === 'voice' ? '\u{1F3A4} ' : '') + fmtTs(row.created_at);
     body.appendChild(ts);
     wrap.appendChild(body);
     // Stamp the rowId so position-aware reordering works for late
@@ -3031,7 +3034,9 @@ document.getElementById('btn-end').addEventListener('click', () => {
   openDialog('End this meeting?', 'You can reopen it within 24h and resume from where you left off.', 'End meeting', endMeeting);
 });
 document.getElementById('btn-switch-voice').addEventListener('click', () => {
-  const q = new URLSearchParams({ token: TOKEN, mode: 'voice' });
+  // Carry the meeting across. Voice is a mode of THIS meeting: the same
+  // board, the same transcript, the same conversation continuing.
+  const q = new URLSearchParams({ token: TOKEN, mode: 'voice', meetingId: MEETING_ID });
   if (CHAT_ID) q.set('chatId', CHAT_ID);
   window.location.href = '/warroom?' + q.toString();
 });

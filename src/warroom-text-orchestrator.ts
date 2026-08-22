@@ -138,6 +138,13 @@ export function getRosterForMeeting(dealCardId: number | null | undefined): Rost
 export interface HandleTurnOptions {
   /** Override roster (test only). */
   roster?: RosterAgent[];
+  /**
+   * Input mode this turn arrived through. 'voice' marks the persisted user
+   * row so the shared transcript can show a mic indicator; routing, seats,
+   * context and the chair are identical either way — voice is an input
+   * mode, not a second reasoning path.
+   */
+  origin?: 'voice';
 }
 
 export interface HandleTurnResult {
@@ -176,7 +183,7 @@ export async function handleTextTurn(
   // orchestrator crash mid-turn. Capture (id, created_at) so sticky-addressee
   // inference can query strictly older rows without picking up the message
   // we just inserted.
-  const userRowCursor = addWarRoomTranscript(meetingId, 'user', trimmed);
+  const userRowCursor = addWarRoomTranscript(meetingId, 'user', trimmed, opts.origin);
 
   const roster = opts.roster ?? getRosterForMeeting(meeting.deal_card_id);
   const rosterById = new Map(roster.map((r) => [r.id, r]));
@@ -201,6 +208,9 @@ export async function handleTextTurn(
     // arrives AFTER turn_start would visually appear after the new
     // user bubble even though its DB row is earlier.
     userTranscriptRowId: userRowCursor.id,
+    // Lets an open text tab mark a voice-originated turn live, matching how
+    // the same row renders after a refresh.
+    ...(opts.origin ? { origin: opts.origin } : {}),
   });
 
   // Track which agents the user explicitly @-mentioned, so the intervener

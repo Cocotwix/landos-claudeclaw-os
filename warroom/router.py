@@ -5,7 +5,7 @@ and decides which ClaudeClaw agent should handle the message.
 Routing rules (in priority order):
   1. Broadcast triggers: "everyone, status update" -> round-robin all agents
   2. Name prefix detection: "Research, what's the latest on X" -> research agent
-  3. Pinned agent (from /tmp/warroom-pin.json, set by the dashboard
+  3. Pinned agent (from the shared warroom runtime dir, set by the dashboard
      click-to-pin UI) -> pinned agent
   4. Default fallback: routes to the main agent
 """
@@ -32,14 +32,14 @@ logger = logging.getLogger("warroom.router")
 # Shared state with the dashboard (src/dashboard.ts POST /api/warroom/pin).
 # Writing via the dashboard; reading here. The Pipecat server and the Hono
 # dashboard are separate processes, so we use this tiny file as IPC.
-PIN_PATH = Path("/tmp/warroom-pin.json")
+from config import PIN_PATH, ROSTER_PATH  # shared with the Node dashboard
 
 # Live roster snapshot written by Node-side refreshWarRoomRoster(). Pipecat
 # used to hardcode AGENT_NAMES which silently broke name-prefix routing for
 # user-created agents. We now mtime-cache the roster file and rebuild the
 # regex when the roster changes, so a new agent in the dashboard immediately
 # becomes addressable by voice prefix ("hey analytics, ...").
-ROSTER_PATH = Path("/tmp/warroom-agents.json")
+
 
 # Default fallback if the roster file is missing/unreadable. Matches the
 # bundled built-in agents so a fresh install still routes correctly.
@@ -80,7 +80,7 @@ def _build_agent_pattern(names: set) -> re.Pattern:
 
 
 def _refresh_agent_names_from_roster() -> None:
-    """Re-read /tmp/warroom-agents.json if the file's mtime changed.
+    """Re-read the shared agent roster if the file's mtime changed.
     Updates AGENT_NAMES in place and invalidates the compiled regex.
     Falls back to last-good values on any error."""
     global _roster_mtime, _agent_pattern
@@ -147,7 +147,7 @@ class AgentRouter(FrameProcessor):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # mtime-cached read of /tmp/warroom-pin.json so we don't stat+parse
+        # mtime-cached read of the shared pin file so we don't stat+parse
         # on every single utterance; only re-read when the file changes.
         self._pin_mtime: float = 0.0
         self._pin_agent: Optional[str] = None
@@ -174,7 +174,7 @@ class AgentRouter(FrameProcessor):
                     data = json.load(f)
                 # The pin file is written by the Hono dashboard, but an
                 # attacker or a buggy process could drop arbitrary JSON
-                # into /tmp/warroom-pin.json. Defend against non-dict
+                # into the shared pin file. Defend against non-dict
                 # top-level values (strings, lists, numbers) that would
                 # otherwise crash .get() with AttributeError.
                 _refresh_agent_names_from_roster()
@@ -231,7 +231,7 @@ class AgentRouter(FrameProcessor):
             return
 
         # Check for agent name prefix (regex rebuilt lazily when the
-        # /tmp/warroom-agents.json roster file changes)
+        # shared roster file changes)
         match = _get_agent_pattern().match(text)
         if match:
             agent_id = match.group(1).lower()

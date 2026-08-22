@@ -18,6 +18,7 @@ import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 import { getVenvPython } from './platform.js';
+import { warroomRuntimeFile, WARROOM_DEBUG_LOG_FILE } from './warroom-runtime-paths.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -254,8 +255,9 @@ async function main(): Promise<void> {
         const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
         if (depCheck.status !== 0) {
           const msg = 'War Room Python dependencies not installed. Run:\n\n'
-            + 'source warroom/.venv/bin/activate\n'
-            + 'pip install -r warroom/requirements.txt\n\n'
+            + (process.platform === 'win32'
+              ? 'warroom\\.venv\\Scripts\\python.exe -m pip install -r warroom\\requirements.txt\n\n'
+              : 'source warroom/.venv/bin/activate\npip install -r warroom/requirements.txt\n\n')
             + 'Then restart the bot.';
           logger.error(msg);
           if (ALLOWED_CHAT_ID) {
@@ -263,7 +265,7 @@ async function main(): Promise<void> {
           }
         } else {
         // Dedicated log file for the warroom subprocess
-        const warroomLogPath = '/tmp/warroom-debug.log';
+        const warroomLogPath = warroomRuntimeFile(WARROOM_DEBUG_LOG_FILE);
         let warroomLogFd: number | null = null;
         try {
           warroomLogFd = fs.openSync(warroomLogPath, 'a');

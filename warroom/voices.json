@@ -23,5 +23,21 @@
     "voice_id": "2ee87190-8f84-4925-97da-e52547f9462c",
     "gemini_voice": "Alnilam",
     "name": "Alnilam / American Male (firm, direct)"
+  },
+  "deal-brain": {
+    "gemini_voice": "Charon",
+    "name": "Charon / British Male (informative, confident)"
+  },
+  "property": {
+    "gemini_voice": "Iapetus",
+    "name": "Iapetus / Clear"
+  },
+  "market": {
+    "gemini_voice": "Kore",
+    "name": "Kore / American Female (firm, analytical)"
+  },
+  "seller": {
+    "gemini_voice": "Sulafat",
+    "name": "Sulafat / Warm"
   }
 }

@@ -180,7 +180,7 @@ import {
 } from './agent-create.js';
 import { getMainModelOverride, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
-import { getWarRoomHtml } from './warroom-html.js';
+import { getWarRoomHtml, type WarRoomVoiceBoard } from './warroom-html.js';
 import { getWarRoomPickerHtml } from './warroom-text-picker-html.js';
 import { getWarRoomTextHtml } from './warroom-text-html.js';
 import { handleTextTurn, cancelMeetingTurns, getRoster, getRosterForMeeting, warmupMeeting, isWarmupDone, getActiveTurnIds, waitForMeetingTurnsIdle } from './warroom-text-orchestrator.js';
@@ -196,6 +196,8 @@ import {
 } from './db.js';
 import { registerLandosRoutes } from './landos/routes.js';
 import { getDealWarRoomContext } from './landos/war-room-deal-context.js';
+import { readVoiceSession, writeVoiceSession, clearVoiceSession, pickSpokenText } from './warroom-voice-session.js';
+import { WARROOM_SERVER_PROCESS_PATTERN } from './warroom-runtime-paths.js';
 import { messageQueue } from './message-queue.js';
 import * as killSwitches from './kill-switches.js';
 import { getIngestionQuotaStatus, extractViaClaude } from './memory-ingest.js';
@@ -279,7 +281,12 @@ const BROWSER_VISUAL_READY_TTL_MS = 60 * 1000;
 const BROWSER_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const BROWSER_SESSION_COOKIE = 'claudeclaw_local_session';
 const BROWSER_BOOTSTRAP_HEADER = 'x-landos-bootstrap-token';
-type BrowserPairing = { expiresAt: number; returnTo: string };
+// `remoteOrigin` is empty for the ordinary loopback pairing. When the operator
+// mints a link for a device that reaches LandOS over a private tunnel (a phone
+// on the Dev Tunnel), the already-authenticated local browser names that exact
+// origin, and the one-time code becomes claimable from that origin ONLY. The
+// master token is still never issued, copied, or reachable off loopback.
+type BrowserPairing = { expiresAt: number; returnTo: string; remoteOrigin: string };
 const browserPairings = new Map<string, BrowserPairing>();
 let browserVisualReadyArm: BrowserPairing | null = null;
 
@@ -292,8 +299,12 @@ function isLoopbackHostname(hostname: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
 }
 
+function requestHostname(c: any): string {
+  try { return new URL(c.req.url).hostname.toLowerCase(); } catch { return ''; }
+}
+
 function isLoopbackRequest(c: any): boolean {
-  try { return isLoopbackHostname(new URL(c.req.url).hostname); } catch { return false; }
+  return isLoopbackHostname(requestHostname(c));
 }
 
 function requestCookie(c: any, name: string): string {
@@ -347,12 +358,53 @@ function safeBrowserPairingReturnTo(value: unknown): string {
   }
 }
 
-function createBrowserPairing(returnTo: string): { code: string; expiresAt: number } {
+/** Normalize an operator-named device origin to a bare http(s) origin, or ''.
+ *  Loopback is rejected here because it is already allowed unconditionally;
+ *  this value exists only to name a non-loopback device. */
+function safeBrowserPairingRemoteOrigin(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const raw = value.trim();
+  if (!raw || raw.length > 512) return '';
+  let parsed: URL;
+  try { parsed = new URL(raw.includes('://') ? raw : `https://${raw}`); } catch { return ''; }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+  const host = parsed.hostname.toLowerCase();
+  if (!host || host.length > 253 || !/^[a-z0-9.-]+$/.test(host)) return '';
+  if (isLoopbackHostname(host)) return '';
+  return parsed.origin;
+}
+
+function pairingRemoteHostname(pairing: BrowserPairing): string {
+  if (!pairing.remoteOrigin) return '';
+  try { return new URL(pairing.remoteOrigin).hostname.toLowerCase(); } catch { return ''; }
+}
+
+function createBrowserPairing(returnTo: string, remoteOrigin = ''): { code: string; expiresAt: number } {
   pruneBrowserPairings();
   const code = crypto.randomBytes(24).toString('base64url');
   const expiresAt = Date.now() + BROWSER_PAIRING_TTL_MS;
-  browserPairings.set(secretHash(code), { expiresAt, returnTo });
+  browserPairings.set(secretHash(code), { expiresAt, returnTo, remoteOrigin });
   return { code, expiresAt };
+}
+
+/** Look at a pairing without consuming it, so the host it was bound to can be
+ *  checked before the single use is spent. */
+function peekBrowserPairing(code: string): BrowserPairing | null {
+  if (!/^[A-Za-z0-9_-]{24,128}$/.test(code)) return null;
+  pruneBrowserPairings();
+  const pairing = browserPairings.get(secretHash(code));
+  return pairing && pairing.expiresAt > Date.now() ? pairing : null;
+}
+
+/** True while an unexpired pairing is bound to this hostname. Used only to let
+ *  the claim route answer that device during the five-minute window. */
+function hasPairingBoundToHost(hostname: string): boolean {
+  if (!hostname) return false;
+  pruneBrowserPairings();
+  for (const pairing of browserPairings.values()) {
+    if (pairingRemoteHostname(pairing) === hostname) return true;
+  }
+  return false;
 }
 
 function claimBrowserPairing(code: string): BrowserPairing | null {
@@ -365,7 +417,8 @@ function claimBrowserPairing(code: string): BrowserPairing | null {
 }
 
 function armBrowserVisualReady(returnTo: string): BrowserPairing {
-  const pairing = { expiresAt: Date.now() + BROWSER_VISUAL_READY_TTL_MS, returnTo };
+  // Credential-free and code-free, so this one stays loopback-only forever.
+  const pairing = { expiresAt: Date.now() + BROWSER_VISUAL_READY_TTL_MS, returnTo, remoteOrigin: '' };
   browserVisualReadyArm = pairing;
   return pairing;
 }
@@ -501,6 +554,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const ua = c.req.header('user-agent') || 'unknown';
     const method = c.req.method;
     const path = new URL(c.req.url).pathname;
+    // The host LandOS was actually addressed as. Loopback and tunnel traffic
+    // are otherwise indistinguishable in this log, which is what made the
+    // remote-pairing failure hard to read.
+    const host = new URL(c.req.url).host;
 
     await next();
 
@@ -508,7 +565,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const ms = Date.now() - start;
     const level = status === 401 || status === 403 ? 'warn' : 'info';
     logger[level](
-      { method, path, status, ip, ua, ms },
+      { method, path, status, ip, ua, ms, host },
       `Dashboard ${method} ${path} ${status}`
     );
   });
@@ -661,8 +718,28 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const origin = c.req.header('origin');
     if (origin) {
       let host = '';
-      try { host = new URL(origin).hostname; } catch { /* malformed */ }
+      let originHostPort = '';
+      try {
+        const parsed = new URL(origin);
+        host = parsed.hostname;
+        originHostPort = parsed.host;
+      } catch { /* malformed */ }
+      // A request whose Origin is our own origin is same-origin by definition,
+      // which is exactly what this check exists to permit; the hostname
+      // allowlist below is a blunter proxy for it and misses any host the
+      // operator reaches LandOS on without naming it in DASHBOARD_URL (a phone
+      // on the private tunnel). Browsers set Origin themselves, so a
+      // cross-origin page cannot forge its way through this.
+      let sameOrigin = false;
+      try { sameOrigin = !!originHostPort && originHostPort === new URL(c.req.url).host; } catch { /* ignore */ }
+      // Claiming a one-time code is also allowed from the exact device origin
+      // the operator bound that code to, for the five minutes it lives. Some
+      // tunnels rewrite Host upstream, which would otherwise make the pairing
+      // request look cross-origin to the check above.
+      const isPairingClaim = new URL(c.req.url).pathname === '/api/dashboard/browser-pairings/claim';
       const allowed =
+        sameOrigin ||
+        (isPairingClaim && hasPairingBoundToHost(host.toLowerCase())) ||
         host === 'localhost' ||
         host === '127.0.0.1' ||
         host === '[::1]' ||
@@ -686,16 +763,21 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!DASHBOARD_TOKEN || !tokensMatch(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
-    const body = await c.req.json().catch(() => ({})) as { returnTo?: unknown };
+    const body = await c.req.json().catch(() => ({})) as { returnTo?: unknown; remoteOrigin?: unknown };
     const returnTo = safeBrowserPairingReturnTo(body.returnTo);
-    const pairing = createBrowserPairing(returnTo);
-    const url = new URL('/connect', new URL(c.req.url).origin);
+    // Optional: the operator names the exact origin a remote device (phone on
+    // the private tunnel) will reach LandOS on. The link is then issued for
+    // that origin and the code is claimable from it and nowhere else.
+    const remoteOrigin = safeBrowserPairingRemoteOrigin(body.remoteOrigin);
+    const pairing = createBrowserPairing(returnTo, remoteOrigin);
+    const url = new URL('/connect', remoteOrigin || new URL(c.req.url).origin);
     url.searchParams.set('returnTo', returnTo);
     url.hash = pairing.code;
     return c.json({
       pairingUrl: url.toString(),
       expiresAt: new Date(pairing.expiresAt).toISOString(),
       returnTo,
+      remoteOrigin,
     }, 201);
   });
 
@@ -740,12 +822,27 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   }
 
   // This is intentionally the sole unauthenticated API route. It accepts a
-  // single-use, five-minute code only on loopback and exchanges it for an
-  // independent local session cookie; it cannot disclose the master token.
+  // single-use, five-minute code and exchanges it for an independent local
+  // session cookie; it cannot disclose the master token.
+  //
+  // Reachability: always loopback. Additionally the exact origin the operator's
+  // already-authenticated local browser bound this one code to when minting it
+  // — that is how a phone on the private tunnel pairs, since it can never mint
+  // a link itself (creating one still demands loopback plus the master token).
+  // An unbound code stays loopback-only, so the default posture is unchanged.
   app.post('/api/dashboard/browser-pairings/claim', async (c) => {
-    if (!isLoopbackRequest(c)) return c.json({ error: 'Not found' }, 404);
     const body = await c.req.json().catch(() => ({})) as { code?: unknown };
-    const pairing = typeof body.code === 'string' ? claimBrowserPairing(body.code) : null;
+    const code = typeof body.code === 'string' ? body.code : '';
+    const pending = code ? peekBrowserPairing(code) : null;
+    const boundHost = pending ? pairingRemoteHostname(pending) : '';
+    // A device that is already paired gets the ordinary expired-code answer
+    // rather than a bare 404 when it re-opens a spent link; it holds a session
+    // already, so this discloses nothing it could not already read.
+    const reachable = isLoopbackRequest(c)
+      || (!!boundHost && boundHost === requestHostname(c))
+      || hasLocalBrowserSession(c);
+    if (!reachable) return c.json({ error: 'Not found' }, 404);
+    const pairing = code ? claimBrowserPairing(code) : null;
     if (!pairing) return c.json({ error: 'Pairing code is invalid or expired.' }, 401);
     return issueLocalBrowserSession(c, pairing);
   });
@@ -861,7 +958,30 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // MUST require a token. The v2 SPA path doesn't.
     if (mode === 'voice') {
       const denied = requireToken(c); if (denied) return denied;
-      return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
+      // ?meetingId= turns this into Voice Mode for an existing deal-scoped
+      // War Room: same meeting, same seats, same transcript. A meeting that
+      // is missing, ended, from another chat, or not deal-scoped falls back
+      // to the unchanged generic voice room rather than half-binding.
+      const voiceMeetingId = (c.req.query('meetingId') || '').trim();
+      let board: WarRoomVoiceBoard | null = null;
+      if (WARROOM_TEXT_ID_RE.test(voiceMeetingId)) {
+        const m = getTextMeeting(voiceMeetingId);
+        if (m && m.ended_at === null && m.deal_card_id != null
+          && (m.chat_id === '' || m.chat_id === chatId)) {
+          board = {
+            meetingId: m.id,
+            dealCardId: m.deal_card_id,
+            dealLabel: m.deal_label,
+            seats: getRosterForMeeting(m.deal_card_id).map((r) => ({
+              id: r.id,
+              name: r.name,
+              description: r.description,
+              ...(('chair' in r && (r as { chair?: boolean }).chair) ? { chair: true } : {}),
+            })),
+          };
+        }
+      }
+      return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT, board));
     }
     if (mode === 'picker' || legacyMode || !fs.existsSync(newDashboardIndex)) {
       const denied = requireToken(c); if (denied) return denied;
@@ -1134,7 +1254,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // so the HTTP response doesn't block on the respawn.
   async function killWarroomAsync(reason: string): Promise<number[]> {
     try {
-      const pids = await findProcessesByPattern('warroom/server.py');
+      const pids = await findProcessesByPattern(WARROOM_SERVER_PROCESS_PATTERN);
       for (const pid of pids) killProcess(pid);
       if (pids.length > 0) {
         logger.info({ pids, reason }, 'Killed warroom subprocess for respawn');
@@ -1705,6 +1825,160 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return c.json({ ok: true, meetingId, entryCount: result.entryCount });
   });
 
+  // ──────────────────────────────────────────────────────────────────
+  // Unified voice + text War Room
+  //
+  // Voice is an input/output mode of the SAME meeting, not a second
+  // pipeline. /voice/bind tells the Python audio server which meeting it
+  // is the microphone for; /voice/turn is the single door every recognized
+  // utterance comes through, and it runs the ordinary War Room turn engine
+  // (same router, same seats, same chair, same transcript, same queue).
+  // Nothing about the deal is decided on the audio side.
+  // ──────────────────────────────────────────────────────────────────
+  app.post('/api/warroom/voice/bind', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    if (meeting.ended_at !== null) return c.json({ error: 'meeting_ended' }, 410);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+
+    const previous = readVoiceSession();
+    writeVoiceSession({
+      meetingId,
+      chatId: meeting.chat_id,
+      dealCardId: meeting.deal_card_id,
+      dealLabel: meeting.deal_label,
+      boundAt: Date.now(),
+    });
+    // The audio server reads its binding once at startup, so a changed
+    // binding needs a respawn to take effect. Unchanged binding: leave the
+    // running process alone so re-entering Voice Mode doesn't stall on a
+    // pointless restart.
+    const changed = previous?.meetingId !== meetingId;
+    if (changed) await killWarroomAsync(`voice session bound to ${meetingId}`);
+    return c.json({
+      ok: true,
+      meetingId,
+      dealCardId: meeting.deal_card_id,
+      dealLabel: meeting.deal_label,
+      respawning: changed,
+    });
+  });
+
+  app.post('/api/warroom/voice/unbind', async (c) => {
+    const had = readVoiceSession();
+    clearVoiceSession();
+    if (had) await killWarroomAsync('voice session unbound');
+    return c.json({ ok: true, respawning: !!had });
+  });
+
+  app.get('/api/warroom/voice/session', (c) => {
+    return c.json({ ok: true, session: readVoiceSession() });
+  });
+
+  // The one door for voice-originated turns. Runs through the SAME
+  // per-meeting queue as typed turns, so a voice utterance and a typed
+  // message can never produce two concurrent board turns on one meeting.
+  // Responses are collected off the meeting's event channel — the exact
+  // text that was persisted and rendered — so the spoken answer can never
+  // diverge from the transcript.
+  app.post('/api/warroom/voice/turn', async (c) => {
+    let body: { meetingId?: string; chatId?: string; text?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || '').trim();
+    const text = (body.text || '').trim();
+    if (!killSwitches.isEnabled('WARROOM_TEXT_ENABLED')) {
+      return c.json({ ok: false, error: 'war room disabled' }, 503);
+    }
+    if (!killSwitches.isEnabled('WARROOM_VOICE_ENABLED')) {
+      return c.json({ ok: false, error: 'voice war room disabled' }, 503);
+    }
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ ok: false, error: 'invalid meetingId' }, 400);
+    if (!text) return c.json({ ok: false, error: 'empty text' }, 400);
+    if (text.length > 8000) return c.json({ ok: false, error: 'text too long' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ ok: false, error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ ok: false, error: chatGate.error }, chatGate.status);
+
+    const roster = getRosterForMeeting(gate.meeting.deal_card_id);
+    const nameById = new Map(roster.map((r) => [r.id, r.name]));
+    // Must be a v4 UUID: the turn engine's dedup helper rejects any other
+    // shape and a rejected id reads as "already seen", which would silently
+    // drop every spoken utterance instead of running a turn.
+    const clientMsgId = crypto.randomUUID();
+
+    const responses: Array<{ agentId: string; name: string; text: string }> = [];
+    // Latch the turnId from turn_start (which carries our clientMsgId) so
+    // agent_done rows can be attributed while the turn is still running.
+    // Waiting for handleTextTurn's return value would be too late: every
+    // response event has already gone by.
+    let turnId: string | null = null;
+    const channel = getChannel(meetingId);
+    const unsub = channel.subscribe((entry) => {
+      const ev = entry.event as {
+        type: string; turnId?: string; clientMsgId?: string;
+        agentId?: string; text?: string; incomplete?: boolean;
+      };
+      if (ev.type === 'turn_start' && ev.clientMsgId === clientMsgId) {
+        turnId = ev.turnId ?? null;
+        return;
+      }
+      if (!turnId || ev.turnId !== turnId) return;
+      if (ev.type === 'agent_done' && ev.agentId && ev.text && !ev.incomplete) {
+        responses.push({
+          agentId: ev.agentId,
+          name: nameById.get(ev.agentId) ?? ev.agentId,
+          text: ev.text,
+        });
+      }
+    });
+
+    try {
+      const settled = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        messageQueue.enqueue(`warroom-text:${meetingId}`, async () => {
+          try {
+            const result = await handleTextTurn(meetingId, text, clientMsgId, { origin: 'voice' });
+            turnId = result.turnId ?? null;
+            resolve(result.accepted
+              ? { ok: true }
+              : { ok: false, error: result.error || 'turn_rejected' });
+          } catch (err) {
+            resolve({ ok: false, error: err instanceof Error ? err.message : String(err) });
+          }
+        });
+      });
+      if (!settled.ok) return c.json({ ok: false, error: settled.error }, 500);
+    } finally {
+      unsub();
+    }
+
+    // The spoken answer is the turn's final persisted response: the chair's
+    // synthesis on a board turn, or the single seat's answer on a direct
+    // question. Never a re-summarization, so speech cannot grow a second
+    // conclusion the transcript does not contain.
+    const spoken = pickSpokenText(responses);
+    if (!spoken) {
+      return c.json({
+        ok: false,
+        error: 'the board produced no answer for that one',
+        turnId,
+      });
+    }
+    return c.json({
+      ok: true,
+      turnId,
+      spoken,
+      responses: responses.map((r) => ({ agentId: r.agentId, name: r.name })),
+    });
+  });
+
   // ── War Room voice configuration ──
   // warroom/voices.json carries two voice identifiers per agent:
   //   - gemini_voice:     Gemini Live's built-in voice name (used in live mode)
@@ -1884,7 +2158,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // because that would kill the dashboard process we're currently
     // running inside — the HTTP response would never be delivered.
     try {
-      const pids = await findProcessesByPattern('warroom/server.py');
+      const pids = await findProcessesByPattern(WARROOM_SERVER_PROCESS_PATTERN);
       if (pids.length === 0) {
         return c.json({ ok: false, error: 'no warroom server process found' }, 500);
       }

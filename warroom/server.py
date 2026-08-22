@@ -97,7 +97,8 @@ except ModuleNotFoundError as e:
     )
     sys.exit(1)
 
-from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT, resolve_bind
+from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT, resolve_bind, ROSTER_PATH, PIN_PATH
+import board_mode
 
 
 logging.basicConfig(
@@ -180,13 +181,12 @@ VOICE_BRIDGE = PROJECT_ROOT / "dist" / "agent-voice-bridge.js"
 # Load agent roster dynamically from the file Node writes on startup.
 # Falls back to the default 5 if the file doesn't exist.
 def _load_agent_roster():
-    roster_path = Path("/tmp/warroom-agents.json")
     try:
-        if roster_path.exists():
-            agents = json.loads(roster_path.read_text())
+        if ROSTER_PATH.exists():
+            agents = json.loads(ROSTER_PATH.read_text(encoding="utf-8"))
             return {a["id"] for a in agents}
     except Exception as exc:
-        logger.warning("Could not read agent roster from %s: %s", roster_path, exc)
+        logger.warning("Could not read agent roster from %s: %s", ROSTER_PATH, exc)
     return {"main", "research", "comms", "content", "ops"}
 
 VALID_AGENTS = _load_agent_roster()
@@ -338,9 +338,9 @@ async def list_agents_handler(params):
         "ops": "Master of War. Calendar, scheduling, internal tools, automations.",
     }
     roster = {}
-    # Start with dynamic roster from /tmp/warroom-agents.json
+    # Start with dynamic roster from the shared warroom runtime dir
     try:
-        agents = json.loads(Path("/tmp/warroom-agents.json").read_text())
+        agents = json.loads(ROSTER_PATH.read_text(encoding="utf-8"))
         for a in agents:
             aid = a["id"]
             roster[aid] = _known_descriptions.get(aid, a.get("description", "Specialist agent"))
@@ -488,7 +488,7 @@ async def answer_as_agent_handler(params):
 # ─── Mode 1: Gemini Live (speech-to-speech + tools) ────────────────────────
 
 # Shared with the dashboard — any HTTP POST to /api/warroom/pin writes here.
-PIN_PATH = Path("/tmp/warroom-pin.json")
+# Path comes from config so the Node and Python halves agree on Windows too.
 
 VALID_MODES = {"direct", "auto"}
 
@@ -540,12 +540,33 @@ async def run_live_mode():
     port = int(os.environ.get("WARROOM_PORT", "7860"))
     model = os.environ.get("WARROOM_LIVE_MODEL")  # None = use Pipecat's default
 
+    # Deal-scoped board mode. When the dashboard has bound a War Room
+    # meeting, this process is the audio interface for THAT meeting: the
+    # same four persistent Hermes specialists, the same Deal Brain chair,
+    # the same transcript. Gemini Live keeps speech recognition and speech
+    # output and nothing else. See warroom/board_mode.py.
+    voice_session = board_mode.read_voice_session()
+    board_token = os.environ.get("DASHBOARD_TOKEN", "")
+    if voice_session and not board_token:
+        logger.error(
+            "Voice session bound to meeting %s but DASHBOARD_TOKEN is unset; "
+            "cannot reach the War Room turn engine. Falling back to generic mode.",
+            voice_session.get("meetingId"),
+        )
+        voice_session = None
+
     # Determine which agent + mode is active. Defaults: ("main", "direct").
     # If the user has clicked an agent card or a mode button on the
     # dashboard, /api/warroom/pin wrote both fields here and then killed
     # the warroom subprocess so this fresh process picks up the new pin.
     active_agent, active_mode = read_pin_state()
-    logger.info("Active agent=%s mode=%s", active_agent, active_mode)
+    if voice_session:
+        logger.info(
+            "Board mode: meeting=%s deal=%s",
+            voice_session.get("meetingId"), voice_session.get("dealCardId"),
+        )
+    else:
+        logger.info("Active agent=%s mode=%s", active_agent, active_mode)
 
     # In auto mode, voice comes from main (Gemini is the front desk,
     # agents answer through it verbatim so they all sound the same
@@ -554,7 +575,20 @@ async def run_live_mode():
     active_entry = AGENT_VOICES.get(voice_agent) or AGENT_VOICES.get("main", {})
     configured_voice = active_entry.get("gemini_voice") or "Charon"
     voice = os.environ.get("WARROOM_LIVE_VOICE", configured_voice)
-    system_prompt = get_persona(active_agent, mode=active_mode)
+    if voice_session:
+        # One audio voice carries the whole board. Gemini Live's native-audio
+        # session pins a single voice for its lifetime, so per-seat voices
+        # would require one live session per specialist. The seats are
+        # already identified by name in the shared transcript, and correct
+        # reasoning identity matters more than voice differentiation, so
+        # this slice keeps one voice and names the limitation honestly.
+        board_entry = AGENT_VOICES.get("deal-brain") or AGENT_VOICES.get("main", {})
+        voice = os.environ.get(
+            "WARROOM_LIVE_VOICE", board_entry.get("gemini_voice") or "Charon",
+        )
+        system_prompt = board_mode.BOARD_PERSONA
+    else:
+        system_prompt = get_persona(active_agent, mode=active_mode)
 
     transport = make_transport(port)
 
@@ -609,7 +643,13 @@ async def run_live_mode():
     # Gemini should not be routing calls away from the pinned agent —
     # the pinned agent IS the one answering, via its own persona.
     standard_tools = [delegate_schema, get_time_schema, list_agents_schema]
-    if active_mode == "auto":
+    if voice_session:
+        # Board mode gets exactly one substantive tool. Delegation,
+        # agent listing and the auto-router are all deliberately absent:
+        # the deal board owns every substantive answer, and the audio
+        # provider must have no other way to act on the operator's behalf.
+        standard_tools = [board_mode.build_ask_war_room_schema(), get_time_schema]
+    elif active_mode == "auto":
         answer_schema = FunctionSchema(
             name="answer_as_agent",
             description=(
@@ -661,11 +701,18 @@ async def run_live_mode():
     # Register the tool handlers. register_function binds a Python async
     # callable to a named function on the LLM side; when Gemini emits a
     # tool_call Pipecat calls our handler with FunctionCallParams.
-    llm.register_function("delegate_to_agent", delegate_to_agent_handler)
-    llm.register_function("get_time", get_time_handler)
-    llm.register_function("list_agents", list_agents_handler)
-    if active_mode == "auto":
-        llm.register_function("answer_as_agent", answer_as_agent_handler)
+    if voice_session:
+        llm.register_function(
+            "ask_war_room",
+            board_mode.build_ask_war_room_handler(voice_session, board_token),
+        )
+        llm.register_function("get_time", get_time_handler)
+    else:
+        llm.register_function("delegate_to_agent", delegate_to_agent_handler)
+        llm.register_function("get_time", get_time_handler)
+        llm.register_function("list_agents", list_agents_handler)
+        if active_mode == "auto":
+            llm.register_function("answer_as_agent", answer_as_agent_handler)
 
     # Context aggregator pair. This is the piece that was missing before —
     # it routes user speech / Gemini responses into the LLMContext and
@@ -721,9 +768,11 @@ async def run_live_mode():
     print_ready(port, "live")
     runner = PipelineRunner(handle_sigterm=True)
     logger.info(
-        "War Room LIVE mode on ws://%s:%d (agent=%s mode=%s voice=%s model=%s tools=%d)",
-        resolve_bind(), port, active_agent, active_mode, voice,
-        model or "pipecat-default", len(standard_tools),
+        "War Room LIVE mode on ws://%s:%d (%s voice=%s model=%s tools=%d)",
+        resolve_bind(), port,
+        f"board meeting={voice_session.get('meetingId')}" if voice_session
+        else f"agent={active_agent} mode={active_mode}",
+        voice, model or "pipecat-default", len(standard_tools),
     )
     await runner.run(task)
     logger.info("War Room session ended.")

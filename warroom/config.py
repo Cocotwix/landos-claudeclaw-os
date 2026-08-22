@@ -29,6 +29,15 @@ PROJECT_ROOT = get_project_root()
 WARROOM_DIR = PROJECT_ROOT / "warroom"
 VOICES_FILE = WARROOM_DIR / "voices.json"
 
+# Shared Node/Python runtime state. These small files used to live at
+# literal /tmp paths, which is not a real directory on Windows, so the
+# Python half silently never saw what Node wrote. Mirror of
+# src/warroom-runtime-paths.ts — keep the two in sync.
+RUNTIME_DIR = PROJECT_ROOT / ".runtime" / "warroom"
+ROSTER_PATH = RUNTIME_DIR / "warroom-agents.json"
+PIN_PATH = RUNTIME_DIR / "warroom-pin.json"
+VOICE_SESSION_PATH = RUNTIME_DIR / "warroom-voice-session.json"
+
 
 def load_voices() -> dict:
     """Load agent voice configs from voices.json.

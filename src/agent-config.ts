@@ -4,12 +4,14 @@ import yaml from 'js-yaml';
 
 import { CLAUDECLAW_CONFIG, LANDOS_AGENTS_DIR, PROJECT_ROOT } from './config.js';
 import { readEnvFile } from './env.js';
+import { warroomRuntimeFile, WARROOM_ROSTER_FILE } from './warroom-runtime-paths.js';
 
 // Shared roster path. Written by Node on startup and any time the agent
 // roster changes (new agent, deleted agent). Read by the Python Pipecat
 // voice stack so new agents propagate into voice War Room without a
-// full bot restart.
-export const WARROOM_ROSTER_PATH = '/tmp/warroom-agents.json';
+// full bot restart. Lives under the project runtime dir rather than a
+// literal /tmp so the Node and Python halves agree on every platform.
+export const WARROOM_ROSTER_PATH = warroomRuntimeFile(WARROOM_ROSTER_FILE);
 
 /** Single source of truth for "is this string a syntactically valid
  *  agent id?". Lifted out of the various inline copies in the dashboard

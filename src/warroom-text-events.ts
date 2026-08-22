@@ -19,7 +19,7 @@ import { EventEmitter } from 'node:events';
 
 export type WarRoomTextEvent =
   | { type: 'meeting_state'; meetingId: string; pinnedAgent: string | null; agents: Array<{ id: string; name: string; description: string }>; isFresh: boolean }
-  | { type: 'turn_start'; turnId: string; clientMsgId: string; userText: string; userTs: number; userTranscriptRowId: number }
+  | { type: 'turn_start'; turnId: string; clientMsgId: string; userText: string; userTs: number; userTranscriptRowId: number; origin?: 'voice' }
   | { type: 'status_update'; turnId: string; phase: 'routing' | 'starting' | 'streaming' | 'checking_interveners'; label: string; agentId?: string }
   | { type: 'router_decision'; turnId: string; primary: string | null; interveners: string[]; reason: string }
   | { type: 'agent_selected'; turnId: string; agentId: string; role: 'primary' | 'intervener' }

@@ -1,2 +1,5 @@
-pipecat-ai[websocket,deepgram,cartesia,silero]==0.0.108
+# The `google` extra provides GeminiLiveLLMService, which live mode (the
+# default WARROOM_MODE) imports. It was previously undeclared, so a venv
+# built from this file could not start the default mode.
+pipecat-ai[websocket,deepgram,cartesia,silero,google]==0.0.108
 python-dotenv>=1.0.0

@@ -756,6 +756,12 @@ function runMigrations(database: Database.Database): void {
   addColumnIfMissing(database, 'warroom_meetings', 'deal_card_id', `INTEGER`);
   addColumnIfMissing(database, 'warroom_meetings', 'deal_label', `TEXT`);
 
+  // Unified voice+text War Room: transcript rows record which input mode
+  // produced them. NULL (all existing rows and typed turns) means text;
+  // 'voice' marks rows that entered through the voice interface. The UI
+  // renders a subtle mic indicator; nothing else branches on it.
+  addColumnIfMissing(database, 'warroom_transcript', 'origin', `TEXT`);
+
   // Text War Room hive-mind: tag conversation_log rows that originated from
   // the war room so they can be deduped on retry and so memory ingestion
   // can scope by source if needed. Existing Telegram rows default to
@@ -2795,11 +2801,12 @@ export function addWarRoomTranscript(
   meetingId: string,
   speaker: string,
   text: string,
+  origin?: 'voice',
 ): { id: number; created_at: number } {
   const created_at = Math.floor(Date.now() / 1000);
   const info = db.prepare(
-    'INSERT INTO warroom_transcript (meeting_id, speaker, text, created_at) VALUES (?, ?, ?, ?)',
-  ).run(meetingId, speaker, text, created_at);
+    'INSERT INTO warroom_transcript (meeting_id, speaker, text, created_at, origin) VALUES (?, ?, ?, ?, ?)',
+  ).run(meetingId, speaker, text, created_at, origin ?? null);
   return { id: Number(info.lastInsertRowid), created_at };
 }
 
@@ -2821,14 +2828,14 @@ export function getWarRoomTranscript(
   meetingId: string,
   opts: { limit?: number; beforeTs?: number; beforeId?: number } = {},
 ): Array<{
-  id: number; speaker: string; text: string; created_at: number;
+  id: number; speaker: string; text: string; created_at: number; origin: string | null;
 }> {
   const { limit, beforeTs, beforeId } = opts;
   // When limit is omitted, preserve the legacy "return everything ASC"
   // behavior for the voice War Room caller in dashboard.ts.
   if (limit === undefined && beforeTs === undefined && beforeId === undefined) {
     return db.prepare(
-      'SELECT id, speaker, text, created_at FROM warroom_transcript WHERE meeting_id = ? ORDER BY created_at, id',
+      'SELECT id, speaker, text, created_at, origin FROM warroom_transcript WHERE meeting_id = ? ORDER BY created_at, id',
     ).all(meetingId) as any[];
   }
   // Paginated path: composite cursor on (created_at, id) so multiple rows
@@ -2840,7 +2847,7 @@ export function getWarRoomTranscript(
   if (beforeTs !== undefined) {
     const bId = beforeId ?? Number.MAX_SAFE_INTEGER;
     return db.prepare(
-      `SELECT id, speaker, text, created_at
+      `SELECT id, speaker, text, created_at, origin
          FROM warroom_transcript
         WHERE meeting_id = ?
           AND (created_at < ? OR (created_at = ? AND id < ?))
@@ -2849,7 +2856,7 @@ export function getWarRoomTranscript(
     ).all(meetingId, beforeTs, beforeTs, bId, cap) as any[];
   }
   return db.prepare(
-    'SELECT id, speaker, text, created_at FROM warroom_transcript WHERE meeting_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+    'SELECT id, speaker, text, created_at, origin FROM warroom_transcript WHERE meeting_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
   ).all(meetingId, cap) as any[];
 }
 
