@@ -499,7 +499,11 @@ export function OverviewSection({
   const improvementValuation = compsValuation?.improvementValuation ?? null;
   const acresForValuation = cvSummary?.workingAcres ?? identity.acres ?? null;
   const officialNoCurrentBuilding = /no_current_building|no buildings/i.test(developmentIntelligence?.currentTruth.improvementStatus ?? '');
-  const residentialSubject = !officialNoCurrentBuilding && !!improvement?.improved && /resid|house|dwelling|home/i.test(improvement.type ?? '');
+  // Current official no-building evidence supersedes older provider
+  // improvement data for every current-facing structure and valuation choice.
+  // The provider claim remains available as labeled historical conflict.
+  const currentImproved = !officialNoCurrentBuilding && !!improvement?.improved;
+  const residentialSubject = currentImproved && /resid|house|dwelling|home/i.test(improvement?.type ?? '');
   const showHouseBreakdown = residentialSubject && (acresForValuation ?? 0) > 1;
   const singleResidentialValue = residentialSubject && acresForValuation != null && acresForValuation <= 1;
   const houseValue = improvementValuation?.estimatedSubjectImprovementValue ?? null;
@@ -629,7 +633,7 @@ export function OverviewSection({
   // ahead of any narrative.
   const decisionMetrics: Array<{ label: string; value: string; sub?: string; tone?: string }> = [
     {
-      label: showHouseBreakdown || (!officialNoCurrentBuilding && improvement?.improved) ? 'Land value' : 'Property value',
+      label: showHouseBreakdown || currentImproved ? 'Land value' : 'Property value',
       value: cvSummary?.fmv ? usd(cvSummary.fmv.central) : 'Pending',
       sub: cvSummary ? `${cvSummary.acceptedCount} accepted sale${cvSummary.acceptedCount === 1 ? '' : 's'} · ${cvSummary.statusLabel}` : undefined,
       tone: 'valuation',
@@ -810,7 +814,7 @@ export function OverviewSection({
           <dl>
             {identity.apn && <><dt>APN</dt><dd>{identity.apn}</dd></>}
             {zip && <><dt>ZIP</dt><dd>{zip}</dd></>}
-            {improvement?.buildingSqft != null && <><dt>{subjectStructure}</dt><dd>{Math.round(improvement.buildingSqft).toLocaleString('en-US')} sqft</dd></>}
+            {currentImproved && improvement?.buildingSqft != null && <><dt>{subjectStructure}</dt><dd>{Math.round(improvement.buildingSqft).toLocaleString('en-US')} sqft</dd></>}
           </dl>
           {snap.subjectParcelUrl && <a href={snap.subjectParcelUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} /> Open parcel evidence</a>}
         </div>
@@ -819,21 +823,21 @@ export function OverviewSection({
       {/* ── 2. Valuation: the decision-relevant figures, House Value naming.
              Deep methodology and the audit ledger live in Comps & Valuation. ── */}
       <section class="awv2-overview-valuation" data-domain="valuation" aria-label="Current valuation">
-        <div class="section-heading"><div><span class="awv2-dom-eyebrow" data-dom="valuation">Valuation</span><h2>{showHouseBreakdown ? 'Land + house + whole property' : improvement?.improved ? 'Land value established separately; whole-property value pending' : 'Current property valuation'}</h2></div><button type="button" onClick={openCompsValuation}>{openCompsValuationLabel}</button></div>
+        <div class="section-heading"><div><span class="awv2-dom-eyebrow" data-dom="valuation">Valuation</span><h2>{showHouseBreakdown ? 'Land + house + whole property' : currentImproved ? 'Land value established separately; whole-property value pending' : 'Current property valuation'}</h2></div><button type="button" onClick={openCompsValuation}>{openCompsValuationLabel}</button></div>
         {cvSummary ? (
           <>
             <div class="valuation-grid">
-              <div class={`primary status-${cvSummary.status}`} data-accepted-count={summary.acceptedCount} title="Land-only indication"><small>{singleResidentialValue ? 'PROPERTY VALUE' : improvement?.improved ? 'LAND VALUE — LAND-ONLY INDICATION' : valuationBasisLabel ?? cvSummary.basisLabel}</small><b>{singleResidentialValue && wholePropertyValue != null ? formatUsd(wholePropertyValue) : cvSummary.fmv ? formatUsd(cvSummary.fmv.central) : 'Not established'}</b><p>{cvSummary.fmv?.low != null && cvSummary.fmv.high != null ? `${formatUsd(cvSummary.fmv.low)}–${formatUsd(cvSummary.fmv.high)} accepted-sale span · ` : ''}{cvSummary.acceptedCount} accepted closed {improvement?.improved ? 'vacant-land ' : ''}sale{cvSummary.acceptedCount === 1 ? '' : 's'} · {cvSummary.statusLabel}</p></div>
+              <div class={`primary status-${cvSummary.status}`} data-accepted-count={summary.acceptedCount} title={currentImproved ? 'Land-only indication' : 'Current property indication'}><small>{singleResidentialValue ? 'PROPERTY VALUE' : currentImproved ? 'LAND VALUE — LAND-ONLY INDICATION' : valuationBasisLabel ?? cvSummary.basisLabel}</small><b>{singleResidentialValue && wholePropertyValue != null ? formatUsd(wholePropertyValue) : cvSummary.fmv ? formatUsd(cvSummary.fmv.central) : 'Not established'}</b><p>{cvSummary.fmv?.low != null && cvSummary.fmv.high != null ? `${formatUsd(cvSummary.fmv.low)}–${formatUsd(cvSummary.fmv.high)} accepted-sale span · ` : ''}{cvSummary.acceptedCount} accepted closed {currentImproved ? 'vacant-land ' : ''}sale{cvSummary.acceptedCount === 1 ? '' : 's'} · {cvSummary.statusLabel}</p></div>
               {showHouseBreakdown && (
                 <div class="house" aria-label="House value"><small>+ HOUSE VALUE</small><b>{houseValue != null ? formatUsd(houseValue) : 'Pending'}</b><p>{houseValue != null
                   ? `Approx. ${improvement?.buildingSqft != null ? Math.round(improvement.buildingSqft).toLocaleString('en-US') : '—'} sqft residence, valued from improved-sale evidence.`
                   : 'No qualifying improved-sale evidence yet; the house is not separately valued.'}</p></div>
               )}
               {!singleResidentialValue && (
-                <div class="whole" aria-label="Whole-property value Pending"><small>= WHOLE-PROPERTY VALUE</small><b>{wholePropertyValue != null ? formatUsd(wholePropertyValue) : improvement?.wholePropertyPending || improvement?.improved ? 'Pending' : cvSummary.fmv ? formatUsd(cvSummary.fmv.central) : 'Not established'}</b><p>{wholePropertyValue != null ? 'Land value plus house value.' : improvement?.improved ? 'Requires the house value; the land figure never prices the residence.' : cvSummary.statusReason}</p></div>
+                <div class="whole" aria-label={currentImproved ? 'Whole-property value Pending' : 'Current whole-property value'}><small>= WHOLE-PROPERTY VALUE</small><b>{wholePropertyValue != null ? formatUsd(wholePropertyValue) : currentImproved && improvement?.wholePropertyPending ? 'Pending' : cvSummary.fmv ? formatUsd(cvSummary.fmv.central) : 'Not established'}</b><p>{wholePropertyValue != null ? 'Land value plus house value.' : currentImproved ? 'Requires the house value; the land figure never prices the residence.' : 'No current building is established; the supported vacant-land indication is the current whole-property value.'}</p></div>
               )}
             </div>
-            {cvSummary?.acquisitionLevels && <div class="land-basis-references"><div><span>Opening reference (40% of land value, rounded)</span><b>{landBasisOpeningReference ?? usd(cvSummary.acquisitionLevels.pct40)}</b></div><div><span>Target reference (50% of land value, rounded)</span><b>{usd(cvSummary.acquisitionLevels.pct50)}</b></div><div><span>Ceiling reference (60% of land value, rounded)</span><b>{usd(cvSummary.acquisitionLevels.pct60)}</b></div><p>Land-basis references derived from land value only, rounded to the nearest $500. They are not completed whole-property offer recommendations.</p></div>}
+            {cvSummary?.acquisitionLevels && <div class="land-basis-references"><div><span>{currentImproved ? 'Opening reference (40% of land value, rounded)' : 'Opening reference (40% of current property value, rounded)'}</span><b>{landBasisOpeningReference ?? usd(cvSummary.acquisitionLevels.pct40)}</b></div><div><span>{currentImproved ? 'Target reference (50% of land value, rounded)' : 'Target reference (50% of current property value, rounded)'}</span><b>{usd(cvSummary.acquisitionLevels.pct50)}</b></div><div><span>{currentImproved ? 'Ceiling reference (60% of land value, rounded)' : 'Ceiling reference (60% of current property value, rounded)'}</span><b>{usd(cvSummary.acquisitionLevels.pct60)}</b></div><p>{currentImproved ? 'Land-basis references derived from land value only. They are not completed whole-property offer recommendations.' : 'Acquisition references derive from the supported current vacant-property value.'} All references are rounded to the nearest $500.</p></div>}
           </>
         ) : <p class="empty">Canonical Comps &amp; Valuation state has not been produced yet.</p>}
       </section>

@@ -186,12 +186,20 @@ describe('ws2 Overview redesign', () => {
   });
 
   it('gates the Land + House + Whole breakdown on a residential subject over one acre', () => {
+    expect(OVERVIEW_SRC).toMatch(/currentImproved = !officialNoCurrentBuilding && !!improvement\?\.improved/);
     expect(OVERVIEW_SRC).toMatch(/showHouseBreakdown = residentialSubject && \(acresForValuation \?\? 0\) > 1/);
     expect(OVERVIEW_SRC).toMatch(/singleResidentialValue = residentialSubject && acresForValuation != null && acresForValuation <= 1/);
     expect(OVERVIEW_SRC).toMatch(/\{showHouseBreakdown && \(/);
     expect(OVERVIEW_SRC).toMatch(/\{!singleResidentialValue && \(/);
     // A house value the backend has not established renders Pending, never a number.
     expect(OVERVIEW_SRC).toMatch(/houseValue != null \? formatUsd\(houseValue\) : 'Pending'/);
+  });
+
+  it('lets current official no-building evidence supersede provider improvement presentation', () => {
+    expect(OVERVIEW_SRC).toMatch(/currentImproved && improvement\?\.buildingSqft != null/);
+    expect(OVERVIEW_SRC).toMatch(/currentImproved \? 'Land value established separately; whole-property value pending' : 'Current property valuation'/);
+    expect(OVERVIEW_SRC).toContain('No current building is established; the supported vacant-land indication is the current whole-property value.');
+    expect(OVERVIEW_SRC).toContain("currentImproved && improvement?.wholePropertyPending ? 'Pending'");
   });
 
   it('keeps provider proximity separate from verified recorded legal access', () => {
