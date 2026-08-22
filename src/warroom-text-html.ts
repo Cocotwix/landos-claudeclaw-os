@@ -1098,6 +1098,9 @@ export function getWarRoomTextHtml(
 const TOKEN = ${jsToken};
 const CHAT_ID = ${jsChatId};
 const MEETING_ID = ${jsMeetingId};
+// Deal-scoped meetings seat the four LandOS specialist seats (Deal Brain
+// chairs). Drives the pre-history fallback roster + warmup skip.
+const IS_DEAL = ${dealCardId != null ? 'true' : 'false'};
 const API = window.location.origin;
 // Q/MEETING_Q carry chatId so the server can validate that the request
 // matches the meeting's chat_id (strict-validate guard). Server treats
@@ -1207,6 +1210,14 @@ function renderRoster() {
     dot.className = 'agent-status-dot';
     dot.setAttribute('aria-hidden', 'true');
     nm.appendChild(nameText);
+    if (a.chair) {
+      // Deal Brain chairs the deal-scoped board. Subtle pill, existing
+      // visual language — no redesign.
+      const chairPill = document.createElement('span');
+      chairPill.textContent = 'Chair';
+      chairPill.style.cssText = 'margin-left:6px;padding:1px 6px;border-radius:999px;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;background:var(--indigo-soft);color:var(--indigo);border:1px solid var(--indigo-soft);vertical-align:middle;';
+      nm.appendChild(chairPill);
+    }
     nm.appendChild(dot);
 
     // The cascading "what they last did" line. The hive_mind fetcher
@@ -3051,7 +3062,7 @@ async function runWarmupIntro(rosterForIntro) {
   // Kick off backend warmup immediately — fire and forget. Resolves in
   // ~3-6s; we don't wait for it if our animation finishes first, but we
   // do wait if it's still pending at animation end (up to a cap).
-  const warmupDone = fetch(API + '/api/warroom/text/warmup' + Q, {
+  const warmupDone = fetch(API + '/api/warroom/text/warmup' + MEETING_Q, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
   }).then(r => r.json()).catch(() => null);
@@ -3159,6 +3170,17 @@ async function runWarmupIntro(rosterForIntro) {
 // cold meeting where /history has not resolved yet.
 function getRoster() {
   if (roster && roster.length) return roster;
+  if (IS_DEAL) {
+    // The four specialist seats of a deal-scoped board (Deal Brain chairs).
+    // Mirrors the server's getRosterForMeeting so the intro never flashes
+    // the generic department agents in an acquisition boardroom.
+    return [
+      { id: 'deal-brain', name: 'Deal Brain', chair: true },
+      { id: 'property', name: 'Property' },
+      { id: 'market', name: 'Market + Area' },
+      { id: 'seller', name: 'Seller' },
+    ];
+  }
   return [
     { id: 'main', name: 'Main' },
     { id: 'research', name: 'Research' },

@@ -341,7 +341,7 @@ function installedHermes(): { python: string; launcher: string; profileHome: str
  * a tiny bootstrap sets sys.argv IN the child process, where no such ceiling
  * exists, then runs the launcher unchanged.
  */
-export async function invokeHermesCli(args: string[], timeoutMs: number): Promise<string> {
+export async function invokeHermesCli(args: string[], timeoutMs: number, signal?: AbortSignal): Promise<string> {
   const { python, launcher } = hermesRuntimePaths();
   const specPath = path.join(os.tmpdir(), `landos-analyst-args-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
   fs.writeFileSync(specPath, JSON.stringify(args), 'utf-8');
@@ -358,12 +358,16 @@ export async function invokeHermesCli(args: string[], timeoutMs: number): Promis
       timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
+      ...(signal ? { signal } : {}),
     });
     return stdout ?? '';
   } catch (error) {
     // The default message is the whole command line, which tells an operator
     // nothing about WHY. The runtime's own first line of stderr does, so that
     // is what travels into the warning.
+    if (signal?.aborted) {
+      throw new Error('the specialist turn was cancelled');
+    }
     const detail = error as { killed?: boolean; signal?: string | null; stderr?: string; stdout?: string };
     if (detail?.killed || detail?.signal === 'SIGTERM') {
       throw new Error(`the analyst exceeded its ${Math.round(timeoutMs / 1_000)}s limit`);

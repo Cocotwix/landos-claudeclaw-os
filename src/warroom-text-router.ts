@@ -266,6 +266,146 @@ export async function routeMessage(ctx: RouterContext): Promise<RouterDecision> 
   return { ...clean, routerDegraded: false };
 }
 
+// ── Deal-scoped board router ─────────────────────────────────────────
+//
+// A deal-scoped acquisition War Room seats exactly four specialists
+// (Property / Market + Area / Seller, chaired by Deal Brain). Routing a
+// boardroom message is a different decision than picking one agent from a
+// department roster: a direct question goes to one seat; a broad question
+// convenes a bounded round of specialist positions followed by ONE chair
+// synthesis — never a recursive debate. Same Haiku classifier discipline
+// as routeMessage: locked-down, JSON-only, deterministic fallback.
+
+export interface BoardRouterContext extends RouterContext {
+  /** The chair's roster id (Deal Brain). Never a round-1 speaker. */
+  chairId: string;
+}
+
+export interface BoardDecision {
+  /** Specialist seats that give positions this turn, in speaking order.
+   *  Empty means the chair answers alone. */
+  speakers: string[];
+  /** True when the chair synthesizes after the speakers (always true when
+   *  speakers is empty — someone must answer). */
+  synthesize: boolean;
+  reason: string;
+  routerDegraded: boolean;
+}
+
+function buildBoardRouterPrompt(ctx: BoardRouterContext): string {
+  return `You dispatch turns for a live land-deal acquisition boardroom. The seats:
+
+${rosterBlock(ctx.roster)}
+
+The chair is "${ctx.chairId}". The chair never gives a round-1 position — it synthesizes after the specialists.
+
+Recent transcript (oldest first, up to last 6 turns):
+${recentBlock(ctx.recentTurns)}
+
+New operator message:
+"""
+${sanitizeForPromptBlock(ctx.userText)}
+"""
+
+Decide who speaks this turn:
+- The operator addresses ONE seat by name or role (e.g. "Market, defend the valuation", "Property, what worries you most?", "what should I ask the seller?") → speakers = [that one seat], synthesize = false.
+- A broad boardroom question spanning domains ("what am I missing?", "what do you guys think?", "poke holes in this deal") → speakers = the genuinely relevant specialist seats (usually property and market; include seller when seller strategy, contact, or negotiation matters or the operator addresses the whole room), synthesize = true.
+- A decision or synthesis ask ("given all this, what should I do?", "summarize where we are") → speakers = [], synthesize = true — the chair answers alone from the current products, optionally speakers when fresh positions are clearly needed first.
+- Never include "${ctx.chairId}" in speakers.
+
+Respond with ONLY a JSON object, no prose, no code fences:
+{"speakers": ["<seat_id>", ...], "synthesize": true | false, "reason": "<one short sentence>"}`;
+}
+
+function sanitizeBoardDecision(
+  raw: unknown,
+  ctx: BoardRouterContext,
+): Omit<BoardDecision, 'routerDegraded'> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const validIds = new Set(ctx.roster.map((a) => a.id));
+  const speakers: string[] = [];
+  let synthesize = obj.synthesize === true;
+  if (!Array.isArray(obj.speakers)) return null;
+  for (const entry of obj.speakers) {
+    if (typeof entry !== 'string') continue;
+    if (entry === ctx.chairId) { synthesize = true; continue; } // chair participates via synthesis only
+    if (!validIds.has(entry)) continue;
+    if (speakers.includes(entry)) continue;
+    if (speakers.length >= 3) break;
+    speakers.push(entry);
+  }
+  if (speakers.length === 0) synthesize = true; // someone must answer — the chair
+  const reason = typeof obj.reason === 'string' ? obj.reason.slice(0, 200) : '';
+  return { speakers, synthesize, reason };
+}
+
+export function boardRouterFallback(): BoardDecision {
+  return {
+    speakers: [],
+    synthesize: true,
+    reason: 'board router unavailable — the chair answers alone',
+    routerDegraded: true,
+  };
+}
+
+/** Run the board router classifier for a deal-scoped meeting. Never throws. */
+export async function routeBoardMessage(ctx: BoardRouterContext): Promise<BoardDecision> {
+  if (!isEnabled('LLM_SPAWN_ENABLED')) return boardRouterFallback();
+  const prompt = buildBoardRouterPrompt(ctx);
+  let text = '';
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), ROUTER_TIMEOUT_MS);
+  const t0 = Date.now();
+
+  try {
+    for await (const ev of query({
+      prompt: singleTurn(prompt),
+      options: {
+        model: ROUTER_MODEL,
+        allowedTools: [],
+        disallowedTools: ['*'],
+        settingSources: [],
+        maxTurns: 1,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        env: sdkEnvStripped(),
+        abortController: abort,
+      } as any,
+    })) {
+      const e = ev as Record<string, unknown>;
+      if (e.type === 'result') text = (e.result as string | undefined) ?? '';
+    }
+  } catch (err) {
+    logger.warn({
+      err: err instanceof Error ? err.message : err,
+      elapsedMs: Date.now() - t0,
+      outcome: 'timeout_or_error',
+    }, 'board router query failed');
+    clearTimeout(timer);
+    return boardRouterFallback();
+  }
+  clearTimeout(timer);
+
+  const raw = parseJson(text);
+  const clean = raw !== null ? sanitizeBoardDecision(raw, ctx) : null;
+  if (!clean) {
+    logger.warn({
+      rawText: text.slice(0, 300),
+      elapsedMs: Date.now() - t0,
+      outcome: 'parse_failure',
+    }, 'board router produced unparseable output');
+    return boardRouterFallback();
+  }
+  logger.info({
+    elapsedMs: Date.now() - t0,
+    outcome: 'success',
+    speakers: clean.speakers,
+    synthesize: clean.synthesize,
+  }, 'board router classified');
+  return { ...clean, routerDegraded: false };
+}
+
 // Same cold-start math as the router. Gates fire sequentially after the
 // primary finishes, so a 25s budget adds at most 50s to a turn (2 max
 // interveners). The UI shows "Checking if anyone wants to add…" so the
@@ -340,4 +480,4 @@ export async function interventionGate(ctx: InterventionContext): Promise<Interv
 }
 
 // Exported for tests.
-export const _internal = { buildRouterPrompt, buildGatePrompt, parseJson, sanitizeDecision };
+export const _internal = { buildRouterPrompt, buildGatePrompt, parseJson, sanitizeDecision, buildBoardRouterPrompt, sanitizeBoardDecision };

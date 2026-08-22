@@ -183,7 +183,7 @@ import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
 import { getWarRoomPickerHtml } from './warroom-text-picker-html.js';
 import { getWarRoomTextHtml } from './warroom-text-html.js';
-import { handleTextTurn, cancelMeetingTurns, getRoster, warmupMeeting, isWarmupDone, getActiveTurnIds, waitForMeetingTurnsIdle } from './warroom-text-orchestrator.js';
+import { handleTextTurn, cancelMeetingTurns, getRoster, getRosterForMeeting, warmupMeeting, isWarmupDone, getActiveTurnIds, waitForMeetingTurnsIdle } from './warroom-text-orchestrator.js';
 import { getChannel, closeChannel, startChannelSweeper } from './warroom-text-events.js';
 import {
   createTextMeeting,
@@ -1270,6 +1270,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // The client calls this on page load in parallel with the intro animation.
   // Idempotent + fast: if warmup already ran, returns immediately.
   app.post('/api/warroom/text/warmup', async (c) => {
+    // Deal-scoped boardrooms seat the Hermes specialists — there is no
+    // Claude SDK to warm, and opening a deal War Room must trigger ZERO
+    // model calls (the warmup itself is a tiny model call). Skip entirely.
+    const warmMeetingId = (c.req.query('meetingId') || '').trim();
+    if (warmMeetingId && WARROOM_TEXT_ID_RE.test(warmMeetingId)) {
+      const warmMeeting = getTextMeeting(warmMeetingId);
+      if (warmMeeting?.deal_card_id != null) {
+        return c.json({ ok: true, skipped: 'deal_scoped' });
+      }
+    }
     if (isWarmupDone()) return c.json({ ok: true, already: true });
     // Don't await — the client doesn't need the result, it just wants
     // the server to have started. The promise resolves in the background.
@@ -1308,7 +1318,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       endedAt: meeting.ended_at,
       dealCardId: meeting.deal_card_id,
       dealLabel: meeting.deal_label,
-      agents: getRoster(),
+      agents: getRosterForMeeting(meeting.deal_card_id),
       latestSeq,
     });
   });
@@ -1335,7 +1345,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         type: 'meeting_state' as const,
         meetingId,
         pinnedAgent: meeting.pinned_agent,
-        agents: getRoster(),
+        agents: getRosterForMeeting(meeting.deal_card_id),
         isFresh: meeting.ended_at === null && meeting.entry_count === 0,
       };
       await stream.writeSSE({
@@ -1556,10 +1566,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const agentId = (body.agentId || '').trim();
     const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
     if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
-    const rosterIds = new Set(getRoster().map((a) => a.id));
-    if (!rosterIds.has(agentId)) return c.json({ error: 'unknown agent' }, 400);
     const gate = requireOpenMeeting(meetingId);
     if (gate.error) return c.json({ error: gate.error }, gate.status);
+    // Validate against the MEETING's roster: a deal-scoped board pins its
+    // specialist seats; a generic room pins department agents.
+    const rosterIds = new Set(getRosterForMeeting(gate.meeting?.deal_card_id).map((a) => a.id));
+    if (!rosterIds.has(agentId)) return c.json({ error: 'unknown agent' }, 400);
     const chatGate = requireChatMatches(gate.meeting, reqChatId);
     if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
     setMeetingPin(meetingId, agentId);
@@ -1604,7 +1616,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       cancelMeetingTurns(meetingId);
       await waitForMeetingTurnsIdle(meetingId, 5000);
     }
-    const agents = getRoster().map((a) => a.id);
+    // Clear across the full department roster PLUS the meeting's own roster:
+    // a deal-scoped board seats Hermes profiles (no SDK sessions), but a
+    // pre-seat deal meeting may still hold legacy department-agent sessions.
+    const agents = [...new Set([
+      ...getRoster().map((a) => a.id),
+      ...getRosterForMeeting(gate.meeting?.deal_card_id).map((a) => a.id),
+    ])];
     const cleared = clearMeetingSessions(meetingId, agents);
     // Persist the divider so reload still shows the marker. Speaker
     // __divider__ is handled client-side to render as a dashed divider.
@@ -1645,7 +1663,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // again (UUID-fresh meetingIds) but they accumulate forever. Mirror
     // the /clear endpoint's behavior so /end is a true cleanup.
     try {
-      const agents = getRoster().map((a) => a.id);
+      const agents = [...new Set([
+        ...getRoster().map((a) => a.id),
+        ...getRosterForMeeting(meeting.deal_card_id).map((a) => a.id),
+      ])];
       clearMeetingSessions(meetingId, agents);
     } catch (err) {
       logger.warn(

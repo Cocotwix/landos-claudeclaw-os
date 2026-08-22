@@ -16,6 +16,15 @@ export interface DealWarRoomContext {
   dealLabel: string;
   /** Bounded opening context for the meeting's first agent turns. */
   contextText: string;
+  /**
+   * Lazy per-seat context for the four Hermes specialist seats
+   * ('property' | 'market' | 'seller' | 'deal-brain'): the authoritative
+   * deal envelope plus that seat's current intelligence product, staleness,
+   * and the SAME bounded dossier view its production intelligence run uses.
+   * Lazy so identity-line-only turns never pay the assembly. SELECT-only by
+   * construction, like contextText. Null for an unknown seat id.
+   */
+  seatContext?: (seatId: string) => string | null;
 }
 
 export type DealWarRoomContextProvider = (dealCardId: number) => DealWarRoomContext | null;

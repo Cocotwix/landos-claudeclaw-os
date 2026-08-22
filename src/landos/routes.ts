@@ -186,6 +186,11 @@ import {
   DEAL_INTELLIGENCE_PRODUCT_TYPE,
   PROPERTY_INTELLIGENCE_PRODUCT_TYPE,
   dealBrainChatPrompt,
+  marketDossierView,
+  propertyDossierView,
+  retainedProductProjection,
+  sellerDossierView,
+  specialistContextEnvelopeForPhase,
   type DealIntelligenceProduct,
   type IntelligenceLayerId,
   type PropertyIntelligenceProduct,
@@ -10329,7 +10334,72 @@ export function registerLandosRoutes(app: Hono): void {
     } else {
       sections.push('No canonical property file is available for this deal yet; only the deal record exists.');
     }
-    return { dealCardId, dealLabel, contextText: boundContextText(sections.join('\n\n')) };
+
+    // Per-seat bounded context for the four Hermes specialist seats. Lazy —
+    // only a seat turn pays the assembly — and SELECT-only like everything
+    // else in this provider: it projects state already read above. Each seat
+    // receives the SAME bounded dossier view its production intelligence run
+    // uses, plus its own current product and honest staleness.
+    const seatContext = (seatId: string): string | null => {
+      if (!dossier || !state.phase || !state.dossierFingerprint) return null;
+      const envelope = specialistContextEnvelopeForPhase(dossier, state.phase, {
+        dealCardId,
+        generatedAt: dossier.assembledAt,
+        contextFingerprint: state.dossierFingerprint,
+      });
+      const productSection = (label: string, product: unknown): string => {
+        const projected = retainedProductProjection(product);
+        return projected
+          ? `=== CURRENT ${label} INTELLIGENCE PRODUCT (persisted LandOS product, JSON) ===\n${JSON.stringify(projected)}\n=== END ${label} INTELLIGENCE PRODUCT ===`
+          : `No current ${label.toLowerCase()} intelligence product exists yet.`;
+      };
+      const freshnessLine = (stale: boolean): string => stale
+        ? 'FRESHNESS: your persisted read above is STALE — the evidence has changed since it was produced. Treat its conclusions as provisional and say your read predates the latest evidence.'
+        : 'FRESHNESS: your persisted read above is CURRENT against the latest evidence fingerprint.';
+      let body: string[];
+      if (seatId === 'property') {
+        body = [
+          envelope,
+          productSection('PROPERTY', state.products.property),
+          freshnessLine(state.stale.property),
+          `=== PROPERTY FILE (JSON — the same bounded view your intelligence runs receive) ===\n${JSON.stringify(propertyDossierView(dossier))}\n=== END PROPERTY FILE ===`,
+        ];
+      } else if (seatId === 'market') {
+        body = [
+          envelope,
+          productSection('MARKET', state.products.market),
+          freshnessLine(state.stale.market),
+          state.quickFlip ? `=== QUICK FLIP ECONOMICS (LandOS CALCULATION — carry verbatim, never recompute) ===\n${JSON.stringify(state.quickFlip)}\n=== END CALCULATION ===` : '',
+          `=== MARKET FILE (JSON — the same bounded view your intelligence runs receive) ===\n${JSON.stringify(marketDossierView(dossier))}\n=== END MARKET FILE ===`,
+        ];
+      } else if (seatId === 'seller') {
+        body = [
+          envelope,
+          productSection('SELLER', state.products.seller),
+          freshnessLine(state.stale.seller),
+          `=== SELLER FILE (JSON — the same bounded view your intelligence runs receive) ===\n${JSON.stringify(sellerDossierView(dossier))}\n=== END SELLER FILE ===`,
+        ];
+      } else if (seatId === 'deal-brain') {
+        body = [
+          envelope,
+          state.sufficiency ? `Property file sufficiency: ${state.sufficiency.ok ? 'sufficient' : `insufficient — ${state.sufficiency.reason ?? 'unstated reason'}`}` : '',
+          productSection('PROPERTY', state.products.property),
+          productSection('MARKET', state.products.market),
+          productSection('SELLER', state.products.seller),
+          productSection('DEAL', state.products.deal),
+          freshnessLine(state.stale.deal),
+          state.quickFlip ? `=== QUICK FLIP ECONOMICS (LandOS CALCULATION — carry verbatim, never recompute) ===\n${JSON.stringify(state.quickFlip)}\n=== END CALCULATION ===` : '',
+          guidance.length > 0
+            ? `RECENT DEAL BRAIN GUIDANCE (operator guidance is input, never fact):\n${guidance.map((entry) => `- ${entry.role}: ${entry.text}`).join('\n')}`
+            : '',
+        ];
+      } else {
+        return null;
+      }
+      return boundContextText(body.filter(Boolean).join('\n\n'));
+    };
+
+    return { dealCardId, dealLabel, contextText: boundContextText(sections.join('\n\n')), seatContext };
   });
 
   app.get('/api/landos/deal-cards/:id/intelligence', (c) => {

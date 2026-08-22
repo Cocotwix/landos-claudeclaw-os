@@ -442,12 +442,23 @@ export function specialistContextEnvelope(
   context: IntelligencePassContext,
   envelope: SpecialistPromptEnvelope,
 ): string {
+  return specialistContextEnvelopeForPhase(dossier, context.phase, envelope);
+}
+
+/** Same authoritative envelope for callers (the deal-scoped War Room) that
+ *  have the deal phase but no full IntelligencePassContext — the doctrine text
+ *  must be ONE string, never a drifting copy. */
+export function specialistContextEnvelopeForPhase(
+  dossier: AcquisitionDossier,
+  phase: DealPhase,
+  envelope: SpecialistPromptEnvelope,
+): string {
   return [
     '=== LANDOS CURRENT DEAL CONTEXT (AUTHORITATIVE) ===',
     `Deal Card: #${envelope.dealCardId}`,
     `Subject: ${subjectLine(dossier)}`,
     `Canonical acreage: ${canonicalAcreageLine(dossier)}`,
-    `Deal phase: ${DEAL_PHASE_LABEL[context.phase]}`,
+    `Deal phase: ${DEAL_PHASE_LABEL[phase]}`,
     `Context generated at: ${envelope.generatedAt}`,
     `Evidence fingerprint: ${envelope.contextFingerprint}`,
     'This block and the FILE below are authoritative for every CURRENT fact about this deal. Your persistent',
@@ -464,8 +475,9 @@ const stripVisualPaths = (dossier: AcquisitionDossier): AcquisitionDossier['visu
 
 /** The property specialist's world: property evidence, never the comp universe
  *  or seller negotiation history. The seller's PROPERTY statements travel as
- *  labeled seller-reported evidence. */
-function propertyDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
+ *  labeled seller-reported evidence. Exported so the deal-scoped War Room
+ *  seats receive the SAME bounded view their intelligence runs use. */
+export function propertyDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
   const { valuation: _valuation, comps: _comps, market: _market, seller, ...rest } = dossier;
   return {
     ...rest,
@@ -477,7 +489,7 @@ function propertyDossierView(dossier: AcquisitionDossier): Record<string, unknow
 /** The market specialist's world: subject basics, canonical acreage, the comp
  *  and valuation projection, the market read, and the land-use context that
  *  bounds development potential. */
-function marketDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
+export function marketDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
   return {
     dossierVersion: dossier.dossierVersion,
     dealCardId: dossier.dealCardId,
@@ -494,7 +506,7 @@ function marketDossierView(dossier: AcquisitionDossier): Record<string, unknown>
 
 /** The seller specialist's world: the canonical seller evidence record, plus
  *  only the subject identity needed to interpret it. */
-function sellerDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
+export function sellerDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
   return {
     dossierVersion: dossier.dossierVersion,
     dealCardId: dossier.dealCardId,
@@ -618,8 +630,9 @@ export function specialistLayerPrompt(
 }
 
 /** A bounded projection of a retained (not refreshed this pass) product for
- *  the Deal Brain: the substance without runtime plumbing. */
-function retainedProductProjection(product: unknown): Record<string, unknown> | null {
+ *  the Deal Brain: the substance without runtime plumbing. Exported for the
+ *  deal-scoped War Room seat contexts. */
+export function retainedProductProjection(product: unknown): Record<string, unknown> | null {
   if (!product || typeof product !== 'object') return null;
   const {
     runtime: _runtime,
