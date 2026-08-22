@@ -8,10 +8,9 @@
 // it, and market commentary is limited to one closing sentence from LandOS
 // Market Research. Nothing here rewrites the persisted analysis.
 //
-// Access terminology follows the discovery-stage operator rule: once road
-// abutment evidence establishes legal access, unresolved-access phrasing is
-// filtered out of the buyer-facing lines and the approved display form
-// ("Legal access: Yes, via <road>") is used instead.
+// Access terminology clears unresolved-rights language only when retained
+// recorded evidence verifies legal access. Provider proximity and imagery do
+// not populate this context.
 
 import type { VisualBuyerAnalysis } from './visual-buyer-analysis.js';
 import { filterResolvedAccessLanguage } from './discovery-access-presentation.js';
@@ -25,7 +24,7 @@ export interface VisualBuyerNarrativeView {
 }
 
 export interface VisualBuyerNarrativeContext {
-  /** "Yes, via Onionville Road" when discovery-stage legal access is present. */
+  /** Recorded-instrument/title finding when legal access is verified. */
   legalAccessDisplay: string | null;
   /** "Cleared grass path visible from …" or "Not confirmed from retained imagery". */
   apparentEntranceDisplay: string | null;
@@ -71,7 +70,7 @@ export function buildVisualBuyerNarrative(
   const concerns = filterResolvedAccessLanguage(perspective.importantConcerns, accessEstablished)
     .filter((entry) => !accessEstablished || !/legal access|recorded instrument/i.test(entry));
   const accessLine = [
-    context.legalAccessDisplay ? `Legal access: ${context.legalAccessDisplay}` : null,
+    context.legalAccessDisplay ? `Recorded legal access: ${context.legalAccessDisplay}` : null,
     context.apparentEntranceDisplay ? `apparent entrance: ${context.apparentEntranceDisplay.charAt(0).toLowerCase()}${context.apparentEntranceDisplay.slice(1)}` : null,
   ].filter(Boolean).join('; ');
   const strengths = [

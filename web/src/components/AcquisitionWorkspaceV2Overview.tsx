@@ -18,6 +18,7 @@ import type {
   VisualBuyerNarrativeView,
 } from './AcquisitionWorkspaceV2PropertyIntelligence';
 import type { RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
+import { OwnerAcquisitionCard } from './AcquisitionWorkspaceV2DevelopmentIntelligence';
 import type {
   AcquisitionIntelligenceView,
   AcquisitionIntelligenceReadiness,
@@ -364,6 +365,7 @@ export function OverviewSection({
   dealBrain,
   researchReadiness,
 }: OverviewSectionProps) {
+  const developmentIntelligence = accessView?.developmentIntelligence ?? null;
   const identity = snap.identity ?? {};
   const operator = snap.operatorAnalysis;
   const canonical = operator?.canonical ?? null;
@@ -453,35 +455,32 @@ export function OverviewSection({
     requestAnimationFrame(() => document.getElementById('exact-address-listing-evidence')?.scrollIntoView({ behavior: 'smooth' }));
   };
 
-  // Access presentation rule: when the accepted parcel evidence says the
-  // parcel is NOT flagged landlocked and it fronts a road (mapped frontage),
-  // access is ESTABLISHED and displays as such — no speculative legal-access
-  // warning is added. Warnings return only on actual contrary evidence
-  // (a landlocked flag). The evidence ladder stays available as provenance.
+  // Access is source-separated: provider proximity, apparent entrance,
+  // reported rights, and verified recorded rights never imply one another.
   const accessEstablished = !!accessView?.established && !accessView?.evidence?.parcelFlagged;
   const accessTiers = [
     {
       label: 'Parcel / landlocked flag',
-      state: accessView?.evidence?.parcelFlagged ? 'Flagged landlocked' : accessEstablished ? 'Not landlocked — fronts a recognized road' : accessView?.evidence ? 'Not flagged landlocked' : 'Not resolved',
+      state: accessView?.evidence?.parcelFlagged ? 'Flagged landlocked' : accessView?.providerSignal === 'mapped_frontage_not_landlocked' ? 'Provider reports mapped frontage; not flagged landlocked' : 'Not resolved',
       tone: accessView?.evidence?.parcelFlagged ? 'risk' : accessEstablished ? 'verified' : 'neutral',
       detail: accessView?.evidence?.byTier.parcel_flag?.[0]?.statement,
     },
     {
       label: 'Apparent physical access',
-      state: accessView?.evidence?.apparentPhysicalAccess ? 'Apparent route observed' : accessEstablished && (accessView?.frontageFt ?? 0) > 0 ? `${accessView!.frontageFt} ft mapped road frontage` : 'Not established',
-      tone: accessView?.evidence?.apparentPhysicalAccess || (accessEstablished && (accessView?.frontageFt ?? 0) > 0) ? 'observed' : 'neutral',
+      state: accessView?.evidence?.apparentPhysicalAccess ? 'Apparent route observed' : 'Not confirmed',
+      tone: accessView?.evidence?.apparentPhysicalAccess ? 'observed' : 'neutral',
       detail: accessView?.evidence?.byTier.apparent_physical?.[0]?.statement,
     },
     {
       label: 'Reported legal / easement access',
-      state: accessView?.evidence?.reportedLegalAccess ? 'Reported' : accessEstablished ? 'Direct frontage — no separate easement required at discovery stage' : 'Not reported',
+      state: accessView?.evidence?.reportedLegalAccess ? 'Reported' : 'Not reported',
       tone: accessView?.evidence?.reportedLegalAccess ? 'reported' : 'neutral',
       detail: accessView?.evidence?.byTier.reported_legal?.[0]?.statement,
     },
     {
       label: 'Verified recorded legal access',
-      state: accessView?.evidence?.verifiedLegalAccess ? 'Verified' : accessEstablished ? 'Ordinary closing diligence' : 'Not verified',
-      tone: accessView?.evidence?.verifiedLegalAccess ? 'verified' : accessEstablished ? 'neutral' : 'risk',
+      state: accessView?.evidence?.verifiedLegalAccess ? 'Verified' : 'Not verified',
+      tone: accessView?.evidence?.verifiedLegalAccess ? 'verified' : 'risk',
       detail: accessView?.evidence?.byTier.verified_legal?.[0]?.statement,
     },
   ];
@@ -499,7 +498,8 @@ export function OverviewSection({
   // the backend has not established renders as Pending — never fabricated.
   const improvementValuation = compsValuation?.improvementValuation ?? null;
   const acresForValuation = cvSummary?.workingAcres ?? identity.acres ?? null;
-  const residentialSubject = !!improvement?.improved && /resid|house|dwelling|home/i.test(improvement.type ?? '');
+  const officialNoCurrentBuilding = /no_current_building|no buildings/i.test(developmentIntelligence?.currentTruth.improvementStatus ?? '');
+  const residentialSubject = !officialNoCurrentBuilding && !!improvement?.improved && /resid|house|dwelling|home/i.test(improvement.type ?? '');
   const showHouseBreakdown = residentialSubject && (acresForValuation ?? 0) > 1;
   const singleResidentialValue = residentialSubject && acresForValuation != null && acresForValuation <= 1;
   const houseValue = improvementValuation?.estimatedSubjectImprovementValue ?? null;
@@ -556,7 +556,7 @@ export function OverviewSection({
       ? { label: 'Total market value', value: sheetValue(lpf?.valuation?.totalMarketValue)!, note: 'As the parcel record states it' } : null,
     sheetValue(lpf?.valuation?.taxAmount)
       ? { label: 'Annual tax', value: sheetValue(lpf?.valuation?.taxAmount)!, note: 'Delinquency not screened' } : null,
-    sheetValue(lpf?.improvement?.label)
+    !officialNoCurrentBuilding && sheetValue(lpf?.improvement?.label)
       ? { label: 'Improvements', value: sheetValue(lpf?.improvement?.label)!, note: sheetValue(lpf?.improvement?.yearBuilt) ? `Built ${sheetValue(lpf?.improvement?.yearBuilt)}` : 'Year built not published' } : null,
     sheetValue(lpf?.parcelContext?.landUse)
       ? { label: 'Land use', value: sheetValue(lpf?.parcelContext?.landUse)!, note: 'Parcel record classification' } : null,
@@ -586,7 +586,7 @@ export function OverviewSection({
   const pctText = (value: number | null, fallback: string | null): string => value == null
     ? fallback || 'Not retained'
     : `${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}%`;
-  const subjectStructure = structureLabel(improvement?.type, !!improvement?.improved);
+  const subjectStructure = officialNoCurrentBuilding ? 'Vacant Land' : structureLabel(improvement?.type, !!improvement?.improved);
   // The reconciled canonical acreage governs the subject heading when the
   // official-record reconciliation resolved it; a snapshot generated before
   // the reconciliation must not keep presenting the superseded figure.
@@ -629,7 +629,7 @@ export function OverviewSection({
   // ahead of any narrative.
   const decisionMetrics: Array<{ label: string; value: string; sub?: string; tone?: string }> = [
     {
-      label: showHouseBreakdown || improvement?.improved ? 'Land value' : 'Property value',
+      label: showHouseBreakdown || (!officialNoCurrentBuilding && improvement?.improved) ? 'Land value' : 'Property value',
       value: cvSummary?.fmv ? usd(cvSummary.fmv.central) : 'Pending',
       sub: cvSummary ? `${cvSummary.acceptedCount} accepted sale${cvSummary.acceptedCount === 1 ? '' : 's'} · ${cvSummary.statusLabel}` : undefined,
       tone: 'valuation',
@@ -657,6 +657,7 @@ export function OverviewSection({
 
   return (
     <main class="awv2-main awv2-overview" data-testid="acquisition-overview">
+      {developmentIntelligence && <OwnerAcquisitionCard dossier={developmentIntelligence} />}
       {/* ── 1. Decision band: the operator decision and its key metrics lead
              the page; every narrative and evidence surface follows. ── */}
       <section class="awv2-overview-decisionband" data-domain="action" aria-label="Operator decision">
@@ -759,12 +760,15 @@ export function OverviewSection({
              stored as deal-specific guidance — never a canonical property
              fact — and replies come from the current deal file. ── */}
       {dealBrain && (
-        <DealBrainAsk
-          thread={dealBrain.thread}
-          running={dealBrain.running}
-          error={dealBrain.error}
-          onAsk={dealBrain.onAsk}
-        />
+        <>
+          {developmentIntelligence && dealBrain.thread.length > 0 && <div class="awv2-pi-note"><b>Historical / superseded guidance:</b> existing Deal Brain replies predate the recorded-document and development reconciliation shown above. They remain retained as history and must not override current acreage, improvement, access, market, or strategy truth.</div>}
+          <DealBrainAsk
+            thread={dealBrain.thread}
+            running={dealBrain.running}
+            error={dealBrain.error}
+            onAsk={dealBrain.onAsk}
+          />
+        </>
       )}
 
       <section class="awv2-overview-hero" data-domain="property" aria-label="Subject property">
@@ -907,19 +911,21 @@ export function OverviewSection({
           an absence: it names the exit, what already supports it, and the one
           thing standing between the operator and pursuing it. Printing only
           "strategy selection is pending" threw all of that away. */}
-      {strategies.length > 0 && (
+      {(strategies.length > 0 || developmentIntelligence?.recommendation) && (
         <section class="awv2-overview-strategy" data-domain="strategy" aria-label="Exit strategy">
           <div class="section-heading">
             <div>
               <span class="awv2-dom-eyebrow" data-dom="strategy">Strategy</span>
-              <h2>{recommendation?.preferredStrategy
+              <h2>{developmentIntelligence?.recommendation
+                ? `Recommended: ${developmentIntelligence.recommendation.strategy}`
+                : recommendation?.preferredStrategy
                 ? `Preferred exit: ${recommendation.preferredStrategy}`
                 : 'Exit strategies assessed'}</h2>
             </div>
             {recommendation?.posture && <span class="awv2-strategy-posture" data-posture={recommendation.posture}>{recommendation.posture}</span>}
           </div>
-          {(recommendation?.postureWhy || recommendation?.why) && (
-            <p class="awv2-strategy-why">{recommendation?.postureWhy || recommendation?.why}</p>
+          {(developmentIntelligence?.recommendation?.basis || recommendation?.postureWhy || recommendation?.why) && (
+            <p class="awv2-strategy-why">{developmentIntelligence?.recommendation?.basis || recommendation?.postureWhy || recommendation?.why}</p>
           )}
           {/* The strongest few exits, each as four scannable lines: fit,
               why it fits, the one thing blocking it, what would confirm it.
@@ -927,10 +933,12 @@ export function OverviewSection({
               lane output and stay on the card, one control away. Every exit
               the lane assessed beyond the strongest few follows below in the
               same shape — none of them is dropped. */}
-          <div class="awv2-strategy-grid">
+          {developmentIntelligence?.recommendation ? (
+            <div class="awv2-pi-note"><b>Quick flip:</b> {developmentIntelligence.recommendation.quickFlip}<br /><b>Major development:</b> {developmentIntelligence.recommendation.majorDevelopment}<br /><b>Maximum basis:</b> {developmentIntelligence.recommendation.maximumBasis}</div>
+          ) : <div class="awv2-strategy-grid">
             {strategies.slice(0, 3).map((item) => <StrategyCard item={item} />)}
-          </div>
-          {strategies.length > 3 && (
+          </div>}
+          {!developmentIntelligence?.recommendation && strategies.length > 3 && (
             <details class="awv2-strategy-more">
               <summary>{strategies.length - 3} further exit{strategies.length - 3 === 1 ? '' : 's'} assessed</summary>
               <div class="awv2-strategy-grid">

@@ -112,14 +112,14 @@ describe('genuine official and legal diligence is preserved', () => {
   });
 });
 
-describe('discovery-stage legal access rule', () => {
+describe('verified recorded access rule', () => {
   const accessState = () => screenedState({ legalAccessRoad: 'Onionville Road', corridorRightsUnresolved: true });
 
-  it('displays legal access as present and never as unresolved', () => {
+  it('displays recorded legal access as verified and keeps physical dimensions separate', () => {
     const result = reconcileMissingDiligence(accessState(), [...STALE_MESSAGES, ...ACCESS_DUPLICATES]);
     const access = result.items.find((item) => item.key === 'access');
-    expect(access?.currentFinding).toMatch(/Legal access: Yes, via Onionville Road/);
-    expect(access?.shortStatus).toMatch(/Legal access: Yes/);
+    expect(access?.currentFinding).toMatch(/Recorded legal access: verified via Onionville Road/);
+    expect(access?.shortStatus).toMatch(/Recorded legal access: verified/);
     const text = JSON.stringify(result);
     expect(text).not.toMatch(/driveway (?:approval|permit)/i);
     expect(text).not.toMatch(/public right[- ]of[- ]way contact/i);

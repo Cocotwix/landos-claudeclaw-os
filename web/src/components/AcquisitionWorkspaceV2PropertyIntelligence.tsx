@@ -29,6 +29,7 @@ import { LandUsePanel, type LandUseView, type RetainedLandUseIntelligenceView } 
 import { ZoningSubdivisionCapabilityRun } from './AcquisitionWorkspaceV2ZoningSubdivision';
 import { PropertyDevelopmentHistoryPanel } from './AcquisitionWorkspaceV2PropertyDevelopmentHistory';
 import type { CvSummary } from './AcquisitionWorkspaceV2CompsValuation';
+import { DevelopmentIntelligencePanel, type DevelopmentIntelligenceView } from './AcquisitionWorkspaceV2DevelopmentIntelligence';
 import '../styles/workspace-v2-property-intelligence.css';
 
 // ── View types (structural; every field optional and defensive) ────────
@@ -113,6 +114,8 @@ export interface MissingDiligenceView {
 
 export interface AccessPresentationView {
   established: boolean;
+  providerSignal?: 'mapped_frontage_not_landlocked' | 'landlocked_flag' | 'unresolved';
+  developmentIntelligence?: DevelopmentIntelligenceView | null;
   road: string | null;
   legalAccess: string | null;
   frontageFt: number | null;
@@ -549,7 +552,7 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus, acquisitionIntelligence }: {
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus, acquisitionIntelligence, developmentIntelligence }: {
   snap: PiSnapshot;
   /**
    * The persisted Acquisition Intelligence read and its controls.
@@ -594,6 +597,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   exactAddressListings?: ExactAddressListingsView | null;
   researchStatus?: ResearchStatusView | null;
   valuationSummary?: CvSummary | null;
+  developmentIntelligence?: DevelopmentIntelligenceView | null;
 }) {
   // Same-page evidence viewer: index into the ordered gallery, or null.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -646,8 +650,11 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     ?? firstFact('lp_sidebar_soils', 'lp_sidebar_soil_type', 'lp_sidebar_soil_description');
   const landPortalFrontage = sheet(lpf?.access?.roadFrontage)
     ?? firstFact('lp_sidebar_frontage', 'lp_sidebar_road_frontage');
-  const landPortalImprovement = sheet(lpf?.improvement?.label)
+  const developmentDossier = accessView?.developmentIntelligence ?? developmentIntelligence ?? null;
+  const officialNoCurrentBuilding = /no_current_building|no buildings/i.test(developmentDossier?.currentTruth.improvementStatus ?? '');
+  const supersededProviderImprovement = sheet(lpf?.improvement?.label)
     ?? firstFact('lp_sidebar_improvements', 'lp_sidebar_improvement_type', 'lp_sidebar_building_sqft');
+  const landPortalImprovement = officialNoCurrentBuilding ? null : supersededProviderImprovement;
   const landPortalParcelContext = sheet(lpf?.parcelContext?.label)
     ?? firstFact('lp_sidebar_parcel_context', 'lp_sidebar_land_use', 'lp_sidebar_property_type');
   const landPortalSlopeUnder10 = sheet(lpf?.terrain?.slopeUnder10Pct);
@@ -770,7 +777,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     if (label && !missing.includes(label)) missing.push(label);
   }
   if (!waterFeature) missing.push('Water features');
-  if (!(improvementFacts?.buildingSqft ?? primaryListing?.buildingSqft) && !landPortalImprovement) missing.push('Building information');
+  if (!officialNoCurrentBuilding && !(improvementFacts?.buildingSqft ?? primaryListing?.buildingSqft) && !landPortalImprovement) missing.push('Building information');
   if (!byId.has('inspection-parcel_context')) missing.push('Wider-context aerial');
   if (!hasStreetViewCapture && streetView?.available !== false) missing.push('Street View capture');
   if (!hasBuildabilityCapture && !landPortalBuildability) missing.push('Dedicated buildability capture');
@@ -800,14 +807,14 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
 
   const accessMetrics: DxMetric[] = [
     {
-      label: 'Access status',
-      value: accessView?.established ? 'Established' : 'Unresolved',
+      label: 'Provider / physical signal',
+      value: accessView?.providerSignal === 'mapped_frontage_not_landlocked' ? 'Mapped frontage; not flagged landlocked' : accessView?.providerSignal === 'landlocked_flag' ? 'Landlocked flag reported' : 'Unresolved',
       sub: accessView?.evidence?.parcelFlagged ? 'parcel flagged landlocked' : lpf?.access?.landLocked ? `landlocked: ${lpf.access.landLocked}` : null,
-      tone: accessView?.established ? 'good' : 'warn',
+      tone: accessView?.providerSignal === 'landlocked_flag' ? 'warn' : 'neutral',
     },
     { label: 'Working frontage', value: workingFrontage ?? '', sub: frontageConflict ? 'sources conflict' : landPortalFrontage ? 'mapped parcel frontage' : null, tone: frontageConflict ? 'warn' : 'neutral' },
     { label: 'Road', value: accessView?.road || roadName || '', sub: roadName ? 'situs road' : null },
-    { label: 'Legal access', value: accessView?.legalAccess || '', sub: 'recorded-instrument review is ordinary closing diligence' },
+    { label: 'Recorded legal access', value: accessView?.legalAccess || 'Not verified', sub: 'requires a retained recorded instrument or title confirmation', tone: accessView?.established ? 'good' : 'warn' },
   ];
 
   const terrainMetrics: DxMetric[] = [
@@ -832,6 +839,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
 
   return (
     <>
+      {(developmentIntelligence ?? accessView?.developmentIntelligence) && <DevelopmentIntelligencePanel dossier={(developmentIntelligence ?? accessView?.developmentIntelligence)!} />}
       {/* ── Subject summary ── */}
       <div class="awv2-pi-questions">
         <section data-domain="property" class="awv2-panel awv2-pi-subject" id="pi-subject">
@@ -979,6 +987,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
               Listing-reported property intelligence
               <span class="awv2-src-tag">{listingCard.evidenceLabel} · never an assessor or recorded fact</span>
             </div>
+            {officialNoCurrentBuilding && <div class="awv2-pi-note"><b>Superseded for current-property truth:</b> the official current parcel reconciliation establishes no current building. These listing/provider fields remain visible as conflicting historical evidence only.</div>}
             <div class="awv2-kv">
               <Kv k="Property / improvement type" v={improvementFacts.propertyType} empty="Not published by the listing" />
               <Kv k="Building sqft" v={improvementFacts.buildingSqft != null ? `${improvementFacts.buildingSqft.toLocaleString('en-US')} sqft` : null} empty="Not published by the listing" />
@@ -1037,17 +1046,14 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             once, as tier-2 support, and nowhere else on this page. */}
         <section data-domain="property" class="awv2-panel" id="access-road-frontage">
           <div class="awv2-panel-title">Access &amp; road frontage</div>
-          {/* Conclusion first. The shared access rule (matches Overview):
-              not flagged landlocked + mapped road frontage = ESTABLISHED, with
-              no speculative legal warning. Recorded-instrument access remains
-              ordinary closing diligence, never a discovery-stage blocker — the
-              discovery-stage standard here is unchanged. */}
+          {/* Conclusion first. Provider proximity, recorded legal access,
+              surveyed frontage, and a physical entrance remain separate. */}
           {accessView?.established && !accessView?.evidence?.parcelFlagged ? (
             <Conclusion
               label="Access"
               value="Established"
               tone="good"
-              note={`${accessView.legalAccess ?? 'Yes'}; not flagged landlocked. Recorded-instrument review remains ordinary closing diligence.`}
+              note={`${accessView.legalAccess ?? 'Verified by retained recorded evidence'}. Provider and physical signals are shown separately.`}
               testId="pi-access-established"
             />
           ) : (
@@ -1066,7 +1072,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             <ConflictBanner
               subject="Mapped frontage"
               span={frontageSpan!}
-              resolution="Exact frontage requires confirmation. Access appears established for discovery purposes, but narrow or uncertain frontage may materially affect subdivision or development."
+              resolution="Exact surveyed frontage and recorded legal access require separate confirmation. Narrow or uncertain frontage may materially affect subdivision or development."
             />
           )}
           <WhatItMeans read={aiRead} topic="access" />
@@ -1124,7 +1130,8 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             <Kv k="Terrain" v={landPortalTerrain || terrain?.detail || null} />
             {/* The listing's own read is stated once, in its own panel; this
                 points at it rather than reprinting the same sentence. */}
-            <Kv k="Improvement context" v={landPortalImprovement || (listingCard ? 'Stated under Listing-reported property intelligence above, at listing weight.' : null)} empty="No improvement fact supplied" />
+            <Kv k="Current improvement status" v={officialNoCurrentBuilding ? 'No current building established by the official reconciliation' : landPortalImprovement || (listingCard ? 'Stated under Listing-reported property intelligence above, at listing weight.' : null)} empty="No improvement fact supplied" />
+            {officialNoCurrentBuilding && supersededProviderImprovement && <Kv k="Superseded provider claim" v={supersededProviderImprovement} empty="None" />}
             <Kv k="Parcel context" v={landPortalParcelContext} empty="No parcel-context fact supplied" />
             <Kv
               k="3D evidence"
@@ -1327,7 +1334,8 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
               Year built is rendered as a row in exactly one panel — the
               listing-reported one, at listing weight — so the same fact never
               appears twice under two different weights. */}
-          <Kv k="Improvements" v={landPortalImprovement} empty="No improvement fact supplied" />
+          <Kv k="Current improvements" v={officialNoCurrentBuilding ? 'No current building established' : landPortalImprovement} empty="No improvement fact supplied" />
+          {officialNoCurrentBuilding && supersededProviderImprovement && <Kv k="Superseded provider claim" v={supersededProviderImprovement} empty="None" />}
           <Kv k="Land use" v={sheet(lpf?.parcelContext?.landUse)} empty="Not published by the retained source" />
           <Kv k="Last sale" v={lastSalePrice ? `${lastSalePriceUsd ? `${lastSalePriceUsd} · ` : ''}displayed “${lastSalePrice}”${lastSaleDate ? ` on ${lastSaleDate}` : ''}` : null} empty="Not published by the retained source" />
         </div>

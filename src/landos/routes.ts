@@ -461,6 +461,7 @@ import {
   type PublicRecordOutcomeInput,
   type ResourceContactInput,
 } from './lead-card-intake.js';
+import { buildDevelopmentIntelligence } from './development-intelligence.js';
 import {
   extractSmartIntakeImage,
   smartIntakeImageSha256,
@@ -3713,6 +3714,30 @@ export function registerLandosRoutes(app: Hono): void {
       address: str(subject.active_input_address), acreage: num(subject.acres), lat: num(subject.lat), lng: num(subject.lng),
     });
     return c.json({ hierarchy, records: listPublicRecordOutcomes(id) });
+  });
+
+  app.get('/api/landos/deal-cards/:id/public-records/:recordId/artifact', (c) => {
+    const id = Number(c.req.param('id'));
+    const recordId = Number(c.req.param('recordId'));
+    if (!Number.isInteger(id) || !Number.isInteger(recordId)) return c.json({ error: 'invalid public-record artifact' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const record = listPublicRecordOutcomes(id).find((row) => Number(row.id) === recordId);
+    const stored = record ? str(record.screenshot_url) : null;
+    if (!stored) return c.json({ error: 'artifact not found' }, 404);
+    const root = path.resolve(getLandosStorageProfile().artifactRoot);
+    const resolved = path.resolve(stored);
+    const relative = path.relative(root, resolved);
+    if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative) || !fs.existsSync(resolved)) {
+      return c.json({ error: 'artifact not available' }, 404);
+    }
+    const bytes = fs.readFileSync(resolved);
+    const ext = path.extname(resolved).toLowerCase();
+    const mime = ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'application/octet-stream';
+    return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, {
+      'Content-Type': mime,
+      'Content-Disposition': `inline; filename="${path.basename(resolved).replace(/"/g, '')}"`,
+      'Cache-Control': 'private, max-age=3600',
+    });
   });
 
   app.post('/api/landos/deal-cards/:id/public-records', async (c) => {
@@ -9646,9 +9671,14 @@ export function registerLandosRoutes(app: Hono): void {
       // than surviving because it was once stored.
       const entranceSupported = entrance.confirmed && reconciliation.apparentPhysicalAccess;
       return {
-        established: read.established,
+        // Recorded legal access is the only establishing rung. Provider
+        // frontage and landlocked flags remain source-separated signals.
+        established: reconciliation.verifiedLegalAccess,
+        providerSignal: read.providerSignal,
         road: read.road,
-        legalAccess: read.display,
+        legalAccess: reconciliation.verifiedLegalAccess
+          ? reconciliation.byTier.verified_legal[0]?.statement ?? 'Verified by recorded instrument'
+          : null,
         frontageFt: read.frontageFt,
         apparentEntrance: entranceSupported ? entrance.display : 'Not confirmed from retained imagery',
         apparentEntranceConfirmed: entranceSupported,
@@ -9737,15 +9767,42 @@ export function registerLandosRoutes(app: Hono): void {
         }
       })(),
     });
+    const developmentIntelligence = (() => {
+      const deal = getDealCard(dealCardId);
+      const subject = ((deal?.propertyCards ?? []) as Array<Record<string, unknown>>)
+        .find((card) => card.role === 'subject')
+        ?? ((deal?.propertyCards ?? []) as Array<Record<string, unknown>>)[0]
+        ?? {};
+      const providerSignal = accessPresentation?.providerSignal === 'mapped_frontage_not_landlocked'
+        ? `Provider reports mapped frontage${accessPresentation.road ? ` at ${accessPresentation.road}` : ''} and does not flag the parcel landlocked`
+        : accessPresentation?.providerSignal === 'landlocked_flag'
+          ? 'Provider flags the parcel landlocked'
+          : 'Provider signal unresolved';
+      return buildDevelopmentIntelligence({
+        dealCardId,
+        records: listPublicRecordOutcomes(dealCardId),
+        acres: canonicalExtentAcres ?? snapshot?.identity.acres ?? num(subject.acres),
+        owner: str(subject.owner) || null,
+        providerAccessSignal: providerSignal,
+        recordedLegalAccess: accessPresentation?.established
+          ? accessPresentation.legalAccess ?? 'Verified recorded legal access'
+          : 'Not verified from a recorded instrument',
+        surveyedFrontage: 'Not verified by a retained survey',
+        physicalEntrance: accessPresentation?.apparentEntranceConfirmed
+          ? accessPresentation.apparentEntrance
+          : 'Not confirmed from retained imagery',
+      });
+    })();
     return {
       snapshot,
       subjectParcel,
       streetView: streetViewProjection,
       missingDiligence,
-      access: accessPresentation,
+      access: accessPresentation ? { ...accessPresentation, developmentIntelligence } : null,
       soilsSeptic,
       visualBuyerAnalysis,
       visualBuyerNarrative,
+      developmentIntelligence,
       // Named research areas with the exact incomplete one, so the operator
       // never has to guess what "N of M delivered" is missing.
       researchStatus: snapshot ? researchStatusFrom(snapshot.specialists, snapshot.dueDiligence) : null,

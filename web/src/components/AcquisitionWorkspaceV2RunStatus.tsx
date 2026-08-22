@@ -86,8 +86,8 @@ const STATUS_WORD: Record<RunSpecialistStatus, string> = {
 /** How the whole run reads in one line. */
 const RUN_WORD: Record<NonNullable<RunView['status']>, string> = {
   running: 'Gathering property intelligence',
-  complete: 'Research complete',
-  complete_with_gaps: 'Research complete, with named gaps',
+  complete: 'Research run complete',
+  complete_with_gaps: 'Research run complete; named underwriting gaps remain',
   blocked_identity: 'Stopped: the subject parcel was never identified',
   failed: 'The research run failed',
 };

@@ -1,5 +1,5 @@
-// Discovery-stage access presentation contract: road abutment evidence
-// displays legal access as present; apparent entrance is a separate visual
+// Discovery-stage access presentation contract: road abutment is a provider
+// signal, not proof of legal access; apparent entrance is a separate visual
 // read that is never fabricated; stale unresolved-access phrasing never
 // survives the projection; metric parsers keep working on the new headline.
 
@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 import {
   apparentEntranceAttribution,
   apparentEntranceFromObservations,
-  establishedAccessFollowUps,
   filterResolvedAccessLanguage,
   normalizeDiscoveryAccessItems,
   presentBuyerAnalysisAccessLanguage,
@@ -42,11 +41,12 @@ describe('road name derivation', () => {
   });
 });
 
-describe('discovery-stage legal access rule', () => {
-  it('establishes legal access from mapped frontage plus no landlocked flag', () => {
+describe('source-separated discovery access rule', () => {
+  it('retains mapped frontage plus no landlocked flag as a provider signal only', () => {
     const read = readDiscoveryAccess([accessItem()], '1487 Onionville Rd, Sterling, NY 13156');
-    expect(read.established).toBe(true);
-    expect(read.display).toBe('Yes, via Onionville Road');
+    expect(read.established).toBe(false);
+    expect(read.providerSignal).toBe('mapped_frontage_not_landlocked');
+    expect(read.display).toBeNull();
     expect(read.frontageFt).toBeCloseTo(693.29);
   });
 
@@ -56,19 +56,23 @@ describe('discovery-stage legal access rule', () => {
       '1 Elm Rd, Town, NY 10000',
     );
     expect(read.established).toBe(false);
+    expect(read.providerSignal).toBe('landlocked_flag');
     expect(read.display).toBeNull();
   });
 
-  it('rewrites the access item with the approved display and only genuine follow-ups', () => {
+  it('rewrites the access item without promoting provider evidence to legal access', () => {
     const [item] = normalizeDiscoveryAccessItems([accessItem()], '1487 Onionville Rd, Sterling, NY 13156');
-    expect(item.headline).toMatch(/^Legal access: Yes, via Onionville Road — /);
-    expect(item.verdict).toBe('good');
-    expect(item.missing).toEqual(establishedAccessFollowUps());
+    expect(item.headline).toMatch(/^Provider signal: mapped frontage at Onionville Road; legal access unresolved — /);
+    expect(item.verdict).toBe('unknown');
+    expect(item.missing).toEqual([
+      'Recorded legal-access instrument or title confirmation.',
+      'Exact surveyed frontage.',
+      'Confirmed physical entrance.',
+    ]);
     const text = JSON.stringify(item);
-    expect(text).not.toMatch(/driveway (?:approval|permit)/i);
-    expect(text).not.toMatch(/right[- ]of[- ]way contact/i);
-    expect(text).not.toMatch(/recorded legal access has not been established/i);
-    expect(text).not.toMatch(/legal access unresolved/i);
+    expect(text).toMatch(/recorded legal-access instrument/i);
+    expect(text).toMatch(/surveyed frontage/i);
+    expect(text).toMatch(/physical entrance/i);
   });
 
   it('keeps the frontage and landlocked metrics parseable in the new headline', () => {

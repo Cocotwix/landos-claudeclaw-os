@@ -1,14 +1,9 @@
 // Discovery-stage access presentation (projection layer).
 //
-// Operator definition: at discovery stage, LEGAL ACCESS means the subject
-// abuts or has access to a public road, private road, or recorded access
-// road. When the accepted parcel evidence shows the parcel abuts a road
-// (mapped frontage present and no landlocked flag), legal access is
-// displayed as PRESENT — it is never shown as unresolved merely because no
-// driveway, survey, deed review, or separate recorded access instrument has
-// been retrieved yet. APPARENT ENTRANCE is a separate, purely visual
-// question answered from retained Street View / aerial evidence, and is
-// never fabricated.
+// Provider road proximity, recorded legal access, surveyed frontage, and an
+// apparent physical entrance are four separate questions. Mapped frontage
+// plus a no-landlocked flag is retained as a provider signal only. Legal
+// access is established only from the verified recorded-instrument rung.
 //
 // Genuine uncertainty is preserved: exact surveyed frontage, easements
 // affecting other portions of the parcel, corridor ownership and crossing
@@ -66,12 +61,14 @@ export function roadNameFromSitus(situs: string | null | undefined): string | nu
 }
 
 export interface DiscoveryAccessRead {
-  /** Discovery-stage legal access is established by road abutment evidence. */
+  /** True only when a recorded-instrument evidence rung is verified. */
   established: boolean;
+  /** Provider/physical signal. Never promoted to a legal conclusion. */
+  providerSignal: 'mapped_frontage_not_landlocked' | 'landlocked_flag' | 'unresolved';
   road: string | null;
   frontageFt: number | null;
   landlocked: 'yes' | 'no' | null;
-  /** Operator display line, e.g. "Yes, via Onionville Road". */
+  /** Legal-access display. Null until recorded evidence is admitted. */
   display: string | null;
 }
 
@@ -87,13 +84,18 @@ export function readDiscoveryAccess(
   const frontageFt = frontage ? Number(frontage[1]) : null;
   const landlocked = landlockedMatch ? (landlockedMatch[1].toLowerCase() as 'yes' | 'no') : null;
   const road = roadNameFromSitus(situsAddress);
-  const established = landlocked === 'no' && (frontageFt ?? 0) > 0;
+  const providerSignal = landlocked === 'yes'
+    ? 'landlocked_flag'
+    : landlocked === 'no' && (frontageFt ?? 0) > 0
+      ? 'mapped_frontage_not_landlocked'
+      : 'unresolved';
   return {
-    established,
+    established: false,
+    providerSignal,
     road,
     frontageFt,
     landlocked,
-    display: established ? `Yes, via ${road ?? 'the abutting road'}` : null,
+    display: null,
   };
 }
 
@@ -111,10 +113,8 @@ export function establishedAccessFollowUps(): string[] {
 }
 
 /**
- * Rewrite the access due-diligence item for display when the accepted parcel
- * evidence establishes discovery-stage legal access. System-wide rule: any
- * property whose stored access headline shows mapped frontage and no
- * landlocked flag is displayed with legal access present. The headline keeps
+ * Preserve a provider road-proximity signal without promoting it to legal
+ * access. The headline keeps
  * the original "<n> ft frontage shown; landlocked flag: <x>" fragment so the
  * existing metric parsers (hero chips, score) keep working. Non-qualifying
  * items are returned untouched.
@@ -124,7 +124,7 @@ export function normalizeDiscoveryAccessItems(
   situsAddress: string | null | undefined,
 ): SnapshotDueDiligenceItem[] {
   const read = readDiscoveryAccess(items, situsAddress);
-  if (!read.established) return items;
+  if (read.providerSignal !== 'mapped_frontage_not_landlocked') return items;
   const road = read.road ?? 'the abutting road';
   return items.map((item) => {
     if (item.key !== 'access') return item;
@@ -134,11 +134,11 @@ export function normalizeDiscoveryAccessItems(
     ].filter(Boolean).join('; ');
     return {
       ...item,
-      label: 'Legal access and road frontage',
-      verdict: 'good' as const,
-      headline: `Legal access: Yes, via ${road} — ${metrics}`,
-      detail: `Discovery-stage operator rule: the parcel abuts ${road} with mapped road frontage and is not flagged landlocked, so legal access is displayed as present. Survey-grade frontage and any recorded easements affecting other portions of the parcel remain ordinary follow-ups, not access blockers.`,
-      missing: establishedAccessFollowUps(),
+      label: 'Access and road frontage',
+      verdict: 'unknown' as const,
+      headline: `Provider signal: mapped frontage at ${road}; legal access unresolved — ${metrics}`,
+      detail: 'Mapped frontage and a provider not-landlocked flag support road proximity only. Recorded legal access, surveyed frontage, and a confirmed physical entrance remain separate evidence questions.',
+      missing: ['Recorded legal-access instrument or title confirmation.', 'Exact surveyed frontage.', 'Confirmed physical entrance.'],
     };
   });
 }

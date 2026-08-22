@@ -194,13 +194,12 @@ describe('ws2 Overview redesign', () => {
     expect(OVERVIEW_SRC).toMatch(/houseValue != null \? formatUsd\(houseValue\) : 'Pending'/);
   });
 
-  it('presents access as established for a not-landlocked, road-fronting parcel without warning tones', () => {
+  it('keeps provider proximity separate from verified recorded legal access', () => {
     expect(OVERVIEW_SRC).toMatch(/accessEstablished = !!accessView\?\.established && !accessView\?\.evidence\?\.parcelFlagged/);
-    expect(OVERVIEW_SRC).toContain("accessEstablished ? 'Access established' : 'Physical evidence is not legal proof'");
-    // The unverified-recorded-access rung is neutral, not risk, once access is established.
-    expect(OVERVIEW_SRC).toMatch(/accessEstablished \? 'neutral' : 'risk'/);
-    // Established access shows the ladder as collapsed provenance.
-    expect(OVERVIEW_SRC).toMatch(/accessEstablished \? \(\s*<details/);
+    expect(OVERVIEW_SRC).toContain('Provider reports mapped frontage; not flagged landlocked');
+    expect(OVERVIEW_SRC).toMatch(/verifiedLegalAccess \? 'Verified' : 'Not verified'/);
+    expect(OVERVIEW_SRC).toMatch(/verifiedLegalAccess \? 'verified' : 'risk'/);
+    expect(OVERVIEW_SRC).toContain("apparentPhysicalAccess ? 'Apparent route observed' : 'Not confirmed'");
   });
 
   it('marks every functional area with its domain surface', () => {

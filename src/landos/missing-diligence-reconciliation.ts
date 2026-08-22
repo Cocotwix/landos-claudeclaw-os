@@ -71,9 +71,8 @@ export interface DiscoveryDiligenceState {
   acceptedSoldComps?: number;
   acceptedActiveComps?: number;
   acceptedAskingReferences?: number;
-  /** Road name once discovery-stage legal access is established by road
-   *  abutment evidence (mapped frontage + no landlocked flag); null keeps
-   *  access honestly open. */
+  /** Road name only after recorded-instrument/title evidence verifies legal
+   *  access; provider frontage never populates this field. */
   legalAccessRoad: string | null;
   /** A mapped corridor crosses the parcel and its ownership/crossing rights
    *  are unconfirmed — genuine access-family uncertainty that survives the
@@ -114,25 +113,24 @@ function fixedItems(state: DiscoveryDiligenceState): MissingDiligenceItem[] {
   const items: MissingDiligenceItem[] = [];
 
   if (state.legalAccessRoad) {
-    // Discovery-stage legal access is PRESENT (the parcel abuts a road per
-    // accepted parcel evidence). Only the genuine follow-ups stay open:
-    // surveyed frontage, easements, and any unresolved corridor rights.
-    // Driveway-approval / permit language is never part of this workflow.
+    // Recorded legal access is verified. Surveyed frontage, physical entrance,
+    // easements affecting other areas, and corridor rights stay independent.
     items.push({
       key: 'access',
-      label: 'Access follow-ups (survey and easements)',
+      label: 'Verified legal access and separate physical follow-ups',
       currentFinding: [
-        `Legal access: Yes, via ${state.legalAccessRoad} — the parcel abuts the road${state.frontageFt != null ? ` with approximately ${ft(state.frontageFt)} of mapped frontage` : ''} and is not flagged landlocked`,
-        state.streetViewComplete ? 'Street View confirms direct road adjacency' : null,
+        `Recorded legal access: verified via ${state.legalAccessRoad}`,
+        state.frontageFt != null ? `provider maps approximately ${ft(state.frontageFt)} of frontage` : null,
+        state.streetViewComplete ? 'retained imagery supplies a separate physical-access observation' : null,
       ].filter(Boolean).join('; ') + '.',
       stillUnresolved: [
         'Exact surveyed frontage',
         state.corridorRightsUnresolved ? 'ownership and crossing rights of the corridor crossing the parcel' : null,
-        'any recorded easements affecting other portions of the parcel',
+        'physical entrance and any easements affecting other portions of the parcel',
       ].filter(Boolean).join('; ') + '.',
-      whyItMatters: 'Survey-grade frontage, corridor rights, and recorded easements refine boundaries and internal access; they do not gate discovery-stage legal access.',
+      whyItMatters: 'A recorded right, surveyed frontage, and a usable physical entrance answer different acquisition and development questions.',
       nextSource: 'Boundary survey and recorded deed/easement documents.',
-      shortStatus: `Legal access: Yes, via ${state.legalAccessRoad}`,
+      shortStatus: `Recorded legal access: verified via ${state.legalAccessRoad}`,
       shortNext: 'Survey + easement review',
       urgent: false,
     });

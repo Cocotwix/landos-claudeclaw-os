@@ -66,7 +66,7 @@ describe('concise narrative composition', () => {
 
   it('uses the approved access terminology and drops unresolved-access phrasing', () => {
     const text = JSON.stringify(buildVisualBuyerNarrative(ANALYSIS, CONTEXT));
-    expect(text).toMatch(/Legal access: Yes, via Onionville Road/);
+    expect(text).toMatch(/Recorded legal access: Yes, via Onionville Road/);
     expect(text).toMatch(/apparent entrance: not confirmed from retained imagery/i);
     expect(text).not.toMatch(/not yet established by recorded instrument/i);
     expect(text).not.toMatch(/driveway (?:approval|permit)/i);
