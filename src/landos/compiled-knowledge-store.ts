@@ -225,9 +225,14 @@ function stateOf(record: LandosKnowledgeRecord, now: number): KnowledgeReadState
 
 function sourceActions(knowledgeId: string): KnowledgeSourceAction[] {
   const rows = getLandosDb().prepare(`
-    SELECT evidence_namespace, evidence_ref, role
+    SELECT evidence_namespace, evidence_ref, role, evidence_fingerprint
     FROM landos_knowledge_support WHERE knowledge_id=? ORDER BY id
-  `).all(knowledgeId) as Array<{ evidence_namespace: KnowledgeEvidenceNamespace; evidence_ref: string; role: KnowledgeSourceAction['role'] }>;
+  `).all(knowledgeId) as Array<{
+    evidence_namespace: KnowledgeEvidenceNamespace;
+    evidence_ref: string;
+    role: KnowledgeSourceAction['role'];
+    evidence_fingerprint: string;
+  }>;
   return rows.map((row) => {
     const resolved = resolveSupport({ evidenceNamespace: row.evidence_namespace, evidenceRef: row.evidence_ref, role: row.role });
     return {
@@ -237,6 +242,8 @@ function sourceActions(knowledgeId: string): KnowledgeSourceAction[] {
       label: resolved.label || row.evidence_namespace.replace(/_/g, ' '),
       url: resolved.url,
       retrievedAt: resolved.retrievedAt,
+      fingerprintDrifted: !resolved.accepted || resolved.fingerprint !== row.evidence_fingerprint,
+      supportStillAccepted: resolved.accepted,
     };
   });
 }
@@ -306,9 +313,11 @@ export function acceptKnowledgeCandidate(input: KnowledgeCandidateInput): Knowle
             acceptance_reason=?, updated_at=? WHERE id=?
       `).run(statement, retrievedAt, lastVerifiedAt, freshUntil, input.compilerVersion, input.acceptanceReason, now, same.id);
       const insertSupport = db.prepare(`
-        INSERT OR IGNORE INTO landos_knowledge_support (
+        INSERT INTO landos_knowledge_support (
           knowledge_id, evidence_namespace, evidence_ref, role, evidence_fingerprint, created_at
         ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(knowledge_id, evidence_namespace, evidence_ref, role)
+        DO UPDATE SET evidence_fingerprint=excluded.evidence_fingerprint
       `);
       for (const support of supports) insertSupport.run(
         same.id,

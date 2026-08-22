@@ -44,6 +44,7 @@ import {
   type ResearchReadinessManifest,
   type ResearchReadinessProbe,
 } from './research-readiness.js';
+import { planJurisdictionKnowledgeForDeal } from './jurisdiction-knowledge.js';
 
 /** Visual sources that actually show the parcel. A fallback map is not one. */
 const PARCEL_GRADE_VISUAL_SERVICES = [
@@ -276,6 +277,7 @@ function zoningProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
   const documentCount = asNumber(rules?.documentCount) ?? 0;
   const byRightStatus = asString(byRight?.statusLabel);
   const rulesUsable = ruleCount > 0;
+  const knowledgePlan = planJurisdictionKnowledgeForDeal(ctx.dealCardId);
 
   return [
     {
@@ -302,17 +304,26 @@ function zoningProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
     },
     {
       itemId: 'subdivision_rules',
-      attempted: zoningRan,
-      technicalSuccess: reading.result ? reading.succeeded : zoningRan,
-      usableEvidence: rulesUsable,
-      unresolved: reading.outcome !== 'not_available',
+      attempted: knowledgePlan ? knowledgePlan.counts.expected > 0 : zoningRan,
+      technicalSuccess: knowledgePlan ? true : reading.result ? reading.succeeded : zoningRan,
+      usableEvidence: knowledgePlan
+        ? knowledgePlan.counts.reuse === knowledgePlan.counts.expected
+        : rulesUsable,
+      unresolved: knowledgePlan
+        ? knowledgePlan.counts.blockedConflict > 0
+        : reading.outcome !== 'not_available',
       lastAttemptAt: zoningAt,
-      lastSuccessAt: rulesUsable ? zoningAt : null,
-      reason: rulesUsable
+      lastSuccessAt: knowledgePlan?.counts.reuse === knowledgePlan?.counts.expected
+        ? zoningAt
+        : rulesUsable ? zoningAt : null,
+      reason: knowledgePlan
+        ? `${knowledgePlan.counts.reuse} jurisdiction subject(s) reusable; ${knowledgePlan.counts.refresh} stale; ${knowledgePlan.counts.researchNew} missing; ${knowledgePlan.counts.blockedConflict} blocked by conflict/unresolved knowledge.`
+        : rulesUsable
         ? `${ruleCount} jurisdiction rule(s) retained from ${documentCount} official document(s).${byRightStatus ? ` By-right result: ${byRightStatus}.` : ''}`
         : zoningRan
           ? 'The subdivision lane ran and retained no jurisdiction rules.'
           : 'Zoning & Subdivision has not run for this parcel.',
+      knowledgePlan: knowledgePlan?.counts ?? null,
     },
   ];
 }

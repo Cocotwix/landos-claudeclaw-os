@@ -14,15 +14,17 @@ import {
 } from './land-use-intelligence-store.js';
 import {
   compileJurisdictionKnowledgeFromDeal,
+  jurisdictionExpectedKnowledgeSubjects,
   jurisdictionKnowledgeScopeKey,
   readJurisdictionKnowledge,
 } from './jurisdiction-knowledge.js';
 import { acceptKnowledgeCandidate, readKnowledge } from './compiled-knowledge-store.js';
+import { buildKnowledgeResearchPlan } from './knowledge-research-planner.js';
 import { upsertPropertyCard } from './property-card.js';
 import { createPropertyIdentityVersion } from './property-summary-slice.js';
 import { saveRegulationDocuments, type RegulationJurisdiction } from './regulation-document-store.js';
 import type { RuleConfidence, SubdivisionRegulations } from './subdivision-regulations.js';
-import type { ZoningSubdivisionFacts } from './zoning-subdivision-capability.js';
+import type { ZoningSubdivisionFacts, ZoningSubdivisionRuntime } from './zoning-subdivision-capability.js';
 
 const NOW = '2026-08-18T12:00:00.000Z';
 const OLD = '2024-01-01T00:00:00.000Z';
@@ -175,6 +177,35 @@ function retainAndCompile(input: Parameters<typeof regulations>[1] & { apn?: str
   return { ...subject, jurisdiction, compiled };
 }
 
+function retainCompletePackage() {
+  const subject = canonicalDeal({ apn: 'COMPLETE-PACKAGE' });
+  const heldAuthority = authority(subject.deal.id);
+  const heldRegulations = regulations(subject.deal.id);
+  const template = heldRegulations.rules[0];
+  heldRegulations.rules = jurisdictionExpectedKnowledgeSubjects()
+    .filter((expected) => expected.subjectKey.startsWith('subdivision.'))
+    .map((expected, index) => ({
+      ...template,
+      key: expected.subjectKey.slice('subdivision.'.length) as SubdivisionRegulations['rules'][number]['key'],
+      label: expected.label,
+      value: `fixture value ${index + 1}`,
+      quote: `Official fixture provision ${index + 1}.`,
+      section: `fixture-${index + 1}`,
+    }));
+  persistControllingAuthority({ authority: heldAuthority });
+  persistSubdivisionRegulations({ regulations: heldRegulations });
+  const jurisdiction: RegulationJurisdiction = { authorityName: 'Fairview', level: 'municipal', state: 'TN' };
+  saveRegulationDocuments(jurisdiction, heldRegulations.documents.map((document) => ({
+    url: document.url as string,
+    label: document.label,
+    adoptedOrAsOf: document.adoptedOrAsOf,
+    draftOrProposed: document.draftOrProposed,
+    ruleCount: heldRegulations.rules.length,
+  })));
+  const compiled = compileJurisdictionKnowledgeFromDeal(subject.deal.id);
+  return { ...subject, jurisdiction, compiled, heldRegulations };
+}
+
 function facts(result: CapabilityResult): ZoningSubdivisionFacts {
   return result.facts as ZoningSubdivisionFacts;
 }
@@ -254,6 +285,45 @@ describe('Jurisdiction Knowledge V1 acceptance', () => {
     expect(bundle.researchRuns).toBe(0);
   });
 
+  it('detects material support fingerprint drift and plans refresh', () => {
+    const fairview = retainAndCompile();
+    const before = readJurisdictionKnowledge(fairview.jurisdiction, { subjectPrefix: 'subdivision.minimum_frontage' });
+    expect(before.items[0].sources[0].fingerprintDrifted).toBe(false);
+    const knowledgeId = before.items[0].record.id;
+    getLandosDb().prepare(`
+      UPDATE landos_knowledge_support SET evidence_fingerprint=? WHERE knowledge_id=?
+    `).run('prior-support-fingerprint', knowledgeId);
+
+    const after = readJurisdictionKnowledge(fairview.jurisdiction, { subjectPrefix: 'subdivision.minimum_frontage' });
+    expect(after.items[0].state).toBe('CURRENT');
+    expect(after.items[0].sources[0].fingerprintDrifted).toBe(true);
+    const plan = buildKnowledgeResearchPlan(after, [{
+      subjectKey: 'subdivision.minimum_frontage', label: 'Minimum frontage', providerLane: 'subdivision_rules',
+    }]);
+    expect(plan.subjects[0].decision).toBe('REFRESH');
+  });
+
+  it('re-verifies only the subjects released by the shared plan', () => {
+    const complete = retainCompletePackage();
+    const bundle = readJurisdictionKnowledge(complete.jurisdiction);
+    const plat = bundle.items.find((row) => row.record.subjectKey === 'subdivision.plat_requirement')!;
+    const zoningAuthority = bundle.items.find((row) => row.record.subjectKey === 'authority.zoning')!;
+    getLandosDb().prepare(`
+      UPDATE landos_knowledge_support SET evidence_fingerprint='prior'
+      WHERE knowledge_id IN (?, ?)
+    `).run(plat.record.id, zoningAuthority.record.id);
+
+    const refreshed = compileJurisdictionKnowledgeFromDeal(
+      complete.deal.id,
+      'test-targeted-refresh',
+      ['subdivision.plat_requirement'],
+    );
+    expect(refreshed).toMatchObject({ attempted: 1, reverified: 1 });
+    const after = readJurisdictionKnowledge(complete.jurisdiction);
+    expect(after.items.find((row) => row.record.id === plat.record.id)?.sources[0].fingerprintDrifted).toBe(false);
+    expect(after.items.find((row) => row.record.id === zoningAuthority.record.id)?.sources[0].fingerprintDrifted).toBe(true);
+  });
+
   it('adds no vector, embedding or external knowledge dependency', () => {
     const packageJson = readFileSync('package.json', 'utf8');
     const implementation = `${readFileSync('src/landos/compiled-knowledge-store.ts', 'utf8')}\n${readFileSync('src/landos/jurisdiction-knowledge.ts', 'utf8')}`;
@@ -288,6 +358,80 @@ describe('Jurisdiction Knowledge V1 acceptance', () => {
     expect(projected.rules.package.some((rule) => rule.key === 'minimum_frontage')).toBe(true);
     expect(projected.summary).toContain('reused from compiled knowledge');
     expect(researchRuns).toBe(0);
+  });
+
+  it('suppresses the generic jurisdiction research adapter when every expected subject is reusable', async () => {
+    const complete = retainCompletePackage();
+    let researchRuns = 0;
+    const result = await invokeRuntimeCapability({
+      capabilityId: 'zoning-subdivision', caller: { type: 'deal_card' },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: complete.card.id, dealCardId: complete.deal.id },
+      mode: 'refresh', parameters: { lane: 'research' }, context: {},
+    }, {
+      readZoning: () => ({ established: true, limitations: [], historicalReferences: [] } as unknown as ReturnType<typeof import('./land-use-intelligence-store.js').readCurrentZoning>),
+      runLandUseResearch: async () => { researchRuns += 1; throw new Error('reuse-only plan must not enter research'); },
+    });
+    expect(result.status, JSON.stringify(result)).not.toBe('FAILED');
+    const projected = facts(result);
+    expect(projected.jurisdiction.knowledge.planning.reuse).toBe(projected.jurisdiction.knowledge.planning.expected);
+    expect(projected.jurisdiction.knowledge.planning.refresh).toBe(0);
+    expect(projected.jurisdiction.knowledge.planning.researchNew).toBe(0);
+    expect(projected.rules.count).toBeGreaterThan(0);
+    expect(researchRuns).toBe(0);
+  });
+
+  it('passes only stale/missing jurisdiction subjects to a generic research adapter', async () => {
+    const complete = retainCompletePackage();
+    getLandosDb().prepare(`
+      UPDATE landos_knowledge_record SET fresh_until=?
+      WHERE scope_key=? AND subject_key='subdivision.plat_requirement' AND status='active'
+    `).run(OLD, complete.compiled.scopeKey);
+    let released: string[] = [];
+    await invokeRuntimeCapability({
+      capabilityId: 'zoning-subdivision', caller: { type: 'deal_card' },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: complete.card.id, dealCardId: complete.deal.id },
+      mode: 'refresh', parameters: { lane: 'research' }, context: {},
+    }, {
+      readZoning: () => ({ established: true, limitations: [], historicalReferences: [] } as unknown as ReturnType<typeof import('./land-use-intelligence-store.js').readCurrentZoning>),
+      runLandUseResearch: async (input) => {
+        released = input.jurisdictionSubjectKeys;
+        return { ran: true, lanes: [], summary: 'fixture' };
+      },
+    });
+    expect(released).toEqual(['subdivision.plat_requirement']);
+    expect(released).not.toContain('subdivision.minimum_frontage');
+  });
+
+  it('keeps parcel-specific zoning research eligible when jurisdiction knowledge is reuse-only', async () => {
+    const complete = retainCompletePackage();
+    let adapterInput: Parameters<NonNullable<ZoningSubdivisionRuntime['runLandUseResearch']>>[0] | null = null;
+    await invokeRuntimeCapability({
+      capabilityId: 'zoning-subdivision', caller: { type: 'deal_card' },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: complete.card.id, dealCardId: complete.deal.id },
+      mode: 'refresh', parameters: { lane: 'research' }, context: {},
+    }, {
+      readZoning: () => null,
+      runLandUseResearch: async (input) => {
+        adapterInput = input;
+        return { ran: true, lanes: [{ lane: 'current_zoning_refresh', status: 'complete', durationMs: 1 }], summary: 'fixture' };
+      },
+    });
+    expect(adapterInput).toMatchObject({ parcelZoningRequired: true, jurisdictionSubjectKeys: [] });
+  });
+
+  it('does not let the legacy deal snapshot restore a stale compiled rule', async () => {
+    const complete = retainCompletePackage();
+    getLandosDb().prepare(`
+      UPDATE landos_knowledge_record SET fresh_until=?
+      WHERE scope_key=? AND subject_key='subdivision.plat_requirement' AND status='active'
+    `).run(OLD, complete.compiled.scopeKey);
+    const result = await invokeRuntimeCapability({
+      capabilityId: 'zoning-subdivision', caller: { type: 'deal_card' },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: complete.card.id, dealCardId: complete.deal.id },
+      mode: 'reuse', parameters: { lane: 'retained_rules' }, context: {},
+    });
+    expect(facts(result).rules.package.some((rule) => rule.key === 'plat_requirement')).toBe(false);
+    expect(facts(result).jurisdiction.knowledge.planning.refresh).toBe(1);
   });
 
   it('never infers parcel-specific zoning from jurisdiction knowledge', async () => {

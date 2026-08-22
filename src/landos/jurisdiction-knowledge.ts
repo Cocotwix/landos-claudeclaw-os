@@ -16,11 +16,37 @@ import {
 } from './land-use-intelligence-store.js';
 import { jurisdictionKey } from './official-site-store.js';
 import type { RegulationJurisdiction } from './regulation-document-store.js';
-import type { SubdivisionRule } from './subdivision-regulations.js';
-import type { KnowledgeReadBundle, KnowledgeWriteOutcome } from './knowledge-contract.js';
+import { SUBDIVISION_RULE_KEYS, type SubdivisionRule } from './subdivision-regulations.js';
+import type {
+  ExpectedKnowledgeSubject,
+  KnowledgeReadBundle,
+  KnowledgeResearchPlan,
+  KnowledgeWriteOutcome,
+} from './knowledge-contract.js';
 import { acceptKnowledgeCandidate, readKnowledge } from './compiled-knowledge-store.js';
+import { buildKnowledgeResearchPlan } from './knowledge-research-planner.js';
 
 export const JURISDICTION_KNOWLEDGE_COMPILER_VERSION = 'jurisdiction-v1.0.0';
+
+const CORE_SUBDIVISION_SUBJECTS = [
+  'minor_subdivision_definition',
+  'major_subdivision_definition',
+  'administrative_split_threshold',
+  'max_lots_before_major_review',
+  'minimum_lot_size_deferred_to',
+  'minimum_frontage',
+  'access_requirement',
+  'public_private_road_rule',
+  'new_road_standard',
+  'road_improvement_requirement',
+  'survey_requirement',
+  'plat_requirement',
+  'plat_sequence',
+  'planning_commission_review',
+  'administrative_review',
+  'governing_body_approval',
+  'recording_requirement',
+] as const;
 
 export interface JurisdictionKnowledgeCompileResult {
   dealCardId: number;
@@ -46,6 +72,44 @@ export interface JurisdictionKnowledgeRule {
   sourceUrl: string | null;
   authorityName: string | null;
   confidence: string;
+}
+
+function subjectLabel(subjectKey: string): string {
+  return subjectKey
+    .replace(/^subdivision\./, '')
+    .replace(/^authority\./, '')
+    .split('_')
+    .map((part) => part ? `${part[0].toUpperCase()}${part.slice(1)}` : part)
+    .join(' ');
+}
+
+/**
+ * Expected questions come from the existing zoning/subdivision contract: two
+ * controlling authorities, its core rule questions, and any optional rule
+ * families this jurisdiction's retained/compiled package says are applicable.
+ */
+export function jurisdictionExpectedKnowledgeSubjects(input: {
+  bundle?: KnowledgeReadBundle | null;
+  regulations?: ReturnType<typeof readSubdivisionRegulations>;
+} = {}): ExpectedKnowledgeSubject[] {
+  const validRules = new Set<string>(SUBDIVISION_RULE_KEYS);
+  const observed = new Set<string>(CORE_SUBDIVISION_SUBJECTS);
+  for (const rule of input.regulations?.rules ?? []) {
+    if (validRules.has(rule.key)) observed.add(rule.key);
+  }
+  for (const item of input.bundle?.items ?? []) {
+    const key = item.record.subjectKey.replace(/^subdivision\./, '');
+    if (item.record.subjectKey.startsWith('subdivision.') && validRules.has(key)) observed.add(key);
+  }
+  return [
+    { subjectKey: 'authority.zoning', label: 'Zoning Authority', providerLane: 'jurisdiction_authority' },
+    { subjectKey: 'authority.subdivision', label: 'Subdivision Authority', providerLane: 'jurisdiction_authority' },
+    ...[...observed].sort().map((key) => ({
+      subjectKey: `subdivision.${key}`,
+      label: subjectLabel(key),
+      providerLane: 'subdivision_rules',
+    })),
+  ];
 }
 
 type EvidenceRow = ReturnType<typeof readSubdivisionRuleEvidence>[number];
@@ -218,6 +282,7 @@ function compileSourceDocuments(
 export function compileJurisdictionKnowledgeFromDeal(
   dealCardId: number,
   actor = 'jurisdiction-knowledge-compiler',
+  subjectKeys?: readonly string[],
 ): JurisdictionKnowledgeCompileResult {
   const started = performance.now();
   const authority = readControllingAuthority(dealCardId);
@@ -234,15 +299,22 @@ export function compileJurisdictionKnowledgeFromDeal(
   }
 
   const outcomes: KnowledgeWriteOutcome[] = [];
+  const selected = subjectKeys ? new Set(subjectKeys) : null;
+  const includes = (subjectKey: string): boolean => !selected || selected.has(subjectKey);
   const authorityEvidence = readAuthorityEvidence(dealCardId);
-  const zoningAuthority = compileAuthority('zoning', authority.zoningAuthority, scopeKey, authorityEvidence, actor);
-  const subdivisionAuthority = compileAuthority('subdivision', authority.subdivisionAuthority, scopeKey, authorityEvidence, actor);
+  const zoningAuthority = includes('authority.zoning')
+    ? compileAuthority('zoning', authority.zoningAuthority, scopeKey, authorityEvidence, actor)
+    : null;
+  const subdivisionAuthority = includes('authority.subdivision')
+    ? compileAuthority('subdivision', authority.subdivisionAuthority, scopeKey, authorityEvidence, actor)
+    : null;
   if (zoningAuthority) outcomes.push(zoningAuthority);
   if (subdivisionAuthority) outcomes.push(subdivisionAuthority);
 
   const regulations = readSubdivisionRegulations(dealCardId);
   const ruleEvidence = readSubdivisionRuleEvidence(dealCardId);
   for (const rule of regulations?.rules ?? []) {
+    if (!includes(`subdivision.${rule.key}`)) continue;
     const sourceDocument = regulations?.documents.find((document) => document.url === rule.sourceUrl);
     // A draft/proposed instrument is evidence of a proposal, never accepted
     // current law. A rule also needs the current retained record to identify
@@ -250,7 +322,9 @@ export function compileJurisdictionKnowledgeFromDeal(
     if (!sourceDocument || sourceDocument.draftOrProposed) continue;
     outcomes.push(compileRule(rule, scopeKey, ruleEvidence, actor));
   }
-  outcomes.push(...compileSourceDocuments(jurisdiction, scopeKey, actor));
+  if (!selected || [...selected].some((subjectKey) => subjectKey.startsWith('source.'))) {
+    outcomes.push(...compileSourceDocuments(jurisdiction, scopeKey, actor));
+  }
 
   return {
     dealCardId,
@@ -261,6 +335,21 @@ export function compileJurisdictionKnowledgeFromDeal(
     researchRuns: 0,
     skippedReason: null,
   };
+}
+
+/** Read and plan one deal's resolved jurisdiction without research or writes. */
+export function planJurisdictionKnowledgeForDeal(
+  dealCardId: number,
+  options: { now?: string } = {},
+): KnowledgeResearchPlan | null {
+  const authority = readControllingAuthority(dealCardId);
+  const jurisdiction = jurisdictionKnowledgeJurisdiction(authority);
+  if (!jurisdiction) return null;
+  const bundle = readJurisdictionKnowledge(jurisdiction, { includeHistorical: true, now: options.now });
+  return buildKnowledgeResearchPlan(bundle, jurisdictionExpectedKnowledgeSubjects({
+    bundle,
+    regulations: readSubdivisionRegulations(dealCardId),
+  }));
 }
 
 /** Exact current/historical bundle for one resolved controlling jurisdiction. */

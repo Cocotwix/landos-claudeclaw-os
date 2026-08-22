@@ -132,6 +132,22 @@ const statusOf = (manifest: ResearchReadinessManifest, id: string) =>
   manifest.items.find((item) => item.id === id)?.status;
 
 describe('research readiness — the core rule', () => {
+  it('maps the shared knowledge plan onto existing green/blue/red/yellow states', () => {
+    const definition = researchReadinessItem('subdivision_rules')!;
+    const status = (counts: ResearchReadinessProbe['knowledgePlan']) => deriveResearchReadinessStatus(
+      definition,
+      probe({
+        itemId: 'subdivision_rules', attempted: true, technicalSuccess: true,
+        usableEvidence: false, knowledgePlan: counts,
+      }),
+      Date.parse(NOW),
+    );
+    expect(status({ expected: 3, reuse: 3, refresh: 0, researchNew: 0, blockedConflict: 0 })).toBe('green');
+    expect(status({ expected: 3, reuse: 2, refresh: 1, researchNew: 0, blockedConflict: 0 })).toBe('blue');
+    expect(status({ expected: 3, reuse: 2, refresh: 0, researchNew: 1, blockedConflict: 0 })).toBe('red');
+    expect(status({ expected: 3, reuse: 2, refresh: 0, researchNew: 0, blockedConflict: 1 })).toBe('yellow');
+  });
+
   const zoning = researchReadinessItem('current_zoning')!;
   const seller = researchReadinessItem('seller_information')!;
   const market = researchReadinessItem('market_statistics')!;

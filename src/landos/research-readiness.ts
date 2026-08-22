@@ -30,6 +30,8 @@
  *   blue   — usable evidence exists but is stale enough to want a refresh
  *   gray   — expected unknown, human follow-up, or not applicable to this property
  */
+import type { KnowledgeResearchPlanCounts } from './knowledge-contract.js';
+
 export type ResearchReadinessStatus = 'green' | 'yellow' | 'red' | 'blue' | 'gray';
 
 /** Which future intelligence layer consumes this item. */
@@ -350,6 +352,8 @@ export interface ResearchReadinessProbe {
   reason: string;
   /** Concise operator-facing next action. Omitted when nothing is needed. */
   nextAction?: string | null;
+  /** Shared jurisdiction knowledge plan when this checklist item consumes it. */
+  knowledgePlan?: KnowledgeResearchPlanCounts | null;
 }
 
 export interface ResearchReadinessManifestItem {
@@ -372,6 +376,7 @@ export interface ResearchReadinessManifestItem {
   nextAction: string | null;
   /** A red machine gap on an intelligence-critical item. */
   blocksIntelligence: boolean;
+  knowledgePlan: KnowledgeResearchPlanCounts | null;
 }
 
 export interface ResearchReadinessGroupState {
@@ -462,6 +467,12 @@ export function deriveResearchReadinessStatus(
   nowMs: number,
 ): ResearchReadinessStatus {
   if (probe.applicable === false) return 'gray';
+  if (probe.knowledgePlan?.expected) {
+    if (probe.knowledgePlan.blockedConflict > 0) return 'yellow';
+    if (probe.knowledgePlan.researchNew > 0) return 'red';
+    if (probe.knowledgePlan.refresh > 0) return 'blue';
+    if (probe.knowledgePlan.reuse === probe.knowledgePlan.expected) return 'green';
+  }
   if (probe.usableEvidence) {
     return isStale(definition, probe.lastSuccessAt ?? null, nowMs) ? 'blue' : 'green';
   }
@@ -581,6 +592,7 @@ export function buildResearchReadinessManifest(input: ResearchReadinessManifestI
       // it. A yellow unresolved input is a known unknown the intelligence layer
       // must reason with, never a blocker.
       blocksIntelligence: status === 'red' && definition.intelligenceCritical && definition.machineBackfill,
+      knowledgePlan: probe.knowledgePlan ?? null,
     };
   });
 

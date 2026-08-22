@@ -30,6 +30,12 @@ interface ZoningSubdivisionRunResult {
       rulePackageKey?: string | null;
       rulePackageReused?: boolean;
       retainedJurisdictionDocuments?: Array<{ label: string; url: string }>;
+      knowledge?: {
+        planning?: {
+          expected?: number; reuse?: number; refresh?: number; researchNew?: number;
+          blockedConflict?: number; rulesReused?: number;
+        };
+      };
     };
     zoning?: {
       established?: boolean; districtCode?: string | null; districtName?: string | null;
@@ -147,6 +153,7 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
   const jurisdiction = facts.jurisdiction ?? {};
   const zoning = facts.zoning ?? {};
   const rules = facts.rules ?? {};
+  const knowledgePlan = jurisdiction.knowledge?.planning;
   const byRight = facts.subdivisionByRight ?? {};
   const allowances = facts.zoningAllowances ?? [];
   const restrictions = facts.zoningRestrictions ?? [];
@@ -179,6 +186,12 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
             <ZsRow k="Zoning authority" v={zoning.governingAuthority ?? null} />
             <ZsRow k="Jurisdiction" v={[jurisdiction.municipality, jurisdiction.county, jurisdiction.state].filter(Boolean).join(', ') || null} />
             <ZsRow k="Rules retained" v={rules.count ? `${rules.count} rule(s) from ${rules.documentCount ?? 0} official document(s)` : null} />
+            {knowledgePlan?.expected ? (
+              <ZsRow
+                k="Jurisdiction knowledge"
+                v={`${knowledgePlan.rulesReused ?? 0} rule(s) reused · ${knowledgePlan.refresh ?? 0} refresh · ${knowledgePlan.researchNew ?? 0} new research`}
+              />
+            ) : null}
           </div>
           {/* The by-right STATUS leads. A lot count never appears without it. */}
           <div data-testid="awv2-zoning-subdivision-run-by-right">

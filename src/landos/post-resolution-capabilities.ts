@@ -558,6 +558,8 @@ export interface SubdivisionIntelligenceContext {
   backstory: PropertyBackstory | null;
   environmental?: EnvironmentalHandback | null;
   access?: UtilitiesAccessHandback | null;
+  /** Shared-plan subjects this run is allowed to reconcile; omitted for the original full lane. */
+  knowledgeSubjectKeys?: readonly string[];
 }
 
 /**
@@ -573,7 +575,7 @@ export async function runSubdivisionIntelligenceForDeal(
   overrides: SubdivisionIntelligenceOverrides = {},
   context: SubdivisionIntelligenceContext,
 ): Promise<{ regulations: SubdivisionRegulations; propertyRead: PropertySubdivisionRead }> {
-    const { authority, zoning, backstory, environmental, access } = context;
+    const { authority, zoning, backstory, environmental, access, knowledgeSubjectKeys } = context;
     const resolved = subjectFor(dealCardId);
     const city = overrides.city ?? resolved?.city ?? null;
     const county = overrides.county ?? resolved?.county ?? null;
@@ -641,7 +643,11 @@ export async function runSubdivisionIntelligenceForDeal(
     // Explicit/event-driven compilation only: this runs after the accepted
     // research path persisted its evidence and official document set. Reads,
     // page loads and model turns never invoke the compiler.
-    const compiledKnowledge = compileJurisdictionKnowledgeFromDeal(dealCardId);
+    const compiledKnowledge = compileJurisdictionKnowledgeFromDeal(
+      dealCardId,
+      'jurisdiction-knowledge-compiler',
+      knowledgeSubjectKeys,
+    );
     logger.info({
       dealCardId,
       ruleCount: regulations.rules.length,

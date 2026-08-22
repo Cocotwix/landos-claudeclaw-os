@@ -485,7 +485,13 @@ describe('Zoning & Subdivision Capability', () => {
       readJurisdictionDocuments: () => [],
       runLandUseResearch: async (input): Promise<LandUseResearchOutcome> => {
         researched += 1;
-        expect(input).toEqual({ propertyCardId: card.id, dealCardId: deal.id });
+        expect(input).toEqual(expect.objectContaining({
+          propertyCardId: card.id,
+          dealCardId: deal.id,
+          knowledgePlan: null,
+          jurisdictionSubjectKeys: [],
+          parcelZoningRequired: true,
+        }));
         ruleSource = () => ({ determination: determination(), determinedAt: NOW });
         return {
           ran: true,

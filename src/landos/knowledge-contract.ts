@@ -98,6 +98,10 @@ export interface KnowledgeSourceAction {
   label: string;
   url: string | null;
   retrievedAt: string | null;
+  /** True when the retained evidence row no longer matches the accepted support fingerprint. */
+  fingerprintDrifted: boolean;
+  /** False when the support row was removed or no longer passes its deterministic admission rule. */
+  supportStillAccepted: boolean;
 }
 
 export interface KnowledgeReadItem {
@@ -123,6 +127,48 @@ export interface KnowledgeReadBundle {
   retrievedInMs: number;
   modelCalls: 0;
   researchRuns: 0;
+}
+
+export const KNOWLEDGE_PLAN_DECISIONS = [
+  'REUSE', 'REFRESH', 'RESEARCH_NEW', 'BLOCKED_CONFLICT',
+] as const;
+export type KnowledgePlanDecision = (typeof KNOWLEDGE_PLAN_DECISIONS)[number];
+
+export interface ExpectedKnowledgeSubject {
+  subjectKey: string;
+  label: string;
+  providerLane: string;
+}
+
+export interface KnowledgeSubjectPlan {
+  subjectKey: string;
+  label: string;
+  decision: KnowledgePlanDecision;
+  reason: string;
+  knowledgeRecordIds: string[];
+  evidenceRefs: string[];
+  freshnessState: KnowledgeReadState | 'MISSING' | 'DRIFTED';
+  researchAllowed: boolean;
+  providerLaneIfNeeded: string | null;
+}
+
+export interface KnowledgeResearchPlanCounts {
+  expected: number;
+  reuse: number;
+  refresh: number;
+  researchNew: number;
+  blockedConflict: number;
+}
+
+export interface KnowledgeResearchPlan {
+  scopeKey: string;
+  subjects: KnowledgeSubjectPlan[];
+  counts: KnowledgeResearchPlanCounts;
+  researchEligibleSubjectKeys: string[];
+  providerLanesEligible: string[];
+  providerLanesSkipped: string[];
+  constructedInMs: number;
+  modelCalls: 0;
 }
 
 export type KnowledgeWriteOutcome = 'accepted' | 'reverified' | 'conflicting' | 'superseded' | 'rejected';

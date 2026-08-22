@@ -287,7 +287,7 @@ import {
   runPropertyBackstoryForDeal,
   runSubdivisionIntelligenceForDeal,
 } from './post-resolution-capabilities.js';
-import { readCurrentZoning } from './land-use-intelligence-store.js';
+import { readControllingAuthority, readCurrentZoning } from './land-use-intelligence-store.js';
 import { readPropertyBackstory } from './property-backstory-store.js';
 import { readPreCallIntelligenceHandoff } from './pre-call-intelligence-handoff.js';
 import { MissionGraphStore } from './mission-graph-store.js';
@@ -10730,7 +10730,13 @@ export function registerLandosRoutes(app: Hono): void {
    * them becomes a legal conclusion.
    */
   async function landUseResearchLane(
-    input: { propertyCardId: number; dealCardId: number },
+    input: {
+      propertyCardId: number;
+      dealCardId: number;
+      knowledgePlan: import('./knowledge-contract.js').KnowledgeResearchPlan | null;
+      jurisdictionSubjectKeys: string[];
+      parcelZoningRequired: boolean;
+    },
     supplied: {
       hasImprovements?: unknown; hasExistingWell?: unknown; hasExistingSeptic?: unknown;
       sellerDiscussedCarveoutAcres?: unknown;
@@ -10760,39 +10766,51 @@ export function registerLandosRoutes(app: Hono): void {
     // official zoning map/GIS/Planning-and-Zoning page, with the existing
     // browser-escalation lane for an interactive GIS map. Bounded by the same
     // budgets those lanes already carry; nothing here searches indefinitely.
-    const retainedZoning = readCurrentZoning(input.dealCardId);
     const zoningRefreshLanes: Array<{ lane: string; status: string; durationMs: number }> = [];
-    if (!retainedZoning?.established) {
-      const overrides = {
-        apn: card.apn || null,
-        address: card.active_input_address || null,
-        city: card.city || null,
-        county: card.county || null,
-        state: card.state || null,
-      };
+    const overrides = {
+      apn: card.apn || null,
+      address: card.active_input_address || null,
+      city: card.city || null,
+      county: card.county || null,
+      state: card.state || null,
+    };
+    let refreshedAuthority = readControllingAuthority(input.dealCardId);
+    let refreshedZoning = readCurrentZoning(input.dealCardId);
+    if (input.parcelZoningRequired) {
       const zoningStartedAt = Date.now();
       try {
         const { authority, zoning } = await runLandUseAuthorityAndZoningForDeal(input.dealCardId, overrides);
+        refreshedAuthority = authority;
+        refreshedZoning = zoning;
         zoningRefreshLanes.push({
           lane: 'current_zoning_refresh',
           status: zoning.established ? 'complete' : 'partial',
           durationMs: Date.now() - zoningStartedAt,
         });
-        const subdivisionStartedAt = Date.now();
-        try {
-          await runSubdivisionIntelligenceForDeal(input.dealCardId, overrides, {
-            authority, zoning, backstory: readPropertyBackstory(input.dealCardId),
-          });
-          zoningRefreshLanes.push({ lane: 'subdivision_refresh', status: 'complete', durationMs: Date.now() - subdivisionStartedAt });
-        } catch {
-          zoningRefreshLanes.push({ lane: 'subdivision_refresh', status: 'unreachable', durationMs: Date.now() - subdivisionStartedAt });
-        }
       } catch {
         zoningRefreshLanes.push({ lane: 'current_zoning_refresh', status: 'unreachable', durationMs: Date.now() - zoningStartedAt });
       }
     }
 
-    const run = await runLandUseResearch({
+    if (input.jurisdictionSubjectKeys.length > 0) {
+      const subdivisionStartedAt = Date.now();
+      try {
+        await runSubdivisionIntelligenceForDeal(input.dealCardId, overrides, {
+          authority: refreshedAuthority,
+          zoning: refreshedZoning,
+          backstory: readPropertyBackstory(input.dealCardId),
+          knowledgeSubjectKeys: input.jurisdictionSubjectKeys,
+        });
+        zoningRefreshLanes.push({ lane: 'subdivision_refresh', status: 'complete', durationMs: Date.now() - subdivisionStartedAt });
+      } catch {
+        zoningRefreshLanes.push({ lane: 'subdivision_refresh', status: 'unreachable', durationMs: Date.now() - subdivisionStartedAt });
+      }
+    }
+
+    // Compatibility for a jurisdiction that cannot yet produce a knowledge
+    // plan. Once a plan exists, the focused authority/zoning and subdivision
+    // adapters above are the only released provider lanes.
+    const run = input.knowledgePlan ? null : await runLandUseResearch({
       dealCardId: input.dealCardId,
       address: card.active_input_address || null,
       city: card.city || null,
@@ -10815,12 +10833,14 @@ export function registerLandosRoutes(app: Hono): void {
     });
     const lanes = [
       ...zoningRefreshLanes,
-      ...run.lanes.map((lane) => ({ lane: lane.lane, status: lane.status, durationMs: lane.durationMs })),
+      ...(run?.lanes ?? []).map((lane) => ({ lane: lane.lane, status: lane.status, durationMs: lane.durationMs })),
     ];
     return {
-      ran: true,
+      ran: lanes.length > 0,
       lanes,
-      summary: `Land-use research ran ${lanes.length} lane(s); ${lanes.filter((lane) => lane.status === 'complete').length} completed.`,
+      summary: lanes.length
+        ? `Land-use research ran ${lanes.length} lane(s); ${lanes.filter((lane) => lane.status === 'complete').length} completed.`
+        : 'Current compiled jurisdiction knowledge satisfied every expected subject; no provider lane ran.',
     };
   }
 

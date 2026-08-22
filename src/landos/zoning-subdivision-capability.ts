@@ -67,9 +67,11 @@ import {
 import { readRegulationDocuments, type RegulationJurisdiction } from './regulation-document-store.js';
 import {
   currentJurisdictionRuleFacts,
+  jurisdictionExpectedKnowledgeSubjects,
   readJurisdictionKnowledge,
 } from './jurisdiction-knowledge.js';
-import type { KnowledgeReadBundle } from './knowledge-contract.js';
+import type { KnowledgeReadBundle, KnowledgeResearchPlan } from './knowledge-contract.js';
+import { buildKnowledgeResearchPlan, normalizeJurisdictionSourceLocator } from './knowledge-research-planner.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { evaluateResolverIdentity, readResolverSubject } from './universal-property-resolution.js';
 import { loadLandPortalInspection } from './property-card.js';
@@ -146,7 +148,13 @@ export interface ZoningSubdivisionRuntime {
    * The existing live land-use research lane, owned by the route layer because
    * it reaches search engines and government hosts.
    */
-  runLandUseResearch?: (input: { propertyCardId: number; dealCardId: number }) => Promise<LandUseResearchOutcome>;
+  runLandUseResearch?: (input: {
+    propertyCardId: number;
+    dealCardId: number;
+    knowledgePlan: KnowledgeResearchPlan | null;
+    jurisdictionSubjectKeys: string[];
+    parcelZoningRequired: boolean;
+  }) => Promise<LandUseResearchOutcome>;
   /** Retained reads. Injectable so a unit test needs no database. */
   readDetermination?: (dealCardId: number) => { determination: LandUseDetermination; determinedAt: string } | null;
   readAuthority?: (dealCardId: number) => ControllingLandUseAuthority | null;
@@ -156,7 +164,10 @@ export interface ZoningSubdivisionRuntime {
   /** The jurisdiction-scoped retained regulation set, reusable across parcels. */
   readJurisdictionDocuments?: (jurisdiction: RegulationJurisdiction) => Array<{ url: string; label: string }>;
   /** Exact compiled company knowledge for the resolved controlling government. */
-  readJurisdictionKnowledge?: (jurisdiction: RegulationJurisdiction) => KnowledgeReadBundle;
+  readJurisdictionKnowledge?: (
+    jurisdiction: RegulationJurisdiction,
+    options?: { includeHistorical?: boolean; now?: string },
+  ) => KnowledgeReadBundle;
   /**
    * The subject's own existing road frontage, when LandOS already retains it —
    * a screening figure, never a survey. Used only to compare against the
@@ -224,6 +235,18 @@ export type ZoningSubdivisionJurisdictionFacts = {
     retrievedInMs: number;
     modelCalls: 0;
     researchRuns: 0;
+    planning: {
+      expected: number;
+      reuse: number;
+      refresh: number;
+      researchNew: number;
+      blockedConflict: number;
+      rulesReused: number;
+      constructedInMs: number;
+      researchEligibleSubjectKeys: string[];
+      providerLanesSkipped: string[];
+      modelCalls: 0;
+    };
   };
 };
 
@@ -530,6 +553,23 @@ function rulePackage(
     });
   }
   return rules;
+}
+
+const LEGACY_RULE_SUBJECT_ALIASES: Record<string, string> = {
+  minimum_road_frontage: 'minimum_frontage',
+  flag_lots: 'flag_lot_rule',
+  shared_driveways: 'shared_driveway_rule',
+  private_roads: 'public_private_road_rule',
+  public_road_frontage_required: 'access_requirement',
+  new_road_trigger: 'new_road_standard',
+  utility_requirement: 'utilities_requirement',
+  septic_requirement: 'septic_implication',
+  dimensional_minimum_lot_area: 'minimum_lot_size',
+  dimensional_minimum_road_frontage: 'minimum_frontage',
+};
+
+function plannedSubjectForLegacyRule(ruleKey: string): string {
+  return `subdivision.${LEGACY_RULE_SUBJECT_ALIASES[ruleKey] ?? ruleKey}`;
 }
 
 /**
@@ -885,6 +925,18 @@ function emptyFacts(
         retrievedInMs: 0,
         modelCalls: 0,
         researchRuns: 0,
+        planning: {
+          expected: 0,
+          reuse: 0,
+          refresh: 0,
+          researchNew: 0,
+          blockedConflict: 0,
+          rulesReused: 0,
+          constructedInMs: 0,
+          researchEligibleSubjectKeys: [],
+          providerLanesSkipped: [],
+          modelCalls: 0,
+        },
       },
     },
     zoning: {
@@ -970,7 +1022,10 @@ function retainedFacts(
         readRegulationDocuments(row).map((document) => ({ url: document.url, label: document.label }))))(jurisdiction)
     : [];
   const knowledge = jurisdiction
-    ? (runtime.readJurisdictionKnowledge ?? readJurisdictionKnowledge)(jurisdiction)
+    ? (runtime.readJurisdictionKnowledge ?? readJurisdictionKnowledge)(jurisdiction, { includeHistorical: true })
+    : null;
+  const knowledgePlan = knowledge
+    ? buildKnowledgeResearchPlan(knowledge, jurisdictionExpectedKnowledgeSubjects({ bundle: knowledge, regulations }))
     : null;
 
   const authorities: ZoningSubdivisionAuthorityFact[] = [];
@@ -1037,8 +1092,13 @@ function retainedFacts(
   };
 
   const retainedDealRules = rulePackage(determination, regulations);
+  const reusableSubjectKeys = new Set((knowledgePlan?.subjects ?? [])
+    .filter((subjectPlan) => subjectPlan.decision === 'REUSE')
+    .map((subjectPlan) => subjectPlan.subjectKey));
   const compiledRules: LandUseRuleFact[] = knowledge
-    ? currentJurisdictionRuleFacts(knowledge).map((rule) => ({
+    ? currentJurisdictionRuleFacts(knowledge)
+      .filter((rule) => reusableSubjectKeys.has(`subdivision.${rule.key}`))
+      .map((rule) => ({
         ...rule,
         unresolved: null,
         scope: 'jurisdiction' as const,
@@ -1048,7 +1108,18 @@ function retainedFacts(
   // deal-scoped rule read remains a compatibility fallback while jurisdictions
   // without compiled knowledge are researched/compiled through the explicit
   // workflow. Stale/conflicting records never control this package.
-  const rules = compiledRules.length ? compiledRules : retainedDealRules;
+  const legacyResearchContext = knowledgePlan
+    ? retainedDealRules.filter((rule) => {
+        const subjectPlan = knowledgePlan.subjects.find((candidate) =>
+          candidate.subjectKey === plannedSubjectForLegacyRule(rule.key));
+        // Facts outside the supported compiled manifest retain their prior
+        // compatibility behavior. Covered facts obey the plan: new evidence
+        // may be context, while stale/conflicting compiled subjects stay out.
+        return !subjectPlan || subjectPlan.decision === 'RESEARCH_NEW';
+      })
+    : retainedDealRules;
+  const rules = [...compiledRules, ...legacyResearchContext].filter((rule, index, all) =>
+    all.findIndex((candidate) => candidate.key === rule.key) === index);
   const jurisdictionLabel = [authority?.municipality ?? null, county, state].filter(Boolean).join(', ') || null;
   const retainedSources = sourceFacts(determination, regulations, zoning, authority, jurisdictionLabel);
   const knowledgeSources: ZoningSubdivisionSourceFact[] = (knowledge?.items ?? [])
@@ -1065,7 +1136,8 @@ function retainedFacts(
       retrievedAt: source.retrievedAt,
     })));
   const sources = [...retainedSources, ...knowledgeSources].filter((source, index, all) =>
-    all.findIndex((row) => row.url === source.url && row.section === source.section && row.title === source.title) === index);
+    all.findIndex((row) => normalizeJurisdictionSourceLocator(row.url) === normalizeJurisdictionSourceLocator(source.url)
+      && row.section === source.section && row.title === source.title) === index);
   const byRight = subdivisionByRight(determination, read);
 
   const manufacturedHousing = manufacturedHousingFacts(determination);
@@ -1083,6 +1155,10 @@ function retainedFacts(
     ...(knowledge?.counts.stale ? [`${knowledge.counts.stale} compiled jurisdiction knowledge record(s) are STALE and were not applied.`] : []),
     ...(knowledge?.counts.conflicting ? [`${knowledge.counts.conflicting} compiled jurisdiction knowledge record(s) are CONFLICTING and were not applied.`] : []),
     ...(knowledge?.counts.unresolved ? [`${knowledge.counts.unresolved} compiled jurisdiction knowledge record(s) remain UNRESOLVED and were not applied.`] : []),
+    ...(knowledgePlan?.counts.refresh ? [`${knowledgePlan.counts.refresh} expected jurisdiction subject(s) require bounded refresh and were not applied as current.`] : []),
+    ...(knowledgePlan?.counts.researchNew ? [`${knowledgePlan.counts.researchNew} expected jurisdiction subject(s) have no accepted compiled knowledge yet.`] : []),
+    ...(knowledgePlan?.counts.blockedConflict ? [`${knowledgePlan.counts.blockedConflict} expected jurisdiction subject(s) are blocked by conflicting or unresolved knowledge.`] : []),
+    ...(legacyResearchContext.length ? [`${legacyResearchContext.length} legacy retained rule fact(s) are shown only as research context for missing compiled subjects; they are not accepted current jurisdiction knowledge.`] : []),
   ].filter((row, index, all) => row && all.indexOf(row) === index);
 
   const missingInformation: string[] = [];
@@ -1090,6 +1166,9 @@ function retainedFacts(
   if (knowledge?.counts.stale) missingInformation.push('A bounded official-source refresh for stale jurisdiction knowledge');
   if (knowledge?.counts.conflicting) missingInformation.push('Resolution of conflicting verified jurisdiction sources');
   if (knowledge?.counts.unresolved) missingInformation.push('Resolution of unresolved jurisdiction knowledge');
+  if (knowledgePlan?.counts.refresh) missingInformation.push('A bounded official-source refresh for the plan\'s stale or evidence-drifted jurisdiction subjects');
+  if (knowledgePlan?.counts.researchNew) missingInformation.push('Accepted compiled knowledge for the plan\'s missing jurisdiction subjects');
+  if (knowledgePlan?.counts.blockedConflict) missingInformation.push('Bounded resolution of the plan\'s conflicting or unresolved jurisdiction subjects');
   if (!zoningFacts.established) {
     missingInformation.push(zoningFacts.statement || 'The adopted zoning district for this parcel');
   }
@@ -1112,7 +1191,7 @@ function retainedFacts(
 
   const anythingRetained = Boolean(determination || authority || zoning || regulations || read || knowledge?.items.length);
   const summary = anythingRetained
-    ? `${zoningFacts.established && zoningFacts.districtCode ? `Zoning ${zoningFacts.districtCode}` : 'Zoning not established'}; ${rules.length} jurisdiction rule(s) ${compiledRules.length ? `reused from compiled knowledge using ${sources.length}` : `retained for this deal from ${sources.length}`} official source(s); ${byRight.statusLabel.toLowerCase()}${byRight.maximumLots != null ? ` at up to ${byRight.maximumLots} lot(s)` : ''}.`
+    ? `${zoningFacts.established && zoningFacts.districtCode ? `Zoning ${zoningFacts.districtCode}` : 'Zoning not established'}; ${compiledRules.length ? `${compiledRules.length} jurisdiction rule(s) reused from compiled knowledge${legacyResearchContext.length ? ` with ${legacyResearchContext.length} legacy context fact(s)` : ''}` : `${rules.length} jurisdiction rule(s) retained for this deal`} using ${sources.length} official source(s); ${byRight.statusLabel.toLowerCase()}${byRight.maximumLots != null ? ` at up to ${byRight.maximumLots} lot(s)` : ''}.`
     : 'LandOS retains no land-use rules for this parcel yet.';
 
   const facts: ZoningSubdivisionFacts = {
@@ -1140,6 +1219,18 @@ function retainedFacts(
         retrievedInMs: knowledge?.retrievedInMs ?? 0,
         modelCalls: 0,
         researchRuns: 0,
+        planning: {
+          expected: knowledgePlan?.counts.expected ?? 0,
+          reuse: knowledgePlan?.counts.reuse ?? 0,
+          refresh: knowledgePlan?.counts.refresh ?? 0,
+          researchNew: knowledgePlan?.counts.researchNew ?? 0,
+          blockedConflict: knowledgePlan?.counts.blockedConflict ?? 0,
+          rulesReused: compiledRules.length,
+          constructedInMs: knowledgePlan?.constructedInMs ?? 0,
+          researchEligibleSubjectKeys: knowledgePlan?.researchEligibleSubjectKeys ?? [],
+          providerLanesSkipped: knowledgePlan?.providerLanesSkipped ?? [],
+          modelCalls: 0,
+        },
       },
     },
     zoning: zoningFacts,
@@ -1290,10 +1381,27 @@ export const ZONING_SUBDIVISION_CAPABILITY: LandosCapability<ZoningSubdivisionFa
       if (!runtime.runLandUseResearch || subject.propertyCardId == null) {
         warnings.push('The live land-use research lane is not available in this environment.');
       } else {
-        research = await runtime.runLandUseResearch({
-          propertyCardId: subject.propertyCardId,
-          dealCardId: subject.dealCardId,
-        });
+        const authority = (runtime.readAuthority ?? readControllingAuthority)(subject.dealCardId);
+        const regulations = (runtime.readRegulations ?? readSubdivisionRegulations)(subject.dealCardId);
+        const jurisdiction = rulePackageJurisdiction(authority, authority?.state ?? subject.state);
+        const knowledge = jurisdiction
+          ? (runtime.readJurisdictionKnowledge ?? readJurisdictionKnowledge)(jurisdiction, { includeHistorical: true })
+          : null;
+        const knowledgePlan = knowledge
+          ? buildKnowledgeResearchPlan(knowledge, jurisdictionExpectedKnowledgeSubjects({ bundle: knowledge, regulations }))
+          : null;
+        const currentZoning = (runtime.readZoning ?? readCurrentZoning)(subject.dealCardId);
+        const parcelZoningRequired = currentZoning?.established !== true;
+        const jurisdictionSubjectKeys = knowledgePlan?.researchEligibleSubjectKeys ?? [];
+        if (!knowledgePlan || jurisdictionSubjectKeys.length > 0 || parcelZoningRequired) {
+          research = await runtime.runLandUseResearch({
+            propertyCardId: subject.propertyCardId,
+            dealCardId: subject.dealCardId,
+            knowledgePlan,
+            jurisdictionSubjectKeys,
+            parcelZoningRequired,
+          });
+        }
       }
     }
 
