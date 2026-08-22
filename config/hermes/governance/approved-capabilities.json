@@ -4,8 +4,17 @@
   "manifestId": "landos-governed-hermes",
   "generatedAt": "2026-08-03T01:18:04.594Z",
   "runtimeAudit": {
-    "hermesVersion": "0.20.0",
-    "sourceCommit": "a991dfc25daf68994c21d6adcdfbafb1b3dc23cf",
+    "hermesVersion": "0.20.5",
+    "sourceCommit": "fcbd1076a93841fa88855acce810e342a5b78101",
+    "releaseTag": "v2026.8.19",
+    "verifiedAt": "2026-08-21T00:00:00.000Z",
+    "verificationMethod": "controlled move of the git install to the official stable tag v2026.8.19 (not rolling main), uv pip install -e .[all] dependency sync, hermes --version runtime confirmation, and skill re-review of the three drifted bundled skills (domain-intel: benign frontmatter/doc changes; docx 1.0.0->1.1.0: upstream MIT rewrite with CLIs and tests, benign; hermes-agent-skill-authoring 1.1.0->2.0.0: authoring-standards doc restructure, benign; xlsx 1.0.0->1.1.0 and powerpoint 2.0.0->1.1.0: same upstream Nous MIT rewrites with tests, benign)",
+    "botMode": {
+      "inCore": true,
+      "sinceVersion": "0.20.3",
+      "baseline": "Persistent named Bots are Hermes profiles; the canonical Bot Chat is the profile session titled 'Bot Chat' (chat -c \"Bot Chat\" --create-if-missing and the api_server /api/sessions contract). LandOS specialist profiles: landos-property, landos-market, landos-seller, landos-deal-brain.",
+      "profileRuntimeContract": "profiles/<name>/{config.yaml,SOUL.md,memories/,skills/,sessions/,state.db} with per-profile fail-closed secret scoping (API_SERVER_KEY is profile-scoped for /p/<profile>/ routes)"
+    },
     "configSchemaVersion": 33,
     "platform": "windows",
     "knownBuiltinToolsets": [
@@ -678,7 +687,7 @@
       },
       {
         "id": "hermes-agent-skill-authoring",
-        "version": "1.1.0",
+        "version": "2.0.0",
         "sourcePath": "skills/software-development/hermes-agent-skill-authoring",
         "profiles": [
           "landos-knowledge"
@@ -720,7 +729,7 @@
       },
       {
         "id": "docx",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "sourcePath": "skills/productivity/docx",
         "profiles": [
           "landos-research",
@@ -731,7 +740,7 @@
       },
       {
         "id": "xlsx",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "sourcePath": "skills/productivity/xlsx",
         "profiles": [
           "landos-research",
@@ -742,7 +751,7 @@
       },
       {
         "id": "powerpoint",
-        "version": "2.0.0",
+        "version": "1.1.0",
         "sourcePath": "skills/productivity/powerpoint",
         "profiles": [
           "landos-research",
@@ -899,13 +908,14 @@
       },
       {
         "id": "domain-intel",
-        "version": "unversioned@3f497e2b4f92ef83f45a98c02f7cb47c12ee069e",
+        "version": "1.0.0",
         "kind": "official-optional",
         "source": {
           "type": "hermes-optional",
           "path": "optional-skills/research/domain-intel",
-          "hermesVersion": "0.19.1",
-          "commit": "3f497e2b4f92ef83f45a98c02f7cb47c12ee069e"
+          "hermesVersion": "0.20.5",
+          "commit": "fcbd1076a93841fa88855acce810e342a5b78101",
+          "priorReview": "unversioned@3f497e2b4f92ef83f45a98c02f7cb47c12ee069e (0.19.1)"
         },
         "installedAt": "2026-08-03T01:18:04.594Z",
         "externalInstallation": "deferred-to-integration",
@@ -914,7 +924,7 @@
           "scanner": "Hermes skills-guard-v1 plus zero-network runpy smoke",
           "scannedAt": "2026-08-03T02:25:02.535Z",
           "findingCount": 0,
-          "notes": "Pinned source and stdlib entrypoint load offline; landos-research is authorized to run its passive commands against approved public domains."
+          "notes": "Pinned source and stdlib entrypoint load offline; landos-research is authorized to run its passive commands against approved public domains. Re-reviewed 2026-08-21 at 0.20.5: SKILL.md change since the 0.19.1 pin is benign (frontmatter metadata plus python3->python in doc examples); entrypoint digest unchanged."
         },
         "owners": [
           "landos-research"
@@ -929,10 +939,10 @@
           "pythonStdlibOnly": true,
           "entrypoint": "scripts/domain_intel.py",
           "entrypointSha256": "980612886da31cdf5c6ad2d5a5936b69c077e025f7cd45ef5e1986ba50916d91",
-          "skillSha256": "ed67786900eb383f4de498486d732382f6fd0e97b5dfee6d7c7c186c9002708a",
+          "skillSha256": "a212e30bced6fd3260f94d9a4c3de8d2e305371629ffb8551da3b526daf56556",
           "executionState": "enabled-approved-public-sources",
           "offlineSmoke": "runpy exposed available,dns,ssl,subdomains,whois and bulk with socket/urllib network denied",
-          "verifiedAt": "2026-08-03T02:25:02.535Z"
+          "verifiedAt": "2026-08-21T00:00:00.000Z"
         }
       },
       {

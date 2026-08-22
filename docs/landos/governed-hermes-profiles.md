@@ -2,7 +2,9 @@
 
 ## Operating model
 
-LandOS has five isolated Hermes `0.19.1` profiles. Governance is practical and
+LandOS has five isolated governed Hermes profiles (runtime pinned at Hermes
+`0.20.5`, tag `v2026.8.19`; see the manifest's `runtimeAudit` for the exact
+verified commit). Governance is practical and
 role-scoped: each profile receives the normal native tools its job needs. There
 is no blanket terminal/file/browser denylist and no custom runtime-operation
 broker. MCP configuration remains owned by the narrow MCP lane and is empty

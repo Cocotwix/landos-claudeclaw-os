@@ -252,3 +252,5 @@ notes/
 # text, and a geocoder response whose filename became the property address.
 /ww_zoning.txt
 /1454 Onionville Rd, Sterling, NY 13156
+# Browser acceptance evidence contains real deal-card records; keep local.
+/docs/landos/evidence/
