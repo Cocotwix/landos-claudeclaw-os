@@ -50,6 +50,7 @@ import {
   saveRegulationDocuments,
   type RegulationJurisdiction,
 } from './regulation-document-store.js';
+import { compileJurisdictionKnowledgeFromDeal } from './jurisdiction-knowledge.js';
 import { logger } from '../logger.js';
 import type { DealIntelligenceCapabilities, EnvironmentalHandback, UtilitiesAccessHandback } from './deal-intelligence-mission.js';
 import type { PropertyBackstory } from './property-backstory.js';
@@ -637,12 +638,21 @@ export async function runSubdivisionIntelligenceForDeal(
     persistPropertySubdivisionRead({ read: propertyRead });
     // Learned, so the next run on this jurisdiction opens the same set.
     const learned = rememberRegulationSet(regulationJurisdiction, regulations);
+    // Explicit/event-driven compilation only: this runs after the accepted
+    // research path persisted its evidence and official document set. Reads,
+    // page loads and model turns never invoke the compiler.
+    const compiledKnowledge = compileJurisdictionKnowledgeFromDeal(dealCardId);
     logger.info({
       dealCardId,
       ruleCount: regulations.rules.length,
       documents: regulations.documents.length,
       retainedDocumentsOffered: retainedSet.length,
       regulationDocumentsLearned: learned,
+      jurisdictionKnowledgeScope: compiledKnowledge.scopeKey,
+      jurisdictionKnowledgeAccepted: compiledKnowledge.accepted,
+      jurisdictionKnowledgeReverified: compiledKnowledge.reverified,
+      jurisdictionKnowledgeRejected: compiledKnowledge.rejected,
+      jurisdictionKnowledgeCompileMs: compiledKnowledge.compileTimeMs,
       roadFrontageFeet: frontage.feet,
       likelyPath: propertyRead.likelyPath.kind,
       theoreticalLots: propertyRead.theoreticalLotCount.value,

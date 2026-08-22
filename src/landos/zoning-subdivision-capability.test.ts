@@ -431,7 +431,7 @@ describe('Zoning & Subdivision Capability', () => {
     expect(major.subdivisionByRight.reason).toContain('discretionary review path');
   });
 
-  it('scopes the rule package to the jurisdiction so another parcel in the same government reuses it', async () => {
+  it('scopes retained documents to the jurisdiction without mislabeling document URLs as compiled rule reuse', async () => {
     const first = canonicalSubject();
     const second = canonicalSubject({ apn: '042 145.00', address: 'Map 042 Parcel 145, Fairview, TN', title: 'Map 042 Parcel 145' });
 
@@ -450,8 +450,11 @@ describe('Zoning & Subdivision Capability', () => {
     // One key, one government — not one per parcel.
     expect(a.jurisdiction.rulePackageKey).toBe('tn:municipality:city of fairview');
     expect(b.jurisdiction.rulePackageKey).toBe(a.jurisdiction.rulePackageKey);
-    expect(a.jurisdiction.rulePackageReused).toBe(true);
-    expect(b.jurisdiction.rulePackageReused).toBe(true);
+    // A retained URL is a discovery optimization, not accepted rule knowledge.
+    // The dedicated Jurisdiction Knowledge fixture proves actual cross-parcel
+    // rule reuse; this path must no longer advertise the weaker condition.
+    expect(a.jurisdiction.rulePackageReused).toBe(false);
+    expect(b.jurisdiction.rulePackageReused).toBe(false);
     expect(askedFor).toEqual([
       { authorityName: 'City of Fairview', level: 'municipality', state: 'TN' },
       { authorityName: 'City of Fairview', level: 'municipality', state: 'TN' },

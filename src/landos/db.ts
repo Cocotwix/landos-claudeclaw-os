@@ -2843,6 +2843,70 @@ function createLandosSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_capability_evidence_invocation
       ON landos_capability_evidence(invocation_id, created_at);
 
+    -- Accepted reusable company knowledge, separate from both source evidence
+    -- and deal/property operational state. The record is the structured
+    -- proposition; provenance remains in the support table below. Search
+    -- indexes are deliberately absent: V1 retrieval is exact by scope/subject.
+    CREATE TABLE IF NOT EXISTS landos_knowledge_record (
+      id                         TEXT PRIMARY KEY,
+      domain                     TEXT NOT NULL
+                                 CHECK (domain IN ('jurisdiction','property_pattern','market')),
+      knowledge_type             TEXT NOT NULL
+                                 CHECK (knowledge_type IN ('factual','reconciled','procedural','pattern','market')),
+      scope_kind                 TEXT NOT NULL
+                                 CHECK (scope_kind IN ('global','state','jurisdiction','market','submarket','property','deal','seller','contact')),
+      scope_key                  TEXT NOT NULL,
+      subject_key                TEXT NOT NULL,
+      statement                  TEXT NOT NULL,
+      value_json                 TEXT NOT NULL DEFAULT 'null',
+      source_authority           TEXT NOT NULL,
+      confidence                 TEXT NOT NULL
+                                 CHECK (confidence IN ('confirmed','well_supported','likely','unresolved')),
+      status                     TEXT NOT NULL
+                                 CHECK (status IN ('candidate','active','conflicting','unresolved','superseded','rejected')),
+      sensitivity                TEXT NOT NULL
+                                 CHECK (sensitivity IN ('public','internal','deal_private','seller_private')),
+      effective_from             TEXT,
+      effective_to               TEXT,
+      retrieved_at               TEXT NOT NULL,
+      last_verified_at           TEXT NOT NULL,
+      freshness_policy           TEXT NOT NULL,
+      fresh_until                TEXT,
+      supersedes_knowledge_id    TEXT REFERENCES landos_knowledge_record(id) ON DELETE SET NULL,
+      dispute_group              TEXT,
+      content_hash               TEXT NOT NULL,
+      compiler_version           TEXT NOT NULL,
+      created_by                 TEXT NOT NULL,
+      acceptance_reason          TEXT NOT NULL,
+      created_at                 TEXT NOT NULL,
+      updated_at                 TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_knowledge_scope_subject
+      ON landos_knowledge_record(domain, scope_kind, scope_key, subject_key, status);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_scope_current
+      ON landos_knowledge_record(scope_kind, scope_key, status, subject_key);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_supersession
+      ON landos_knowledge_record(supersedes_knowledge_id);
+
+    -- Provenance is polymorphic because LandOS already has several valid
+    -- evidence namespaces. Every reference is resolved deterministically by
+    -- the compiler before an accepted record can be written.
+    CREATE TABLE IF NOT EXISTS landos_knowledge_support (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      knowledge_id         TEXT NOT NULL REFERENCES landos_knowledge_record(id) ON DELETE CASCADE,
+      evidence_namespace   TEXT NOT NULL
+                           CHECK (evidence_namespace IN ('property_evidence','capability_evidence','regulation_document','official_site','record_artifact','market_metric','seller_fact')),
+      evidence_ref         TEXT NOT NULL,
+      role                 TEXT NOT NULL CHECK (role IN ('supports','conflicts','supersedes')),
+      evidence_fingerprint TEXT NOT NULL,
+      created_at           TEXT NOT NULL,
+      UNIQUE(knowledge_id, evidence_namespace, evidence_ref, role)
+    );
+    CREATE INDEX IF NOT EXISTS idx_knowledge_support_record
+      ON landos_knowledge_support(knowledge_id, role, id);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_support_evidence
+      ON landos_knowledge_support(evidence_namespace, evidence_ref);
+
     -- Deal Brain guidance: the operator's deal-specific hypotheses, priorities
     -- and questions, with the Deal Brain's replies. Guidance is an input the
     -- Deal Intelligence weighs; it is NEVER a canonical property fact and no

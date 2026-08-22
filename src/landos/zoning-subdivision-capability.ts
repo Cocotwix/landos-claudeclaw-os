@@ -65,6 +65,11 @@ import {
   readSubdivisionRegulations,
 } from './land-use-intelligence-store.js';
 import { readRegulationDocuments, type RegulationJurisdiction } from './regulation-document-store.js';
+import {
+  currentJurisdictionRuleFacts,
+  readJurisdictionKnowledge,
+} from './jurisdiction-knowledge.js';
+import type { KnowledgeReadBundle } from './knowledge-contract.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { evaluateResolverIdentity, readResolverSubject } from './universal-property-resolution.js';
 import { loadLandPortalInspection } from './property-card.js';
@@ -150,6 +155,8 @@ export interface ZoningSubdivisionRuntime {
   readSubdivisionRead?: (dealCardId: number) => PropertySubdivisionRead | null;
   /** The jurisdiction-scoped retained regulation set, reusable across parcels. */
   readJurisdictionDocuments?: (jurisdiction: RegulationJurisdiction) => Array<{ url: string; label: string }>;
+  /** Exact compiled company knowledge for the resolved controlling government. */
+  readJurisdictionKnowledge?: (jurisdiction: RegulationJurisdiction) => KnowledgeReadBundle;
   /**
    * The subject's own existing road frontage, when LandOS already retains it —
    * a screening figure, never a survey. Used only to compare against the
@@ -208,6 +215,16 @@ export type ZoningSubdivisionJurisdictionFacts = {
   rulePackageKey: string | null;
   rulePackageReused: boolean;
   retainedJurisdictionDocuments: Array<{ label: string; url: string }>;
+  knowledge: {
+    scopeKey: string | null;
+    current: number;
+    stale: number;
+    conflicting: number;
+    unresolved: number;
+    retrievedInMs: number;
+    modelCalls: 0;
+    researchRuns: 0;
+  };
 };
 
 export type ZoningSubdivisionZoningFacts = {
@@ -859,6 +876,16 @@ function emptyFacts(
       rulePackageKey: null,
       rulePackageReused: false,
       retainedJurisdictionDocuments: [],
+      knowledge: {
+        scopeKey: null,
+        current: 0,
+        stale: 0,
+        conflicting: 0,
+        unresolved: 0,
+        retrievedInMs: 0,
+        modelCalls: 0,
+        researchRuns: 0,
+      },
     },
     zoning: {
       established: false,
@@ -942,6 +969,9 @@ function retainedFacts(
     ? (runtime.readJurisdictionDocuments ?? ((row: RegulationJurisdiction) =>
         readRegulationDocuments(row).map((document) => ({ url: document.url, label: document.label }))))(jurisdiction)
     : [];
+  const knowledge = jurisdiction
+    ? (runtime.readJurisdictionKnowledge ?? readJurisdictionKnowledge)(jurisdiction)
+    : null;
 
   const authorities: ZoningSubdivisionAuthorityFact[] = [];
   const pushAuthority = (role: string, value: { name: string | null; level: string | null; determination: string; basis: string | null } | null | undefined): void => {
@@ -1006,9 +1036,36 @@ function retainedFacts(
     limitations: zoning?.limitations ?? [],
   };
 
-  const rules = rulePackage(determination, regulations);
+  const retainedDealRules = rulePackage(determination, regulations);
+  const compiledRules: LandUseRuleFact[] = knowledge
+    ? currentJurisdictionRuleFacts(knowledge).map((rule) => ({
+        ...rule,
+        unresolved: null,
+        scope: 'jurisdiction' as const,
+      }))
+    : [];
+  // A current compiled package is the reusable jurisdiction answer. The
+  // deal-scoped rule read remains a compatibility fallback while jurisdictions
+  // without compiled knowledge are researched/compiled through the explicit
+  // workflow. Stale/conflicting records never control this package.
+  const rules = compiledRules.length ? compiledRules : retainedDealRules;
   const jurisdictionLabel = [authority?.municipality ?? null, county, state].filter(Boolean).join(', ') || null;
-  const sources = sourceFacts(determination, regulations, zoning, authority, jurisdictionLabel);
+  const retainedSources = sourceFacts(determination, regulations, zoning, authority, jurisdictionLabel);
+  const knowledgeSources: ZoningSubdivisionSourceFact[] = (knowledge?.items ?? [])
+    .filter((item) => item.state === 'CURRENT')
+    .flatMap((item) => item.sources.filter((source) => source.url).map((source) => ({
+      title: source.label,
+      sourceType: 'jurisdiction_knowledge',
+      url: source.url,
+      jurisdiction: jurisdiction?.authorityName ?? jurisdictionLabel,
+      date: item.record.effectiveFrom,
+      section: item.record.value && typeof item.record.value === 'object'
+        ? String((item.record.value as Record<string, unknown>).section ?? '') || null
+        : null,
+      retrievedAt: source.retrievedAt,
+    })));
+  const sources = [...retainedSources, ...knowledgeSources].filter((source, index, all) =>
+    all.findIndex((row) => row.url === source.url && row.section === source.section && row.title === source.title) === index);
   const byRight = subdivisionByRight(determination, read);
 
   const manufacturedHousing = manufacturedHousingFacts(determination);
@@ -1023,10 +1080,16 @@ function retainedFacts(
     ...(determination?.unresolved ?? []),
     ...(regulations?.limitations ?? []),
     ...(read?.limitations ?? []),
+    ...(knowledge?.counts.stale ? [`${knowledge.counts.stale} compiled jurisdiction knowledge record(s) are STALE and were not applied.`] : []),
+    ...(knowledge?.counts.conflicting ? [`${knowledge.counts.conflicting} compiled jurisdiction knowledge record(s) are CONFLICTING and were not applied.`] : []),
+    ...(knowledge?.counts.unresolved ? [`${knowledge.counts.unresolved} compiled jurisdiction knowledge record(s) remain UNRESOLVED and were not applied.`] : []),
   ].filter((row, index, all) => row && all.indexOf(row) === index);
 
   const missingInformation: string[] = [];
   if (!rules.length) missingInformation.push('An authoritative zoning or subdivision rule source for this jurisdiction');
+  if (knowledge?.counts.stale) missingInformation.push('A bounded official-source refresh for stale jurisdiction knowledge');
+  if (knowledge?.counts.conflicting) missingInformation.push('Resolution of conflicting verified jurisdiction sources');
+  if (knowledge?.counts.unresolved) missingInformation.push('Resolution of unresolved jurisdiction knowledge');
   if (!zoningFacts.established) {
     missingInformation.push(zoningFacts.statement || 'The adopted zoning district for this parcel');
   }
@@ -1047,9 +1110,9 @@ function retainedFacts(
       },
     }));
 
-  const anythingRetained = Boolean(determination || authority || zoning || regulations || read);
+  const anythingRetained = Boolean(determination || authority || zoning || regulations || read || knowledge?.items.length);
   const summary = anythingRetained
-    ? `${zoningFacts.established && zoningFacts.districtCode ? `Zoning ${zoningFacts.districtCode}` : 'Zoning not established'}; ${rules.length} jurisdiction rule(s) retained from ${sources.length} official source(s); ${byRight.statusLabel.toLowerCase()}${byRight.maximumLots != null ? ` at up to ${byRight.maximumLots} lot(s)` : ''}.`
+    ? `${zoningFacts.established && zoningFacts.districtCode ? `Zoning ${zoningFacts.districtCode}` : 'Zoning not established'}; ${rules.length} jurisdiction rule(s) ${compiledRules.length ? `reused from compiled knowledge using ${sources.length}` : `retained for this deal from ${sources.length}`} official source(s); ${byRight.statusLabel.toLowerCase()}${byRight.maximumLots != null ? ` at up to ${byRight.maximumLots} lot(s)` : ''}.`
     : 'LandOS retains no land-use rules for this parcel yet.';
 
   const facts: ZoningSubdivisionFacts = {
@@ -1064,17 +1127,29 @@ function retainedFacts(
       authorityPattern: determination?.authority.pattern ?? null,
       authorities,
       rulePackageKey: packageKeyOf(jurisdiction),
-      // The package is reused when this government's retained document set
-      // already carried the documents this parcel's rules came from.
-      rulePackageReused: retainedDocuments.length > 0,
+      // Reuse now means accepted CURRENT rule values came from the canonical
+      // knowledge store, not merely that a document URL was remembered.
+      rulePackageReused: compiledRules.length > 0,
       retainedJurisdictionDocuments: retainedDocuments,
+      knowledge: {
+        scopeKey: knowledge?.scopeKey || null,
+        current: knowledge?.counts.current ?? 0,
+        stale: knowledge?.counts.stale ?? 0,
+        conflicting: knowledge?.counts.conflicting ?? 0,
+        unresolved: knowledge?.counts.unresolved ?? 0,
+        retrievedInMs: knowledge?.retrievedInMs ?? 0,
+        modelCalls: 0,
+        researchRuns: 0,
+      },
     },
     zoning: zoningFacts,
     rules: {
       count: rules.length,
-      documentCount: regulations?.documents.length ?? 0,
-      ordinanceLabel: determination?.subdivision.ordinanceLabel ?? regulations?.documents[0]?.label ?? null,
-      ordinanceUrl: determination?.subdivision.ordinanceUrl ?? regulations?.documents[0]?.url ?? null,
+      documentCount: compiledRules.length
+        ? new Set(compiledRules.map((rule) => rule.sourceUrl).filter(Boolean)).size
+        : regulations?.documents.length ?? 0,
+      ordinanceLabel: compiledRules[0]?.sourceLabel ?? determination?.subdivision.ordinanceLabel ?? regulations?.documents[0]?.label ?? null,
+      ordinanceUrl: compiledRules[0]?.sourceUrl ?? determination?.subdivision.ordinanceUrl ?? regulations?.documents[0]?.url ?? null,
       package: rules,
     },
     subdivisionByRight: byRight,
@@ -1095,7 +1170,7 @@ export const ZONING_SUBDIVISION_CAPABILITY: LandosCapability<ZoningSubdivisionFa
   metadata: {
     id: ZONING_SUBDIVISION_CAPABILITY_ID,
     name: 'Zoning & Subdivision',
-    contractVersion: '1.0',
+    contractVersion: '1.1',
     description: 'Answers what rules apply to the canonical property because of where it is: the controlling jurisdiction, the adopted zoning district, the jurisdiction-scoped zoning and subdivision rule package with its official sources, and the deterministically applied subdivision-by-right result with its missing inputs stated honestly.',
   },
   validate(request: CapabilityInvocationRequest): void {
