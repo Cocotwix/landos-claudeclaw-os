@@ -238,6 +238,71 @@ const DEAL_SCHEMA = '"deal":{"score":0,"deal_read":{"headline":"","judgment":"",
   + '"additional_upside":[{"title":"","why":"","worth_it":""}],'
   + '"discovery_call_objective":"","negotiation_posture":"","reads":{"property":"","market":"","seller":""}}';
 
+// Shared doctrine sections. The coordinated single-pass prompt and the
+// per-specialist prompts must carry the SAME doctrine — extracting it here is
+// what prevents the two executors' rules from drifting apart.
+
+function groundedObservationsSection(observations: VisualObservationDraft[]): string {
+  return observations.length
+    ? [
+      '=== GROUNDED VISUAL OBSERVATIONS (a vision model actually received the image pixels; you did not) ===',
+      ...observations.map((observation) => `[${observation.visual}] ${observation.observation}${observation.basis ? ` (${observation.basis})` : ''}`),
+      '=== END GROUNDED VISUAL OBSERVATIONS ===',
+      '',
+      'These observations are EVIDENCE from the retained imagery, never canonical facts, and imagery may be stale',
+      '(where a capture date is unknown, say "retained imagery", never "current"). Ask of each: does what the',
+      'imagery shows agree with what the records claim? Where a record claim and a grounded observation materially',
+      'disagree — an improvement the record carries that no imagery shows, access the record asserts that the',
+      'imagery contradicts, a structure visible on land recorded vacant — report it in the property layer\'s',
+      '"conflicts" with the record claim, the grounded observation, the plausible explanations (stale record,',
+      'removed structure, stale/obscured/incomplete imagery), and ONE bounded verification that would settle it',
+      '(for example the current official assessor improvement record). Do not chase permits: a demolition permit',
+      'found while reading relevant records may support an explanation, but the ABSENCE of one proves nothing.',
+      'Never rewrite a record fact because of imagery, and where the imagery is genuinely ambiguous say so',
+      'rather than forcing a conclusion.',
+    ].join('\n')
+    : 'No pixel-grounded visual observation is available for this run. Do not describe or characterize the imagery yourself: you have not seen it. Reason from the structured facts, and leave the property layer\'s "conflicts" empty unless the structured file itself conflicts.';
+}
+
+function assessorDoctrineSection(dossier: AcquisitionDossier): string {
+  return dossier.officialAssessorRecord
+    ? [
+      'OFFICIAL ASSESSOR RECORD DOCTRINE. The property file carries an "officialAssessorRecord" section:',
+      'the latest bounded Assessor & Tax capability answer for this subject. Where its recordStatus is',
+      '"official_record_retrieved", treat it as the CURRENT official record for improvement status, assessed',
+      'acreage and owner of record, and reconcile record-vs-imagery conflicts against it — an older provider',
+      'claim it contradicts is plausibly historical or stale, but it stays retained as source evidence and is',
+      'never erased or rewritten. Where the record could not be retrieved ("not_retrieved"), say that plainly:',
+      'the conflict remains unresolved, the official record may itself be unavailable, and the absence of a',
+      'record (or of a demolition permit) proves nothing about the structure either way. Never average',
+      'conflicting acreages, and never prefer a marketplace value over an official record arbitrarily.',
+    ].join('\n')
+    : '';
+}
+
+function sellerDoctrineSection(dossier: AcquisitionDossier): string {
+  return (dossier.seller.communications.length || dossier.seller.discovery.length || dossier.seller.sellerReportedFacts.length)
+    ? [
+      'SELLER EVIDENCE DOCTRINE. The property file\'s "seller" section is the canonical seller communication',
+      'record for this deal: profile, chronological communications, discovery extractions and SELLER-REPORTED',
+      'statements with provenance. Rules:',
+      '- A SELLER-REPORTED statement is evidence attributed to the seller, never a canonical property fact.',
+      '  "The seller says the property is raw land" never becomes "no structure exists".',
+      '- In the seller layer, keep the information types separate: a RECORDED EVENT (a call happened on a date),',
+      '  a SELLER-REPORTED statement, your INTERPRETATION, a HYPOTHESIS, a CONFLICT, an UNKNOWN, and the NEXT',
+      '  QUESTION worth asking. Never promote a negotiation hypothesis into a fact.',
+      '- Read the record chronologically: where the seller\'s own statements changed or contradict over time',
+      '  (price, timing, motivation, authority), report it under "contradictions" with both statements. Where',
+      '  observed behavior (responsiveness, follow-through) differs from stated urgency, say so as interpretation.',
+      '- Every seller_reported_facts entry must carry its attribution: who said it, when, in which record.',
+      '- CROSS-DOMAIN REFERENCE: another layer may CITE a seller-reported statement as supporting evidence —',
+      '  for example, a seller-reported description that independently supports a record-vs-imagery conflict in',
+      '  the property layer — but it must stay labeled seller-reported, and no record fact is ever rewritten',
+      '  because of it. The seller layer likewise never mutates property facts.',
+    ].join('\n')
+    : '';
+}
+
 /**
  * One coordinated reasoning pass returning only the requested structured
  * layers. The dossier is the complete world; the deterministic quick-flip
@@ -278,60 +343,11 @@ export function intelligenceStackPrompt(
     JSON.stringify(inlined),
     '=== END PROPERTY FILE ===',
     '',
-    observations.length
-      ? [
-        '=== GROUNDED VISUAL OBSERVATIONS (a vision model actually received the image pixels; you did not) ===',
-        ...observations.map((observation) => `[${observation.visual}] ${observation.observation}${observation.basis ? ` (${observation.basis})` : ''}`),
-        '=== END GROUNDED VISUAL OBSERVATIONS ===',
-        '',
-        'These observations are EVIDENCE from the retained imagery, never canonical facts, and imagery may be stale',
-        '(where a capture date is unknown, say "retained imagery", never "current"). Ask of each: does what the',
-        'imagery shows agree with what the records claim? Where a record claim and a grounded observation materially',
-        'disagree — an improvement the record carries that no imagery shows, access the record asserts that the',
-        'imagery contradicts, a structure visible on land recorded vacant — report it in the property layer\'s',
-        '"conflicts" with the record claim, the grounded observation, the plausible explanations (stale record,',
-        'removed structure, stale/obscured/incomplete imagery), and ONE bounded verification that would settle it',
-        '(for example the current official assessor improvement record). Do not chase permits: a demolition permit',
-        'found while reading relevant records may support an explanation, but the ABSENCE of one proves nothing.',
-        'Never rewrite a record fact because of imagery, and where the imagery is genuinely ambiguous say so',
-        'rather than forcing a conclusion.',
-      ].join('\n')
-      : 'No pixel-grounded visual observation is available for this run. Do not describe or characterize the imagery yourself: you have not seen it. Reason from the structured facts, and leave the property layer\'s "conflicts" empty unless the structured file itself conflicts.',
+    groundedObservationsSection(observations),
     '',
-    dossier.officialAssessorRecord
-      ? [
-        'OFFICIAL ASSESSOR RECORD DOCTRINE. The property file carries an "officialAssessorRecord" section:',
-        'the latest bounded Assessor & Tax capability answer for this subject. Where its recordStatus is',
-        '"official_record_retrieved", treat it as the CURRENT official record for improvement status, assessed',
-        'acreage and owner of record, and reconcile record-vs-imagery conflicts against it — an older provider',
-        'claim it contradicts is plausibly historical or stale, but it stays retained as source evidence and is',
-        'never erased or rewritten. Where the record could not be retrieved ("not_retrieved"), say that plainly:',
-        'the conflict remains unresolved, the official record may itself be unavailable, and the absence of a',
-        'record (or of a demolition permit) proves nothing about the structure either way. Never average',
-        'conflicting acreages, and never prefer a marketplace value over an official record arbitrarily.',
-      ].join('\n')
-      : '',
+    assessorDoctrineSection(dossier),
     '',
-    (dossier.seller.communications.length || dossier.seller.discovery.length || dossier.seller.sellerReportedFacts.length)
-      ? [
-        'SELLER EVIDENCE DOCTRINE. The property file\'s "seller" section is the canonical seller communication',
-        'record for this deal: profile, chronological communications, discovery extractions and SELLER-REPORTED',
-        'statements with provenance. Rules:',
-        '- A SELLER-REPORTED statement is evidence attributed to the seller, never a canonical property fact.',
-        '  "The seller says the property is raw land" never becomes "no structure exists".',
-        '- In the seller layer, keep the information types separate: a RECORDED EVENT (a call happened on a date),',
-        '  a SELLER-REPORTED statement, your INTERPRETATION, a HYPOTHESIS, a CONFLICT, an UNKNOWN, and the NEXT',
-        '  QUESTION worth asking. Never promote a negotiation hypothesis into a fact.',
-        '- Read the record chronologically: where the seller\'s own statements changed or contradict over time',
-        '  (price, timing, motivation, authority), report it under "contradictions" with both statements. Where',
-        '  observed behavior (responsiveness, follow-through) differs from stated urgency, say so as interpretation.',
-        '- Every seller_reported_facts entry must carry its attribution: who said it, when, in which record.',
-        '- CROSS-DOMAIN REFERENCE: another layer may CITE a seller-reported statement as supporting evidence —',
-        '  for example, a seller-reported description that independently supports a record-vs-imagery conflict in',
-        '  the property layer — but it must stay labeled seller-reported, and no record fact is ever rewritten',
-        '  because of it. The seller layer likewise never mutates property facts.',
-      ].join('\n')
-      : '',
+    sellerDoctrineSection(dossier),
     '',
     '=== LANDOS DETERMINISTIC QUICK-FLIP SCREEN (CALCULATION — carry these numbers verbatim, never recompute or invent economics) ===',
     JSON.stringify({ quickFlip: context.quickFlip, sellerPriceVerdict: context.sellerPriceVerdict }),
@@ -383,6 +399,331 @@ export function intelligenceStackPrompt(
     `Reply with ONE JSON object and nothing else, containing exactly these top-level keys: ${context.layers.map((layer) => `"${layer}"`).join(', ')}.`,
     'Use exactly these shapes:',
     `{${schemas.join(',')}}`,
+  ].filter(Boolean).join('\n');
+}
+
+// ── Per-specialist prompts (persistent Hermes specialist executor) ─────────
+//
+// The same four products, produced by four persistent profiles instead of one
+// combined pass. Each specialist receives a BOUNDED view of the dossier — the
+// sections its layer actually reasons over, aligned with that layer's
+// fingerprint inputs — plus an authoritative CURRENT DEAL CONTEXT envelope.
+// The envelope is the anti-contamination rule made explicit: a persistent
+// profile's memory may shape HOW it reasons, never WHAT is currently true.
+
+export interface SpecialistPromptEnvelope {
+  dealCardId: number;
+  generatedAt: string;
+  /** The dossier fingerprint of the exact evidence this run reasons over. */
+  contextFingerprint: string;
+}
+
+function subjectLine(dossier: AcquisitionDossier): string {
+  const identity = dossier.identity;
+  return [
+    identity.displayAddress,
+    identity.apn ? `APN ${identity.apn}` : null,
+    [identity.county ? `${identity.county} County` : null, identity.stateCode ?? identity.state].filter(Boolean).join(', ') || null,
+  ].filter(Boolean).join(' · ') || 'Subject identity pending';
+}
+
+function canonicalAcreageLine(dossier: AcquisitionDossier): string {
+  if (dossier.acreage) {
+    const core = `${dossier.acreage.canonicalAcres} acres (${[dossier.acreage.source, dossier.acreage.confidence].filter(Boolean).join(', ')})`;
+    return dossier.acreage.extentExplanation ? `${core} — ${dossier.acreage.extentExplanation}` : core;
+  }
+  return dossier.identity.acres != null
+    ? `${dossier.identity.acres} acres (${dossier.identity.acreageBasis ?? 'basis unstated'})`
+    : 'not established';
+}
+
+export function specialistContextEnvelope(
+  dossier: AcquisitionDossier,
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+): string {
+  return [
+    '=== LANDOS CURRENT DEAL CONTEXT (AUTHORITATIVE) ===',
+    `Deal Card: #${envelope.dealCardId}`,
+    `Subject: ${subjectLine(dossier)}`,
+    `Canonical acreage: ${canonicalAcreageLine(dossier)}`,
+    `Deal phase: ${DEAL_PHASE_LABEL[context.phase]}`,
+    `Context generated at: ${envelope.generatedAt}`,
+    `Evidence fingerprint: ${envelope.contextFingerprint}`,
+    'This block and the FILE below are authoritative for every CURRENT fact about this deal. Your persistent',
+    'profile memory may shape HOW you reason — method, patterns, discipline — never WHAT is currently true here.',
+    'Where anything you remember about this or any other property disagrees with this context, this context wins.',
+    'Never carry a fact from another deal into this read, and never treat this deal\'s facts as durable memory:',
+    'deal facts belong to LandOS, not to your profile.',
+    '=== END LANDOS CURRENT DEAL CONTEXT ===',
+  ].join('\n');
+}
+
+const stripVisualPaths = (dossier: AcquisitionDossier): AcquisitionDossier['visuals'] =>
+  dossier.visuals.map(({ filePath: _filePath, ...visual }) => ({ ...visual, filePath: null }));
+
+/** The property specialist's world: property evidence, never the comp universe
+ *  or seller negotiation history. The seller's PROPERTY statements travel as
+ *  labeled seller-reported evidence. */
+function propertyDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
+  const { valuation: _valuation, comps: _comps, market: _market, seller, ...rest } = dossier;
+  return {
+    ...rest,
+    visuals: stripVisualPaths(dossier),
+    sellerReportedPropertyStatements: seller.sellerReportedFacts,
+  };
+}
+
+/** The market specialist's world: subject basics, canonical acreage, the comp
+ *  and valuation projection, the market read, and the land-use context that
+ *  bounds development potential. */
+function marketDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
+  return {
+    dossierVersion: dossier.dossierVersion,
+    dealCardId: dossier.dealCardId,
+    assembledAt: dossier.assembledAt,
+    identity: dossier.identity,
+    acreage: dossier.acreage,
+    valuation: dossier.valuation,
+    comps: dossier.comps,
+    market: dossier.market,
+    landUse: dossier.landUse,
+    coverage: dossier.coverage,
+  };
+}
+
+/** The seller specialist's world: the canonical seller evidence record, plus
+ *  only the subject identity needed to interpret it. */
+function sellerDossierView(dossier: AcquisitionDossier): Record<string, unknown> {
+  return {
+    dossierVersion: dossier.dossierVersion,
+    dealCardId: dossier.dealCardId,
+    assembledAt: dossier.assembledAt,
+    identity: dossier.identity,
+    acreage: dossier.acreage,
+    seller: dossier.seller,
+    coverage: dossier.coverage,
+  };
+}
+
+const SPECIALIST_ROLE: Record<Exclude<IntelligenceLayerId, 'deal'>, string> = {
+  property: 'the persistent LandOS Property Intelligence specialist',
+  market: 'the persistent LandOS Market + Area Intelligence specialist',
+  seller: 'the persistent LandOS Seller Intelligence specialist',
+};
+
+const NO_RESEARCH_RULE = [
+  'The FILE below is the complete world for this run: do not research, do not browse, and do not assert any',
+  'fact it does not carry. Where it says something is not established, it is not established. Where a material',
+  'question needs verification, NAME the bounded check — never attempt it yourself.',
+].join('\n');
+
+const SCORE_RULE = 'Every "score" field is YOUR integer judgment from 0 to 100 — replace the placeholder, never echo 0.';
+
+function contextLines(context: IntelligencePassContext): string[] {
+  return [
+    context.readinessHeadline ? `Research readiness: ${context.readinessHeadline}.` : '',
+    context.knownUnresolved.length
+      ? `Properly attempted but still unresolved (treat as key unknowns, do not assume answers): ${context.knownUnresolved.join('; ')}.`
+      : '',
+    context.guidance.length
+      ? [
+        '=== OPERATOR GUIDANCE (deal-specific guidance from the operator — weigh it, respond to it, but it is NOT a canonical property fact) ===',
+        ...context.guidance.map((item) => `- ${item}`),
+        '=== END OPERATOR GUIDANCE ===',
+      ].join('\n')
+      : '',
+  ];
+}
+
+const canonicalScoreLineFor = (label: string, score: number | null): string =>
+  `${label}: ${score != null ? `${score}/100 (authoritative LandOS score — carry it, do not re-score)` : 'not yet established (you may propose one from the file)'}`;
+
+/**
+ * One bounded specialist pass producing exactly one non-deal layer.
+ */
+export function specialistLayerPrompt(
+  layer: Exclude<IntelligenceLayerId, 'deal'>,
+  dossier: AcquisitionDossier,
+  observations: VisualObservationDraft[],
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+): string {
+  const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
+  const view = layer === 'property' ? propertyDossierView(dossier)
+    : layer === 'market' ? marketDossierView(dossier)
+      : sellerDossierView(dossier);
+
+  const layerSections: string[] = layer === 'property'
+    ? [
+      groundedObservationsSection(observations),
+      '',
+      assessorDoctrineSection(dossier),
+      '',
+      dossier.seller.sellerReportedFacts.length
+        ? 'The file\'s "sellerReportedPropertyStatements" are SELLER-REPORTED evidence with attribution — they may support or contradict a record claim, but they never become canonical property facts.'
+        : '',
+      '',
+      '=== CANONICAL LANDOS SCORES ===',
+      canonicalScoreLineFor('Property score', context.canonicalScores.property),
+      '=== END SCORES ===',
+      '',
+      'Observe, then model one coherent reality: surface contradictions with both values rather than averaging',
+      'them, weight every finding honestly, and name the ONE bounded verification for anything material and',
+      'unresolved — then stop.',
+    ]
+    : layer === 'market'
+      ? [
+        '=== LANDOS DETERMINISTIC QUICK-FLIP SCREEN (CALCULATION — carry these numbers verbatim, never recompute or invent economics) ===',
+        JSON.stringify({ quickFlip: context.quickFlip, sellerPriceVerdict: context.sellerPriceVerdict }),
+        '=== END CALCULATION ===',
+        '',
+        '=== CANONICAL LANDOS SCORES ===',
+        canonicalScoreLineFor('Market score', context.canonicalScores.market),
+        '=== END SCORES ===',
+        '',
+        'Keep CURRENT raw-land FMV, DEVELOPMENT POTENTIAL, and BROADER MARKET CONTEXT strictly distinct — a',
+        'county-wide statistic is not the subject\'s value, and hypothetical development value is never current',
+        'FMV. Market value and liquidity are different: connect the subject to its actual acreage band and say',
+        'which bands are liquid. Time-sensitive claims (a moratorium, a pending project) hold only as long as',
+        'their evidence is current — say how current the evidence is.',
+      ]
+      : [
+        sellerDoctrineSection(dossier),
+      ];
+
+  return [
+    `You are ${SPECIALIST_ROLE[layer]}. You are producing the ${layer} layer of the LandOS Intelligence Stack read for ${subject}. Phase: ${DEAL_PHASE_LABEL[context.phase]}.`,
+    '',
+    specialistContextEnvelope(dossier, context, envelope),
+    '',
+    NO_RESEARCH_RULE,
+    '',
+    'Keep information types separate: a sourced FACT, a deterministic LandOS CALCULATION, your INTERPRETATION,',
+    'a temporary ASSUMPTION, and OPERATOR GUIDANCE are different things — never promote one into another.',
+    '',
+    `=== ${layer.toUpperCase()} FILE (JSON) ===`,
+    JSON.stringify(view),
+    `=== END ${layer.toUpperCase()} FILE ===`,
+    '',
+    ...layerSections,
+    ...contextLines(context),
+    '',
+    SCORE_RULE,
+    '',
+    `Reply with ONE JSON object and nothing else, containing exactly this top-level key: "${layer}".`,
+    'Use exactly this shape:',
+    `{${LAYER_SCHEMAS[layer]}}`,
+  ].filter(Boolean).join('\n');
+}
+
+/** A bounded projection of a retained (not refreshed this pass) product for
+ *  the Deal Brain: the substance without runtime plumbing. */
+function retainedProductProjection(product: unknown): Record<string, unknown> | null {
+  if (!product || typeof product !== 'object') return null;
+  const {
+    runtime: _runtime,
+    layerFingerprint: _layerFingerprint,
+    dossierFingerprint: _dossierFingerprint,
+    contractVersion: _contractVersion,
+    ...rest
+  } = product as Record<string, unknown>;
+  return rest;
+}
+
+/**
+ * The Deal Brain chair pass: synthesize the CURRENT specialist products —
+ * fresh ones from this run plus retained ones — with the deterministic
+ * economics, into the deal layer. The chair consumes products, not raw
+ * dossiers, and never manufactures consensus.
+ */
+export function specialistDealPrompt(
+  dossier: AcquisitionDossier,
+  observations: VisualObservationDraft[],
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+  inputs: {
+    /** Parsed layer objects produced by the specialists THIS pass. */
+    freshLayers: Partial<Record<'property' | 'market' | 'seller', unknown>>;
+    /** Retained products for layers not refreshed this pass. */
+    retainedProducts: Partial<Record<'property' | 'market' | 'seller', unknown>>;
+  },
+): string {
+  const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
+  const visualKeys = [...new Set([...dossier.visuals.map((visual) => visual.key), ...observations.map((observation) => observation.visual)])];
+  const productSection = (layer: 'property' | 'market' | 'seller'): string => {
+    const fresh = inputs.freshLayers[layer];
+    if (fresh !== undefined) {
+      return `=== CURRENT ${layer.toUpperCase()} INTELLIGENCE (fresh this pass, JSON) ===\n${JSON.stringify(fresh)}\n=== END ${layer.toUpperCase()} INTELLIGENCE ===`;
+    }
+    const retained = retainedProductProjection(inputs.retainedProducts[layer]);
+    if (retained) {
+      return `=== CURRENT ${layer.toUpperCase()} INTELLIGENCE (retained current product, JSON) ===\n${JSON.stringify(retained)}\n=== END ${layer.toUpperCase()} INTELLIGENCE ===`;
+    }
+    return `No current ${layer} intelligence product exists yet.`;
+  };
+
+  return [
+    `You are the persistent LandOS Deal Brain — the executive chair above the specialist reads. You are producing the deal layer of the Intelligence Stack read for ${subject}. Phase: ${DEAL_PHASE_LABEL[context.phase]}.`,
+    '',
+    specialistContextEnvelope(dossier, context, envelope),
+    '',
+    NO_RESEARCH_RULE,
+    '',
+    'You synthesize the CURRENT specialist products below with the deterministic economics. Quote deterministic',
+    'numbers verbatim, never recompute. Specialist disagreement is information — never manufacture consensus or',
+    'average incompatible positions; carry the disagreement and say what would settle it. Route an open question',
+    'back to the specialist layer that owns it via next_actions.',
+    '',
+    productSection('property'),
+    '',
+    productSection('market'),
+    '',
+    productSection('seller'),
+    '',
+    '=== LANDOS DETERMINISTIC QUICK-FLIP SCREEN (CALCULATION — carry these numbers verbatim, never recompute or invent economics) ===',
+    JSON.stringify({ quickFlip: context.quickFlip, sellerPriceVerdict: context.sellerPriceVerdict }),
+    '=== END CALCULATION ===',
+    '',
+    '=== CANONICAL LANDOS SCORES ===',
+    canonicalScoreLineFor('Property score', context.canonicalScores.property),
+    canonicalScoreLineFor('Market score', context.canonicalScores.market),
+    context.sellerEstablished
+      ? canonicalScoreLineFor('Seller score', context.canonicalScores.seller)
+      : 'Seller score: NOT ESTABLISHED — no seller contact yet. That is normal pre-call; never fabricate motivation from ownership records.',
+    '=== END SCORES ===',
+    dossier.conflicts.length
+      ? `=== LANDOS-DETECTED CONFLICTS (carry every one, with both values) ===\n${JSON.stringify(dossier.conflicts)}\n=== END CONFLICTS ===`
+      : '',
+    `Evidence coverage — present: ${dossier.coverage.present.join('; ') || 'none listed'}. Absent: ${dossier.coverage.absent.join('; ') || 'none listed'}.`,
+    ...contextLines(context),
+    '',
+    groundedObservationsSection(observations),
+    '',
+    'Strategy rules for the deal layer:',
+    '- The FIRST screen is the simple cash quick flip: buy, list as-is, sell. The deterministic screen above is that answer.',
+    '- Recommend the SIMPLEST, FASTEST, REALISTIC profitable strategy. Complexity must be earned: added net must justify added time, capital, approvals and risk.',
+    '- Value-add strategies (splits, land-home, entitlement) are UPSIDE, never prerequisites. List them under additional_upside only when the juice is worth the squeeze.',
+    '- Novation/double close may only be considered when the calculation block says the gate is open — never as a pre-call strategy.',
+    '- Market value and liquidity are different: connect the subject to its actual acreage band and say which bands are liquid.',
+    context.phase === 'pre_call'
+      ? '- This is PRE-CALL: also state the discovery-call objective — exactly what to learn from the seller.'
+      : '- Seller communication exists: state the negotiation posture.',
+    '',
+    SCORE_RULE,
+    'The deal score reflects property quality, market and liquidity, quick-flip economics, supported value,',
+    'seller fit when known, strategy, risks and uncertainty together — never a mere average of the other scores,',
+    'and a score below 10 means genuinely worthless and must be justified in the judgment.',
+    'Think across the whole file rather than section by section. Say what the combinations mean.',
+    'Rank only the strategies THIS property actually supports and mark the ones it does not as rejected.',
+    'Carry every conflict in the file, with both values.',
+    visualKeys.length
+      ? `Cite images only by these exact keys: ${visualKeys.join(', ')}.`
+      : 'There are no image keys to cite.',
+    '',
+    'Reply with ONE JSON object and nothing else, containing exactly this top-level key: "deal".',
+    'Use exactly this shape:',
+    `{${DEAL_SCHEMA}}`,
   ].filter(Boolean).join('\n');
 }
 

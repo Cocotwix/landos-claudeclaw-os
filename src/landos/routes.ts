@@ -150,6 +150,10 @@ import {
   dossierFingerprint as acquisitionDossierFingerprint,
   acquisitionAnalystRuntimeStatus,
 } from './acquisition-analyst.js';
+import {
+  createIntelligenceExecutor,
+  intelligenceExecutorRuntimeStatus,
+} from './specialist-intelligence-executor.js';
 import { readAcquisitionIntelligence } from './acquisition-intelligence-store.js';
 import { setDealWarRoomContextProvider, boundContextText } from './war-room-deal-context.js';
 import { ASSESSOR_TAX_CAPABILITY_ID } from './assessor-tax-capability.js';
@@ -10355,7 +10359,7 @@ export function registerLandosRoutes(app: Hono): void {
       // Official acreage / parcel-extent reconciliation: SELECT-only here.
       acreageExtent: readAcreageExtentRecord(id),
       acreageExtentRun: acreageExtentRuns.get(id) ?? null,
-      runtime: acquisitionAnalystRuntimeStatus(),
+      runtime: intelligenceExecutorRuntimeStatus(),
     });
   });
 
@@ -10366,7 +10370,7 @@ export function registerLandosRoutes(app: Hono): void {
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const inFlight = intelligenceStackRuns.get(id);
     if (inFlight && !inFlight.error) {
-      return c.json({ running: true, startedAt: inFlight.startedAt, runtime: acquisitionAnalystRuntimeStatus() }, 202);
+      return c.json({ running: true, startedAt: inFlight.startedAt, runtime: intelligenceExecutorRuntimeStatus() }, 202);
     }
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const layerNames: IntelligenceLayerId[] = ['property', 'market', 'seller', 'deal'];
@@ -10386,7 +10390,7 @@ export function registerLandosRoutes(app: Hono): void {
           requestedModel: str(body.model) ?? null,
         }, {
           ...intelligenceStackReadDeps,
-          analyst: createHermesAcquisitionAnalyst(),
+          analyst: createIntelligenceExecutor(),
           runBackfill: async (itemIds: string[]) => {
             const report = await runResearchReadinessBackfill(
               id,
@@ -10407,7 +10411,7 @@ export function registerLandosRoutes(app: Hono): void {
       }
     })();
 
-    return c.json({ running: true, startedAt, runtime: acquisitionAnalystRuntimeStatus() }, 202);
+    return c.json({ running: true, startedAt, runtime: intelligenceExecutorRuntimeStatus() }, 202);
   });
 
   // ── Bounded intelligence → capability → reconciliation (explicit only) ──
@@ -10459,7 +10463,7 @@ export function registerLandosRoutes(app: Hono): void {
           rereadIntelligence: async () => {
             const result = await runIntelligenceStack({ dealCardId: id, layers: ['property'] }, {
               ...intelligenceStackReadDeps,
-              analyst: createHermesAcquisitionAnalyst(),
+              analyst: createIntelligenceExecutor(),
             });
             if (result.outcome !== 'produced' && result.outcome !== 'reused') {
               throw new Error(result.reason ?? `re-read outcome ${result.outcome}`);
@@ -10597,7 +10601,7 @@ export function registerLandosRoutes(app: Hono): void {
         const dossier = buildAcquisitionDossier(source);
         const state = readIntelligenceStackState(id, intelligenceStackReadDeps);
         const thread = listDealBrainGuidance(id).map((entry) => ({ role: entry.role, text: entry.text }));
-        const analyst = createHermesAcquisitionAnalyst();
+        const analyst = createIntelligenceExecutor();
         const run = await analyst.run({
           dossier,
           judgmentPromptBuilder: () => dealBrainChatPrompt({

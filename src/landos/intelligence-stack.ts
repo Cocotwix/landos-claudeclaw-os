@@ -56,6 +56,8 @@ import {
   intelligenceStackPrompt,
   parseIntelligenceLayers,
   qualityForScore,
+  specialistDealPrompt,
+  specialistLayerPrompt,
   type DealIntelligenceProduct,
   type DealPhase,
   type IntelligenceLayerId,
@@ -488,29 +490,51 @@ export async function runIntelligenceStack(
   let run: AnalystRunOutput | null = null;
   if (modelLayers.length) {
     if (!deps.analyst) return failed('The Acquisition Analyst is not available in this runtime.');
+    const passContext = {
+      layers: modelLayers,
+      phase,
+      quickFlip,
+      sellerPriceVerdict,
+      canonicalScores,
+      sellerEstablished,
+      guidance,
+      readinessHeadline: manifest?.headline ?? null,
+      knownUnresolved: manifest
+        ? manifest.items.filter((item) => item.status === 'yellow').map((item) => item.label)
+        : [],
+      retainedReads: {
+        ...(refreshProperty || !retained.property ? {} : { property: retained.property.read }),
+        ...(refreshMarket || !retained.market ? {} : { market: retained.market.read }),
+        ...(refreshSeller || !retained.seller ? {} : { seller: retained.seller.read }),
+      },
+    };
+    const envelope = { dealCardId: input.dealCardId, generatedAt, contextFingerprint: dossierFp };
     try {
       run = await deps.analyst.run({
         dossier,
         requestedProvider: input.requestedProvider ?? null,
         requestedModel: input.requestedModel ?? null,
-        judgmentPromptBuilder: (currentDossier, observations) => intelligenceStackPrompt(currentDossier, observations, {
+        judgmentPromptBuilder: (currentDossier, observations) => intelligenceStackPrompt(currentDossier, observations, passContext),
+        // The per-layer plan for the persistent-specialist executor. The
+        // legacy analyst ignores it; carrying both on the same input is what
+        // keeps the executor swappable behind a setting.
+        specialistPlan: {
+          dealCardId: input.dealCardId,
           layers: modelLayers,
-          phase,
-          quickFlip,
-          sellerPriceVerdict,
-          canonicalScores,
-          sellerEstablished,
-          guidance,
-          readinessHeadline: manifest?.headline ?? null,
-          knownUnresolved: manifest
-            ? manifest.items.filter((item) => item.status === 'yellow').map((item) => item.label)
-            : [],
-          retainedReads: {
-            ...(refreshProperty || !retained.property ? {} : { property: retained.property.read }),
-            ...(refreshMarket || !retained.market ? {} : { market: retained.market.read }),
-            ...(refreshSeller || !retained.seller ? {} : { seller: retained.seller.read }),
-          },
-        }),
+          layerPrompt: (layer, currentDossier, observations) =>
+            specialistLayerPrompt(layer, currentDossier, observations, passContext, envelope),
+          dealPrompt: (freshLayers, currentDossier, observations) =>
+            specialistDealPrompt(currentDossier, observations, passContext, envelope, {
+              freshLayers,
+              retainedProducts: {
+                ...(refreshProperty || !retained.property ? {} : { property: retained.property }),
+                ...(refreshMarket || !retained.market ? {} : { market: retained.market }),
+                ...(refreshSeller
+                  ? (sellerEstablished || !sellerProduct ? {} : { seller: sellerProduct })
+                  : (retained.seller ? { seller: retained.seller } : {})),
+              },
+            }),
+        },
       });
     } catch (error) {
       return failed(`The Acquisition Analyst could not complete this read: ${error instanceof Error ? error.message.split(/\r?\n/, 1)[0] : String(error)}`);
@@ -522,6 +546,11 @@ export async function runIntelligenceStack(
   if (run && !layers) return failed('The analyst returned no parsable layered JSON result.');
 
   const runtime = run?.runtime ?? DETERMINISTIC_RUNTIME;
+  // Per-layer execution provenance: the specialist executor reports which
+  // profile produced each layer; the legacy single-pass analyst reports one
+  // runtime for all of them.
+  const runtimeFor = (layer: IntelligenceLayerId): AcquisitionIntelligenceRuntime =>
+    run?.layerRuntimes?.[layer] ?? runtime;
   const observations = run?.observations ?? [];
   // Retained observations are re-screened on every reuse: an earlier run may
   // have persisted refusal chatter under an older, narrower filter, and a
@@ -559,7 +588,7 @@ export async function runIntelligenceStack(
       contractVersion: INTELLIGENCE_STACK_VERSION,
       dealCardId: input.dealCardId,
       generatedAt,
-      runtime,
+      runtime: runtimeFor('property'),
       layerFingerprint: fingerprints.property,
       dossierFingerprint: dossierFp,
       score,
@@ -588,7 +617,7 @@ export async function runIntelligenceStack(
       snapshotType: PROPERTY_INTELLIGENCE_PRODUCT_TYPE,
       payload: propertyProduct,
       completeness: { strengths: propertyProduct.strengths.length, constraints: propertyProduct.constraints.length, unknowns: propertyProduct.unknowns.length },
-      changeReason: `Property Intelligence read by ${runtime.agentProfile} on ${runtime.model}.`,
+      changeReason: `Property Intelligence read by ${runtimeFor('property').agentProfile} on ${runtimeFor('property').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'property_intelligence_read',
     });
@@ -602,7 +631,7 @@ export async function runIntelligenceStack(
       contractVersion: INTELLIGENCE_STACK_VERSION,
       dealCardId: input.dealCardId,
       generatedAt,
-      runtime,
+      runtime: runtimeFor('market'),
       layerFingerprint: fingerprints.market,
       dossierFingerprint: dossierFp,
       score,
@@ -630,7 +659,7 @@ export async function runIntelligenceStack(
       snapshotType: MARKET_INTELLIGENCE_PRODUCT_TYPE,
       payload: marketProduct,
       completeness: { signals: marketProduct.bestSignals.length, risks: marketProduct.risks.length, unknowns: marketProduct.unknowns.length },
-      changeReason: `Market Intelligence read by ${runtime.agentProfile} on ${runtime.model}.`,
+      changeReason: `Market Intelligence read by ${runtimeFor('market').agentProfile} on ${runtimeFor('market').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'market_intelligence_read',
     });
@@ -642,7 +671,7 @@ export async function runIntelligenceStack(
       contractVersion: INTELLIGENCE_STACK_VERSION,
       dealCardId: input.dealCardId,
       generatedAt,
-      runtime,
+      runtime: runtimeFor('seller'),
       layerFingerprint: fingerprints.seller,
       dossierFingerprint: dossierFp,
       state: 'established',
@@ -670,7 +699,7 @@ export async function runIntelligenceStack(
       completeness: { state: sellerProduct.state, reportedFacts: sellerProduct.sellerReportedFacts.length },
       changeReason: sellerProduct.state === 'pre_contact'
         ? 'Seller Intelligence recorded as pre-contact: honestly unknown.'
-        : `Seller Intelligence read by ${runtime.agentProfile} on ${runtime.model}.`,
+        : `Seller Intelligence read by ${runtimeFor('seller').agentProfile} on ${runtimeFor('seller').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'seller_intelligence_read',
     });
@@ -682,7 +711,7 @@ export async function runIntelligenceStack(
     const normalized = normalizeAcquisitionIntelligence({
       raw: layers.dealRaw,
       dealCardId: input.dealCardId,
-      runtime,
+      runtime: runtimeFor('deal'),
       dossierFingerprint: dossierFp,
       allowedVisualKeys: [...new Set([
         ...dossier.visuals.map((visual) => visual.key),
@@ -777,7 +806,7 @@ export async function runIntelligenceStack(
         quickFlipStatus: quickFlip.status,
         phase,
       },
-      changeReason: whatChanged.join(' ').slice(0, 600) || `Deal Intelligence read by ${runtime.agentProfile} on ${runtime.model}.`,
+      changeReason: whatChanged.join(' ').slice(0, 600) || `Deal Intelligence read by ${runtimeFor('deal').agentProfile} on ${runtimeFor('deal').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'deal_intelligence_read',
     });

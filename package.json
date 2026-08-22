@@ -24,6 +24,7 @@
     "landos:hermes:specialists": "node scripts/hermes/provision-specialist-profiles.mjs",
     "landos:hermes:specialists:check": "node scripts/hermes/provision-specialist-profiles.mjs --check",
     "landos:hermes:specialist:invoke": "node scripts/hermes/specialist-bot-invoke.mjs",
+    "landos:intelligence:executor": "node scripts/landos/intelligence-executor.mjs",
     "hermes:governed:audit": "node scripts/hermes/governed-profile-manager.mjs audit",
     "hermes:governed:provision": "node scripts/hermes/governed-profile-manager.mjs provision --apply-external",
     "hermes:governed:check": "node scripts/hermes/governed-profile-manager.mjs check",

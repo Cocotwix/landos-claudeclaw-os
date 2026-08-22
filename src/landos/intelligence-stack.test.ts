@@ -406,6 +406,80 @@ describe('readiness preflight', () => {
   });
 });
 
+describe('specialist executor plan on the analyst seam', () => {
+  it('passes a per-layer specialist plan alongside the combined prompt, excluding pre-contact seller from the model layers', async () => {
+    let plan: AnalystRunInput['specialistPlan'];
+    const analyst = {
+      run: async (input: AnalystRunInput): Promise<AnalystRunOutput> => {
+        plan = input.specialistPlan;
+        return {
+          raw: JSON.stringify(LAYERED_REPLY),
+          observations: [],
+          warnings: [],
+          runtime: { engine: 'hermes', agentProfile: 'landos-acquisition-analyst', provider: 'openai-codex', model: 'gpt-5.6-sol', modelSource: 'default', durationMs: 5 },
+        };
+      },
+    };
+    await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst }));
+    expect(plan?.dealCardId).toBe(89);
+    expect(plan?.layers).toEqual(['property', 'market', 'deal']);
+    // The bounded layer prompt carries the authoritative envelope with the
+    // CURRENT canonical facts and the memory-never-overrides rule.
+    const propertyPrompt = plan!.layerPrompt('property', dossier, []);
+    expect(propertyPrompt).toContain('LANDOS CURRENT DEAL CONTEXT (AUTHORITATIVE)');
+    expect(propertyPrompt).toContain('this context wins');
+    expect(propertyPrompt).not.toContain('"valuation"');
+    // The chair prompt receives the fresh products, and the deterministic
+    // pre-contact seller product rides along as the retained current seller.
+    const dealPrompt = plan!.dealPrompt({ property: { read: 'Fresh property read.' } }, dossier, []);
+    expect(dealPrompt).toContain('Fresh property read.');
+    expect(dealPrompt).toContain('Unknown — pre-contact');
+  });
+
+  it('attaches per-layer specialist runtimes to their products when the executor reports them', async () => {
+    const layerRuntime = (agentProfile: string) => ({
+      engine: 'hermes', agentProfile, provider: 'openai-codex', model: 'gpt-5.6-sol',
+      modelSource: 'default' as const, durationMs: 7, transport: 'hermes-cli-oneshot',
+    });
+    const analyst = {
+      run: async (): Promise<AnalystRunOutput> => ({
+        raw: JSON.stringify(LAYERED_REPLY),
+        observations: [],
+        warnings: [],
+        runtime: layerRuntime('landos-deal-brain'),
+        layerRuntimes: {
+          property: layerRuntime('landos-property'),
+          market: layerRuntime('landos-market'),
+          deal: layerRuntime('landos-deal-brain'),
+        },
+      }),
+    };
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst }));
+    expect(result.products.property?.runtime.agentProfile).toBe('landos-property');
+    expect(result.products.market?.runtime.agentProfile).toBe('landos-market');
+    expect(result.products.deal?.runtime.agentProfile).toBe('landos-deal-brain');
+    // The deterministic pre-contact seller stays deterministic.
+    expect(result.products.seller?.runtime.model).toBe('deterministic');
+    const propertyWrite = writes.find((write) => write.snapshotType === 'intelligence_property_v1');
+    expect(propertyWrite?.changeReason).toContain('landos-property');
+  });
+
+  it('a failed executor pass retains every last good product and fabricates nothing', async () => {
+    const first = fakeAnalyst();
+    await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: first.analyst }));
+    writes.length = 0;
+
+    guidance = ['New guidance to force a refresh.'];
+    const failing = { run: async (): Promise<AnalystRunOutput> => { throw new Error('landos-market returned no parsable market layer'); } };
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: failing }));
+    expect(result.outcome).toBe('failed');
+    expect(result.reason).toContain('landos-market returned no parsable market layer');
+    expect(writes).toHaveLength(0);
+    // The last good products are exactly what remains readable.
+    expect(result.products.deal?.dealRead.headline).toBe('Promising land, unpriced flip.');
+  });
+});
+
 describe('seller evidence reaches the seller layer', () => {
   it('treats a real communication record as seller contact even before the readiness checklist catches up, and carries the seller evidence doctrine into the prompt', async () => {
     dossier = {

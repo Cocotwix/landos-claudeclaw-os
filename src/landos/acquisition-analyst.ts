@@ -192,6 +192,36 @@ export interface VisualObservationDraft {
 import { isUsableVisualObservation, readsAsNonObservation } from './acquisition-intelligence-contract.js';
 export { isUsableVisualObservation };
 
+/** A layer of the Intelligence Stack that reaches a reasoning model. */
+export type SpecialistModelLayer = 'property' | 'market' | 'seller' | 'deal';
+
+/**
+ * The per-layer execution plan the Intelligence Stack supplies alongside its
+ * single combined prompt. The legacy single-profile analyst ignores it; the
+ * persistent-specialist executor uses it to route each layer to its own Hermes
+ * profile with a bounded, layer-specific prompt. Carrying BOTH on the same
+ * input is the whole rollback story: the stack never knows which executor ran.
+ */
+export interface SpecialistExecutionPlan {
+  dealCardId: number;
+  /** The layers this pass must reason (already excludes deterministic
+   *  pre-contact Seller). */
+  layers: SpecialistModelLayer[];
+  /** Bounded prompt for one non-deal layer. */
+  layerPrompt: (
+    layer: Exclude<SpecialistModelLayer, 'deal'>,
+    dossier: AcquisitionDossier,
+    observations: VisualObservationDraft[],
+  ) => string;
+  /** The Deal Brain prompt, built AFTER the specialist layers return so the
+   *  chair synthesizes from the fresh structured products. */
+  dealPrompt: (
+    freshLayers: Partial<Record<Exclude<SpecialistModelLayer, 'deal'>, unknown>>,
+    dossier: AcquisitionDossier,
+    observations: VisualObservationDraft[],
+  ) => string;
+}
+
 export interface AnalystRunInput {
   dossier: AcquisitionDossier;
   requestedProvider?: string | null;
@@ -200,6 +230,9 @@ export interface AnalystRunInput {
    *  a caller with a different question (the Intelligence Stack's coordinated
    *  layered pass) reuses the same analyst, passes and runtime unchanged. */
   judgmentPromptBuilder?: (dossier: AcquisitionDossier, observations: VisualObservationDraft[]) => string;
+  /** Per-layer routing for the persistent-specialist executor. Optional and
+   *  ignored by the legacy analyst. */
+  specialistPlan?: SpecialistExecutionPlan;
 }
 
 export interface AnalystRunOutput {
@@ -207,6 +240,9 @@ export interface AnalystRunOutput {
   runtime: AcquisitionIntelligenceRuntime;
   observations: VisualObservationDraft[];
   warnings: string[];
+  /** Per-layer execution provenance when layers ran on different profiles.
+   *  Absent on the legacy single-pass analyst. */
+  layerRuntimes?: Partial<Record<SpecialistModelLayer, AcquisitionIntelligenceRuntime>>;
 }
 
 /** The seam every caller uses. Tests substitute a fake; nothing outside this
@@ -260,7 +296,9 @@ export function groundedObservationDrafts(dossier: AcquisitionDossier): VisualOb
     }));
 }
 
-function installedHermes(): { python: string; launcher: string; profileHome: string } {
+/** The installed Hermes runtime paths, shared by every LandOS one-shot caller
+ *  (the analyst here and the specialist executor). Throws when absent. */
+export function hermesRuntimePaths(): { python: string; launcher: string } {
   const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const root = path.join(localAppData, 'hermes', 'hermes-agent');
   const python = process.platform === 'win32'
@@ -270,11 +308,71 @@ function installedHermes(): { python: string; launcher: string; profileHome: str
   if (!fs.existsSync(python) || !fs.existsSync(launcher)) {
     throw new Error(`The Hermes runtime was not found under ${root}.`);
   }
-  const profileHome = path.join(localAppData, 'hermes', 'profiles', ACQUISITION_ANALYST_PROFILE);
+  return { python, launcher };
+}
+
+/** Where a Hermes profile's local state lives. */
+export function hermesProfileHome(profile: string): string {
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(localAppData, 'hermes', 'profiles', profile);
+}
+
+/** Is this profile provisioned on this machine? */
+export function hermesProfileProvisioned(profile: string): boolean {
+  return fs.existsSync(path.join(hermesProfileHome(profile), 'config.yaml'));
+}
+
+function installedHermes(): { python: string; launcher: string; profileHome: string } {
+  const { python, launcher } = hermesRuntimePaths();
+  const profileHome = hermesProfileHome(ACQUISITION_ANALYST_PROFILE);
   if (!fs.existsSync(path.join(profileHome, 'config.yaml'))) {
     throw new Error(`The Hermes Acquisition Analyst profile is not provisioned. Run: npm run landos:hermes:analyst`);
   }
   return { python, launcher, profileHome };
+}
+
+/**
+ * Spawn the installed Hermes CLI once with the given argv and return stdout.
+ *
+ * The judgment prompt carries the whole property file, and Windows caps a
+ * child's command line at ~32K characters — a full dossier as an argv element
+ * fails with spawn ENAMETOOLONG before the runtime ever starts (surfacing as
+ * "exited without output"). So the real argv travels in a temp JSON file, and
+ * a tiny bootstrap sets sys.argv IN the child process, where no such ceiling
+ * exists, then runs the launcher unchanged.
+ */
+export async function invokeHermesCli(args: string[], timeoutMs: number): Promise<string> {
+  const { python, launcher } = hermesRuntimePaths();
+  const specPath = path.join(os.tmpdir(), `landos-analyst-args-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
+  fs.writeFileSync(specPath, JSON.stringify(args), 'utf-8');
+  const bootstrap = [
+    'import sys, json, runpy',
+    "spec = json.load(open(sys.argv[1], encoding='utf-8'))",
+    'launcher = sys.argv[2]',
+    'sys.argv = [launcher] + spec',
+    "runpy.run_path(launcher, run_name='__main__')",
+  ].join('\n');
+  try {
+    const { stdout } = await execFileAsync(python, ['-X', 'utf8', '-c', bootstrap, specPath, launcher], {
+      cwd: process.cwd(),
+      timeout: timeoutMs,
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    });
+    return stdout ?? '';
+  } catch (error) {
+    // The default message is the whole command line, which tells an operator
+    // nothing about WHY. The runtime's own first line of stderr does, so that
+    // is what travels into the warning.
+    const detail = error as { killed?: boolean; signal?: string | null; stderr?: string; stdout?: string };
+    if (detail?.killed || detail?.signal === 'SIGTERM') {
+      throw new Error(`the analyst exceeded its ${Math.round(timeoutMs / 1_000)}s limit`);
+    }
+    const reported = String(detail?.stderr || detail?.stdout || '').trim().split(/[\r\n]+/).find((line) => line.trim());
+    throw new Error(reported?.slice(0, 300) || 'the local reasoning runtime exited without output');
+  } finally {
+    try { fs.unlinkSync(specPath); } catch { /* temp spec cleanup is best-effort */ }
+  }
 }
 
 /**
@@ -306,43 +404,8 @@ export function createHermesAcquisitionAnalyst(deps: HermesAnalystDeps = {}): Ac
   const now = deps.now ?? (() => Date.now());
 
   const invoke = deps.invoke ?? (async (args: string[], timeoutMs: number): Promise<string> => {
-    const { python, launcher } = installedHermes();
-    // The judgment prompt carries the whole property file, and Windows caps a
-    // child's command line at ~32K characters — a full dossier as an argv
-    // element fails with spawn ENAMETOOLONG before the runtime ever starts
-    // (surfacing as "exited without output"). So the real argv travels in a
-    // temp JSON file, and a tiny bootstrap sets sys.argv IN the child process,
-    // where no such ceiling exists, then runs the launcher unchanged.
-    const specPath = path.join(os.tmpdir(), `landos-analyst-args-${process.pid}-${Date.now()}.json`);
-    fs.writeFileSync(specPath, JSON.stringify(args), 'utf-8');
-    const bootstrap = [
-      'import sys, json, runpy',
-      "spec = json.load(open(sys.argv[1], encoding='utf-8'))",
-      'launcher = sys.argv[2]',
-      'sys.argv = [launcher] + spec',
-      "runpy.run_path(launcher, run_name='__main__')",
-    ].join('\n');
-    try {
-      const { stdout } = await execFileAsync(python, ['-X', 'utf8', '-c', bootstrap, specPath, launcher], {
-        cwd: process.cwd(),
-        timeout: timeoutMs,
-        maxBuffer: 8 * 1024 * 1024,
-        windowsHide: true,
-      });
-      return stdout ?? '';
-    } catch (error) {
-      // The default message is the whole command line, which tells an operator
-      // nothing about WHY. The runtime's own first line of stderr does, so that
-      // is what travels into the warning.
-      const detail = error as { killed?: boolean; signal?: string | null; stderr?: string; stdout?: string };
-      if (detail?.killed || detail?.signal === 'SIGTERM') {
-        throw new Error(`the analyst exceeded its ${Math.round(timeoutMs / 1_000)}s limit`);
-      }
-      const reported = String(detail?.stderr || detail?.stdout || '').trim().split(/[\r\n]+/).find((line) => line.trim());
-      throw new Error(reported?.slice(0, 300) || 'the local reasoning runtime exited without output');
-    } finally {
-      try { fs.unlinkSync(specPath); } catch { /* temp spec cleanup is best-effort */ }
-    }
+    installedHermes();
+    return invokeHermesCli(args, timeoutMs);
   });
 
   return {

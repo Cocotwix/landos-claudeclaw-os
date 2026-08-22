@@ -40,6 +40,11 @@ export interface AcquisitionIntelligenceRuntime {
   /** Where the model selection came from: an operator setting or the default. */
   modelSource: 'setting' | 'default' | 'request';
   durationMs: number;
+  /** How the executor was reached (e.g. `hermes-cli-oneshot`). Optional
+   *  internal provenance — the operator surface never renders it. */
+  transport?: string;
+  /** The pinned Hermes runtime version that executed, when known. */
+  runtimeVersion?: string;
 }
 
 export interface AcquisitionStrategyRead {
