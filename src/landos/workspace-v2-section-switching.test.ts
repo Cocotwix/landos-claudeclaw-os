@@ -23,6 +23,9 @@ const OVERVIEW_SRC = fs.readFileSync(
   path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2Overview.tsx'),
   'utf8',
 );
+const SECTION_SWITCH_SRC = PAGE_SRC.match(
+  /const switchSection = \(e: MouseEvent, slug: string\) => \{[\s\S]*?^  \};/m,
+)?.[0] ?? '';
 
 describe('V2 section switching is client-side over one loaded record', () => {
   it('switches sections with pushState instead of full document navigation', () => {
@@ -60,9 +63,14 @@ describe('V2 section switching is client-side over one loaded record', () => {
   });
 
   it('never triggers research or any mutation from section navigation', () => {
-    for (const src of [PAGE_SRC, PI_SRC, OVERVIEW_SRC]) {
-      expect(src).not.toMatch(/apiPost|apiPut|apiDelete|method:\s*'POST'/);
-      expect(src).not.toMatch(/\/research|\/rerun|\/run\b/);
-    }
+    // The workspace also owns explicit operator-triggered mutations (for
+    // example, opening a War Room and running intelligence). Those actions are
+    // not section navigation. Scope this guard to the actual navigation
+    // handler so adding a legitimate button elsewhere cannot weaken or falsely
+    // fail the client-side switching contract.
+    expect(SECTION_SWITCH_SRC).not.toBe('');
+    expect(SECTION_SWITCH_SRC).not.toMatch(/apiPost|apiPut|apiDelete|method:\s*'POST'/);
+    expect(SECTION_SWITCH_SRC).not.toMatch(/\/research|\/rerun|\/run\b/);
+    expect(SECTION_SWITCH_SRC).toMatch(/history\.pushState/);
   });
 });
