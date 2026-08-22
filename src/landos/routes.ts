@@ -171,6 +171,7 @@ import { PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID } from './property-developme
 import type { PropertyBackstory } from './property-backstory.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { readAcreageExtentRecord, runOfficialAcreageExtentReconciliation } from './official-acreage-run.js';
+import { runAcreageDependentRefresh } from './acreage-dependent-refresh.js';
 import { deriveOperatorDisplayLocation } from './operator-display-location.js';
 import type { CapabilityEntity } from './capability-contract.js';
 import { researchReadinessItem } from './research-readiness.js';
@@ -8771,9 +8772,22 @@ export function registerLandosRoutes(app: Hono): void {
     // abutment evidence displays legal access as present) and specialist
     // delivery re-derived from the current accepted evidence (a stale
     // "blocked — no screenshots retained" row never undercounts research).
+    // Canonical acreage is a read-time presentation correction too: after an
+    // acreage/extent adoption the stored mission snapshot may still carry the
+    // superseded subject size, and the CURRENT view must never present it as
+    // current. The stored run record stays untouched; the superseded figure
+    // remains retained inside the acreage-extent record with provenance.
+    const canonicalExtentAcres = readAcreageExtentRecord(dealCardId)?.decision.canonicalAcres ?? null;
     const presentedSource = storedSnapshot
       ? {
           ...storedSnapshot,
+          identity: canonicalExtentAcres != null && storedSnapshot.identity.acres !== canonicalExtentAcres
+            ? {
+                ...storedSnapshot.identity,
+                acres: canonicalExtentAcres,
+                acreageBasis: 'official_reported (canonical acreage reconciliation)',
+              }
+            : storedSnapshot.identity,
           dueDiligence: normalizeDiscoveryAccessItems(
             storedSnapshot.dueDiligence,
             storedSnapshot.identity.situs ?? storedSnapshot.identity.normalizedAddress,
@@ -8817,7 +8831,10 @@ export function registerLandosRoutes(app: Hono): void {
         identityState: snapshot.identity.state,
         discoveryIdentityUsable: snapshot.identity.discoveryUsable,
         identityBasis: snapshot.identity.discoveryBasis ?? snapshot.identity.explanation,
-        subjectAcres: snapshot.identity.acres,
+        // Canonical current acreage outranks the retained mission snapshot's
+        // figure: strategy reasoning must never continue from a superseded
+        // subject size after an acreage/extent adoption.
+        subjectAcres: canonicalExtentAcres ?? snapshot.identity.acres,
         valuation: snapshot.valuation,
         dueDiligence: snapshot.dueDiligence,
         zoning: zoning?.headline ?? zoning?.detail ?? null,
@@ -10121,6 +10138,11 @@ export function registerLandosRoutes(app: Hono): void {
       assessorTax: (cardId != null
         ? new CapabilityInvocationStore().latestForProperty(cardId, dealCardId, ASSESSOR_TAX_CAPABILITY_ID)
         : null) as unknown,
+      // The retained official acreage / parcel-extent reconciliation. Its
+      // canonical current acreage outranks the mission snapshot's figure in
+      // the dossier, so a stale snapshot can never silently feed the analyst
+      // a superseded subject size. A SELECT.
+      acreageExtent: readAcreageExtentRecord(dealCardId) as unknown,
       visuals,
       visualObservations: groundedVisualObservations,
     };
@@ -10508,6 +10530,35 @@ export function registerLandosRoutes(app: Hono): void {
     })();
 
     return c.json({ running: true, startedAt }, 202);
+  });
+
+  // ── Acreage-dependent stale-product resolution (explicit only) ──────────
+  //
+  // The bounded deterministic pass that RESOLVES the stale markers an
+  // acreage/extent adoption raised: each product is classified against the
+  // canonical acreage (recalculated / retained-compatible-basis / requires
+  // targeted refresh / still stale) and the classification is persisted into
+  // the retained acreage-extent record. SELECTs plus one derived-snapshot
+  // update — no providers, no model calls, no rescaling. Synchronous.
+  app.post('/api/landos/deal-cards/:id/acreage-extent/refresh-dependents', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    try {
+      const result = runAcreageDependentRefresh(id);
+      if (result.outcome === 'refused') return c.json({ error: result.reason }, 409);
+      return c.json({
+        outcome: result.outcome,
+        reason: result.reason,
+        remainingStale: result.remainingStale,
+        record: result.record,
+        acreageExtent: readAcreageExtentRecord(id),
+      });
+    } catch (error) {
+      const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
+      logger.error({ event: 'acreage_dependent_refresh_failed', dealCardId: id, msg: detail }, 'acreage_dependent_refresh_failed');
+      return c.json({ error: `Acreage-dependent resolution failed: ${detail}` }, 500);
+    }
   });
 
   // ── Deal Brain conversation ─────────────────────────────────────────────

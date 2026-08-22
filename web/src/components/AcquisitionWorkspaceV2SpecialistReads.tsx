@@ -138,6 +138,14 @@ export interface AcreageExtentView {
   } | null;
   adoption?: { adopted?: boolean; previousAcres?: number | null; newAcres?: number | null; note?: string } | null;
   staleSince?: string | null;
+  /** The recorded per-product resolution of the stale markers, when the
+   *  bounded dependent-product resolver has run. */
+  dependentRefresh?: {
+    runAt?: string;
+    canonicalAcres?: number;
+    outcomes?: Array<{ product?: string; status?: string; basis?: string; evidence?: string[] }>;
+    remainingStale?: string[];
+  } | null;
   completedAt?: string;
   refusalReason?: string | null;
 }
@@ -148,6 +156,9 @@ export interface AcreageExtentControls {
   running: boolean;
   error: string | null;
   onReconcile: () => void;
+  /** Runs the bounded deterministic stale-product resolver. */
+  resolvingDependents?: boolean;
+  onResolveDependents?: (() => void) | null;
 }
 
 // ── Shared pieces ──────────────────────────────────────────────────────────
@@ -282,6 +293,25 @@ function AcreageExtentPanel({ acreage }: { acreage: AcreageExtentControls }) {
               {record.staleSince ? ` — since ${new Date(record.staleSince).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}.
             </p>
           )}
+          {(record.dependentRefresh?.outcomes?.length ?? 0) > 0 && (
+            <div data-testid="acreage-dependent-resolution">
+              <p>
+                <i>Dependent products</i>{' '}
+                {staleProducts.length === 0
+                  ? <span data-testid="acreage-dependents-resolved">All reconciled against the canonical {record.dependentRefresh?.canonicalAcres} AC.</span>
+                  : `${(record.dependentRefresh?.outcomes ?? []).length - staleProducts.length} of ${(record.dependentRefresh?.outcomes ?? []).length} reconciled against the canonical ${record.dependentRefresh?.canonicalAcres} AC.`}
+              </p>
+              <details class="awv2-specialist-details">
+                <summary>Resolution record ({(record.dependentRefresh?.outcomes ?? []).length})</summary>
+                {(record.dependentRefresh?.outcomes ?? []).map((outcome) => (
+                  <p data-testid={`acreage-dependent-${outcome.product}`}>
+                    <i>{(outcome.product ?? '').replace(/_/g, ' ')}</i>{' '}
+                    <b>{(outcome.status ?? '').replace(/_/g, ' ')}</b> — {outcome.basis}
+                  </p>
+                ))}
+              </details>
+            </div>
+          )}
           <p class="awv2-specialist-reconcile-status">
             <i>Status</i>{' '}
             <span class={`awv2-reconcile-chip s-${tone}`} data-testid="acreage-status">{status ? ACREAGE_STATUS_LABEL[status] ?? status : '—'}</span>
@@ -310,6 +340,21 @@ function AcreageExtentPanel({ acreage }: { acreage: AcreageExtentControls }) {
           title="Reconciles the conflicting acreage figures against the current official county parcel record and GIS depiction"
         >
           {acreage.running ? 'Reconciling official acreage…' : 'Reconcile official acreage & extent'}
+        </button>
+      )}
+      {record && staleProducts.length > 0 && acreage.onResolveDependents && (
+        // Explicit action only: one bounded DETERMINISTIC pass that classifies
+        // each stale product against the canonical acreage and records the
+        // classification. No providers, no model calls, no rescaling.
+        <button
+          type="button"
+          class="awv2-reconcile-btn"
+          data-testid="acreage-resolve-dependents"
+          disabled={acreage.resolvingDependents}
+          onClick={() => acreage.onResolveDependents?.()}
+          title="Classifies each stale acreage-dependent product against the canonical acreage and records the resolution — nothing is rerun or rescaled"
+        >
+          {acreage.resolvingDependents ? 'Resolving dependent products…' : 'Resolve acreage-dependent products'}
         </button>
       )}
     </div>

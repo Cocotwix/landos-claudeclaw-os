@@ -76,6 +76,20 @@ const hash = (value: unknown): string =>
 export function propertyLayerFingerprint(dossier: AcquisitionDossier): string {
   return hash({
     identity: dossier.identity,
+    // The canonical acreage/extent DECISION is property evidence: an adoption
+    // must move this fingerprint. The dependent-product resolution bookkeeping
+    // (staleProducts / dependentResolution) is deliberately excluded — it
+    // records that downstream products caught up, which is not new property
+    // evidence, and hashing it would make each resolver pass re-invalidate
+    // the layer it just reconciled.
+    acreage: dossier.acreage == null ? null : {
+      canonicalAcres: dossier.acreage.canonicalAcres,
+      source: dossier.acreage.source,
+      confidence: dossier.acreage.confidence,
+      parcelExtent: dossier.acreage.parcelExtent,
+      extentExplanation: dossier.acreage.extentExplanation,
+      retainedFigures: dossier.acreage.retainedFigures,
+    },
     physical: dossier.physical,
     access: dossier.access,
     landUse: dossier.landUse,

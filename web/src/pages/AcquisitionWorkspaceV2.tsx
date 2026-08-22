@@ -332,6 +332,7 @@ export function AcquisitionWorkspaceV2() {
   const [acreageExtent, setAcreageExtent] = useState<AcreageExtentView | null>(null);
   const [acreageRunning, setAcreageRunning] = useState(false);
   const [acreageError, setAcreageError] = useState<string | null>(null);
+  const [acreageResolvingDependents, setAcreageResolvingDependents] = useState(false);
   const [dealBrainThread, setDealBrainThread] = useState<DealBrainThreadEntry[]>([]);
   const [dealBrainRunning, setDealBrainRunning] = useState(false);
   const [dealBrainError, setDealBrainError] = useState<string | null>(null);
@@ -561,6 +562,25 @@ export function AcquisitionWorkspaceV2() {
     } catch (e) {
       setAcreageRunning(false);
       setAcreageError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // The explicit bounded DETERMINISTIC resolution of the stale acreage-
+  // dependent products: SELECTs plus one snapshot update; no providers, no
+  // model calls, no rescaling. Synchronous — the updated record comes back.
+  const runAcreageDependentResolve = async () => {
+    if (dealId == null || acreageResolvingDependents) return;
+    setAcreageResolvingDependents(true);
+    setAcreageError(null);
+    try {
+      const result = await apiPost<{ acreageExtent?: AcreageExtentView | null }>(
+        `/api/landos/deal-cards/${dealId}/acreage-extent/refresh-dependents`, {},
+      );
+      if (result?.acreageExtent !== undefined) setAcreageExtent(result.acreageExtent ?? null);
+    } catch (e) {
+      setAcreageError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAcreageResolvingDependents(false);
     }
   };
 
@@ -958,6 +978,8 @@ export function AcquisitionWorkspaceV2() {
               running: acreageRunning,
               error: acreageError,
               onReconcile: runAcreageReconcile,
+              resolvingDependents: acreageResolvingDependents,
+              onResolveDependents: runAcreageDependentResolve,
             },
           }}
           dealBrain={{

@@ -32,6 +32,7 @@ import {
   type GisDepictionRecord,
   type SiblingParcelRecord,
 } from './acreage-extent-reconciliation.js';
+import type { AcreageDependentRefreshRecord } from './acreage-dependent-refresh.js';
 import {
   searchWilliamsonParcelFamily,
   williamsonParcelIdMatchesApn,
@@ -80,6 +81,11 @@ export interface AcreageExtentRunRecord {
    *  silently clear them while dependent products still rest on the old
    *  acreage; only recomputing those products retires the marker. */
   staleSince: string | null;
+  /** The recorded per-product resolution of the stale markers (Slice 4C).
+   *  Absent until the bounded dependent-product resolver has run; once
+   *  present, its remaining-stale set — not the raw adoption marker — is what
+   *  later reconciliation re-runs carry forward. */
+  dependentRefresh?: AcreageDependentRefreshRecord | null;
   refusalReason: string | null;
 }
 
@@ -307,14 +313,22 @@ export function persistAcreageExtentRun(record: AcreageExtentRunRecord, subject:
   // timestamp — a no-change re-run never silently clears them.
   let staleSince: string | null = adoption.adopted ? record.completedAt : null;
   let staleProducts = decision.staleProducts;
+  let dependentRefresh: AcreageDependentRefreshRecord | null = null;
   if (!adoption.adopted && staleProducts.length === 0) {
     const current = readAcreageExtentRecord(dealCardId);
     const history = readDerivedSnapshotHistory<AcreageExtentRunRecord>(dealCardId, ACREAGE_EXTENT_SNAPSHOT_TYPE);
     // Latest-first over current + retained history: the most recent record
-    // that still carries markers (or the adoption itself) wins.
+    // that resolved the markers, still carries markers, or raised them by
+    // adoption wins. A recorded dependent-product resolution is authoritative
+    // over the raw adoption marker — a no-change re-run must neither clear
+    // markers silently nor resurrect ones a resolution already retired.
     const prior = [current, ...history.reverse()]
-      .find((r) => r != null && (r.decision.staleProducts?.length || r.adoption?.adopted));
-    if (prior?.decision.staleProducts?.length || prior?.adoption?.adopted) {
+      .find((r) => r != null && (r.dependentRefresh || r.decision.staleProducts?.length || r.adoption?.adopted));
+    if (prior?.dependentRefresh) {
+      dependentRefresh = prior.dependentRefresh;
+      staleProducts = prior.decision.staleProducts ?? [];
+      staleSince = staleProducts.length ? (prior.staleSince ?? prior.completedAt ?? null) : null;
+    } else if (prior?.decision.staleProducts?.length || prior?.adoption?.adopted) {
       staleProducts = prior.decision.staleProducts?.length
         ? prior.decision.staleProducts
         : [...ACREAGE_DEPENDENT_PRODUCTS];
@@ -326,6 +340,7 @@ export function persistAcreageExtentRun(record: AcreageExtentRunRecord, subject:
     ...record,
     adoption,
     staleSince,
+    dependentRefresh,
     decision: { ...decision, staleProducts },
   };
   writeDerivedSnapshot({

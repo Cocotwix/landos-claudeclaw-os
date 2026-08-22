@@ -53,6 +53,7 @@ function baseDossier(): AcquisitionDossier {
       county: 'Williamson', stateCode: 'TN', owner: 'Owner', acres: 75.91, acreageBasis: 'assessor',
       hasParcelGeometry: true, basis: 'official record',
     },
+    acreage: null,
     physical: {
       acres: 75.91, buildablePct: '60%', buildableAcres: '45', slopeAveragePct: '8%', acresUnder10PctSlope: '40',
       elevation: null, femaFloodZone: 'X', femaCoveragePct: null, wetlandsPct: null, waterPresent: null,

@@ -148,6 +148,23 @@ export interface AcquisitionDossier {
     hasParcelGeometry: boolean | null;
     basis: string | null;
   };
+  /** Canonical current acreage from the retained official acreage /
+   *  parcel-extent reconciliation, with the superseded figures and the
+   *  recorded resolution of the acreage-dependent products. Null when no
+   *  reconciliation is retained. When present, `identity.acres` and
+   *  `physical.acres` already carry `canonicalAcres` — the CURRENT parcel
+   *  size; every other retained figure here describes provenance or the
+   *  pre-split historical extent, never the current subject. */
+  acreage: {
+    canonicalAcres: number;
+    source: string | null;
+    confidence: string | null;
+    parcelExtent: string | null;
+    extentExplanation: string | null;
+    retainedFigures: Array<{ acres: number | null; valueType: string | null; source: string | null; vintage: string | null }>;
+    staleProducts: string[];
+    dependentResolution: Array<{ product: string; status: string; basis: string }>;
+  } | null;
   physical: {
     acres: number | null;
     buildablePct: string | null;
@@ -346,6 +363,11 @@ export interface PropertyFileSource {
   /** The latest persisted Assessor & Tax capability RESULT for this subject,
    *  verbatim from the invocation ledger. */
   assessorTax?: Unknown;
+  /** The retained official acreage / parcel-extent reconciliation record
+   *  (acreage_extent_v1), verbatim. Its canonical current acreage outranks any
+   *  stale mission-snapshot or provider acreage for CURRENT reasoning; the
+   *  superseded figures stay retained inside it as provenance. */
+  acreageExtent?: Unknown;
   /** Retained visual assets, resolved to files on this machine. */
   visuals?: Array<{ key: string; label?: string | null; purpose?: string | null; capturedAt?: string | null; filePath?: string | null }>;
   /** Candidate visual observations. Only entries the caller can vouch for as
@@ -393,7 +415,14 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
   const cv = at(pi, 'compsValuation');
   const marketSource = source.marketContext ?? at(pi, 'compsValuation.marketContext');
 
-  const identityAcres = num(at(snapshot, 'identity.acres')) ?? num(at(lpf, 'acres'));
+  // Canonical current acreage outranks the mission-snapshot and provider
+  // figures for CURRENT reasoning: an adopted acreage/extent reconciliation is
+  // the identity-verified official record, while `snapshot.identity.acres` can
+  // lag it (the mission snapshot is only rebuilt by a full mission run). The
+  // superseded figures stay retained inside the `acreage` section below.
+  const extent = at(source, 'acreageExtent');
+  const canonicalAcres = num(at(extent, 'decision.canonicalAcres'));
+  const identityAcres = canonicalAcres ?? num(at(snapshot, 'identity.acres')) ?? num(at(lpf, 'acres'));
   const identity: AcquisitionDossier['identity'] = {
     state: text(at(snapshot, 'identity.state'), 40),
     confirmed: text(at(snapshot, 'identity.state'), 40) === 'confirmed',
@@ -405,10 +434,36 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     stateCode: text(at(snapshot, 'identity.state_'), 8) ?? text(at(lpf, 'stateCode'), 8),
     owner: text(at(snapshot, 'identity.owner'), 120) ?? text(at(lpf, 'owner'), 120),
     acres: identityAcres,
-    acreageBasis: text(at(snapshot, 'identity.acreageBasis'), 60),
+    acreageBasis: canonicalAcres != null
+      ? 'official_reported (canonical acreage reconciliation)'
+      : text(at(snapshot, 'identity.acreageBasis'), 60),
     hasParcelGeometry: bool(at(snapshot, 'identity.hasParcelGeometry')),
     basis: text(at(snapshot, 'identity.discoveryBasis'), 500) ?? text(at(snapshot, 'identity.explanation'), 500),
   };
+
+  const acreage: AcquisitionDossier['acreage'] = canonicalAcres != null
+    ? {
+      canonicalAcres,
+      source: text(at(extent, 'decision.canonicalSource'), 160),
+      confidence: text(at(extent, 'decision.confidence'), 20),
+      parcelExtent: text(at(extent, 'decision.parcelExtent'), 400),
+      extentExplanation: text(at(extent, 'decision.extentExplanation'), 600),
+      retainedFigures: asArray(at(extent, 'decision.retained')).slice(0, 8).map((r) => ({
+        acres: num(at(r, 'valueAcres')),
+        valueType: text(at(r, 'valueType'), 40),
+        source: text(at(r, 'source'), 160),
+        vintage: text(at(r, 'vintage'), 20),
+      })),
+      staleProducts: asArray(at(extent, 'decision.staleProducts'))
+        .map((p) => text(p, 40))
+        .filter((p): p is string => !!p),
+      dependentResolution: asArray(at(extent, 'dependentRefresh.outcomes')).map((o) => ({
+        product: text(at(o, 'product'), 40) ?? 'unknown',
+        status: text(at(o, 'status'), 40) ?? 'unknown',
+        basis: text(at(o, 'basis'), 400) ?? '',
+      })),
+    }
+    : null;
 
   const physical: AcquisitionDossier['physical'] = {
     acres: identityAcres,
@@ -526,7 +581,11 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     workingAcres: num(at(cv, 'summary.workingAcres')),
     acceptedCompCount: num(at(cv, 'summary.acceptedCount')),
     medianPricePerAcre: num(at(cv, 'summary.medianPricePerAcre')),
-    fairMarketValue: num(at(cv, 'summary.fmv')),
+    // summary.fmv is the {low, central, high} band; the adopted figure is its
+    // central value. Reading the object with num() silently yielded null and
+    // made every downstream screen report "no supported FMV" while the
+    // valuation surface carried one.
+    fairMarketValue: num(at(cv, 'summary.fmv.central')) ?? num(at(cv, 'summary.fmv')),
     lpEstimate: text(at(cv, 'lpEstimate.priceLabel'), 80),
     blockers: strings(at(pi, 'canonicalState.valuation.blockers'), MAX_LIST, 'Valuation blockers', truncation),
   };
@@ -693,6 +752,7 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     propertyCardId: source.propertyCardId ?? num(at(snapshot, 'identity.propertyCardId')) ?? null,
     assembledAt: (source.now?.() ?? new Date()).toISOString(),
     identity,
+    acreage,
     physical,
     access: accessSection,
     landUse: landUseSection,
