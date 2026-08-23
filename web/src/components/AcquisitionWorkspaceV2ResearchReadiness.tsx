@@ -125,7 +125,14 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
       <header class="awv2-rr-head">
         <div class="awv2-rr-title">
           <div class="awv2-dom-eyebrow" data-dom="property"><ClipboardCheck size={13} /> Research readiness</div>
-          <h2>{manifest.headline.toUpperCase()}</h2>
+          {/*
+            Name the unit. This strip counts the 19 diligence INPUTS a deal
+            needs; the run panel counts the 12 research LANES a run dispatched.
+            Rendered as a bare "10 / 19" beside "7 of 12 required lanes
+            returned", the two read as contradictory completion claims of the
+            same thing — which they are not, and never were.
+          */}
+          <h2>{counts.ready} / {counts.total} RESEARCH INPUTS READY</h2>
         </div>
         <div class="awv2-rr-tallies">
           {tallies.map((tally) => (
@@ -167,6 +174,7 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
           View research readiness
         </button>
         <span class="awv2-rr-note">
+          Diligence inputs, a different measure from the research lane count on the run panel above.
           Reading this card runs no research. Backfill runs only the missing items a registered capability owns.
         </span>
       </div>
