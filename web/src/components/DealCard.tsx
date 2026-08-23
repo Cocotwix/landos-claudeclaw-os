@@ -390,7 +390,7 @@ function VisualIntelligencePanel({ cardId, token, compact }: { cardId: number; t
   const [rec, setRec] = useState<ViRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const withToken = (u: string) => (u.startsWith('/api/') ? `${u}&token=${encodeURIComponent(token)}` : u);
+  const withToken = (u: string) => u;
 
   async function load() {
     try { const r = await apiGet<{ record: ViRecord | null }>(`/api/landos/property-cards/${cardId}/visual-intelligence`); setRec(r.record); }
@@ -3013,8 +3013,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
                   {piSnapshot.completedAt && <span class="text-[10px] text-[var(--color-text-faint)]">last run {formatRelativeTime(new Date(piSnapshot.completedAt).getTime())}</span>}
                 </div>
                 <div class="flex items-center gap-2 flex-wrap">
-                  <a href={`/api/landos/deal-cards/${deal.id}/report/download?format=pdf&token=${encodeURIComponent(dashboardToken)}`} class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]">Download PDF</a>
-                  <a href={`/api/landos/deal-cards/${deal.id}/report/download?format=md&token=${encodeURIComponent(dashboardToken)}`} class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]">Download Markdown</a>
+                  <a href={`/api/landos/deal-cards/${deal.id}/report/download?format=pdf`} class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]">Download PDF</a>
+                  <a href={`/api/landos/deal-cards/${deal.id}/report/download?format=md`} class="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-elevated)]">Download Markdown</a>
                 </div>
               </div>
             ) : (

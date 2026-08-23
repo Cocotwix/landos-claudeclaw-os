@@ -1,10 +1,12 @@
-// Token + chatId come from the URL query string (set by the Telegram deep link
-// or a saved bookmark). sessionStorage keeps a tab working across navigations.
+// A legacy Telegram link or bookmark may still arrive with the master token in
+// its query string. It is consumed once, removed from the visible URL before
+// any navigation or request, and exchanged through the existing loopback-only
+// pairing header for the existing HttpOnly browser-session cookie.
 //
 // Cross-tab persistence (deliberate, scoped, safe): the dashboard token is ALSO
 // mirrored to localStorage, but ONLY on a local dashboard origin (localhost /
 // 127.0.0.1 / [::1]), so a fresh local tab stays authenticated without re-adding
-// ?token=. Hard rules:
+// query credential. Hard rules:
 //   - Only the dashboard token is persisted. NEVER LandPortal credentials,
 //     cookies, CDP data, or any browser-session secret — none of those ever
 //     touch the frontend.
@@ -30,6 +32,7 @@ const lsGet = (k: string): string => { try { return localStorage.getItem(k) || '
 const lsSet = (k: string, v: string): void => { try { localStorage.setItem(k, v); } catch {} };
 
 let cachedToken = url.searchParams.get('token') || '';
+const tokenArrivedInUrl = cachedToken.length > 0;
 if (cachedToken) {
   // URL token wins and updates both stores (localStorage local-origin only).
   ssSet(TOKEN_KEY, cachedToken);
@@ -42,6 +45,12 @@ if (cachedToken) {
     cachedToken = lsGet(TOKEN_KEY);
     if (cachedToken) ssSet(TOKEN_KEY, cachedToken);
   }
+}
+
+if (tokenArrivedInUrl) {
+  const clean = new URL(window.location.href);
+  clean.searchParams.delete('token');
+  window.history.replaceState(null, '', clean.pathname + clean.search + clean.hash);
 }
 
 let cachedChatId = url.searchParams.get('chatId') || '';
@@ -61,14 +70,50 @@ export function clearDashboardToken(): void {
   try { localStorage.removeItem(TOKEN_KEY); } catch {}
 }
 
-function withToken(path: string): string {
-  const sep = path.includes('?') ? '&' : '?';
-  return `${path}${sep}token=${encodeURIComponent(dashboardToken)}`;
+/** Same-origin URLs authenticate with the HttpOnly browser-session cookie. */
+export function authenticatedUrl(path: string): string { return path; }
+
+let sessionBootstrap: Promise<void> | null = null;
+function ensureDashboardSession(): Promise<void> {
+  if (sessionBootstrap) return sessionBootstrap;
+  if (!cachedToken || !isLocalDashboard()) return Promise.resolve();
+  sessionBootstrap = (async () => {
+    try {
+      const returnTo = window.location.pathname + window.location.search;
+      const created = await fetch('/api/dashboard/browser-pairings', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'content-type': 'application/json',
+          'x-landos-bootstrap-token': cachedToken,
+        },
+        body: JSON.stringify({ returnTo }),
+      });
+      if (!created.ok) return;
+      const pairing = await created.json() as { pairingUrl?: string };
+      const code = pairing.pairingUrl ? new URL(pairing.pairingUrl).hash.slice(1) : '';
+      if (!code) return;
+      const claimed = await fetch('/api/dashboard/browser-pairings/claim', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      if (claimed.ok) clearDashboardToken();
+    } catch {
+      // The ordinary API request below supplies the user-visible 401/connect
+      // behavior. Never log the credential or the failed request object.
+    }
+  })();
+  return sessionBootstrap;
 }
+
+/** Awaited by API/SSE consumers so direct assets render only after cookie auth. */
+export const dashboardSessionReady = ensureDashboardSession();
 // A fresh local browser has no dashboard session yet. Take it to the pairing
 // screen instead of leaving the current page with a raw API 401.
 function redirectUnpairedBrowser(status: number): void {
-  if (status !== 401 || dashboardToken || window.location.pathname === '/connect') return;
+  if (status !== 401 || window.location.pathname === '/connect') return;
   const returnTo = window.location.pathname + window.location.search;
   const target = new URL('/connect', window.location.origin);
   target.searchParams.set('returnTo', returnTo);
@@ -82,7 +127,8 @@ export class ApiError extends Error {
 }
 
 export async function apiGet<T = unknown>(path: string): Promise<T> {
-  const res = await fetch(withToken(path), { method: 'GET' });
+  await dashboardSessionReady;
+  const res = await fetch(authenticatedUrl(path), { method: 'GET', credentials: 'same-origin' });
   if (!res.ok) {
     redirectUnpairedBrowser(res.status);
     const body = await res.json().catch(() => ({}));
@@ -92,8 +138,10 @@ export async function apiGet<T = unknown>(path: string): Promise<T> {
 }
 
 export async function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(withToken(path), {
+  await dashboardSessionReady;
+  const res = await fetch(authenticatedUrl(path), {
     method: 'POST',
+    credentials: 'same-origin',
     headers: body ? { 'content-type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -107,7 +155,8 @@ export async function apiPost<T = unknown>(path: string, body?: unknown): Promis
 /** POST browser-native form data while preserving the local dashboard session.
  * The browser supplies the multipart boundary; callers must not set content-type. */
 export async function apiPostForm<T = unknown>(path: string, body: FormData): Promise<T> {
-  const res = await fetch(withToken(path), { method: 'POST', body });
+  await dashboardSessionReady;
+  const res = await fetch(authenticatedUrl(path), { method: 'POST', credentials: 'same-origin', body });
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
     throw new ApiError(res.status, errBody, `POST ${path} failed: ${res.status}`);
@@ -116,8 +165,10 @@ export async function apiPostForm<T = unknown>(path: string, body: FormData): Pr
 }
 
 export async function apiPatch<T = unknown>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(withToken(path), {
+  await dashboardSessionReady;
+  const res = await fetch(authenticatedUrl(path), {
     method: 'PATCH',
+    credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -129,8 +180,10 @@ export async function apiPatch<T = unknown>(path: string, body: unknown): Promis
 }
 
 export async function apiPut<T = unknown>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(withToken(path), {
+  await dashboardSessionReady;
+  const res = await fetch(authenticatedUrl(path), {
     method: 'PUT',
+    credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -142,7 +195,8 @@ export async function apiPut<T = unknown>(path: string, body: unknown): Promise<
 }
 
 export async function apiDelete<T = unknown>(path: string): Promise<T> {
-  const res = await fetch(withToken(path), { method: 'DELETE' });
+  await dashboardSessionReady;
+  const res = await fetch(authenticatedUrl(path), { method: 'DELETE', credentials: 'same-origin' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(res.status, body, `DELETE ${path} failed: ${res.status}`);
@@ -151,7 +205,7 @@ export async function apiDelete<T = unknown>(path: string): Promise<T> {
 }
 
 export function tokenizedSseUrl(path: string): string {
-  return withToken(path);
+  return authenticatedUrl(path);
 }
 
 // Vite dev runs on :5173 and proxies /api/* and /warroom/text to the

@@ -26,6 +26,7 @@ import { buildResearchMissionView, type ResearchMissionView } from './research-m
 import { attachCardActivity, getCardActivity, getPropertyCard } from './property-card.js';
 import type { OperatorPropertyRecord } from './operator-property-record.js';
 import type { CompProviderRun } from './comp-orchestrator.js';
+import type { UtilityKnowledgeRead } from './utility-availability-record.js';
 
 /** Bump when the canonical Deal Card model changes shape/semantics. */
 export const DEAL_CARD_MODEL_VERSION = 2;
@@ -243,6 +244,7 @@ export function strategyReadinessForDeal(input: {
   valuationConflict: boolean;
   improved: boolean;
   hardRisks?: string[] | null;
+  utilityKnowledge: UtilityKnowledgeRead | null;
 }): StrategyReadinessRecord {
   const rec = input.operatorRecord;
   const wetlandsCard = rec?.decisionCards.find((c) => c.key === 'wetlands');
@@ -265,7 +267,7 @@ export function strategyReadinessForDeal(input: {
     accessStatus: rec?.accessStatus.status ?? 'unknown',
     legalAccessConfirmed: false, // recorded-instrument confirmation is never inferred
     zoningKnown: !!rec?.decisionCards.find((c) => c.key === 'zoning' && c.verdict !== 'unknown'),
-    utilitiesKnown: !!rec?.decisionCards.find((c) => c.key === 'utilities' && c.verdict !== 'unknown'),
+    utilitiesKnown: input.utilityKnowledge?.fullyKnown === true,
     improved: input.improved,
     hardRisks: input.hardRisks ?? rec?.risks ?? [],
     trustAuthorityUnresolved: (rec?.identity.ownerWarnings?.length ?? 0) > 0,

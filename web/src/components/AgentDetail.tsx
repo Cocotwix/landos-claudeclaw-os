@@ -6,7 +6,7 @@ import { Pill, StatusDot } from '@/components/Pill';
 import { Tab } from '@/components/PageHeader';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime, formatCost } from '@/lib/format';
-import { chatId, dashboardToken } from '@/lib/api';
+import { chatId, dashboardSessionReady } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { showCosts } from '@/lib/theme';
 
@@ -56,7 +56,7 @@ export function AgentDetail({ agent, onClose }: Props) {
 
 function Header({ agent }: { agent: Agent }) {
   // Cache-bust the avatar by bumping a counter every time we upload or
-  // delete — the AgentAvatar component reads `?token=...` only and
+  // delete — the AgentAvatar URL carries only a cache-busting revision and
   // would otherwise serve the stale cached image.
   const [avatarVersion, setAvatarVersion] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -75,8 +75,10 @@ function Header({ agent }: { agent: Agent }) {
     try {
       const form = new FormData();
       form.append('image', file);
-      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/avatar?token=${encodeURIComponent(dashboardToken)}`, {
+      await dashboardSessionReady;
+      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/avatar`, {
         method: 'PUT',
+        credentials: 'same-origin',
         body: form,
       });
       if (!res.ok) {
@@ -102,8 +104,10 @@ function Header({ agent }: { agent: Agent }) {
     if (!confirm(`Remove the custom avatar for ${agent.id}? The dashboard will fall back to Telegram's avatar (if set) or initials.`)) return;
     setBusy(true);
     try {
-      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/avatar?token=${encodeURIComponent(dashboardToken)}`, {
+      await dashboardSessionReady;
+      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/avatar`, {
         method: 'DELETE',
+        credentials: 'same-origin',
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

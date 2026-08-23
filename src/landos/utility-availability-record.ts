@@ -95,6 +95,12 @@ export interface UtilityAvailabilityProjection {
   depth: DevelopmentResearchDepth;
   water: UtilityAvailabilityResolution;
   sewer: UtilityAvailabilityResolution;
+  /**
+   * The one current interpretation consumed by every downstream question that
+   * still needs a coarse "utilities known" gate. The per-utility outcomes stay
+   * attached so PARTIAL/BLOCKED/UNRESOLVED is never flattened into a false yes.
+   */
+  knowledge: UtilityKnowledgeRead;
   waterPlan: UtilityResearchPlan;
   sewerPlan: UtilityResearchPlan;
   neighborhoodPattern: NeighborhoodServicePattern | null;
@@ -106,6 +112,50 @@ export interface UtilityAvailabilityProjection {
   sewerConfirmation: UtilityConfirmationRequest | null;
   researchNotes: string[];
   researchedAt: string;
+}
+
+export interface UtilityKnowledgeRead {
+  outcome: UtilityAvailabilityResolution['laneOutcome'];
+  fullyKnown: boolean;
+  water: { outcome: UtilityAvailabilityResolution['laneOutcome']; known: boolean };
+  sewer: { outcome: UtilityAvailabilityResolution['laneOutcome']; known: boolean };
+  summary: string;
+}
+
+function utilityOutcomeIsKnown(outcome: UtilityAvailabilityResolution['laneOutcome']): boolean {
+  return outcome === 'RETURNED' || outcome === 'NOT_REQUIRED';
+}
+
+/**
+ * Reconcile the independent water and sewer resolutions into the canonical
+ * compatibility read used by older boolean gates.
+ *
+ * RETURNED and NOT_REQUIRED are the only settled outcomes. A mixed pair is
+ * PARTIAL, while a pair with no usable answer preserves BLOCKED/UNRESOLVED.
+ * Consumers needing detail always retain the two independent outcomes.
+ */
+export function interpretUtilityKnowledge(
+  water: UtilityAvailabilityResolution,
+  sewer: UtilityAvailabilityResolution,
+): UtilityKnowledgeRead {
+  const waterKnown = utilityOutcomeIsKnown(water.laneOutcome);
+  const sewerKnown = utilityOutcomeIsKnown(sewer.laneOutcome);
+  const outcomes = [water.laneOutcome, sewer.laneOutcome];
+  const fullyKnown = waterKnown && sewerKnown;
+  const outcome: UtilityAvailabilityResolution['laneOutcome'] =
+    outcomes.every((value) => value === 'NOT_REQUIRED') ? 'NOT_REQUIRED'
+      : fullyKnown ? 'RETURNED'
+        : outcomes.every((value) => value === 'UNRESOLVED') ? 'UNRESOLVED'
+          : outcomes.includes('PARTIAL') || waterKnown || sewerKnown ? 'PARTIAL'
+            : outcomes.includes('BLOCKED') ? 'BLOCKED'
+              : 'UNRESOLVED';
+  return {
+    outcome,
+    fullyKnown,
+    water: { outcome: water.laneOutcome, known: waterKnown },
+    sewer: { outcome: sewer.laneOutcome, known: sewerKnown },
+    summary: `Water: ${water.laneOutcome}. Sewer: ${sewer.laneOutcome}.`,
+  };
 }
 
 /**
@@ -243,6 +293,7 @@ export function projectUtilityAvailability(
     depth: record.depth,
     water,
     sewer,
+    knowledge: interpretUtilityKnowledge(water, sewer),
     waterPlan: planFor('water', water),
     sewerPlan: planFor('sewer', sewer),
     neighborhoodPattern: pattern,

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { dashboardToken } from '@/lib/api';
 
 export interface DealImageItem {
   id: string;
@@ -13,8 +12,7 @@ export interface DealImageItem {
 
 function tokenized(url: string | null): string | null {
   if (!url) return null;
-  if (!url.startsWith('/api/')) return url;
-  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
+  return url;
 }
 
 function heroScore(item: DealImageItem): number {

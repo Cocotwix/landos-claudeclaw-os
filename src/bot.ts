@@ -1205,7 +1205,27 @@ export function createBot(): Bot {
     }
     const chatIdStr = ctx.chat!.id.toString();
     const base = DASHBOARD_URL || `http://localhost:${DASHBOARD_PORT}`;
-    const url = `${base}/?token=${DASHBOARD_TOKEN}&chatId=${chatIdStr}`;
+    let url: string;
+    try {
+      const created = await fetch(`http://localhost:${DASHBOARD_PORT}/api/dashboard/browser-pairings`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-landos-bootstrap-token': DASHBOARD_TOKEN,
+        },
+        body: JSON.stringify({
+          returnTo: `/?chatId=${encodeURIComponent(chatIdStr)}`,
+          remoteOrigin: base,
+        }),
+      });
+      if (!created.ok) throw new Error(`pairing request failed (${created.status})`);
+      const pairing = await created.json() as { pairingUrl?: unknown };
+      if (typeof pairing.pairingUrl !== 'string') throw new Error('pairing response was invalid');
+      url = pairing.pairingUrl;
+    } catch {
+      await ctx.reply('Dashboard link unavailable. Confirm the dashboard is running and try again.');
+      return;
+    }
 
     const { InlineKeyboard } = await import('grammy');
     const keyboard = new InlineKeyboard().url('Open Dashboard', url);

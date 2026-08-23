@@ -436,8 +436,8 @@ export function DocumentRegistryPanel({ registry, dealId, token }: { registry: D
   const [zoom, setZoom] = useState(1);
   useEffect(() => { setZoom(1); }, [viewer?.docId, viewer?.page]);
   if (!registry) return null;
-  const pageSrc = (file: string) => `/api/landos/deal-cards/${dealId}/document-page/${encodeURIComponent(file)}?token=${encodeURIComponent(token)}`;
-  const uploadSrc = (file: string) => `/api/landos/deal-cards/${dealId}/documents/upload-file/${encodeURIComponent(file)}?token=${encodeURIComponent(token)}`;
+  const pageSrc = (file: string) => `/api/landos/deal-cards/${dealId}/document-page/${encodeURIComponent(file)}`;
+  const uploadSrc = (file: string) => `/api/landos/deal-cards/${dealId}/documents/upload-file/${encodeURIComponent(file)}`;
   const viewerDoc = viewer ? registry.documents.find((d) => d.id === viewer.docId) ?? null : null;
   const viewerPage = viewerDoc?.pages.find((p) => p.pageNumber === viewer!.page) ?? null;
 

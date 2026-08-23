@@ -6,7 +6,7 @@ import {
   type PiOperatorScore,
   type PiSnapshot,
 } from '@/components/PropertyIntelligencePanel';
-import { apiPost, dashboardToken } from '@/lib/api';
+import { apiPost } from '@/lib/api';
 import { DealImageGallery } from '@/components/DealImageGallery';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -93,8 +93,7 @@ function analystFrom(snapshot: PiSnapshot | null): OperatorAnalysisView | null {
 
 function tokenized(url: string | null): string | null {
   if (!url) return null;
-  if (!url.startsWith('/api/')) return url;
-  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
+  return url;
 }
 
 function ActionButton({

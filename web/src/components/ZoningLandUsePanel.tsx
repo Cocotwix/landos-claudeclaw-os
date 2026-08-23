@@ -444,7 +444,7 @@ export function ZoningLandUsePanel(props: {
               <div class="text-[11px] font-semibold">Official sources & retained evidence</div>
               <div class="grid gap-3 md:grid-cols-2">
                 {props.value!.artifacts.map((artifact) => {
-                  const firstPage = `/api/landos/deal-cards/${props.dealId}/zoning-land-use/artifacts/${artifact.id}/page/1?token=${encodeURIComponent(props.token)}`;
+                  const firstPage = `/api/landos/deal-cards/${props.dealId}/zoning-land-use/artifacts/${artifact.id}/page/1`;
                   return (
                     <div key={artifact.id} data-testid="zoning-artifact" class="rounded-md border border-[var(--color-border)] p-3">
                       <div class="flex items-start gap-3">

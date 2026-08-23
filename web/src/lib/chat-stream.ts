@@ -1,5 +1,5 @@
 import { signal, effect } from '@preact/signals';
-import { tokenizedSseUrl, dashboardToken } from './api';
+import { tokenizedSseUrl, dashboardSessionReady } from './api';
 
 // Global chat SSE state — opened once when the app mounts so the unread
 // badge keeps tracking even when /chat isn't the active page.
@@ -21,7 +21,7 @@ export function resetUnread() { chatUnread.value = 0; }
 
 let started = false;
 export function startChatStream() {
-  if (started || !dashboardToken) return;
+  if (started) return;
   started = true;
 
   let es: EventSource | null = null;
@@ -63,7 +63,7 @@ export function startChatStream() {
     es.addEventListener('error', dispatch('error') as any);
   }
 
-  open();
+  void dashboardSessionReady.then(open);
 }
 
 // When the user navigates onto /chat, clear the unread count.

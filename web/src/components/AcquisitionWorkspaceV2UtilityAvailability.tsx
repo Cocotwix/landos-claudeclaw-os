@@ -30,7 +30,7 @@
 // nothing and calls nothing.
 import { useEffect, useState } from 'preact/hooks';
 
-import { apiGet, dashboardToken } from '@/lib/api';
+import { apiGet } from '@/lib/api';
 
 import { Disclosure } from './AcquisitionWorkspaceV2Diligence';
 import '../styles/workspace-v2-utility-availability.css';
@@ -360,7 +360,7 @@ function UtilityBlock({ resolution, plan, confirmation, context }: {
               request; an <img> cannot carry a header, so the token rides the
               query string the same way every other retained image here does. */}
           <img
-            src={`${infra.screenshotPath}?token=${encodeURIComponent(dashboardToken)}`}
+            src={infra.screenshotPath}
             alt={`${kindLabel} layer at the subject parcel`}
             loading="lazy"
           />

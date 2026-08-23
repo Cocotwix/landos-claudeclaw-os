@@ -275,7 +275,7 @@ export function DocumentUploadPanel({ dealId, token, onUploaded }: { dealId: num
     ['other', 'Other (perc test, delineation, elevation cert, utility/zoning letter, closing doc)'],
   ] as const;
   const endpoint = (suffix = '') =>
-    `/api/landos/deal-cards/${dealId}/documents/uploads${suffix}?token=${encodeURIComponent(token)}`;
+    `/api/landos/deal-cards/${dealId}/documents/uploads${suffix}`;
   const loadUploads = async () => {
     try {
       const response = await fetch(endpoint());
@@ -297,7 +297,7 @@ export function DocumentUploadPanel({ dealId, token, onUploaded }: { dealId: num
       fd.append('file', file);
       fd.append('category', category);
       fd.append('title', title || file.name);
-      const res = await fetch(`/api/landos/deal-cards/${dealId}/documents/upload?token=${encodeURIComponent(token)}`, { method: 'POST', body: fd });
+      const res = await fetch(`/api/landos/deal-cards/${dealId}/documents/upload`, { method: 'POST', credentials: 'same-origin', body: fd });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? 'upload failed');
       setMsg(`Uploaded "${body.upload?.title ?? file.name}".`);
@@ -403,7 +403,7 @@ export function DocumentUploadPanel({ dealId, token, onUploaded }: { dealId: num
                       {row.note && <div class="mt-1 whitespace-pre-wrap break-words text-[10.5px] leading-relaxed text-[var(--color-text-faint)]">{row.note}</div>}
                     </div>
                     <div class="flex flex-wrap gap-2">
-                      <a href={`/api/landos/deal-cards/${dealId}/documents/upload-file/${encodeURIComponent(row.fileName)}?token=${encodeURIComponent(token)}`} target="_blank" rel="noreferrer" class="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-accent)]">Open</a>
+                      <a href={`/api/landos/deal-cards/${dealId}/documents/upload-file/${encodeURIComponent(row.fileName)}`} target="_blank" rel="noreferrer" class="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-accent)]">Open</a>
                       <button type="button" disabled={busy} onClick={() => startEdit(row)} class="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[11px]">Edit details</button>
                       <button type="button" disabled={busy} onClick={() => void removeUpload(row)} class="rounded-md border border-rose-500/50 px-3 py-1.5 text-[11px] text-rose-400">Delete</button>
                     </div>

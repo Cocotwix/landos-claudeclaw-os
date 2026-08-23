@@ -256,9 +256,7 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
   const [viewerActualSize, setViewerActualSize] = useState(false);
   const [loadError, setLoadError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const withToken = (url: string) => token && url.startsWith('/api/')
-    ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
-    : url;
+  const withToken = (url: string) => url;
   // Retained originals are evidence. A failed reload must never blank them: an
   // empty panel is indistinguishable from "this Deal Card never had a
   // screenshot", which is exactly how retained evidence appears to go missing.

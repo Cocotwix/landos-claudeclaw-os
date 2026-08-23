@@ -11,15 +11,13 @@
 //   • No value is shown when the snapshot says the property is not priceable.
 
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { apiGet, apiPost, dashboardToken } from '../lib/api';
+import { apiGet, apiPost } from '../lib/api';
 import { DealImageGallery } from '@/components/DealImageGallery';
 
 /** Same-origin API asset URLs need the dashboard token appended for <img>/<a>. */
 function tokenized(url: string | null): string | null {
   if (!url) return null;
-  if (!url.startsWith('/api/')) return url;
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}token=${encodeURIComponent(dashboardToken)}`;
+  return url;
 }
 
 // ── View types (mirror src/landos/property-intelligence-snapshot.ts) ─────────

@@ -11,7 +11,7 @@
 //   • The comp section shows the attempt outcome even when no comp was found.
 
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { apiGet, apiPost, dashboardToken } from '../lib/api';
+import { apiGet, apiPost } from '../lib/api';
 
 interface BrowserUseCapture { label: string; file: string; pageUrl: string; capturedAt: string }
 interface BrowserUseCompCandidate {
@@ -156,7 +156,7 @@ const body = 'text-[11px] leading-relaxed text-[var(--color-text-muted)]';
 const box = 'rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3';
 
 function captureUrl(dealId: number, file: string): string {
-  return `/api/landos/deal-cards/${dealId}/browseruse/image/${encodeURIComponent(file)}?token=${encodeURIComponent(dashboardToken)}`;
+  return `/api/landos/deal-cards/${dealId}/browseruse/image/${encodeURIComponent(file)}`;
 }
 
 function FactRow({ name, value }: { name: string; value: string | null }) {

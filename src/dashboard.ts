@@ -316,6 +316,17 @@ function requestCookie(c: any, name: string): string {
   return '';
 }
 
+function hasBrowserSessionCookieHeader(header: string | undefined): boolean {
+  let token = '';
+  for (const item of (header || '').split(';')) {
+    const [key, ...value] = item.trim().split('=');
+    if (key === BROWSER_SESSION_COOKIE) token = value.join('=');
+  }
+  if (!token || token.length > 256) return false;
+  pruneBrowserPairings();
+  return hasDashboardBrowserSession(secretHash(token));
+}
+
 function pruneBrowserPairings(now = Date.now()): void {
   for (const [key, pairing] of browserPairings) {
     if (pairing.expiresAt <= now) browserPairings.delete(key);
@@ -324,10 +335,7 @@ function pruneBrowserPairings(now = Date.now()): void {
 }
 
 function hasLocalBrowserSession(c: any): boolean {
-  const token = requestCookie(c, BROWSER_SESSION_COOKIE);
-  if (!token || token.length > 256) return false;
-  pruneBrowserPairings();
-  return hasDashboardBrowserSession(secretHash(token));
+  return hasBrowserSessionCookieHeader(c.req.header('cookie'));
 }
 
 /** Extend an in-use session and return a refreshed cookie header, or null when
@@ -498,7 +506,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     c.header('Vary', 'Origin');
     if (origin) c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
-    c.header('Access-Control-Allow-Headers', 'Content-Type');
+    c.header('Access-Control-Allow-Headers', 'Content-Type, X-LandOS-Bootstrap-Token');
     if (c.req.method === 'OPTIONS') return c.body(null, 204);
     await next();
   });
@@ -649,6 +657,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // session cookie instead.
     if (hasLocalBrowserSession(c)) return null;
     return c.json({ error: 'Unauthorized' }, 401) as Response;
+  }
+
+  /** Normal cookie-authenticated legacy pages embed no master credential. */
+  function legacyPageToken(c: any): string {
+    return hasLocalBrowserSession(c) ? '' : c.req.query('token') || '';
   }
 
   // Mutation kill-switch middleware. When DASHBOARD_MUTATIONS_ENABLED is
@@ -981,11 +994,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
           };
         }
       }
-      return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT, board));
+      return c.html(getWarRoomHtml(legacyPageToken(c), chatId, WARROOM_PORT, board));
     }
     if (mode === 'picker' || legacyMode || !fs.existsSync(newDashboardIndex)) {
       const denied = requireToken(c); if (denied) return denied;
-      return c.html(getWarRoomPickerHtml(DASHBOARD_TOKEN, chatId));
+      return c.html(getWarRoomPickerHtml(legacyPageToken(c), chatId));
     }
     // v2 SPA shell — no embedded token, safe to serve unauth so a
     // hard-refresh of a token-stripped URL still loads the app.
@@ -1004,10 +1017,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   //                                   "Recent meetings" list on the
   //                                   picker)
   //   - meeting open                → serve interactive war room
-  function pickerRedirect(chatId: string) {
-    const q = new URLSearchParams({ token: DASHBOARD_TOKEN });
+  function pickerRedirect(c: any, chatId: string) {
+    const q = new URLSearchParams();
+    const token = legacyPageToken(c);
+    if (token) q.set('token', token);
     if (chatId) q.set('chatId', chatId);
-    return '/warroom?' + q.toString();
+    const query = q.toString();
+    return query ? `/warroom?${query}` : '/warroom';
   }
   app.get('/warroom/text', (c) => {
     // Legacy HTML embeds DASHBOARD_TOKEN — gate it inline since the
@@ -1017,23 +1033,23 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const meetingId = (c.req.query('meetingId') || '').trim();
     const archive = c.req.query('archive') === '1';
     if (!WARROOM_TEXT_ID_RE.test(meetingId)) {
-      return c.redirect(pickerRedirect(chatId));
+      return c.redirect(pickerRedirect(c, chatId));
     }
     const existing = getTextMeeting(meetingId);
     if (!existing) {
-      return c.redirect(pickerRedirect(chatId));
+      return c.redirect(pickerRedirect(c, chatId));
     }
     if (existing.ended_at !== null && !archive) {
-      return c.redirect(pickerRedirect(chatId));
+      return c.redirect(pickerRedirect(c, chatId));
     }
     // Chat-id mismatch: don't render the page (would let a stale meetingId
     // from chat A render under chat B's session). Send them back to the
     // picker for their actual chat. Legacy meetings with chat_id='' bypass
     // this since they pre-date the migration.
     if (existing.chat_id !== '' && existing.chat_id !== chatId) {
-      return c.redirect(pickerRedirect(chatId));
+      return c.redirect(pickerRedirect(c, chatId));
     }
-    return c.html(getWarRoomTextHtml(DASHBOARD_TOKEN, chatId, meetingId, {
+    return c.html(getWarRoomTextHtml(legacyPageToken(c), chatId, meetingId, {
       dealCardId: existing.deal_card_id,
       dealLabel: existing.deal_label,
     }));
@@ -4721,7 +4737,8 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       const url = new URL(req.url || '/', `http://${req.headers.host}`);
       if (url.pathname !== '/ws/landos/training') return;
       const token = url.searchParams.get('token');
-      if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
+      const sessionAuthenticated = hasBrowserSessionCookieHeader(req.headers.cookie);
+      if (!sessionAuthenticated && (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN))) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
@@ -4779,7 +4796,8 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         // Without this, anyone who can reach the dashboard port could
         // proxy into the local Pipecat War Room socket with no auth.
         const token = url.searchParams.get('token');
-        if (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN)) {
+        const sessionAuthenticated = hasBrowserSessionCookieHeader(req.headers.cookie);
+        if (!sessionAuthenticated && (!DASHBOARD_TOKEN || !token || !tokensMatch(token, DASHBOARD_TOKEN))) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
           return;

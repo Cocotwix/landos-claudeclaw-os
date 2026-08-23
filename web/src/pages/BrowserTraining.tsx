@@ -5,7 +5,7 @@ import {
 } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
-import { apiGet, apiPost, dashboardToken } from '@/lib/api';
+import { apiGet, apiPost } from '@/lib/api';
 
 // ── Types (mirror the Browser Training API) ─────────────────────────────
 type Surface = 'tab' | 'window' | 'desktop';
@@ -226,7 +226,7 @@ export function BrowserTraining() {
 
   function openSocket(sessionId: number) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsUrl = `${proto}://${location.host}/ws/landos/training?token=${encodeURIComponent(dashboardToken)}&session=${sessionId}`;
+    const wsUrl = `${proto}://${location.host}/ws/landos/training?session=${sessionId}`;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;

@@ -22,7 +22,7 @@
 // the map; every visual states its own provenance.
 
 import { useMemo, useRef, useState } from 'preact/hooks';
-import { apiPost, dashboardToken, ApiError } from '@/lib/api';
+import { apiPost, ApiError } from '@/lib/api';
 import { CombinedCompMap } from './AcquisitionWorkspaceV2CompMap';
 import { CompVisualThumb, type CvVisual } from './CompVisualThumb';
 import {
@@ -525,7 +525,7 @@ const signedPct = (ratio: number) => {
   const pct = Math.abs(ratio) * 100;
   return Math.round(pct) === 0 && pct > 0 ? `${sign}<1%` : `${sign}${Math.round(pct)}%`;
 };
-const tok = (u: string) => `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
+const tok = (u: string) => u;
 const nameOf = (c: CvComp) => c.address ?? (c.apn ? `APN ${c.apn}` : 'Unnamed parcel');
 const cardDomId = (key: string) => `cv-card-${key.replace(/[^a-z0-9]+/gi, '-')}`;
 const propertyTypeLabel = (c: CvComp) => c.propertyClass === 'improved'

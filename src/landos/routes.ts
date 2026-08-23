@@ -4501,6 +4501,12 @@ export function registerLandosRoutes(app: Hono): void {
       acres: input.operatorRecord?.identity.mappedAcres ?? input.operatorRecord?.identity.assessedAcres ?? null,
     }, r.marketComps ?? null);
     const buildingArea = Number(((r.ddFactChecklist ?? []).find((f) => f.key === 'buildingArea')?.value ?? '').replace(/[^0-9.]/g, '')) || 0;
+    const utilityRecord = input.cardId ? loadUtilityAvailabilityRecord(input.cardId) : null;
+    const utilityAvailability = utilityRecord
+      ? projectUtilityAvailability(utilityRecord, {
+        address: null, apn: null, county: null, state: null, acres: null,
+      })
+      : null;
     const strategyReadiness = strategyReadinessForDeal({
       parcelVerified: !!r.parcelVerified,
       registry: compRegistry,
@@ -4508,6 +4514,7 @@ export function registerLandosRoutes(app: Hono): void {
       valuationConflict: !!r.valuation?.conflict,
       improved: buildingArea > 0,
       hardRisks: r.riskFlags ?? null,
+      utilityKnowledge: utilityAvailability?.knowledge ?? null,
     });
     const documentRegistry = documentRegistryForCard(input.cardId, { acreageConflict: input.operatorRecord?.identity.acreageConflict, dealCardId: input.dealCardId });
     const unifiedReadiness = unifiedReadinessForDeal({
@@ -8875,6 +8882,14 @@ export function registerLandosRoutes(app: Hono): void {
         }
       : null;
     let snapshot = presentedSource ? presentPropertyIntelligenceSnapshot(presentedSource) : null;
+    const dealForUtilities = getDealCard(dealCardId);
+    const utilityPropertyCardId = dealForUtilities ? subjectCardId(dealForUtilities) : null;
+    const utilityRecord = utilityPropertyCardId ? loadUtilityAvailabilityRecord(utilityPropertyCardId) : null;
+    const utilityAvailability = utilityRecord
+      ? projectUtilityAvailability(utilityRecord, {
+        address: null, apn: null, county: null, state: null, acres: null,
+      })
+      : null;
     if (snapshot) {
       const deal = getDealCard(dealCardId);
       const acquisition = getAcquisition(dealCardId);
@@ -8892,7 +8907,6 @@ export function registerLandosRoutes(app: Hono): void {
             : /\blandlocked\b.{0,30}\bno\b|\broad frontage\b.{0,30}\d/i.test(accessEvidence) ? 'public_road_proximity' as const
               : 'unknown' as const;
       const zoning = snapshot.dueDiligence.find((item) => /zoning|land use/i.test(`${item.key} ${item.label}`)) ?? null;
-      const utilities = snapshot.dueDiligence.find((item) => /utilit|power|water|sewer/i.test(`${item.key} ${item.label}`)) ?? null;
       const identityUsable = snapshot.identity.state === 'confirmed'
         || (snapshot.identity.state === 'provisional' && snapshot.identity.discoveryUsable === true);
       const currentBlockers = snapshot.blockers.filter((blocker) => {
@@ -8918,8 +8932,10 @@ export function registerLandosRoutes(app: Hono): void {
         dueDiligence: snapshot.dueDiligence,
         zoning: zoning?.headline ?? zoning?.detail ?? null,
         zoningKnown: !!zoning && !['unresolved_question', 'unavailable_public_record'].includes(zoning.grade),
-        utilitiesKnown: !!utilities && !['unresolved_question', 'unavailable_public_record'].includes(utilities.grade),
-        utilitiesSummary: utilities?.headline ?? utilities?.detail ?? null,
+        utilitiesKnown: utilityAvailability?.knowledge.fullyKnown ?? false,
+        utilitiesSummary: utilityAvailability
+          ? `${utilityAvailability.water.headline} ${utilityAvailability.sewer.headline}`
+          : null,
         accessStatus,
         landHomeCompCount: snapshot.comps.landHomeOnly.length,
         acceptedSoldCount: snapshot.comps.sold.length,
@@ -9775,7 +9791,7 @@ export function registerLandosRoutes(app: Hono): void {
         streetViewComplete: !!streetViewProjection && streetViewProjection.available,
         zoningCode: str(linkInspection?.parcelFacts?.['Zoning Code']) || null,
         zoningOfficialConfirmed: resolvedVerdict('zoning'),
-        utilitiesConfirmed: resolvedVerdict('utilities'),
+        utilitiesConfirmed: utilityAvailability?.knowledge.fullyKnown ?? false,
         septicConfirmed: resolvedVerdict('septic'),
         officialRecordsRetrieved: false,
         valuationPriceable: snapshot.valuation.priceable === true,

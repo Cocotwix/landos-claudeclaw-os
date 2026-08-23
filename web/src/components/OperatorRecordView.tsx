@@ -380,7 +380,7 @@ export function EvidenceGallery({ dealId, token }: { dealId: number; token: stri
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
         {OVERLAY_KINDS.filter((o) => !failed[o.kind]).map((overlay) => {
-          const src = `/api/landos/deal-cards/${dealId}/overlay/${overlay.kind}?token=${encodeURIComponent(token)}`;
+          const src = `/api/landos/deal-cards/${dealId}/overlay/${overlay.kind}`;
           return (
             <a key={overlay.kind} href={src} target="_blank" rel="noreferrer" class="block rounded-lg overflow-hidden border border-[var(--color-border)] bg-black hover:border-[var(--color-border-strong)]">
               <img

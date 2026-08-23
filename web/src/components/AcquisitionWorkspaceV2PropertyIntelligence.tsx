@@ -9,7 +9,6 @@
 // never sourced from LandPortal market panels (SOP 10B).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ChevronLeft, ChevronRight, Maximize2, X, ZoomIn, ZoomOut } from 'lucide-preact';
-import { dashboardToken } from '@/lib/api';
 import { AcquisitionWorkspaceV2CompPhotoGallery, type CvCompPhoto } from './AcquisitionWorkspaceV2CompPhotoGallery';
 import { AssessorTaxRun } from './AcquisitionWorkspaceV2AssessorTax';
 import {
@@ -419,7 +418,7 @@ export interface VisualBuyerAnalysisView {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-const tok = (u: string) => `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
+const tok = (u: string) => u;
 const num = (s: string | null | undefined, re: RegExp): string | null => {
   const m = s ? s.match(re) : null;
   return m ? m[1] : null;

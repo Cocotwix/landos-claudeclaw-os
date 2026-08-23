@@ -81,6 +81,8 @@ import {
 } from './exact-address-web-discovery.js';
 import type { CompLaneInput, CompLaneRouteOutcome } from './comp-lane-accountability.js';
 import { saveSubjectListingDetail, type SubjectListingWriteResult } from './subject-listing-store.js';
+import { projectUtilityAvailability, type UtilityAvailabilityProjection } from './utility-availability-record.js';
+import { loadUtilityAvailabilityRecord } from './utility-service-screen-capability.js';
 
 // ── Injected dependencies ───────────────────────────────────────────────────
 
@@ -1384,6 +1386,41 @@ function decisionCardToItem(card: { key: string; label: string; verdict: string;
   };
 }
 
+function utilityAvailabilityItem(availability: UtilityAvailabilityProjection): SnapshotDueDiligenceItem {
+  const { knowledge, water, sewer } = availability;
+  const connectionStates = [water.connection.state, sewer.connection.state];
+  const verdict: SnapshotDueDiligenceItem['verdict'] = knowledge.fullyKnown
+    ? connectionStates.includes('not_available')
+      ? 'risk'
+      : connectionStates.includes('conditionally_available')
+        ? 'caution'
+        : 'good'
+    : knowledge.outcome === 'PARTIAL'
+      ? 'caution'
+      : 'unknown';
+  return {
+    key: 'utilities',
+    label: 'Utility availability',
+    verdict,
+    headline: `${water.headline} ${sewer.headline}`,
+    grade: knowledge.fullyKnown
+      ? 'confirmed_fact'
+      : knowledge.outcome === 'BLOCKED'
+        ? 'unavailable_public_record'
+        : knowledge.outcome === 'PARTIAL'
+          ? 'likely_indication'
+          : 'unresolved_question',
+    detail: `${knowledge.summary} Water and sewer remain independently resolved; connection, capacity, and extension requirements are not inferred from infrastructure position.`,
+    sourceUrl: null,
+    missing: knowledge.fullyKnown
+      ? []
+      : [
+        ...(knowledge.water.known ? [] : [`Water is ${knowledge.water.outcome.toLowerCase()}.`]),
+        ...(knowledge.sewer.known ? [] : [`Sewer is ${knowledge.sewer.outcome.toLowerCase()}.`]),
+      ],
+  };
+}
+
 export async function collectEnvironmentalTerrain(ctx: MissionContext): Promise<SpecialistOutcome<EnvironmentalContribution>> {
   const publicRun = new PublicIntelligenceStore().load(ctx.dealCardId)?.run ?? null;
   const execution = publicLaneExecution(publicRun, ENVIRONMENTAL_TASKS);
@@ -1545,6 +1582,18 @@ export async function collectAccessUtilities(ctx: MissionContext): Promise<Speci
     else if (items[accessIndex].verdict === 'unknown') items[accessIndex] = indication;
   }
   const utilitiesCard = record.decisionCards.find((card) => card.key === 'utilities');
+  const availabilityRecord = cardId ? loadUtilityAvailabilityRecord(cardId) : null;
+  const availability = availabilityRecord
+    ? projectUtilityAvailability(availabilityRecord, {
+      address: null, apn: null, county: null, state: null, acres: null,
+    })
+    : null;
+  if (availability) {
+    const current = utilityAvailabilityItem(availability);
+    const index = items.findIndex((item) => item.key === 'utilities');
+    if (index < 0) items.push(current);
+    else items[index] = current;
+  }
 
   // Provider proximity never clears unresolved legal-access questions.
   const accessItem = items.find((item) => item.key === 'access');
@@ -1556,13 +1605,19 @@ export async function collectAccessUtilities(ctx: MissionContext): Promise<Speci
   }
 
   return {
-    status: items.length === 0 ? 'blocked' : items.some((item) => item.verdict === 'unknown') ? 'partial' : 'completed',
-    summary: `${providerRoadSignal ? 'The live LandPortal parcel collector supplied a mapped-frontage / not-landlocked provider signal; legal access remains unverified. ' : frontage || landLocked ? 'The live LandPortal parcel collector supplied frontage/access indications. ' : ''}${record.accessStatus.summary}${utilitiesCard ? ` Utilities: ${utilitiesCard.headline}` : ' Utility availability was not established.'} ${execution.summary}`,
+    status: items.length === 0
+      ? 'blocked'
+      : items.some((item) => item.verdict === 'unknown') || (availability != null && !availability.knowledge.fullyKnown)
+        ? 'partial'
+        : 'completed',
+    summary: `${providerRoadSignal ? 'The live LandPortal parcel collector supplied a mapped-frontage / not-landlocked provider signal; legal access remains unverified. ' : frontage || landLocked ? 'The live LandPortal parcel collector supplied frontage/access indications. ' : ''}${record.accessStatus.summary}${availability ? ` ${availability.water.headline} ${availability.sewer.headline}` : utilitiesCard ? ` Utilities: ${utilitiesCard.headline}` : ' Utility availability was not established.'} ${execution.summary}`,
     data: {
       items,
       accessStatus: frontage || /no/i.test(landLocked ?? '') ? 'public_road_proximity' : record.accessStatus.status,
-      utilitiesKnown: !!utilitiesCard && utilitiesCard.verdict !== 'unknown',
-      utilitiesSummary: utilitiesCard?.headline ?? null,
+      utilitiesKnown: availability?.knowledge.fullyKnown ?? false,
+      utilitiesSummary: availability
+        ? `${availability.water.headline} ${availability.sewer.headline}`
+        : null,
       collectorAttemptCount: execution.attemptedCount,
       sourceLimitations: execution.limitations,
     },

@@ -18,7 +18,7 @@ import {
   Phone, MessageSquare, Mail, StickyNote, ListPlus, Pencil, ExternalLink,
   LayoutDashboard, Map, Activity, UserRound, CalendarClock, Users,
 } from 'lucide-preact';
-import { apiGet, apiPost, dashboardToken, chatId, legacyUrl } from '@/lib/api';
+import { apiGet, apiPost, chatId, legacyUrl } from '@/lib/api';
 import {
   readSection, readPropertyMarketView, sectionHref, rememberWorkspaceDeal, lastWorkspaceDealId,
   SECTION_SLUGS, type WorkspaceV2Section, type PropertyMarketView,
@@ -180,7 +180,7 @@ interface IntelResp {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-const tok = (u: string) => `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
+const tok = (u: string) => u;
 const usd = (n: number) => '$' + Math.round(n).toLocaleString('en-US');
 const matchNum = (s: string | undefined, re: RegExp): string | null => {
   const m = s ? s.match(re) : null;
@@ -704,7 +704,7 @@ export function AcquisitionWorkspaceV2() {
     setWarRoomBusy(true);
     try {
       const res = await apiPost<{ ok: boolean; meetingId: string }>('/api/warroom/text/new', { chatId, dealCardId: dealId });
-      window.location.href = legacyUrl(`/warroom/text?token=${encodeURIComponent(dashboardToken)}&meetingId=${encodeURIComponent(res.meetingId)}&chatId=${encodeURIComponent(chatId)}`);
+      window.location.href = legacyUrl(`/warroom/text?meetingId=${encodeURIComponent(res.meetingId)}&chatId=${encodeURIComponent(chatId)}`);
     } catch (e) {
       setWarRoomBusy(false);
       alert('War Room failed to open: ' + (e instanceof Error ? e.message : String(e)));

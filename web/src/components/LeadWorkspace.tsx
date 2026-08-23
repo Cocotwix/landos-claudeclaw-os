@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { apiGet, apiPost, apiPostForm, dashboardToken } from '@/lib/api';
+import { apiGet, apiPost, apiPostForm } from '@/lib/api';
 import { TrashCardButton } from '@/components/TrashCardButton';
 import { formatRelativeTime } from '@/lib/format';
 import {
@@ -90,8 +90,7 @@ function Unavailable({ label = 'Unavailable' }: { label?: string }) {
 // same-origin API image URLs must embed the dashboard token as a query param
 // (the same pattern the GIS overlay and PDF download links already use).
 function withDashboardToken(url: string): string {
-  if (!url.startsWith('/api/') || !dashboardToken || /[?&]token=/.test(url)) return url;
-  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(dashboardToken)}`;
+  return url;
 }
 
 function isRenderableImageArtifact(url: string | undefined): boolean {
@@ -266,7 +265,7 @@ function OwnerBrief({
     key: `official-gis-${dealCardId}`,
     label: 'Official county GIS parcel map',
     kind: 'official_gis_aerial',
-    url: `/api/landos/deal-cards/${dealCardId}/overlay/aerial?token=${encodeURIComponent(dashboardToken)}`,
+    url: `/api/landos/deal-cards/${dealCardId}/overlay/aerial`,
   };
   const pulseFacts = asArray(marketPulse.facts).map(asRecord).filter((fact) => asString(fact.value));
   const slope = visibleFacts.find((fact) => /slope|gradient/i.test(asString(fact.label) ?? ''));
@@ -969,7 +968,7 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
               <button data-testid="discovery-package-run" type="button" disabled={actionBusy !== null || !opportunity?.id} onClick={() => void rebuildDiscoveryPackage()} class="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--color-accent)] disabled:opacity-45">
                 {actionBusy === 'package' ? 'Building…' : 'Refresh call package'}
               </button>
-              {opportunity?.id ? <a data-testid="discovery-package-pdf" href={`/api/landos/opportunities/${opportunity.id}/discovery-package/download?format=pdf&token=${encodeURIComponent(dashboardToken)}`} class="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--color-text)]">Download PDF</a> : null}
+              {opportunity?.id ? <a data-testid="discovery-package-pdf" href={`/api/landos/opportunities/${opportunity.id}/discovery-package/download?format=pdf`} class="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--color-text)]">Download PDF</a> : null}
             </div>
           </div>
           {asString(callPrep.unresolvedIdentityWarning) ? <div data-testid="unresolved-call-brief" class="mt-3 rounded-lg border border-amber-500/45 bg-amber-500/10 px-3 py-2 text-[11.5px] text-[var(--color-text)]">{asString(callPrep.unresolvedIdentityWarning)}</div> : null}
@@ -1546,7 +1545,7 @@ export function LeadWorkspace({ dealCardId }: { dealCardId: number }) {
           </div>
           <div class="flex flex-wrap gap-2">
             <button data-testid="discovery-package-run" type="button" disabled={actionBusy !== null || !opportunity?.id} onClick={() => void rebuildDiscoveryPackage()} class="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--color-accent)] disabled:opacity-45">{actionBusy === 'package' ? 'Building…' : 'Refresh call package'}</button>
-            {opportunity?.id ? <a data-testid="discovery-package-pdf" href={`/api/landos/opportunities/${opportunity.id}/discovery-package/download?format=pdf&token=${encodeURIComponent(dashboardToken)}`} class="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--color-text)]">Download PDF</a> : null}
+            {opportunity?.id ? <a data-testid="discovery-package-pdf" href={`/api/landos/opportunities/${opportunity.id}/discovery-package/download?format=pdf`} class="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--color-text)]">Download PDF</a> : null}
           </div>
         </div>
         <div class="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">

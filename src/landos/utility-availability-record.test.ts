@@ -155,6 +155,71 @@ describe('the plan is adaptive, not a fixed sequence', () => {
   });
 });
 
+describe('canonical downstream utility knowledge', () => {
+  const determination = (connection: 'available' | 'not_available' | 'conditionally_available') => ({
+    connection,
+    capacity: 'confirmed' as const,
+    extensionRequired: false,
+    source: { label: 'Serving utility written determination' },
+  });
+
+  it('recognizes a fully returned water and sewer result once for every consumer', () => {
+    const projected = projectUtilityAvailability(record({
+      water: { determination: determination('available') },
+      sewer: { determination: determination('conditionally_available') },
+    }), SUBJECT);
+    expect(projected.knowledge).toMatchObject({
+      outcome: 'RETURNED',
+      fullyKnown: true,
+      water: { outcome: 'RETURNED', known: true },
+      sewer: { outcome: 'RETURNED', known: true },
+    });
+  });
+
+  it('keeps corridor evidence PARTIAL and never promotes it to fully known', () => {
+    const projected = projectUtilityAvailability(record({
+      water: { provider: PROVIDER, corridor: { relationship: 'ADJACENT', layerName: 'Water Mains', source: gis } },
+      sewer: { corridor: { relationship: 'ON_SUBJECT_ROAD', layerName: 'Sewer Mains', source: gis } },
+    }), SUBJECT);
+    expect(projected.knowledge.outcome).toBe('PARTIAL');
+    expect(projected.knowledge.fullyKnown).toBe(false);
+    expect(projected.knowledge.water).toEqual({ outcome: 'PARTIAL', known: false });
+    expect(projected.knowledge.sewer).toEqual({ outcome: 'PARTIAL', known: false });
+  });
+
+  it('keeps UNRESOLVED and BLOCKED out of the known state', () => {
+    const unresolved = projectUtilityAvailability(record(), SUBJECT).knowledge;
+    expect(unresolved).toMatchObject({ outcome: 'UNRESOLVED', fullyKnown: false });
+
+    const blocked = projectUtilityAvailability(record({
+      water: { blocked: { reason: 'Provider portal unavailable.' } },
+      sewer: { blocked: { reason: 'Provider portal unavailable.' } },
+    }), SUBJECT).knowledge;
+    expect(blocked).toMatchObject({ outcome: 'BLOCKED', fullyKnown: false });
+  });
+
+  it('represents water and sewer independently when only one has returned', () => {
+    const projected = projectUtilityAvailability(record({
+      water: { determination: determination('available') },
+      sewer: {},
+    }), SUBJECT);
+    expect(projected.knowledge).toMatchObject({
+      outcome: 'PARTIAL',
+      fullyKnown: false,
+      water: { outcome: 'RETURNED', known: true },
+      sewer: { outcome: 'UNRESOLVED', known: false },
+    });
+  });
+
+  it('treats NOT_REQUIRED as settled without inventing utility evidence', () => {
+    const projected = projectUtilityAvailability(record({
+      water: { notApplicable: true },
+      sewer: { notApplicable: true },
+    }), SUBJECT);
+    expect(projected.knowledge).toMatchObject({ outcome: 'NOT_REQUIRED', fullyKnown: true });
+  });
+});
+
 describe('projection derives the read from observations every time', () => {
   it('resolves water and sewer independently from one record', () => {
     const projection = projectUtilityAvailability(record({
