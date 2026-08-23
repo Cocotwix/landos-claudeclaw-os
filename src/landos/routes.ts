@@ -270,6 +270,7 @@ import {
   rederiveSpecialistDelivery,
   researchStatusFrom,
 } from './property-intelligence-snapshot.js';
+import { tallyResearchLanes } from './research-lane-outcome.js';
 import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
 import { buildPropertyIntelligenceStrategies } from './property-intelligence-strategy.js';
 import {
@@ -11424,7 +11425,24 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     const view = propertyIntelligenceView(id);
-    return c.json({ run: view.run, specialists: view.specialists, snapshotStatus: view.snapshot?.status ?? null, progressive: view.progressive ?? null });
+    // The completion metric the operator reads, computed HERE so no surface can
+    // invent its own. The panel used to count every settled lane — including
+    // the ones that answered nothing and the one that was externally blocked —
+    // and present the total as "12 of 12 lanes reported". Outcomes are counted
+    // now, and only RETURNED is an answer.
+    const laneOutcomes = tallyResearchLanes(
+      (view.specialists ?? []).map((lane) => ({
+        status: lane.status,
+        failureCategory: lane.failureCategory ?? null,
+      })),
+    );
+    return c.json({
+      run: view.run,
+      specialists: view.specialists,
+      laneOutcomes,
+      snapshotStatus: view.snapshot?.status ?? null,
+      progressive: view.progressive ?? null,
+    });
   });
 
   app.post('/api/landos/deal-cards/:id/property-intelligence/run', async (c) => {

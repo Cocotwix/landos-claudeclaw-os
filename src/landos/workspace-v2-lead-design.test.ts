@@ -124,7 +124,13 @@ describe('ws1 QA repairs stay repaired', () => {
     expect(PAGE_SRC).not.toContain('awv2-statusbar');
     expect(PAGE_SRC).not.toContain('research lanes delivered');
     expect(PI_SRC).toContain('Research areas delivered');
-    expect(RUN_SRC).toContain('lanes reported by this research run');
+    // The run panel measures ANSWERS. It used to count every settled lane and
+    // call the total "reported", which read as completion while unresolved and
+    // blocked lanes sat inside the number.
+    expect(RUN_SRC).not.toContain('lanes reported by this research run');
+    expect(RUN_SRC).not.toContain('settledCount');
+    expect(RUN_SRC).toContain('outcomes.headline');
+    expect(RUN_SRC).toContain('outcomes.breakdown');
   });
 
   it('no operator-visible string literal carries an HTML entity (F7)', () => {

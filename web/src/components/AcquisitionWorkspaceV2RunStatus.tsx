@@ -54,9 +54,32 @@ export interface RunView {
   error?: string | null;
 }
 
+/**
+ * The completion metric, computed server-side.
+ *
+ * `returned` counts lanes that produced a usable answer and nothing else. A
+ * lane that ran, answered nothing and settled is UNRESOLVED; one stopped by a
+ * real external wall is BLOCKED; neither is an answer. The panel renders this
+ * verbatim rather than deriving its own count, which is how it previously came
+ * to report every settled lane as "reported".
+ */
+export interface LaneOutcomeTally {
+  returned: number;
+  partial: number;
+  unresolved: number;
+  blocked: number;
+  notRequired: number;
+  requiredTotal: number;
+  pending: number;
+  laneTotal: number;
+  headline: string;
+  breakdown: string;
+}
+
 interface ProgressResp {
   run?: RunView | null;
   specialists?: RunSpecialistView[];
+  laneOutcomes?: LaneOutcomeTally | null;
   snapshotStatus?: string | null;
 }
 
@@ -111,6 +134,7 @@ export function PropertyIntelligenceRunStatus(props: {
   const { dealId, onRunSettled } = props;
   const [run, setRun] = useState<RunView | null>(null);
   const [lanes, setLanes] = useState<RunSpecialistView[]>([]);
+  const [outcomes, setOutcomes] = useState<LaneOutcomeTally | null>(null);
   const [starting, setStarting] = useState(false);
   const [refreshingResolution, setRefreshingResolution] = useState(false);
   const [resolution, setResolution] = useState<PropertyResolutionView | null>(null);
@@ -133,6 +157,7 @@ export function PropertyIntelligenceRunStatus(props: {
       if (dead.current) return false;
       setRun(data?.run ?? null);
       setLanes(Array.isArray(data?.specialists) ? data.specialists : []);
+      setOutcomes(data?.laneOutcomes ?? null);
       setResolution(propertyResolution.result ?? null);
       const running = data?.run?.status === 'running';
       // The transition out of `running` is the moment the run's writes are on
@@ -207,7 +232,6 @@ export function PropertyIntelligenceRunStatus(props: {
   const elapsed = elapsedLabel(run?.startedAt, running ? null : run?.completedAt);
 
   const active = lanes.filter((lane) => lane.status === 'running');
-  const settledCount = lanes.filter((lane) => lane.status && lane.status !== 'queued' && lane.status !== 'running').length;
   const currentLine = running
     ? (active.length
       ? `Retrieving: ${active.map((lane) => lane.label).filter(Boolean).join(' · ')}`
@@ -224,9 +248,16 @@ export function PropertyIntelligenceRunStatus(props: {
             {elapsed && <span class="awv2-runstatus-elapsed">{running ? elapsed : `took ${elapsed}`}</span>}
           </div>
           {currentLine && <div class="awv2-runstatus-current">{currentLine}</div>}
-          {!running && lanes.length > 0 && (
-            <div class="awv2-runstatus-current">
-              {settledCount} of {lanes.length} lanes reported by this research run
+          {/*
+            Answers, not executions. An unresolved or blocked lane is never
+            counted as returned, and a partial one stays visibly partial.
+            The diagnostic "how many lanes ran" is still available by
+            expanding the lane list below.
+          */}
+          {!running && outcomes && outcomes.requiredTotal > 0 && (
+            <div class="awv2-runstatus-current" data-testid="run-status-lane-outcomes">
+              <b>{outcomes.headline}</b>
+              <span class="awv2-runstatus-outcome-breakdown"> · {outcomes.breakdown}</span>
             </div>
           )}
           <div class="awv2-runstatus-current" data-testid="deal-card-property-resolution">

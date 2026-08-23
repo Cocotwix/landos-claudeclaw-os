@@ -21,6 +21,7 @@
 import { readResolverSubject, retainedLandPortalIdentity } from './universal-property-resolution.js';
 import { createHermesFreeSearch } from './hermes-free-search.js';
 import { defaultGovFetchText } from './gis-transport.js';
+import { createGovernedBrowserSourceReader } from './browser-source-reader.js';
 import { loadPropertyInspection } from './property-card.js';
 import { buildParcelFactSheet } from './landportal-facts.js';
 import { resolveJurisdiction, type JurisdictionResolution } from './jurisdiction-resolution.js';
@@ -313,6 +314,17 @@ export async function runLandUseAuthorityAndZoningForDeal(
     const address = overrides.address ?? resolved?.address ?? null;
     const owner = overrides.owner ?? resolved?.owner ?? null;
     const search = createHermesFreeSearch();
+    // The escalation rung, finally wired. Every one of these lanes declared a
+    // browser seam and none of them was ever given one, so the last rung of
+    // the ladder reported itself unwired on every run and the question fell
+    // straight to UNRESOLVED. One reader serves all three call sites below;
+    // it reads only official pages the lanes themselves selected, and it
+    // escalates into a governed background tab ONLY when a direct request is
+    // refused at the transport level.
+    const browserNotes: string[] = [];
+    const browser = createGovernedBrowserSourceReader({
+      onNote: (note) => { if (browserNotes.length < 40) browserNotes.push(note); },
+    });
     const known = knownSourceUrls(dealCardId);
     const hosts = officialHostsFor(dealCardId);
     const retained = retainedDocuments(dealCardId);
@@ -330,6 +342,7 @@ export async function runLandUseAuthorityAndZoningForDeal(
           search,
           fetchText: defaultGovFetchText,
           knownSourceUrls: known,
+          browser,
           ...AUTHORITY_BUDGET,
         },
       ),
@@ -364,6 +377,7 @@ export async function runLandUseAuthorityAndZoningForDeal(
           fetchText: defaultGovFetchText,
           knownSourceUrls: known,
           retainedSources: retained.map((row) => ({ url: row.sourceUrl, title: row.sourceTitle, text: row.text })),
+          browser,
           ...ZONING_BUDGET,
         },
       ),
@@ -390,6 +404,7 @@ export async function runLandUseAuthorityAndZoningForDeal(
         retainedSources: retained.map((row) => ({ url: row.sourceUrl, title: row.sourceTitle, text: row.text })),
         knownSourceUrls: known,
         contextDistrict,
+        browser,
         ...STANDARDS_BUDGET,
       },
     ).catch(() => null);
@@ -612,6 +627,11 @@ export async function runSubdivisionIntelligenceForDeal(
         knownDocumentUrls: knownSourceUrls(dealCardId),
         search: createHermesFreeSearch(),
         fetchText: defaultGovFetchText,
+        // Same escalation rung as the authority and zoning lanes. Subdivision
+        // regulations are the most likely of the four to sit behind a
+        // JS-rendered code viewer, which is exactly what the direct request
+        // cannot read and the governed tab can.
+        browser: createGovernedBrowserSourceReader(),
         ...SUBDIVISION_BUDGET,
       },
     );
