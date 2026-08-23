@@ -6795,9 +6795,15 @@ export function registerLandosRoutes(app: Hono): void {
     const artifact = resolveGovernmentRecordArtifactPage({ dealCardId: id, artifactId, pageNumber });
     if (!artifact) return c.json({ error: 'artifact page not found' }, 404);
     const bytes = fs.readFileSync(artifact.path);
+    // HTTP header values are ByteStrings. A display name carrying any
+    // non-latin-1 character — an em dash out of an ordinance title is enough —
+    // throws while building the response, and the operator gets a 500 for an
+    // artifact sitting on disk perfectly intact. RFC 6266: an ASCII fallback
+    // in `filename`, the real name in `filename*`.
+    const asciiName = artifact.displayName.replace(/"/g, '').replace(/[^\x20-\x7E]/g, '_');
     return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, {
       'Content-Type': artifact.mimeType,
-      'Content-Disposition': `inline; filename="${artifact.displayName.replace(/"/g, '')}"`,
+      'Content-Disposition': `inline; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(artifact.displayName)}`,
       'Cache-Control': 'private, max-age=3600',
     });
   });
@@ -6843,9 +6849,15 @@ export function registerLandosRoutes(app: Hono): void {
     const artifact = resolveZoningArtifactPage({ dealCardId: id, artifactId, pageNumber });
     if (!artifact) return c.json({ error: 'artifact page not found' }, 404);
     const bytes = fs.readFileSync(artifact.path);
+    // HTTP header values are ByteStrings. A display name carrying any
+    // non-latin-1 character — an em dash out of an ordinance title is enough —
+    // throws while building the response, and the operator gets a 500 for an
+    // artifact sitting on disk perfectly intact. RFC 6266: an ASCII fallback
+    // in `filename`, the real name in `filename*`.
+    const asciiName = artifact.displayName.replace(/"/g, '').replace(/[^\x20-\x7E]/g, '_');
     return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, {
       'Content-Type': artifact.mimeType,
-      'Content-Disposition': `inline; filename="${artifact.displayName.replace(/"/g, '')}"`,
+      'Content-Disposition': `inline; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(artifact.displayName)}`,
       'Cache-Control': 'private, max-age=3600',
     });
   });

@@ -20,7 +20,7 @@ import {
   emptyZoningStandards,
   type CurrentZoningDetermination,
 } from './current-zoning-determination.js';
-import type { PropertyIdentityVersion } from './property-summary-slice.js';
+import type { PropertyIdentityVersion, PropertyIdentityVersionInput } from './property-summary-slice.js';
 import type { ZoningCollectorInput } from './zoning-operator.js';
 import {
   DEFAULT_GIS_SESSION_STEPS,
@@ -158,6 +158,69 @@ export function determinationFromGisEvidence(input: {
 }
 
 /**
+ * Promote parcel identity on the strength of an official GIS parcel record.
+ *
+ * PERMANENT MEMORY invariant 2 admits "an official assessor or GIS record" as a
+ * basis for confirming parcel identity. A county whose assessor layer never
+ * matched can leave a subject stuck at `candidate` forever while the CITY that
+ * actually zones it publishes the parcel by key and by owner — which is exactly
+ * where Deal 89 sat, and why its zoning artifact had nowhere to be filed.
+ *
+ * NARROW BY CONSTRUCTION. This promotes STATUS and nothing else. Every
+ * identifying attribute is copied from the existing version, so a GIS layer's
+ * acreage, geometry, owner history or address spelling cannot ride in on the
+ * promotion and overwrite reconciled canonical facts. Deal 89's canonical
+ * 51.11 acres was itself the product of a split reconciliation; the city layer
+ * still carries the pre-split figure, and that figure must not win here.
+ *
+ * Deliberately stricter than reading a district off the same layer: identity
+ * requires the parcel key AND owner corroboration, because a key alone can be
+ * a stale row and identity is the one thing everything else hangs from.
+ */
+export function identityPromotionFromGisConfirmation(input: {
+  existing: PropertyIdentityVersion;
+  evidence: GisEvidence;
+  source: MunicipalGisSource;
+}): PropertyIdentityVersionInput | null {
+  const { existing, evidence, source } = input;
+  const confirmation = evidence.subject;
+
+  if (!confirmation.confirmed) return null;
+  // Owner corroboration is required for identity, not merely a key match.
+  if (confirmation.basis !== 'parcel_identifier_owner_corroborated') return null;
+  // Nothing to promote, and never a path to revise an accepted identity or to
+  // resurrect one an operator disputed or rejected.
+  if (existing.status !== 'candidate') return null;
+
+  return {
+    dealCardId: existing.dealCardId,
+    // Every attribute below is the EXISTING canonical value, not the layer's.
+    propertyCardId: existing.propertyCardId,
+    status: 'confirmed',
+    address: existing.address,
+    city: existing.city,
+    county: existing.county,
+    state: existing.state,
+    zip: existing.zip,
+    apn: existing.apn,
+    owner: existing.owner,
+    acreage: existing.acreage,
+    geometry: existing.geometry,
+    basis: [
+      `Parcel identity confirmed against the ${source.sourceLabel}.`,
+      confirmation.statement,
+      'Confirmation is of identity only: acreage, geometry, ownership history and every other canonical fact are carried forward unchanged from the accepted record and were not taken from the GIS layer.',
+    ].join(' '),
+    confidence: 0.95,
+    sourceRefs: [evidence.appUrl, evidence.layerUrl].filter((ref): ref is string => !!ref),
+    changeReason: 'Official municipal GIS parcel record confirmed the subject parcel key and owner of record.',
+    createdBy: 'interactive-gis-session',
+    // An automated confirmation never supersedes an accepted identity.
+    allowAcceptedSupersession: false,
+  };
+}
+
+/**
  * Retain the map capture as a Deal Card zoning ARTIFACT.
  *
  * The determination alone tells the operator the district; it does not let them
@@ -176,6 +239,16 @@ export function gisZoningCollectorInput(input: {
   evidence: GisEvidence;
   source: MunicipalGisSource;
   screenshotPath: string;
+  /**
+   * The capture's bytes.
+   *
+   * Supplied, the collector store copies the image into the Deal Card's own
+   * zoning artifact directory under a content hash and serves it from there.
+   * Without them the row would point back at the transient browser-shots file,
+   * which the next capture sweep is entitled to remove — an artifact the
+   * operator can open today and not next week is not retained evidence.
+   */
+  screenshotBytes?: Buffer;
 }): ZoningCollectorInput | null {
   const { evidence, source } = input;
   if (!evidence.subject.confirmed || !evidence.value) return null;
@@ -223,10 +296,10 @@ export function gisZoningCollectorInput(input: {
       ordinanceEffectiveDate: source.regimeAdoptedAt,
       documentType: 'official_zoning_map_capture',
       mimeType: 'image/png',
-      displayName: `${source.municipality} ${source.districtNoun} map — subject parcel with "${evidence.layerName}" and legend.png`,
+      displayName: `${source.municipality} ${source.districtNoun} map - subject parcel with ${evidence.layerName} layer and legend.png`,
       retrievedAt: evidence.retrievedAtIso,
       pageCount: 1,
-      sourcePath: input.screenshotPath,
+      ...(input.screenshotBytes ? { bytes: input.screenshotBytes } : { sourcePath: input.screenshotPath }),
     }],
     alternateOfficialSourcesChecked: [],
   };
