@@ -52,7 +52,11 @@ describe('a mapped utility line is geometry, not service', () => {
     });
     expect(finding.doesNotEstablish).toContain('connection approval');
     expect(finding.doesNotEstablish).toContain('available capacity');
-    expect(finding.statement).toMatch(/Proximity is not service/i);
+    // The separation survives, and the adjacency itself is no longer written up
+    // as a shortfall: a public main beside undeveloped ground is where public
+    // infrastructure belongs, not evidence against the site.
+    expect(finding.statement).toMatch(/remain the utility authority's determinations/i);
+    expect(finding.statement).not.toMatch(/Proximity is not service/i);
   });
 
   it('states the limits even for the strongest reading, which is the tempting one', () => {

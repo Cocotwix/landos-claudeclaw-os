@@ -34,8 +34,18 @@ import {
   type UtilityKind,
   type UtilityLineRelationship,
 } from './utility-infrastructure-relationship.js';
+import {
+  readUtilitySitePosition,
+  utilityPositionHeadlineFragment,
+  type SubjectDevelopmentStatus,
+  type UtilityCorridorSetting,
+  type UtilityInfrastructureSignal,
+  type UtilitySitePosition,
+  type UtilitySitePositionReading,
+} from './utility-site-position.js';
 
 export type { UtilityKind, UtilityLineRelationship };
+export type { SubjectDevelopmentStatus, UtilityCorridorSetting, UtilityInfrastructureSignal, UtilitySitePosition };
 
 // ── Evidence levels ──────────────────────────────────────────────────────────
 
@@ -208,6 +218,16 @@ export interface UtilityCorridorObservation {
   relationship: UtilityLineRelationship;
   /** The layer actually toggled on, so the read is reproducible. */
   layerName: string | null;
+  /**
+   * Measured distance from the mapped line to the subject boundary.
+   *
+   * The number an acquisition actually turns on: thirteen feet and two hundred
+   * feet are both "adjacent" and are not the same deal. Null is honest — the
+   * relationship alone still carries the read.
+   */
+  distanceToBoundaryFeet?: number | null;
+  /** Right-of-way, easement, adjoining development. Language, and one rule. */
+  setting?: UtilityCorridorSetting;
   mainSizeInches?: number | null;
   pressureZone?: string | null;
   hydrantsObserved?: boolean | null;
@@ -233,6 +253,15 @@ export interface UtilityAreaContextObservation {
 
 export interface UtilityResolutionInput {
   kind: UtilityKind;
+  /**
+   * Whether the subject carries improvements today.
+   *
+   * Read only where the geometry could mislead — a line drawn inside an
+   * undeveloped boundary. It never conditions the favourable reading of
+   * frontage or property-edge infrastructure, which is correct for every
+   * parcel type. `unknown` is the honest default and changes no score.
+   */
+  subjectDevelopment?: SubjectDevelopmentStatus;
   provider?: UtilityProviderObservation | null;
   territory?: UtilityTerritoryObservation | null;
   corridor?: UtilityCorridorObservation | null;
@@ -258,6 +287,25 @@ export interface UtilityAvailabilityResolution {
     lineType: SewerLineType | null;
     liftStationObserved: boolean | null;
     screenshotPath: string | null;
+    /**
+     * The acquisition read of where that line sits.
+     *
+     * The relationship above is geometry; this is what the geometry MEANS for
+     * a parcel someone is buying to develop. A main at the frontage or the
+     * boundary is the normal, favourable condition for undeveloped land, and
+     * `signal` says so rather than penalising it for not crossing the parcel.
+     */
+    position: UtilitySitePosition;
+    positionLabel: string;
+    signal: UtilityInfrastructureSignal;
+    distanceToBoundaryFeet: number | null;
+    setting: UtilityCorridorSetting;
+    /** The connection work the position implies. Never a feasibility verdict. */
+    connectionPath: string;
+    /** Set only where the geometry could mislead. Usually null. */
+    caution: string | null;
+    /** What this position still does not settle. Always populated. */
+    stillOpen: readonly string[];
   };
   connection: UtilityDimension<UtilityConnectionState>;
   capacity: UtilityDimension<UtilityCapacityState>;
@@ -294,24 +342,16 @@ export function corridorInfrastructureShown(relationship: UtilityLineRelationshi
     || relationship === 'ADJACENT';
 }
 
-function infrastructureStatement(kind: UtilityKind, relationship: UtilityLineRelationship, size: number | null): string {
-  const utility = utilityLabel(kind);
-  const sized = size ? ` (${size}-inch main)` : '';
-  switch (relationship) {
-    case 'AT_SUBJECT':
-      return `${utility}: a main${sized} is mapped at the subject parcel. Geometry only — it does not establish connection approval, capacity, or fire flow.`;
-    case 'ON_SUBJECT_ROAD':
-      return `${utility}: a main${sized} is mapped along the subject's road corridor. Geometry only — the right to connect and the capacity to serve are separate determinations by the ${authorityLabel(kind)}.`;
-    case 'ADJACENT':
-      return `${utility}: a main${sized} is mapped immediately adjacent to the subject. Proximity is not service; extension, connection approval and capacity remain open.`;
-    case 'NEARBY':
-      return `${utility}: a main is mapped in the vicinity but not on the subject corridor. Any connection would require an extension whose route, cost and feasibility are unestablished.`;
-    case 'NOT_SHOWN':
-      return `${utility}: the official layer that was read draws no line at or along this parcel. Absence on a map is not proof service is unavailable; the ${authorityLabel(kind)} controls.`;
-    case 'UNKNOWN':
-    default:
-      return `${utility}: no usable official utility layer was read for this corridor, so the physical relationship is unestablished.`;
-  }
+/**
+ * The infrastructure sentence an operator reads.
+ *
+ * It is the position reading plus the standing separation: however favourable
+ * the position, connection and capacity are still the serving party's to
+ * decide. The two halves are concatenated rather than blended so neither can be
+ * edited away without the other becoming visibly incomplete.
+ */
+function infrastructureStatement(kind: UtilityKind, reading: UtilitySitePositionReading): string {
+  return `${reading.statement} ${reading.connectionPath}`;
 }
 
 function connectionStatement(kind: UtilityKind, state: UtilityConnectionState, hasCorridor: boolean): string {
@@ -351,18 +391,37 @@ function capacityStatement(kind: UtilityKind, state: UtilityCapacityState): stri
   }
 }
 
-function extensionStatement(kind: UtilityKind, state: UtilityExtensionState): string {
+/**
+ * What connecting to the mapped infrastructure would take.
+ *
+ * A SEPARATE question from whether the infrastructure position is good, and the
+ * language keeps them separate. Bringing a service line in from a main at the
+ * boundary is the ordinary way undeveloped land is connected — a cost and
+ * mechanics item to price, never evidence that the site is poorly served. The
+ * position reading supplies the sentence wherever the map is what answered,
+ * because "extension" means something different at thirteen feet than at half
+ * a mile and a single sentence for both is how the old reading went wrong.
+ */
+function extensionStatement(
+  kind: UtilityKind,
+  state: UtilityExtensionState,
+  reading: UtilitySitePositionReading | null,
+): string {
   const utility = utilityLabel(kind);
   switch (state) {
     case 'confirmed_required':
-      return `${utility}: the serving party states an extension is required to reach this parcel.`;
+      return `${utility}: the serving party states an extension is required to reach this parcel.${reading ? ` ${reading.connectionPath}` : ''}`;
     case 'likely_required':
-      return `${utility}: the mapped main does not run along the subject's own frontage, so bringing service to the parcel appears to require an extension. Length, route, easements and cost are unestablished.`;
+      return reading
+        ? `${utility}: ${reading.connectionPath} Scope, easement or right-of-way mechanics and cost are unestablished; the requirement itself is ordinary for undeveloped land and is not a mark against the site.`
+        : `${utility}: connecting this parcel would involve work between the mapped main and the property. Scope, route, easements and cost are unestablished.`;
     case 'not_indicated':
-      return `${utility}: mapped infrastructure already runs along the subject's frontage, so no main extension is indicated by the map. The tap, the service line, and any upsizing the ${authorityLabel(kind)} requires are separate.`;
+      return reading
+        ? `${utility}: serving infrastructure already reaches the property, so no main extension is indicated by the map. ${reading.connectionPath}`
+        : `${utility}: no main extension is indicated. The tap, the service line, and any upsizing the ${authorityLabel(kind)} requires are separate.`;
     case 'unresolved':
     default:
-      return `${utility}: whether an extension would be required is unestablished, because the physical relationship of the line to this parcel was never established.`;
+      return `${utility}: whether an extension would be required is unestablished, because the physical position of serving infrastructure relative to this parcel was never established.`;
   }
 }
 
@@ -413,16 +472,30 @@ export function resolveUtilityAvailability(input: UtilityResolutionInput): Utili
     sources: territory ? [sourceLine(territory.source)] : [],
   };
 
-  // INFRASTRUCTURE. Geometry, and labelled as geometry.
+  // INFRASTRUCTURE. Geometry, read for what it means to a buyer.
+  //
+  // The relationship is still the stored fact and still travels unchanged. What
+  // changed is the INTERPRETATION laid over it: a main at the frontage, in the
+  // adjoining right-of-way, or at the boundary is the normal, favourable way
+  // undeveloped land is served, and is scored as the positive it is instead of
+  // as an extension problem for failing to cross private ground.
   const corridor = input.corridor;
   const relationship: UtilityLineRelationship = corridor?.relationship ?? 'UNKNOWN';
   const shown = corridorInfrastructureShown(relationship);
+  const positionReading = readUtilitySitePosition({
+    kind,
+    relationship,
+    distanceToBoundaryFeet: corridor?.distanceToBoundaryFeet ?? null,
+    setting: corridor?.setting ?? 'unknown',
+    subjectDevelopment: input.subjectDevelopment ?? 'unknown',
+    mainSizeInches: corridor?.mainSizeInches ?? null,
+  });
   const infrastructureDimension = {
     state: relationship,
     basis: corridor
       ? (shown ? ('corridor_infrastructure' as UtilityEvidenceLevel) : ('area_service' as UtilityEvidenceLevel))
       : null,
-    statement: infrastructureStatement(kind, relationship, corridor?.mainSizeInches ?? null),
+    statement: infrastructureStatement(kind, positionReading),
     sources: corridor ? [sourceLine(corridor.source)] : [],
     layerName: corridor?.layerName ?? null,
     mainSizeInches: corridor?.mainSizeInches ?? null,
@@ -430,6 +503,14 @@ export function resolveUtilityAvailability(input: UtilityResolutionInput): Utili
     lineType: kind === 'sewer' ? (corridor?.lineType ?? 'unknown') : null,
     liftStationObserved: corridor?.liftStationObserved ?? null,
     screenshotPath: corridor?.source.screenshotPath ?? null,
+    position: positionReading.position,
+    positionLabel: positionReading.label,
+    signal: positionReading.signal,
+    distanceToBoundaryFeet: corridor?.distanceToBoundaryFeet ?? null,
+    setting: corridor?.setting ?? ('unknown' as UtilityCorridorSetting),
+    connectionPath: positionReading.connectionPath,
+    caution: positionReading.caution,
+    stillOpen: positionReading.stillOpen,
   };
 
   // CONNECTION. Only the serving party settles this.
@@ -457,20 +538,24 @@ export function resolveUtilityAvailability(input: UtilityResolutionInput): Utili
   };
 
   // EXTENSION. The map can say "likely"; only the provider says "required".
+  //
+  // Driven by POSITION rather than by the raw relationship, because "adjacent"
+  // covers both a main thirteen feet off the boundary and one four hundred feet
+  // away, and those are not the same extension. What has not changed: a main
+  // near the parcel is still not a main at it, and the connection work is still
+  // named. What has changed is that naming it is a scope-and-cost item rather
+  // than a verdict on the site.
   const extensionState: UtilityExtensionState = determination?.extensionRequired === true
     ? 'confirmed_required'
     : determination?.extensionRequired === false
       ? 'not_indicated'
       : !corridor
         ? 'unresolved'
-        // Only a line ON the frontage removes the extension question. ADJACENT
-        // means a main sits beside the parcel and not along it — real, valuable,
-        // and still something that has to be brought to the property. Reading it
-        // as "no extension needed" is the single most expensive rounding error
-        // available here, so the two are kept apart.
-        : relationship === 'AT_SUBJECT' || relationship === 'ON_SUBJECT_ROAD'
+        : positionReading.position === 'crosses_site' || positionReading.position === 'at_site_edge'
           ? 'not_indicated'
-          : relationship === 'ADJACENT' || relationship === 'NEARBY'
+          : positionReading.position === 'adjoining_site'
+            || positionReading.position === 'same_corridor'
+            || positionReading.position === 'off_corridor'
             ? 'likely_required'
             : 'unresolved';
   const extensionDimension: UtilityDimension<UtilityExtensionState> = {
@@ -480,7 +565,7 @@ export function resolveUtilityAvailability(input: UtilityResolutionInput): Utili
       : corridor
         ? 'corridor_infrastructure'
         : null,
-    statement: extensionStatement(kind, extensionState),
+    statement: extensionStatement(kind, extensionState, corridor ? positionReading : null),
     sources: determination?.extensionRequired != null
       ? [sourceLine(determination.source)]
       : corridor
@@ -522,7 +607,7 @@ export function resolveUtilityAvailability(input: UtilityResolutionInput): Utili
     confirmationRequired: connectionState === 'written_confirmation_required'
       || capacityState === 'written_confirmation_required',
     laneOutcome,
-    headline: utilityHeadline(kind, connectionState, relationship, provider?.name ?? null, input.blocked?.reason ?? null),
+    headline: utilityHeadline(kind, connectionState, positionReading, provider?.name ?? null, input.blocked?.reason ?? null),
   };
 }
 
@@ -559,10 +644,19 @@ export function utilityLaneOutcome(input: {
   return 'UNRESOLVED';
 }
 
+/**
+ * The one line an operator reads first.
+ *
+ * It leads with what the infrastructure DOES — a main at the property edge, a
+ * main adjoining the site — and then names what is still pending. The order is
+ * the correction: "no main crosses the parcel; extension likely required" led
+ * with an absence that is the normal condition of well-served vacant land, and
+ * buried the fact that a modern public main reaches the boundary.
+ */
 function utilityHeadline(
   kind: UtilityKind,
   connection: UtilityConnectionState,
-  relationship: UtilityLineRelationship,
+  reading: UtilitySitePositionReading,
   providerName: string | null,
   blockedReason: string | null,
 ): string {
@@ -576,18 +670,8 @@ function utilityHeadline(
     case 'not_available':
       return `${utility}: not available to this parcel per the serving authority.`;
     case 'written_confirmation_required': {
-      const geometry = relationship === 'AT_SUBJECT'
-        ? 'main mapped at the parcel'
-        : relationship === 'ON_SUBJECT_ROAD'
-          ? 'main mapped on the subject road'
-          : relationship === 'ADJACENT'
-            ? 'main mapped adjacent'
-            : relationship === 'NEARBY'
-              ? 'main mapped nearby only'
-              : relationship === 'NOT_SHOWN'
-                ? 'no line drawn on the layer read'
-                : 'line relationship unestablished';
-      return `${utility}: ${providerName ?? 'provider'} — ${geometry}; written availability confirmation required.`;
+      const distance = reading.label.includes('~') ? ` (${reading.label.split('·').pop()?.trim()})` : '';
+      return `${utility}: ${providerName ?? 'provider'} — ${utilityPositionHeadlineFragment(reading)}${distance}; connection and capacity require written confirmation.`;
     }
     case 'unresolved':
     default:

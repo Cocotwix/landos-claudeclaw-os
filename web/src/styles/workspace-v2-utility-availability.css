@@ -107,6 +107,86 @@
   padding: 1px 6px;
   white-space: nowrap;
 }
+/* ── Infrastructure position ──
+   The signal chip carries the acquisition weight of WHERE serving
+   infrastructure sits. It is deliberately loud for the strong readings: a
+   modern public main at the property edge is the normal, favourable condition
+   for undeveloped land, and rendering it in the same cautionary grey as an
+   unread layer is what made a good site read as a problem. The geometry it was
+   derived from stays visible beside it, and the "still does not settle" list
+   below keeps the strong reading from being read as availability. */
+.awv2-util-row-infra { padding-bottom: 10px; }
+
+.awv2-util-signal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.awv2-util-signal-chip {
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  padding: 2px 7px;
+  border: 1px solid var(--awv2-line-strong);
+  color: var(--awv2-bone-faint);
+  white-space: nowrap;
+}
+.awv2-util-signal-chip.sig-very_strong_positive {
+  border-color: var(--awv2-moss);
+  color: var(--awv2-moss);
+  background: color-mix(in srgb, var(--awv2-moss) 14%, transparent);
+  font-weight: 700;
+}
+.awv2-util-signal-chip.sig-strong_positive {
+  border-color: var(--awv2-moss);
+  color: var(--awv2-moss);
+  background: color-mix(in srgb, var(--awv2-moss) 8%, transparent);
+}
+.awv2-util-signal-chip.sig-positive { border-color: var(--awv2-brass); color: var(--awv2-brass); }
+.awv2-util-signal-chip.sig-context_only { border-color: var(--awv2-amber); color: var(--awv2-amber); }
+.awv2-util-signal-chip.sig-material_negative { border-color: var(--awv2-rust); color: var(--awv2-rust); }
+
+.awv2-util-signal-geom {
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  color: var(--awv2-bone-faint);
+}
+
+.awv2-util-caution {
+  margin: 6px 0 0;
+  padding: 6px 9px;
+  border-left: 2px solid var(--awv2-amber);
+  background: color-mix(in srgb, var(--awv2-amber) 7%, transparent);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--awv2-bone-dim);
+}
+
+.awv2-util-stillopen { margin-top: 7px; }
+.awv2-util-stillopen small {
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+}
+.awv2-util-stillopen ul {
+  margin: 3px 0 0;
+  padding-left: 15px;
+  display: grid;
+  gap: 1px;
+}
+.awv2-util-stillopen li {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--awv2-bone-faint);
+}
+
 .awv2-util-row-note {
   margin: 5px 0 0;
   font-size: 11.5px;

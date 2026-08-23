@@ -165,7 +165,7 @@ describe('corridor infrastructure is not connection', () => {
     const read = resolve({
       corridor: { relationship: 'NOT_SHOWN', layerName: 'Water Mains', source: source('county utility GIS') },
     });
-    expect(read.infrastructure.statement).toContain('not proof service is unavailable');
+    expect(read.infrastructure.statement).toContain('absence on a map is not proof of unavailability');
     expect(read.connection.state).not.toBe('not_available');
   });
 });
@@ -259,7 +259,7 @@ describe('lane semantics', () => {
       corridor: { relationship: 'NOT_SHOWN', layerName: 'Water Mains', source: source('county utility GIS') },
     });
     expect(read.headline).toContain('Water Authority of Dickson County');
-    expect(read.headline).toContain('written availability confirmation required');
+    expect(read.headline).toContain('connection and capacity require written confirmation');
   });
 
   it('is UNRESOLVED only when genuinely nothing was established', () => {

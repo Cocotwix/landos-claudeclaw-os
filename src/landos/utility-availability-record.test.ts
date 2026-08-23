@@ -332,3 +332,106 @@ describe('reconciliation with the coarse screening vocabulary', () => {
     expect(read.sourcesChecked.join(' ')).toContain('County utility GIS');
   });
 });
+
+describe('the retained Fairview evidence, reinterpreted without new research', () => {
+  // Spec test 8. Every input below is already on the retained record: a 6-inch
+  // WADC main ~13 ft off the north boundary inside the adjoining Cedarcrest
+  // development, and an 8-inch gravity sewer ~41 ft off it in public
+  // right-of-way. Nothing here researches anything; the projection is pure.
+  const FAIRVIEW = record({
+    subjectDevelopment: 'vacant',
+    water: {
+      provider: PROVIDER,
+      territory: { state: 'inside', source: gis },
+      corridor: {
+        relationship: 'ADJACENT',
+        layerName: 'Fairview_Water_Mains',
+        distanceToBoundaryFeet: 13,
+        setting: 'adjoining_development',
+        mainSizeInches: 6,
+        hydrantsObserved: true,
+        source: gis,
+      },
+    },
+    sewer: {
+      provider: PROVIDER,
+      territory: { state: 'inside', source: gis },
+      corridor: {
+        relationship: 'ADJACENT',
+        layerName: 'Sewer_Pipe_Viewer',
+        distanceToBoundaryFeet: 41,
+        setting: 'public_row',
+        mainSizeInches: 8,
+        lineType: 'gravity',
+        source: gis,
+      },
+    },
+  });
+
+  const projected = projectUtilityAvailability(FAIRVIEW, SUBJECT);
+
+  it('reads the water main at the property edge as a very strong positive', () => {
+    const water = projected.water.infrastructure;
+    expect(water.position).toBe('at_site_edge');
+    expect(water.signal).toBe('very_strong_positive');
+    expect(water.distanceToBoundaryFeet).toBe(13);
+    expect(water.statement).toMatch(/effectively reaches the property edge/i);
+    expect(water.statement).toMatch(/6-inch main/);
+    expect(projected.water.headline).toMatch(/main at the property edge/i);
+  });
+
+  it('reads the gravity sewer 41 ft off the boundary as a favourable near-site position', () => {
+    const sewer = projected.sewer.infrastructure;
+    expect(sewer.position).toBe('adjoining_site');
+    expect(sewer.signal).toBe('strong_positive');
+    expect(sewer.distanceToBoundaryFeet).toBe(41);
+    expect(sewer.statement).toMatch(/favourable near-site position/i);
+    // Read aloud, so the article follows the spoken number: "an 8-inch main".
+    expect(sewer.statement).toMatch(/an 8-inch main/);
+    expect(projected.water.infrastructure.statement).toMatch(/a 6-inch main/);
+    expect(projected.sewer.headline).toMatch(/main adjoining the site/i);
+  });
+
+  it('carries no language calling the absent crossing main a deficiency', () => {
+    for (const resolution of [projected.water, projected.sewer]) {
+      const prose = [
+        resolution.headline,
+        resolution.infrastructure.statement,
+        resolution.extension.statement,
+      ].join(' ');
+      expect(prose).not.toMatch(/does not cross|no main crosses|proximity is not service/i);
+    }
+  });
+
+  it('still refuses to call either utility available', () => {
+    expect(projected.water.connection.state).toBe('written_confirmation_required');
+    expect(projected.sewer.connection.state).toBe('written_confirmation_required');
+    expect(projected.water.capacity.state).toBe('written_confirmation_required');
+    expect(projected.sewer.capacity.state).toBe('written_confirmation_required');
+    expect(publicServiceReadFromResolution(projected.water).state).toBe('unresolved');
+    expect(publicServiceReadFromResolution(projected.sewer).state).toBe('unresolved');
+    expect(projected.water.laneOutcome).toBe('PARTIAL');
+  });
+
+  it('names the tap, easement and cost work without treating it as a mark against the site', () => {
+    expect(projected.water.extension.statement).toMatch(/tap or short service connection/i);
+    expect(projected.sewer.extension.statement).toMatch(/short extension or service connection/i);
+    expect(projected.sewer.extension.statement).toMatch(/not a mark against the site/i);
+  });
+
+  it('projects identically twice, so a hard refresh costs nothing', () => {
+    expect(JSON.stringify(projectUtilityAvailability(FAIRVIEW, SUBJECT)))
+      .toEqual(JSON.stringify(projected));
+  });
+
+  it('degrades honestly when a record predates the measured distance', () => {
+    const older = projectUtilityAvailability(record({
+      water: { provider: PROVIDER, corridor: { relationship: 'ADJACENT', layerName: 'Water Mains', source: gis } },
+    }), SUBJECT);
+    // Favourable, one band below the edge it was never shown to reach, and
+    // never punished for the missing number.
+    expect(older.water.infrastructure.position).toBe('adjoining_site');
+    expect(older.water.infrastructure.signal).toBe('strong_positive');
+    expect(older.water.infrastructure.distanceToBoundaryFeet).toBeNull();
+  });
+});

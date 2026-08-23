@@ -18,6 +18,12 @@
 //      OPERATOR THE REQUEST. "Unresolved" with no next move is the failure this
 //      replaces; the written inquiry, already carrying what we established, is
 //      the product.
+//   4. INFRASTRUCTURE POSITION IS SHOWN AS THE ACQUISITION SIGNAL IT IS. A main
+//      at the frontage, in the adjoining right-of-way or at the boundary is how
+//      undeveloped land is normally served, so it renders as the strong positive
+//      it is rather than as an extension problem for not crossing the parcel.
+//      The signal chip is about POSITION only; connection and capacity keep
+//      their own rows and their own, unchanged, pending state.
 //
 // The panel READS. It never runs research: everything below is a pure
 // projection of retained observations, which is why a hard refresh costs
@@ -30,6 +36,23 @@ import { Disclosure } from './AcquisitionWorkspaceV2Diligence';
 import '../styles/workspace-v2-utility-availability.css';
 
 type EvidenceLevel = 'area_service' | 'corridor_infrastructure' | 'subject_availability';
+
+type SitePosition =
+  | 'crosses_site'
+  | 'at_site_edge'
+  | 'adjoining_site'
+  | 'same_corridor'
+  | 'off_corridor'
+  | 'no_practical_infrastructure'
+  | 'unestablished';
+
+type InfrastructureSignal =
+  | 'very_strong_positive'
+  | 'strong_positive'
+  | 'positive'
+  | 'context_only'
+  | 'material_negative'
+  | 'unestablished';
 
 interface Dimension {
   state: string;
@@ -49,6 +72,14 @@ interface UtilityResolution {
     lineType: string | null;
     liftStationObserved: boolean | null;
     screenshotPath: string | null;
+    position: SitePosition;
+    positionLabel: string;
+    signal: InfrastructureSignal;
+    distanceToBoundaryFeet: number | null;
+    setting: string;
+    connectionPath: string;
+    caution: string | null;
+    stillOpen: string[];
   };
   connection: Dimension;
   capacity: Dimension;
@@ -152,6 +183,43 @@ const STATE_LABEL: Record<string, string> = {
   confirmed_required: 'Confirmed required',
 };
 
+const POSITION_LABEL: Record<SitePosition, string> = {
+  crosses_site: 'Line crosses the parcel',
+  at_site_edge: 'At the property edge',
+  adjoining_site: 'Adjoining the site',
+  same_corridor: 'On the subject corridor',
+  off_corridor: 'Different corridor — context only',
+  no_practical_infrastructure: 'None found in reach',
+  unestablished: 'Position unestablished',
+};
+
+const SIGNAL_LABEL: Record<InfrastructureSignal, string> = {
+  very_strong_positive: 'Very strong positive',
+  strong_positive: 'Strong positive',
+  positive: 'Positive',
+  context_only: 'Context only',
+  material_negative: 'Material negative',
+  unestablished: 'Not established',
+};
+
+/**
+ * Tone for the infrastructure row comes from the POSITION signal, not from the
+ * evidence level.
+ *
+ * The level says how sure we are; the signal says whether the fact is good for
+ * the deal. Painting a 2025 public main thirteen feet off the boundary in the
+ * same cautionary colour as an unread layer is the visual half of the defect
+ * this panel corrects.
+ */
+const SIGNAL_TONE: Record<InfrastructureSignal, string> = {
+  very_strong_positive: 'good',
+  strong_positive: 'good',
+  positive: 'neutral',
+  context_only: 'warn',
+  material_negative: 'bad',
+  unestablished: 'muted',
+};
+
 function stateLabel(state: string): string {
   return STATE_LABEL[state] ?? state;
 }
@@ -177,6 +245,66 @@ function Row({ label, dimension, extra }: { label: string; dimension: Dimension;
       <p class="awv2-util-row-note">{dimension.statement}</p>
       {dimension.sources.length > 0 && (
         <div class="awv2-util-row-src">{dimension.sources.map((source) => <span>{source}</span>)}</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The infrastructure row, which is the one this correction is about.
+ *
+ * It leads with WHERE serving infrastructure sits relative to a viable
+ * connection point and how that reads for an acquisition, then keeps the raw
+ * mapped relationship visible underneath so the interpretation can always be
+ * checked against the geometry it came from. The list of what a strong position
+ * still does not settle renders on the same row, so the good news and its
+ * limits cannot be read apart.
+ */
+function InfrastructureRow({ label, infrastructure, extra }: {
+  label: string;
+  infrastructure: UtilityResolution['infrastructure'];
+  extra?: string | null;
+}) {
+  const kind = label.toLowerCase().includes('sewer') ? 'sewer' : 'water';
+  return (
+    <div
+      class={`awv2-util-row awv2-util-row-infra tone-${SIGNAL_TONE[infrastructure.signal]}`}
+      data-position={infrastructure.position}
+      data-signal={infrastructure.signal}
+      data-testid={`utility-infrastructure-${kind}`}
+    >
+      <div class="awv2-util-row-head">
+        <span class="k">{label}</span>
+        <b class="v" data-testid={`utility-position-${kind}`}>
+          {POSITION_LABEL[infrastructure.position]}
+          {infrastructure.distanceToBoundaryFeet != null
+            ? ` · ~${Math.round(infrastructure.distanceToBoundaryFeet)} ft from boundary`
+            : ''}
+          {extra ? ` · ${extra}` : ''}
+        </b>
+        <span class="lvl">{infrastructure.basis ? LEVEL_LABEL[infrastructure.basis] : 'Not established'}</span>
+      </div>
+      <div class="awv2-util-signal">
+        <span
+          class={`awv2-util-signal-chip sig-${infrastructure.signal}`}
+          data-testid={`utility-signal-${kind}`}
+        >
+          {SIGNAL_LABEL[infrastructure.signal]}
+        </span>
+        <span class="awv2-util-signal-geom">Mapped relationship: {stateLabel(infrastructure.state)}</span>
+      </div>
+      <p class="awv2-util-row-note">{infrastructure.statement}</p>
+      {infrastructure.caution && (
+        <p class="awv2-util-caution" data-testid={`utility-caution-${kind}`}>{infrastructure.caution}</p>
+      )}
+      {infrastructure.stillOpen.length > 0 && (
+        <div class="awv2-util-stillopen">
+          <small>A strong position does not settle</small>
+          <ul>{infrastructure.stillOpen.map((entry) => <li>{entry}</li>)}</ul>
+        </div>
+      )}
+      {infrastructure.sources.length > 0 && (
+        <div class="awv2-util-row-src">{infrastructure.sources.map((source) => <span>{source}</span>)}</div>
       )}
     </div>
   );
@@ -216,9 +344,9 @@ function UtilityBlock({ resolution, plan, confirmation, context }: {
           extra={resolution.provider.name ?? null}
         />
         <Row label="Service territory" dimension={resolution.territory} />
-        <Row
+        <InfrastructureRow
           label={resolution.kind === 'water' ? 'Water infrastructure' : 'Sewer infrastructure'}
-          dimension={infra}
+          infrastructure={infra}
           extra={infraExtra}
         />
         <Row label="Connection" dimension={resolution.connection} />
@@ -331,11 +459,18 @@ export function useUtilityAvailability(dealId?: number): {
 /** The one-line read the coarser Utilities section shows, from this same source. */
 export function utilityMetricValue(projection: UtilityAvailabilityProjection | null): string | null {
   if (!projection) return null;
-  const label = (resolution: UtilityAvailabilityProjection['water']) => (
-    resolution.connection.state === 'available' || resolution.connection.state === 'conditionally_available'
-      ? stateLabel(resolution.connection.state)
-      : `${stateLabel(resolution.infrastructure.state)} · ${stateLabel(resolution.connection.state).toLowerCase()}`
-  );
+  // Leads with the infrastructure POSITION rather than the mapped relationship,
+  // for the same reason the headline does: "mapped adjacent" reads as a
+  // shortfall, and a main at the property edge is the opposite of one.
+  const label = (resolution: UtilityAvailabilityProjection['water']) => {
+    if (resolution.connection.state === 'available' || resolution.connection.state === 'conditionally_available') {
+      return stateLabel(resolution.connection.state);
+    }
+    const distance = resolution.infrastructure.distanceToBoundaryFeet;
+    const position = POSITION_LABEL[resolution.infrastructure.position]
+      + (distance != null ? ` (~${Math.round(distance)} ft)` : '');
+    return `${position} · connection pending confirmation`;
+  };
   return `Water: ${label(projection.water)} — Sewer: ${label(projection.sewer)}`;
 }
 
@@ -354,9 +489,12 @@ export function UtilityAvailabilityPanel({ projection }: { projection: UtilityAv
       </div>
 
       <p class="awv2-util-doctrine">
-        Provider, service territory, infrastructure, connection, capacity and extension are separate
-        questions. Nearby service never establishes a line on this road, and a mapped line never
-        establishes the right to connect, the capacity to serve, or fire flow.
+        Provider, service territory, infrastructure position, connection, capacity and extension are
+        separate questions. A public provider does not lay its main into undeveloped private ground:
+        infrastructure at the frontage, in the adjoining right-of-way or at the property edge is the
+        normal, favourable condition for land, and is read here as the positive it is. It is still
+        only a position — it never establishes the right to connect, the capacity to serve, or fire
+        flow, and service on another corridor never establishes a line on this one.
       </p>
 
       <div class="awv2-util-grid">

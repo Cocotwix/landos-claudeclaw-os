@@ -115,9 +115,13 @@ export function relationshipStatement(kind: UtilityKind, relationship: UtilityLi
     case 'ON_SUBJECT_ROAD':
       return `${utility}: a main is mapped along the subject's road corridor. Infrastructure geometry only — capacity, tap availability, connection approval and fire flow remain the utility authority's determinations.`;
     case 'ADJACENT':
-      return `${utility}: a main is mapped adjacent to the subject parcel. Proximity is not service — extension, capacity and connection approval remain open.`;
+      // A public provider does not lay its main inside undeveloped private
+      // ground; adjacency is where public infrastructure is SUPPOSED to be, and
+      // reading it as a shortfall penalises the normal healthy condition. The
+      // separation from connection and capacity is unchanged.
+      return `${utility}: a main is mapped adjoining the subject parcel — the position public infrastructure normally occupies, and a favourable one. The connection itself, capacity and approval remain the utility authority's determinations.`;
     case 'NEARBY':
-      return `${utility}: a main is mapped in the vicinity but not at the parcel. Any connection would require an extension whose cost and feasibility are unestablished.`;
+      return `${utility}: a main is mapped in the vicinity but not on the subject's own corridor. Reaching the parcel would involve an extension whose route, cost and feasibility are unestablished.`;
     case 'NOT_SHOWN':
       return `${utility}: the official layer that was read draws no line at or near this parcel. Absence on a map is not proof that service is unavailable; the utility authority controls.`;
     case 'UNKNOWN':

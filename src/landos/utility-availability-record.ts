@@ -24,6 +24,7 @@ import {
   type UtilityProviderObservation,
   type UtilityTerritoryObservation,
 } from './utility-availability-resolution.js';
+import type { SubjectDevelopmentStatus } from './utility-site-position.js';
 import {
   buildUtilityConfirmationRequest,
   type UtilityConfirmationRequest,
@@ -66,6 +67,17 @@ export const UTILITY_AVAILABILITY_RECORD_VERSION = 1;
 export interface RetainedUtilityAvailabilityRecord {
   version: typeof UTILITY_AVAILABILITY_RECORD_VERSION;
   depth: DevelopmentResearchDepth;
+  /**
+   * Whether the subject carries improvements today.
+   *
+   * Optional, and absent on records written before it existed. It is read in
+   * exactly one place — how to interpret a line drawn INSIDE the boundary,
+   * which on undeveloped land is often a private lateral left by a former
+   * structure rather than a public main. It never conditions the favourable
+   * reading of frontage or property-edge infrastructure, so an older record
+   * projects identically without it.
+   */
+  subjectDevelopment?: SubjectDevelopmentStatus;
   water: RetainedUtilityObservations;
   sewer: RetainedUtilityObservations;
   /** Every lead considered, admitted or not. Refusals are shown too. */
@@ -196,6 +208,7 @@ export function projectUtilityAvailability(
         : null);
     return resolveUtilityAvailability({
       kind,
+      subjectDevelopment: record.subjectDevelopment ?? 'unknown',
       provider: observations.provider ?? null,
       territory: observations.territory ?? null,
       corridor,
