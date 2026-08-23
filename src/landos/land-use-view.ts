@@ -42,7 +42,10 @@ import {
   readCurrentZoning,
   readPropertySubdivisionRead,
   readSubdivisionRegulations,
+  readZoningStandards,
 } from './land-use-intelligence-store.js';
+import type { ZoningStandardsResult } from './zoning-standards-research.js';
+import type { CurrentZoningDetermination } from './current-zoning-determination.js';
 import { readPropertyBackstory } from './property-backstory-store.js';
 
 /* ────────────────────────────── view shapes ──────────────────────────── */
@@ -662,13 +665,76 @@ export function toLandUseView(determination: LandUseDetermination): LandUseView 
 }
 
 /**
+ * Reconcile the panel's zoning header against the CURRENT zoning determination.
+ *
+ * Two stores answer "what is this parcel zoned", and they are written by
+ * different lanes. `land_use_determination` is the older whole-panel record;
+ * `current_zoning_v1` is the promoted snapshot the source race and the
+ * interactive GIS session write. When the second establishes a district and
+ * the first has not been re-run, the panel showed the operator a CONFIRMED
+ * district in its body underneath a header chip reading "Zoning unverified" —
+ * the same contradiction the retained-intelligence block was added to fix, one
+ * level up.
+ *
+ * Corrected at READ time, system-wide, with the stored record untouched: the
+ * header states what the current accepted evidence actually says, and a stale
+ * row is never rewritten to make a surface agree with itself.
+ */
+export function reconcileZoningPresence(view: LandUseView, current: CurrentZoningDetermination | null): LandUseView {
+  if (!current?.established || !current.districtCode) return view;
+  if (view.zoning.presence === 'zoning_established') return view;
+
+  const sources: SourceView[] = current.sourceUrl
+    ? [{
+        label: current.sourceLabel ?? 'Official zoning source',
+        url: current.sourceUrl,
+        citation: null,
+        publisher: current.authorityName ?? null,
+        // The authority's own parcel-level map is a primary source; that is
+        // exactly why it may establish the district.
+        tier: 'municipal_primary',
+        isPrimary: true,
+        excerpt: current.parcelMatchBasis ?? null,
+        effectiveDate: current.effectiveOrAsOf ?? null,
+      }]
+    : [];
+  // The two modules grade evidence on different scales. A zoning
+  // determination's confidence is mapped onto the panel's evidence quality
+  // rather than passed through, so neither vocabulary is quietly widened.
+  const quality = current.confidence === 'confirmed' || current.confidence === 'well_supported'
+    ? 'verified_official' as const
+    : 'provisional_official' as const;
+  const established = (value: string): ValueView => ({
+    value,
+    unresolved: null,
+    quality,
+    qualityLabel: evidenceQualityLabel(quality),
+    sources,
+    conflict: null,
+  });
+
+  return {
+    ...view,
+    present: true,
+    zoning: {
+      ...view.zoning,
+      presence: 'zoning_established',
+      presenceLabel: ZONING_PRESENCE_LABELS.zoning_established,
+      code: established(current.districtCode),
+      districtName: established(current.districtName ?? current.districtCode),
+      governingAuthority: current.authorityName ?? view.zoning.governingAuthority,
+    },
+  };
+}
+
+/**
  * The panel's data for one deal. SELECT-only and scoped by deal id, so no other
  * property's legal research can reach this surface.
  */
 export function buildLandUseView(dealCardId: number): LandUseView {
   const record = getLandUseDetermination(dealCardId);
-  if (!record) return emptyLandUseView();
-  return toLandUseView(record.determination);
+  const base = record ? toLandUseView(record.determination) : emptyLandUseView();
+  return reconcileZoningPresence(base, readCurrentZoning(dealCardId));
 }
 
 /* ── Retained land-use intelligence ────────────────────────────────────────
@@ -714,6 +780,25 @@ export interface RetainedLandUseIntelligenceView {
     references: Array<{ kindLabel: string; value: string | null; asOf: string | null; quote: string; sourceUrl: string | null }>;
     limitations: string[];
   } | null;
+  /**
+   * The established district's OWN standards, from the adopted code.
+   *
+   * Separate from the subdivision rules beside them, and deliberately so: the
+   * subdivision regulations say how a tract may be divided, while these say
+   * what the resulting lots must be. On a form-based site the two disagree in
+   * a way that matters — a subdivision article can require 200 ft of frontage
+   * while the district caps lot WIDTH at 150 ft — and an operator reading only
+   * one of them draws the wrong yield.
+   */
+  districtStandards: {
+    districtCode: string;
+    contextOnly: boolean;
+    rows: Array<{ label: string; value: string }>;
+    principalUses: string[];
+    specialConditions: string[];
+    documents: Array<{ label: string; url: string | null; adoptedOrAsOf: string | null }>;
+    limitations: string[];
+  } | null;
   backstory: {
     narrative: string;
     highlights: string[];
@@ -751,8 +836,41 @@ function passage(value: string | null | undefined, max = 320): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+/** The six standards that decide yield, plus what the district permits. */
+const DISTRICT_STANDARD_ROWS: ReadonlyArray<{ key: keyof ZoningStandardsResult['standards']; label: string }> = [
+  { key: 'density', label: 'Density' },
+  { key: 'minimumLotSize', label: 'Lot area' },
+  { key: 'lotWidth', label: 'Lot width' },
+  { key: 'frontage', label: 'Frontage' },
+  { key: 'setbacks', label: 'Setbacks' },
+  { key: 'heightOrCoverage', label: 'Height / coverage' },
+];
+
+export function districtStandardsView(
+  standards: ZoningStandardsResult | null,
+): RetainedLandUseIntelligenceView['districtStandards'] {
+  if (!standards?.districtCode) return null;
+  const rows = DISTRICT_STANDARD_ROWS
+    .map((row) => ({ label: row.label, value: String(standards.standards[row.key] ?? '').trim() }))
+    .filter((row) => row.value.length > 0);
+  // A district with no readable standards is not a section worth rendering;
+  // the operator already knows the district from the block above it.
+  if (!rows.length && !standards.standards.principalUses.length) return null;
+  return {
+    districtCode: standards.districtCode,
+    contextOnly: standards.contextOnly,
+    rows,
+    principalUses: standards.standards.principalUses.slice(0, 6),
+    specialConditions: standards.standards.specialConditions.slice(0, 6),
+    documents: standards.documents.map((doc) => ({
+      label: doc.label, url: doc.url, adoptedOrAsOf: doc.adoptedOrAsOf,
+    })).slice(0, 4),
+    limitations: standards.limitations.slice(0, 4),
+  };
+}
+
 export function emptyRetainedLandUseIntelligenceView(): RetainedLandUseIntelligenceView {
-  return { present: false, determinedAt: null, authority: null, currentZoning: null, backstory: null, subdivision: null };
+  return { present: false, determinedAt: null, authority: null, currentZoning: null, districtStandards: null, backstory: null, subdivision: null };
 }
 
 export function buildRetainedLandUseIntelligenceView(dealCardId: number): RetainedLandUseIntelligenceView {
@@ -761,7 +879,8 @@ export function buildRetainedLandUseIntelligenceView(dealCardId: number): Retain
   const backstory = readPropertyBackstory(dealCardId);
   const regulations = readSubdivisionRegulations(dealCardId);
   const subdivisionRead = readPropertySubdivisionRead(dealCardId);
-  if (!authority && !zoning && !backstory && !regulations) return emptyRetainedLandUseIntelligenceView();
+  const standards = readZoningStandards(dealCardId);
+  if (!authority && !zoning && !backstory && !regulations && !standards) return emptyRetainedLandUseIntelligenceView();
 
   const roles: RetainedAuthorityView[] = [];
   const pushRole = (role: string, value: { name: string | null; level: string | null; determination: string; basis: string | null } | null | undefined): void => {
@@ -827,6 +946,7 @@ export function buildRetainedLandUseIntelligenceView(dealCardId: number): Retain
           limitations: (zoning.limitations ?? []).slice(0, 6),
         }
       : null,
+    districtStandards: districtStandardsView(standards),
     backstory: backstory
       ? {
           narrative: backstory.summary.narrative,

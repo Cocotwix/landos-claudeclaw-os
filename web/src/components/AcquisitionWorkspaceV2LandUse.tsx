@@ -267,6 +267,16 @@ export interface RetainedLandUseIntelligenceView {
     references: Array<{ kindLabel: string; value: string | null; asOf: string | null; quote: string; sourceUrl: string | null }>;
     limitations: string[];
   } | null;
+  /** The established district's own standards, from the adopted code. */
+  districtStandards: {
+    districtCode: string;
+    contextOnly: boolean;
+    rows: Array<{ label: string; value: string }>;
+    principalUses: string[];
+    specialConditions: string[];
+    documents: Array<{ label: string; url: string | null; adoptedOrAsOf: string | null }>;
+    limitations: string[];
+  } | null;
   backstory: {
     narrative: string; highlights: string[]; openQuestions: string[];
     documents: Array<{ label: string; url: string | null }>;
@@ -354,6 +364,33 @@ function RetainedIntelligence({ r, read }: {
         tone={r.currentZoning?.established ? 'good' : 'warn'}
         note={r.currentZoning?.statement ?? null}
       />
+
+      {/*
+        The district's OWN standards, kept distinct from the subdivision rules
+        below. The subdivision article says how a tract may be divided; these
+        say what the resulting lots must be, and on a form-based code the two
+        can disagree in a way that changes the yield.
+      */}
+      {r.districtStandards && (
+        <div class="awv2-lu-fields" aria-label={`${r.districtStandards.districtCode} district standards`}>
+          {r.districtStandards.rows.map((row) => (
+            <div class="awv2-lu-field" key={row.label}>
+              <small>{`${r.districtStandards!.districtCode} · ${row.label}`}</small>
+              <b>{row.value}</b>
+              {r.districtStandards!.contextOnly && <i>context only — district not confirmed current</i>}
+            </div>
+          ))}
+          {r.districtStandards.principalUses.map((use) => (
+            <div class="awv2-lu-field" key={use}>
+              <small>{`${r.districtStandards!.districtCode} · Building types`}</small>
+              <b>{use}</b>
+            </div>
+          ))}
+        </div>
+      )}
+      {r.districtStandards?.specialConditions.map((condition) => (
+        <p class="awv2-record-note" key={condition}>{condition}</p>
+      ))}
 
       {/* The concise field grid. Long ordinance text stays under Full rules. */}
       <div class="awv2-lu-fields" aria-label="Zoning and subdivision fields">

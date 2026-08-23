@@ -375,6 +375,118 @@ const STANDARD_RULES: StandardRule[] = [
 const SECTION_PATTERN = /\b(?:section|sec\.|article|art\.|chapter|ch\.|§)\s*([0-9]+(?:[.\-][0-9A-Za-z]+)*)/i;
 
 /**
+ * FORM-BASED CODES STATE THE SAME NUMBERS A DIFFERENT WAY.
+ *
+ * A conventional Euclidean ordinance writes prose — "the minimum lot area
+ * shall be four (4) acres" — and the rules above read it. A form-based code
+ * publishes a per-district TABLE whose rows are a label and a measurement:
+ *
+ *   Density                       2 dwelling units per acre max.
+ *   Lot / Building Site Width     100 ft. min., 150 ft. max.
+ *   Lot / Building Site Area      NR
+ *
+ * None of those rows contains the word "minimum", so every prose pattern above
+ * misses them and the district reads as having no standards at all. That is
+ * not a rare shape: character-district and transect codes are how a growing
+ * share of towns now zone, and it is exactly the code type LandOS met on its
+ * own acceptance parcel.
+ *
+ * The rows are read positionally: find the labels, and a row's value is the
+ * text up to the next label. `NR` / `NA` are preserved rather than dropped —
+ * "lot area is not regulated" is a finding, and on a form-based site it is
+ * often the finding, because it means DENSITY is the binding constraint.
+ */
+interface FormBasedRow {
+  key: StandardRule['key'];
+  label: RegExp;
+}
+
+const FORM_BASED_ROWS: readonly FormBasedRow[] = [
+  { key: 'density', label: /\bDensity\b\*?/i },
+  { key: 'lotWidth', label: /\bLot(?:\s*\/\s*Building Site)?\s+Width\b/i },
+  { key: 'minimumLotSize', label: /\bLot(?:\s*\/\s*Building Site)?\s+Area\b/i },
+  { key: 'frontage', label: /\bFrontage Buildout\b/i },
+  { key: 'setbacks', label: /\bFront Setback\s*\/\s*Yard,\s*Principal Frontage\b/i },
+  { key: 'heightOrCoverage', label: /\bBuilding Height\b|\bImpervious Surface Coverage\b|\bLot Coverage\b/i },
+];
+
+/** Every label that can terminate a row's value, so one row cannot swallow the next. */
+const ROW_BOUNDARY = new RegExp(
+  [
+    'Density', 'Lot Occupation', 'Lot\\s*/\\s*Building Site Width', 'Lot\\s*/\\s*Building Site Area',
+    'Lot\\s*/\\s*Building Site Enfrontment', 'Lot\\s*/\\s*Building Site Access', 'Frontage Buildout',
+    'Impervious Surface Coverage', 'Setbacks\\s*/\\s*Yards', 'Front Setback', 'Side Setback', 'Rear Setback',
+    'Building Standards', 'Building Height', 'Ceiling Height', 'Building Composition', 'Block Size',
+    'Block Perimeter', 'Permitted Uses', 'Civic Space Types', 'Private Frontage Types', 'Building Types',
+    'Number of Buildings', 'LEGEND', 'Vehicular Parking',
+  ].join('|'),
+  'gi',
+);
+
+/** Footnote markers and their explanatory sentence, which are not the value. */
+function stripRowFootnote(value: string): string {
+  return value
+    .replace(/^\*+\s*/, '')
+    .replace(/\*\s*Applicable only to [^.]*\./gi, '')
+    .replace(/^[\s:.\-–]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    // A district table is laid out around a diagram, so a row's text often
+    // ends with the page number or the single-letter key that points at the
+    // illustration ("40 ft. min. A"). Neither is part of the rule.
+    .replace(/\s+(?:\d{1,3}|[A-Z])$/, '')
+    .trim();
+}
+
+/** True when a row value actually states something readable. */
+function usableRowValue(value: string): boolean {
+  if (!value) return false;
+  if (/^(NR|NA)\b/i.test(value)) return true;
+  return /\d/.test(value);
+}
+
+export function readFormBasedDistrictStandards(input: {
+  text: string;
+  sourceLabel: string;
+  sourceUrl: string | null;
+}): ZoningStandards {
+  const standards = emptyZoningStandards();
+  const text = input.text.replace(/\s+/g, ' ');
+
+  // Every boundary label, in document order.
+  const boundaries: number[] = [];
+  for (const match of text.matchAll(ROW_BOUNDARY)) boundaries.push(match.index ?? 0);
+  boundaries.sort((a, b) => a - b);
+
+  for (const row of FORM_BASED_ROWS) {
+    if (standards[row.key]) continue;
+    // EVERY occurrence, not the first. These labels are ordinary words that
+    // also appear in the district's prose description — "a low DENSITY
+    // single-family area" precedes the Density ROW by two paragraphs — so
+    // stopping at the first match reads the description and reports nothing.
+    const label = new RegExp(row.label.source, `${row.label.flags.replace(/g/g, '')}g`);
+    for (const found of text.matchAll(label)) {
+      const valueStart = (found.index ?? 0) + found[0].length;
+      const next = boundaries.find((index) => index > valueStart + 2);
+      const raw = text.slice(valueStart, next ?? valueStart + 180);
+      const value = stripRowFootnote(raw).slice(0, 180);
+      if (!usableRowValue(value)) continue;
+      standards[row.key] = /^(NR|NA)\b/i.test(value)
+        ? 'Not regulated by the district table'
+        : value;
+      standards.sources.push({
+        label: input.sourceLabel,
+        url: input.sourceUrl,
+        section: SECTION_PATTERN.exec(text.slice(Math.max(0, (found.index ?? 0) - 200), found.index ?? 0))?.[0] ?? null,
+        quote: `${found[0]} ${value}`.slice(0, 400),
+      });
+      break;
+    }
+  }
+  return standards;
+}
+
+/**
  * The handful of standards that actually decide a land deal.
  *
  * Deliberately NOT an encyclopedia of the zoning code. Minimum lot size,
@@ -436,6 +548,27 @@ export function readZoningStandards(input: {
   for (const condition of [...body.matchAll(/\b(?:provided\s+that|subject\s+to|except\s+that)\b[^.\n]{0,180}/gi)].slice(0, 3)) {
     standards.specialConditions.push(condition[0].replace(/\s+/g, ' ').trim());
   }
+
+  // The prose rules read Euclidean ordinances. When the document is a
+  // form-based district TABLE they match nothing, because the rows never say
+  // "minimum" — so the table reader fills whatever is still unanswered. Prose
+  // wins where both speak, since a sentence carries its own qualifiers.
+  // District scoping narrows to the district's prose section, which in a
+  // form-based code is a different place from its standards TABLE. So the
+  // table reader gets the scoped body first and the whole document second.
+  let tabular = readFormBasedDistrictStandards({
+    text: body, sourceLabel: input.sourceLabel, sourceUrl: input.sourceUrl,
+  });
+  if (!tabular.sources.length && body !== text) {
+    tabular = readFormBasedDistrictStandards({
+      text, sourceLabel: input.sourceLabel, sourceUrl: input.sourceUrl,
+    });
+  }
+  for (const key of ['minimumLotSize', 'density', 'setbacks', 'frontage', 'lotWidth', 'heightOrCoverage'] as const) {
+    if (!standards[key] && tabular[key]) standards[key] = tabular[key];
+  }
+  if (tabular.sources.length) standards.sources.push(...tabular.sources);
+
   return standards;
 }
 

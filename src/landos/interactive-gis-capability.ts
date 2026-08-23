@@ -20,6 +20,8 @@ import {
   emptyZoningStandards,
   type CurrentZoningDetermination,
 } from './current-zoning-determination.js';
+import type { PropertyIdentityVersion } from './property-summary-slice.js';
+import type { ZoningCollectorInput } from './zoning-operator.js';
 import {
   DEFAULT_GIS_SESSION_STEPS,
   runInteractiveGisSession,
@@ -152,6 +154,81 @@ export function determinationFromGisEvidence(input: {
     standards: emptyZoningStandards(),
     limitations,
     consideredEvidence: [],
+  };
+}
+
+/**
+ * Retain the map capture as a Deal Card zoning ARTIFACT.
+ *
+ * The determination alone tells the operator the district; it does not let them
+ * look at what the machine looked at. `persistCurrentZoning` writes derived
+ * evidence whose `artifact_ref` is structurally null, so a screenshot admitted
+ * that way is retained on disk and reachable from nowhere. The zoning-collector
+ * store is the one path in this repo where a file, an append-only evidence row
+ * and a served route line up, so the capture goes there and becomes something
+ * the operator can open.
+ *
+ * Refuses on an unconfirmed identity, which the collector store enforces too:
+ * an artifact filed against the wrong parcel is worse than no artifact.
+ */
+export function gisZoningCollectorInput(input: {
+  identity: PropertyIdentityVersion;
+  evidence: GisEvidence;
+  source: MunicipalGisSource;
+  screenshotPath: string;
+}): ZoningCollectorInput | null {
+  const { evidence, source } = input;
+  if (!evidence.subject.confirmed || !evidence.value) return null;
+  if (input.identity.status !== 'confirmed') return null;
+
+  const jurisdiction = `${source.municipality}, ${source.state}`;
+  const artifactKey = `gis-zoning-${source.webMapItemId}-${evidence.value}`;
+
+  return {
+    identity: input.identity,
+    domain: 'zoning_district',
+    sourceJurisdiction: jurisdiction,
+    platform: 'arcgis',
+    adapterKey: 'interactive-gis-session',
+    status: 'succeeded',
+    outcomeKind: 'completed',
+    claims: [{
+      claimKey: `current-zoning-district:${evidence.value}`,
+      exactWording: `${source.districtNoun} ${evidence.value}`,
+      normalizedValue: { districtCode: evidence.value, districtName: evidence.legendLabel ?? evidence.value },
+      domain: 'zoning_district',
+      locatorStatus: 'record_located',
+      sourceKind: 'official_gis',
+      authorityLevel: 'municipality',
+      authorityName: source.sourceLabel,
+      sourceName: `${evidence.appTitle ?? source.sourceLabel} — layer "${evidence.layerName}"`,
+      sourceUrl: evidence.appUrl,
+      sourceJurisdiction: jurisdiction,
+      sourceTier: 'official_government_source',
+      confidence: 'high',
+      retrievedAt: evidence.retrievedAtIso,
+      effectiveAt: source.regimeAdoptedAt,
+      districtCode: evidence.value,
+      districtName: evidence.legendLabel ?? evidence.value,
+      artifactKey,
+    }],
+    artifacts: [{
+      artifactKey,
+      domain: 'zoning_district',
+      sourceJurisdiction: jurisdiction,
+      authorityName: source.sourceLabel,
+      sourceName: evidence.appTitle ?? source.sourceLabel,
+      sourceUrl: evidence.appUrl,
+      districtReference: evidence.value,
+      ordinanceEffectiveDate: source.regimeAdoptedAt,
+      documentType: 'official_zoning_map_capture',
+      mimeType: 'image/png',
+      displayName: `${source.municipality} ${source.districtNoun} map — subject parcel with "${evidence.layerName}" and legend.png`,
+      retrievedAt: evidence.retrievedAtIso,
+      pageCount: 1,
+      sourcePath: input.screenshotPath,
+    }],
+    alternateOfficialSourcesChecked: [],
   };
 }
 
