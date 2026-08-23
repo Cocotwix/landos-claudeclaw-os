@@ -34,10 +34,15 @@ import {
   type RetainedFrontageReading,
 } from './access-utilities-screening.js';
 import {
+  loadUtilityAvailabilityRecord,
   loadWellContextScreening,
   retainedSoilUnits,
   retainedUtilityScreen,
 } from './utility-service-screen-capability.js';
+import {
+  projectUtilityAvailability,
+  publicServiceReadFromResolution,
+} from './utility-availability-record.js';
 import type { CapabilityResult, JsonObject, JsonValue } from './capability-contract.js';
 import {
   buildResearchReadinessManifest,
@@ -487,16 +492,29 @@ function siteServiceProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
   const capabilityWell = asObject(facts.wellOutlook);
   const capabilitySeptic = asObject(facts.septicOutlook);
 
-  // The capability result is the stronger source. The retained
-  // public-intelligence utilities lane is the fallback for every card whose
-  // research predates this capability.
+  // Three sources can answer "does this parcel have public water", and they are
+  // ranked here rather than left to whichever ran last. The utility availability
+  // research is the most precise, so where it exists it decides — reconciled at
+  // READ time, with every stored row untouched. The capability result is next,
+  // and the retained public-intelligence utilities lane is the fallback for
+  // every card whose research predates both.
   const retainedScreen = retainedUtilityScreen(ctx.dealCardId);
-  const water = capabilityWater
-    ? { state: asString(capabilityWater.state) ?? 'not_screened', statement: asString(capabilityWater.statement) ?? '' }
-    : readPublicWater(retainedScreen);
-  const sewer = capabilitySewer
-    ? { state: asString(capabilitySewer.state) ?? 'not_screened', statement: asString(capabilitySewer.statement) ?? '' }
-    : readPublicSewer(retainedScreen);
+  const availabilityRecord = ctx.propertyCardId ? loadUtilityAvailabilityRecord(ctx.propertyCardId) : null;
+  const availability = availabilityRecord
+    ? projectUtilityAvailability(availabilityRecord, {
+      address: null, apn: null, county: null, state: null, acres: null,
+    })
+    : null;
+  const water = availability
+    ? publicServiceReadFromResolution(availability.water)
+    : capabilityWater
+      ? { state: asString(capabilityWater.state) ?? 'not_screened', statement: asString(capabilityWater.statement) ?? '' }
+      : readPublicWater(retainedScreen);
+  const sewer = availability
+    ? publicServiceReadFromResolution(availability.sewer)
+    : capabilitySewer
+      ? { state: asString(capabilitySewer.state) ?? 'not_screened', statement: asString(capabilitySewer.statement) ?? '' }
+      : readPublicSewer(retainedScreen);
 
   const soilUnits = retainedSoilUnits(ctx.dealCardId, ctx.propertyCardId);
   const wellContext = loadWellContextScreening(ctx.propertyCardId);
@@ -507,7 +525,7 @@ function siteServiceProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
     ? { category: asString(capabilitySeptic.category) ?? 'unknown', statement: asString(capabilitySeptic.statement) ?? '' }
     : readSepticOutlook(readPublicSewer(retainedScreen), soilUnits);
 
-  const at = reading.completedAt ?? retainedScreen?.screenedAt ?? null;
+  const at = availability?.researchedAt ?? reading.completedAt ?? retainedScreen?.screenedAt ?? null;
   const screened = water.state !== 'not_screened';
 
   const service = (itemId: string, read: { state: string; statement: string }, label: string): ResearchReadinessProbe => ({

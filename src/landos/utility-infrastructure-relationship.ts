@@ -25,6 +25,14 @@
  */
 export type UtilityLineRelationship =
   | 'AT_SUBJECT'
+  /**
+   * A main runs along the subject's own road corridor without being drawn at
+   * the frontage itself. Distinct from ADJACENT on purpose: a line on the road
+   * the parcel fronts is the relationship a service extension is priced off,
+   * and collapsing it into either "at the parcel" or "nearby" loses the exact
+   * fact an operator needs.
+   */
+  | 'ON_SUBJECT_ROAD'
   | 'ADJACENT'
   | 'NEARBY'
   | 'NOT_SHOWN'
@@ -34,6 +42,7 @@ export type UtilityKind = 'water' | 'sewer';
 
 export const UTILITY_RELATIONSHIP_LABEL: Readonly<Record<UtilityLineRelationship, string>> = {
   AT_SUBJECT: 'Line mapped at the subject parcel',
+  ON_SUBJECT_ROAD: 'Line mapped along the subject road corridor',
   ADJACENT: 'Line mapped adjacent to the subject parcel',
   NEARBY: 'Line mapped in the vicinity, not at the parcel',
   NOT_SHOWN: 'No line shown on the layer that was read',
@@ -79,7 +88,9 @@ export interface UtilityInfrastructureFinding {
  * "serviceAvailable": it answers a geometry question.
  */
 export function lineIsMapped(relationship: UtilityLineRelationship): boolean {
-  return relationship === 'AT_SUBJECT' || relationship === 'ADJACENT';
+  return relationship === 'AT_SUBJECT'
+    || relationship === 'ON_SUBJECT_ROAD'
+    || relationship === 'ADJACENT';
 }
 
 /**
@@ -101,6 +112,8 @@ export function relationshipStatement(kind: UtilityKind, relationship: UtilityLi
   switch (relationship) {
     case 'AT_SUBJECT':
       return `${utility}: a main is mapped at the subject parcel. This is infrastructure geometry only — it does not establish capacity, tap availability, connection approval, or fire flow.`;
+    case 'ON_SUBJECT_ROAD':
+      return `${utility}: a main is mapped along the subject's road corridor. Infrastructure geometry only — capacity, tap availability, connection approval and fire flow remain the utility authority's determinations.`;
     case 'ADJACENT':
       return `${utility}: a main is mapped adjacent to the subject parcel. Proximity is not service — extension, capacity and connection approval remain open.`;
     case 'NEARBY':

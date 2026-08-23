@@ -227,6 +227,8 @@ import { withOwnedPages } from './browser-owned-pages.js';
 import { LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY_ID } from './landportal-property-characteristics-capability.js';
 import { LANDPORTAL_VISUAL_CAPTURE_CAPABILITY_ID } from './landportal-visual-capture-capability.js';
 import { LANDPORTAL_COMP_SEARCH_CAPABILITY_ID, type SecondarySearchResult } from './landportal-comp-search-capability.js';
+import { projectUtilityAvailability } from './utility-availability-record.js';
+import { loadUtilityAvailabilityRecord } from './utility-service-screen-capability.js';
 import { readResolverSubject } from './universal-property-resolution.js';
 import { CountyCapabilityRegistry } from './county-capability-registry.js';
 import { PUBLIC_INTELLIGENCE_TASKS, normalizeParcelIdentifier, type PublicIntelligenceRun, type PublicIntelligenceSubject } from './public-property-intelligence.js';
@@ -4054,6 +4056,36 @@ export function registerLandosRoutes(app: Hono): void {
       });
     } catch {
       return c.json({ error: 'data-center map not found' }, 404);
+    }
+  });
+
+  // The utility map capture behind a corridor finding.
+  //
+  // The path comes from the retained utility record rather than the request, so
+  // a caller cannot name a file; it is then confined to the browser-shots root
+  // the same way every other retained capture is.
+  app.get('/api/landos/deal-cards/:id/utility-availability/map/:utility', (c) => {
+    const id = Number(c.req.param('id'));
+    const utility = c.req.param('utility');
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (utility !== 'water' && utility !== 'sewer') return c.json({ error: 'invalid utility' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'not found' }, 404);
+    const cardId = subjectCardId(deal);
+    if (cardId == null) return c.json({ error: 'this Deal Card has no canonical subject Property Card yet' }, 409);
+    const record = loadUtilityAvailabilityRecord(cardId);
+    const stored = record?.[utility]?.corridor?.source.screenshotPath;
+    if (!stored) return c.json({ error: 'no utility map capture retained' }, 404);
+    const resolved = path.resolve(stored);
+    const root = landosArtifactPath('browser-shots');
+    if (!resolved.startsWith(root + path.sep)) return c.json({ error: 'forbidden' }, 403);
+    try {
+      const buf = fs.readFileSync(resolved);
+      return new Response(new Uint8Array(buf), {
+        headers: { 'content-type': 'image/png', 'cache-control': 'private, max-age=3600' },
+      });
+    } catch {
+      return c.json({ error: 'utility map capture not found' }, 404);
     }
   });
 
@@ -11183,6 +11215,44 @@ export function registerLandosRoutes(app: Hono): void {
     if (!cardId) return { error: 'this Deal Card has no canonical subject Property Card yet' as const, status: 409 as const };
     return { deal, cardId };
   };
+
+  // Deal Card → Utility Availability Resolution.
+  //
+  // READ ONLY, and deliberately so. The retained record holds OBSERVATIONS; the
+  // six-dimension read is derived from them by pure functions on every request.
+  // That is what makes a hard refresh free: this route opens no browser, calls
+  // no model, contacts no provider and re-runs no research. It also means the
+  // promotion guards apply to old records, not just new ones.
+  app.get('/api/landos/deal-cards/:id/utility-availability', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const subject = dealCardAssessorTaxSubject(id);
+    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    const record = loadUtilityAvailabilityRecord(subject.cardId);
+    if (!record) {
+      return c.json({ dealCardId: id, propertyCardId: subject.cardId, availability: null });
+    }
+    const resolver = readResolverSubject(id);
+    const availability = projectUtilityAvailability(record, {
+      address: resolver?.address ?? null,
+      apn: resolver?.apn ?? null,
+      county: resolver?.county ?? null,
+      state: resolver?.state ?? null,
+      acres: resolver?.acres ?? null,
+      contemplatedUse: null,
+    });
+    // The retained record holds a filesystem path; the page needs a URL, and
+    // the operator's browser needs never to see the former. Swapped here rather
+    // than in the projection, because where a capture is SERVED from is a
+    // transport concern and the projection stays pure.
+    for (const kind of ['water', 'sewer'] as const) {
+      const infrastructure = availability[kind].infrastructure;
+      infrastructure.screenshotPath = infrastructure.screenshotPath
+        ? `/api/landos/deal-cards/${id}/utility-availability/map/${kind}`
+        : null;
+    }
+    return c.json({ dealCardId: id, propertyCardId: subject.cardId, availability });
+  });
 
   app.get('/api/landos/deal-cards/:id/assessor-tax', (c) => {
     const id = Number(c.req.param('id'));

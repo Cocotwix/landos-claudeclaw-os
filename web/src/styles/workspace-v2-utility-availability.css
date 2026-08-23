@@ -1,0 +1,246 @@
+/* ── Public water & public sewer availability ──────────────────────────────
+   The visual job here is one thing: make evidence STRENGTH impossible to
+   misread. Level 1 area context, Level 2 corridor infrastructure and Level 3
+   subject availability each get their own left rule and level chip, so an
+   operator scanning the panel sees at a glance which claims are carried by a
+   map, which by the neighbourhood, and which by the utility itself. */
+
+.awv2-util-doctrine {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--awv2-bone-faint);
+  max-width: 68ch;
+}
+
+.awv2-util-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 1180px) {
+  .awv2-util-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.awv2-util-block {
+  border: 1px solid var(--awv2-line);
+  border-radius: 3px;
+  background: var(--awv2-panel-2);
+  padding: 14px 15px 12px;
+}
+
+.awv2-util-headline {
+  border-left: 3px solid var(--awv2-line-strong);
+  padding-left: 11px;
+  margin-bottom: 13px;
+}
+.awv2-util-headline small {
+  display: block;
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+}
+.awv2-util-headline b {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--awv2-serif);
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--awv2-bone);
+  font-weight: 500;
+}
+.awv2-util-headline .lane {
+  display: inline-block;
+  margin-top: 6px;
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--awv2-bone-faint);
+}
+.awv2-util-headline.tone-good { border-left-color: var(--awv2-moss); }
+.awv2-util-headline.tone-warn { border-left-color: var(--awv2-amber); }
+.awv2-util-headline.tone-bad { border-left-color: var(--awv2-rust); }
+.awv2-util-headline.tone-neutral { border-left-color: var(--awv2-brass); }
+
+.awv2-util-rows { display: grid; gap: 1px; background: var(--awv2-line); }
+
+.awv2-util-row {
+  background: var(--awv2-panel);
+  padding: 9px 11px 8px;
+  border-left: 2px solid transparent;
+}
+.awv2-util-row.tone-good { border-left-color: var(--awv2-moss); }
+.awv2-util-row.tone-neutral { border-left-color: var(--awv2-brass); }
+.awv2-util-row.tone-warn { border-left-color: var(--awv2-amber); }
+.awv2-util-row.tone-bad { border-left-color: var(--awv2-rust); }
+.awv2-util-row.tone-muted { border-left-color: var(--awv2-line-strong); }
+
+.awv2-util-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.awv2-util-row-head .k {
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+  min-width: 128px;
+}
+.awv2-util-row-head .v {
+  font-size: 13px;
+  color: var(--awv2-bone);
+  font-weight: 600;
+}
+.awv2-util-row-head .lvl {
+  margin-left: auto;
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--awv2-bone-faint);
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 2px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.awv2-util-row-note {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--awv2-bone-dim);
+}
+.awv2-util-row-src {
+  margin-top: 5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.awv2-util-row-src span {
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  color: var(--awv2-bone-faint);
+  word-break: break-all;
+}
+
+.awv2-util-shot { margin-top: 12px; }
+.awv2-util-shot img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 2px;
+}
+.awv2-util-shot small {
+  display: block;
+  margin-top: 5px;
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  color: var(--awv2-bone-faint);
+}
+
+/* Context renders visibly BELOW and apart from the subject's own dimensions,
+   under a heading that names it as context. */
+.awv2-util-context {
+  margin-top: 13px;
+  padding: 10px 12px;
+  border: 1px dashed var(--awv2-line-strong);
+  border-radius: 2px;
+  background: var(--awv2-brass-soft);
+}
+.awv2-util-context h4 {
+  margin: 0 0 7px;
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-brass);
+  font-weight: 600;
+}
+.awv2-util-context p {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--awv2-bone-dim);
+}
+.awv2-util-context p:last-child { margin-bottom: 0; }
+.awv2-util-context .src,
+.awv2-util-context .det {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  color: var(--awv2-bone-faint);
+}
+
+.awv2-util-next {
+  margin-top: 13px;
+  border-top: 1px solid var(--awv2-line);
+  padding-top: 9px;
+}
+.awv2-util-next small {
+  display: block;
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+}
+.awv2-util-next b {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--awv2-bone);
+  font-weight: 500;
+}
+
+.awv2-util-why {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--awv2-bone-dim);
+}
+.awv2-util-contact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--awv2-bone-dim);
+}
+.awv2-util-contact b { color: var(--awv2-bone); }
+.awv2-util-contact a { color: var(--awv2-brass); }
+.awv2-util-block h5,
+.awv2-panel h5 {
+  margin: 10px 0 5px;
+  font-family: var(--awv2-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--awv2-bone-faint);
+  font-weight: 600;
+}
+.awv2-util-message {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--awv2-line-strong);
+  border-radius: 2px;
+  background: var(--awv2-ink);
+  font-family: var(--awv2-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--awv2-bone-dim);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.awv2-util-asof {
+  margin: 10px 0 0;
+  font-family: var(--awv2-mono);
+  font-size: 9.5px;
+  color: var(--awv2-bone-faint);
+}

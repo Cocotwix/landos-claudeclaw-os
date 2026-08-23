@@ -28,6 +28,7 @@ import { OfficialParcelGisPanel, type OfficialParcelGisView } from './Acquisitio
 import { LandUsePanel, type LandUseView, type RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
 import { ZoningSubdivisionCapabilityRun } from './AcquisitionWorkspaceV2ZoningSubdivision';
 import { PropertyDevelopmentHistoryPanel } from './AcquisitionWorkspaceV2PropertyDevelopmentHistory';
+import { UtilityAvailabilityPanel, useUtilityAvailability, utilityMetricValue } from './AcquisitionWorkspaceV2UtilityAvailability';
 import type { CvSummary } from './AcquisitionWorkspaceV2CompsValuation';
 import { DevelopmentIntelligencePanel, type DevelopmentIntelligenceView } from './AcquisitionWorkspaceV2DevelopmentIntelligence';
 import '../styles/workspace-v2-property-intelligence.css';
@@ -691,6 +692,10 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   const wetlands = dd.get('wetlands');
   const flood = dd.get('flood');
   const utilities = dd.get('utilities');
+  // One source for the utility question on this page. The detailed panel below
+  // and the Utilities & septic row read the SAME retained resolution, so the
+  // page cannot show an established finding under a "Not screened" chip.
+  const { projection: utilityAvailability } = useUtilityAvailability(dealId);
   const zoning = dd.get('zoning');
   const septic = dd.get('septic');
 
@@ -827,7 +832,12 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   ];
 
   const utilityMetrics: DxMetric[] = [
-    { label: 'Utilities', value: utilities?.headline || 'Not established', tone: utilities?.headline ? 'neutral' : 'warn' },
+    {
+      label: 'Utilities',
+      value: utilityMetricValue(utilityAvailability) || utilities?.headline || 'Not established',
+      sub: utilityAvailability ? 'retained utility research' : null,
+      tone: utilityAvailability ? 'neutral' : utilities?.headline ? 'neutral' : 'warn',
+    },
     { label: 'Septic outlook', value: soilsSeptic?.categoryLabel || septic?.headline || 'Field testing required', tone: soilsSeptic && /favorable|suitable/i.test(soilsSeptic.categoryLabel) ? 'good' : 'warn' },
     { label: 'Listing-reported', value: listingUtilities.length ? listingUtilities.join(', ') : '', sub: 'listing weight' },
   ];
@@ -1223,6 +1233,13 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
         </div>
       )}
 
+      {/* ── Public water & public sewer ──
+          Directly above the coarse utilities line it supersedes. The two are
+          the same question at different resolutions, so the detailed read sits
+          first and the screening row below it is the fallback for cards whose
+          research predates it. */}
+      {dealId != null && <UtilityAvailabilityPanel projection={utilityAvailability} />}
+
       <section data-domain="risk" class="awv2-panel" id="utilities-septic">
         <div class="awv2-panel-title">Utilities &amp; septic</div>
         <MetricRow metrics={utilityMetrics} label="Utility and septic status" />
@@ -1232,7 +1249,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
           <Disclosure label="Supporting utility and septic evidence">
             <div class="awv2-pi-note">{[utilities?.detail, septic?.detail].filter(Boolean).join(' ')}</div>
             <div class="awv2-pi-question-read">
-              <div><span>Utilities</span><b>{utilities?.headline || 'Not yet resolved'}</b></div>
+              <div><span>Utilities</span><b>{utilityMetricValue(utilityAvailability) || utilities?.headline || 'Not yet resolved'}</b></div>
               <div><span>Septic</span><b>{soilsSeptic?.categoryLabel || septic?.headline || 'Field testing required'}</b></div>
               <div><span>Listing-reported context</span><b>{listingUtilities.length ? listingUtilities.join(', ') : 'No utility detail retained from listing'}</b></div>
             </div>

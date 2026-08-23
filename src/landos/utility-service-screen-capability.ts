@@ -48,6 +48,13 @@ import type {
   UtilitiesFinding,
 } from './public-property-intelligence.js';
 import { loadSoilsSepticScreening } from './soils-septic-outlook.js';
+import {
+  projectUtilityAvailability,
+  publicServiceReadFromResolution,
+  UTILITY_AVAILABILITY_RECORD_VERSION,
+  type RetainedUtilityAvailabilityRecord,
+  type UtilityAvailabilityProjection,
+} from './utility-availability-record.js';
 import { evaluateResolverIdentity, readResolverSubject } from './universal-property-resolution.js';
 import {
   readPublicSewer,
@@ -93,6 +100,46 @@ export function loadWellContextScreening(propertyCardId: number): RetainedWellCo
   try {
     const parsed = JSON.parse(row.ref) as RetainedWellContext;
     return typeof parsed?.nearbyRecordCount === 'number' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Retained utility availability observations ───────────────────────────────
+
+export const UTILITY_AVAILABILITY_RECORD_KIND = 'utility_availability_resolution_v1';
+
+/**
+ * Retain what the utility research OBSERVED for this subject.
+ *
+ * Observations, never the derived answer: `projectUtilityAvailability` re-runs
+ * the promotion guards and the relevance gates on every read, so an answer
+ * cannot outlive the rules that justified it. The same property makes a hard
+ * refresh free — the read is pure functions over a retained row.
+ */
+export function persistUtilityAvailabilityRecord(
+  propertyCardId: number,
+  record: RetainedUtilityAvailabilityRecord,
+): number {
+  const water = record.water.provider?.name ?? 'provider unresolved';
+  const sewer = record.sewer.provider?.name ?? 'provider unresolved';
+  return attachCardActivity({
+    cardId: propertyCardId,
+    agentId: 'utility-service-screen',
+    kind: UTILITY_AVAILABILITY_RECORD_KIND,
+    summary: `Utility availability research retained (water: ${water}; sewer: ${sewer}).`,
+    ref: JSON.stringify(record),
+  });
+}
+
+export function loadUtilityAvailabilityRecord(propertyCardId: number): RetainedUtilityAvailabilityRecord | null {
+  const row = getLandosDb()
+    .prepare('SELECT ref FROM landos_card_activity WHERE card_id = ? AND kind = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+    .get(propertyCardId, UTILITY_AVAILABILITY_RECORD_KIND) as { ref: string } | undefined;
+  if (!row?.ref) return null;
+  try {
+    const parsed = JSON.parse(row.ref) as RetainedUtilityAvailabilityRecord;
+    return parsed?.version === UTILITY_AVAILABILITY_RECORD_VERSION ? parsed : null;
   } catch {
     return null;
   }
@@ -290,6 +337,13 @@ export interface UtilityServiceScreenFacts extends JsonObject {
     favorableSharePct: number | null;
     limitedSharePct: number | null;
   };
+  /**
+   * The six-dimension utility availability read, when utility research has been
+   * retained for this subject. `null` means the coarse screen above is all
+   * there is — an honest absence, not an empty resolution that would read as
+   * "we looked and found nothing".
+   */
+  availability: JsonObject | null;
   screenedAt: string | null;
 }
 
@@ -298,6 +352,7 @@ function projectFacts(input: {
   sewer: PublicServiceRead;
   soilUnits: RetainedSoilUnit[];
   wellContext: RetainedWellContext | null;
+  availability: UtilityAvailabilityProjection | null;
   screenedAt: string | null;
   screened: boolean;
 }): UtilityServiceScreenFacts {
@@ -316,6 +371,7 @@ function projectFacts(input: {
       favorableSharePct: septic.favorableSharePct,
       limitedSharePct: septic.limitedSharePct,
     },
+    availability: input.availability ? (input.availability as unknown as JsonObject) : null,
     screenedAt: input.screenedAt,
   };
 }
@@ -360,6 +416,7 @@ export const UTILITY_SERVICE_SCREEN_CAPABILITY: LandosCapability<UtilityServiceS
           sewer: readPublicSewer(null),
           soilUnits: [],
           wellContext: null,
+          availability: null,
           screenedAt: null,
           screened: false,
         }),
@@ -413,15 +470,31 @@ export const UTILITY_SERVICE_SCREEN_CAPABILITY: LandosCapability<UtilityServiceS
         ? { publicWater: 'unknown', publicSewer: 'unknown', researchAttempted: lane.attempted, screenedAt: new Date().toISOString() }
         : null;
 
-    const water = readPublicWater(screen);
-    const sewer = readPublicSewer(screen);
+    // The retained utility availability research, when there is any. It is the
+    // stronger read of the same question, so where it exists it decides the
+    // coarse water/sewer state rather than sitting beside a contradicting one.
+    const availabilityRecord = loadUtilityAvailabilityRecord(propertyCardId);
+    const availability = availabilityRecord
+      ? projectUtilityAvailability(availabilityRecord, {
+        address: retained.address,
+        apn: retained.apn,
+        county: retained.county,
+        state: retained.state,
+        acres: retained.acres ?? null,
+        contemplatedUse: null,
+      })
+      : null;
+
+    const water = availability ? publicServiceReadFromResolution(availability.water) : readPublicWater(screen);
+    const sewer = availability ? publicServiceReadFromResolution(availability.sewer) : readPublicSewer(screen);
     const facts = projectFacts({
       water,
       sewer,
       soilUnits,
       wellContext,
-      screenedAt: screen?.screenedAt ?? null,
-      screened: screen != null,
+      availability,
+      screenedAt: availability?.researchedAt ?? screen?.screenedAt ?? null,
+      screened: screen != null || availability != null,
     });
 
     const missingInformation: string[] = [];
@@ -435,7 +508,7 @@ export const UTILITY_SERVICE_SCREEN_CAPABILITY: LandosCapability<UtilityServiceS
     }
 
     return {
-      status: screen ? 'SUCCEEDED' : 'NEEDS_INPUT',
+      status: screen || availability ? 'SUCCEEDED' : 'NEEDS_INPUT',
       subjectResolution,
       canonicalSubject,
       facts,
