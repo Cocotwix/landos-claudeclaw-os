@@ -95,6 +95,7 @@ import {
   type BestCompsSelection,
   type CompCandidate,
 } from './deal-card-reconciliation.js';
+import type { PropertyIntelligenceSnapshot, SnapshotFact } from './property-intelligence-snapshot.js';
 
 export interface MarketCompView {
   price: number; saleDateIso: string; acres: number | null; pricePerAcre: number | null; sourceUrl: string; sourceLabel: string; addressDesc?: string;
@@ -1792,6 +1793,127 @@ export function getDealCardReport(dealCardId: number): DealCardReportView {
     ...empty,
     parcelVerified: true,
     parcelVerificationStatus: 'Parcel identity confirmed from the accepted canonical property record. No Property Intelligence report has been run yet.',
+  };
+}
+
+/**
+ * Present a promoted V2 Property Intelligence snapshot through the existing
+ * report renderer without reviving the retired operational report runner.
+ *
+ * This is deliberately a pure compatibility projection: it performs no
+ * provider work and writes no second report snapshot. The download route still
+ * applies its canonical comp/valuation projection after this adapter, so
+ * accepted current evidence outranks values retained on the historical mission.
+ */
+export function projectPropertyIntelligenceSnapshotForReport(
+  snapshot: PropertyIntelligenceSnapshot | null | undefined,
+  base: DealCardReportView,
+): DealCardReportView | null {
+  if (!snapshot || snapshot.preliminary === true || snapshot.isPrimary !== true) return null;
+  if (snapshot.status !== 'complete' && snapshot.status !== 'complete_with_gaps') return null;
+
+  const identityConfirmed = snapshot.identity.state === 'confirmed';
+  const identityGrade: SnapshotFact['grade'] = identityConfirmed ? 'confirmed_fact' : 'likely_indication';
+  const identitySource = snapshot.identity.explanation || 'Current Property Intelligence snapshot';
+  const identityFacts: SnapshotFact[] = [
+    { key: 'apn', label: 'Parcel number (APN)', value: snapshot.identity.apn, grade: identityGrade, source: identitySource, sourceUrl: null, retrievedAt: snapshot.completedAt, note: null },
+    { key: 'owner', label: 'Recorded owner', value: snapshot.identity.owner, grade: identityGrade, source: identitySource, sourceUrl: null, retrievedAt: snapshot.completedAt, note: null },
+    { key: 'acres', label: 'Acreage', value: snapshot.identity.acres == null ? null : `${snapshot.identity.acres} ac`, grade: identityGrade, source: snapshot.identity.acreageBasis ?? identitySource, sourceUrl: null, retrievedAt: snapshot.completedAt, note: null },
+    { key: 'situsAddress', label: 'Situs address', value: snapshot.identity.displayAddress ?? snapshot.identity.situs ?? snapshot.identity.normalizedAddress, grade: identityGrade, source: identitySource, sourceUrl: null, retrievedAt: snapshot.completedAt, note: null },
+    { key: 'city', label: 'City', value: snapshot.identity.city ?? null, grade: identityGrade, source: identitySource, sourceUrl: null, retrievedAt: snapshot.completedAt, note: null },
+    { key: 'county', label: 'County', value: snapshot.identity.county, grade: identityGrade, source: identitySource, sourceUrl: null, retrievedAt: snapshot.completedAt, note: null },
+    { key: 'state', label: 'State', value: snapshot.identity.state_, grade: identityGrade, source: identitySource, sourceUrl: null, retrievedAt: snapshot.completedAt, note: null },
+  ];
+  const snapshotFacts: SnapshotFact[] = [
+    ...identityFacts,
+    ...snapshot.facts,
+    ...snapshot.dueDiligence.map((item) => ({
+      key: `due_diligence_${item.key}`,
+      label: item.label,
+      value: [item.headline, item.detail].filter(Boolean).join(' — ') || null,
+      grade: item.grade,
+      source: item.sourceUrl ? 'Retained Property Intelligence evidence' : null,
+      sourceUrl: item.sourceUrl,
+      retrievedAt: snapshot.completedAt,
+      note: item.missing.length ? `Open items: ${item.missing.join('; ')}` : null,
+    })),
+  ];
+  const checklistByKey = new Map<string, DdChecklistRow>();
+  for (const fact of snapshotFacts) {
+    if (!fact.value) continue;
+    checklistByKey.set(fact.key, {
+      key: fact.key,
+      label: fact.label,
+      value: fact.value,
+      status: fact.grade === 'confirmed_fact' ? 'verified' : 'needs_verification',
+      source: fact.source,
+      timestamp: fact.retrievedAt,
+      url: fact.sourceUrl,
+      confidence: fact.grade === 'confirmed_fact' ? 'high' : fact.grade === 'likely_indication' ? 'medium' : 'none',
+    });
+  }
+  const standardChecklist = base.ddFactChecklist.map((row) => checklistByKey.get(row.key) ?? row);
+  const standardKeys = new Set(standardChecklist.map((row) => row.key));
+  const additionalFacts = [...checklistByKey.values()].filter((row) => !standardKeys.has(row.key));
+  const ddFactChecklist = [...standardChecklist, ...additionalFacts];
+  const marketPulse = snapshot.facts.find((fact) => fact.key === 'market_pulse' && !!fact.value) ?? null;
+  const completedAt = snapshot.completedAt ? Math.floor(Date.parse(snapshot.completedAt) / 1000) : null;
+
+  return {
+    ...base,
+    exists: true,
+    reportStatus: snapshot.status,
+    parcelVerified: identityConfirmed,
+    parcelVerificationStatus: identityConfirmed
+      ? `Parcel identity confirmed by current Property Intelligence. ${snapshot.identity.explanation}`
+      : `Property Intelligence identity state: ${snapshot.identity.state}. ${snapshot.identity.explanation}`,
+    ddSummary: snapshot.headline.confidenceWhy || snapshot.headline.keyOpportunity,
+    marketSummary: snapshot.comps.summaryLine,
+    strategySummary: snapshot.recommendation.postureWhy || snapshot.recommendation.why,
+    mostViableStrategy: snapshot.recommendation.preferredStrategy ?? '',
+    offerReadiness: snapshot.valuation.priceable ? 'needs_confirmation' : 'not_reviewed',
+    sourceTable: [
+      {
+        source: identitySource,
+        kind: 'parcel_exact',
+        status: identityConfirmed ? 'used_non_credit' : 'attempted_not_verified',
+        detail: snapshot.identity.explanation,
+        compCreditUsed: false,
+      },
+      ...(marketPulse ? [{
+        source: marketPulse.source ?? 'Persisted Market Pulse',
+        kind: 'market_pulse' as const,
+        status: 'used_non_credit' as const,
+        detail: marketPulse.value!,
+        compCreditUsed: false as const,
+      }] : []),
+    ],
+    dataGaps: [...snapshot.missingInformation],
+    riskFlags: [...snapshot.headline.topRisks],
+    strategyBlockers: [...snapshot.blockers],
+    nextConfirmations: [...snapshot.nextActions],
+    preCallStrategyNotes: snapshot.recommendation.why,
+    ddFactChecklist,
+    ddCompleteness: summarizeDdCompleteness(ddFactChecklist),
+    reconciliation: {
+      ...base.reconciliation,
+      acreage: snapshot.identity.acres == null ? base.reconciliation.acreage : {
+        ...base.reconciliation.acreage,
+        primary: `${snapshot.identity.acres} ac`,
+        primarySource: snapshot.identity.acreageBasis ?? identitySource,
+        primaryTier: identityConfirmed ? 'official' : 'provider',
+        conflict: snapshot.identity.conflicts.length > 0,
+        conflictNote: snapshot.identity.conflicts.join(' ') || null,
+        status: snapshot.identity.conflicts.length > 0 ? 'needs_confirmation' : 'reconciled',
+      },
+    },
+    creditUsage: {
+      landportalNonCreditUsed: snapshot.evidence.some((item) => /landportal/i.test(`${item.sourceType} ${item.sourceUrl ?? ''}`)),
+      compCreditUsed: false,
+      note: 'Generated from the promoted persisted Property Intelligence snapshot. No provider or research workflow ran.',
+    },
+    generatedAt: Number.isFinite(completedAt) ? completedAt : null,
+    updatedBy: 'property-intelligence-snapshot/compatibility',
   };
 }
 

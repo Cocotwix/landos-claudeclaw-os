@@ -21,6 +21,16 @@ export interface DealBrainGuidanceEntry {
   createdAt: number;
 }
 
+export interface DealBrainCurrentTruth {
+  acceptedCompCount: number;
+  supportedFmv: number | null;
+}
+
+export interface DealBrainGuidanceProjection {
+  thread: DealBrainGuidanceEntry[];
+  staleReplies: Array<DealBrainGuidanceEntry & { staleReason: string }>;
+}
+
 const MAX_GUIDANCE_TEXT = 4_000;
 
 export function appendDealBrainGuidance(
@@ -52,6 +62,59 @@ export function listDealBrainGuidance(dealCardId: number, limit = 60): DealBrain
     text: row.text,
     createdAt: row.created_at,
   }));
+}
+
+/**
+ * Select the conversation that is still compatible with current canonical
+ * valuation truth. Deal Brain replies are retained guidance, not facts, and
+ * older rows historically had no freshness metadata. A reply that explicitly
+ * denies evidence the current accepted record now carries is therefore stale:
+ * retain it for audit, but never project it as the current answer.
+ */
+export function projectCurrentDealBrainGuidance(
+  entries: DealBrainGuidanceEntry[],
+  truth: DealBrainCurrentTruth,
+): DealBrainGuidanceProjection {
+  const thread: DealBrainGuidanceEntry[] = [];
+  const staleReplies: DealBrainGuidanceProjection['staleReplies'] = [];
+  for (const entry of entries) {
+    if (entry.role !== 'deal_brain') {
+      thread.push(entry);
+      continue;
+    }
+    const deniesAcceptedSales = truth.acceptedCompCount > 0 && (
+      /no\s+(?:accepted\s+|usable\s+)?closed(?:-sale|\s+sale)?[^.]*\b(?:comp|sale|evidence)/i.test(entry.text)
+      || /accepted(?:-sale|\s+closed-sale|\s+closed sale)[^.]*\b(?:does not exist|doesn't exist|unavailable|not available)/i.test(entry.text)
+    );
+    const deniesSupportedFmv = truth.supportedFmv != null && (
+      /no\s+supported\s+(?:fmv|fair market value|valuation)/i.test(entry.text)
+      || /supported\s+(?:fmv|fair market value|valuation)[^.]*\b(?:does not exist|doesn't exist|unavailable|not available)/i.test(entry.text)
+    );
+    if (deniesAcceptedSales || deniesSupportedFmv) {
+      const current = [
+        truth.acceptedCompCount > 0 ? `${truth.acceptedCompCount} accepted closed sale(s)` : null,
+        truth.supportedFmv != null ? `supported FMV $${Math.round(truth.supportedFmv).toLocaleString('en-US')}` : null,
+      ].filter(Boolean).join(' and ');
+      staleReplies.push({ ...entry, staleReason: `Current canonical truth carries ${current}.` });
+    } else {
+      thread.push(entry);
+    }
+  }
+  return { thread, staleReplies };
+}
+
+/** Retire only the stale Deal Brain replies a successful current-truth refresh
+ * superseded. Operator guidance remains active and every retired reply remains
+ * persisted for audit/history. */
+export function retireDealBrainReplies(dealCardId: number, replyIds: number[]): number {
+  const ids = [...new Set(replyIds.filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length) return 0;
+  const placeholders = ids.map(() => '?').join(',');
+  const result = getLandosDb().prepare(`
+    UPDATE landos_deal_brain_guidance SET status='retired'
+    WHERE deal_card_id=? AND role='deal_brain' AND status='active' AND id IN (${placeholders})
+  `).run(dealCardId, ...ids);
+  return result.changes;
 }
 
 /** The operator guidance currently in effect for a Deal Intelligence read:

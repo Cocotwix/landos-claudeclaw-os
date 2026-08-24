@@ -39,6 +39,16 @@ describe('Acquisitions is one cohesive department workspace', () => {
     expect(ACQ).toMatch(/<DealCard/);
   });
 
+  it('points Discovery, Offers, and Reports at the actual V2 operator surfaces', () => {
+    expect(ACQ).toContain('lives in Deal Activity in the Acquisition Workspace');
+    expect(ACQ).toContain('Deal Brain strategy live on Overview');
+    expect(ACQ).toContain('valuation, and supporting comps live in Property & Market');
+    expect(ACQ).toContain('Recorded documents and official-source links live in Property & Market');
+    expect(ACQ).not.toMatch(/Seller tab|Strategy tab|Documents tab/);
+    expect(V2).toMatch(/data-testid="property-intelligence-report-download"/);
+    expect(V2).toMatch(/report\/download\?format=pdf/);
+  });
+
   it('opens every record in Acquisition Workspace V2 (never Deal Card V1)', () => {
     // openDeal routes pipeline cards, library rows, and new-lead completion to
     // the same record's V2 workspace, preserving deal identity.

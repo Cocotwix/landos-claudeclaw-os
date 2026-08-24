@@ -195,7 +195,12 @@ import {
   type IntelligenceLayerId,
   type PropertyIntelligenceProduct,
 } from './intelligence-stack-contract.js';
-import { appendDealBrainGuidance, listDealBrainGuidance } from './deal-brain-guidance.js';
+import {
+  appendDealBrainGuidance,
+  listDealBrainGuidance,
+  projectCurrentDealBrainGuidance,
+  retireDealBrainReplies,
+} from './deal-brain-guidance.js';
 import { readDerivedSnapshot, writeDerivedSnapshot } from './derived-intelligence-store.js';
 import {
   INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE,
@@ -378,7 +383,7 @@ import {
 import { buildResolutionSnapshot, writeResolutionSnapshot, readResolutionSnapshot } from './resolution-snapshot.js';
 import { getDealCardDd } from './deal-card-dd.js';
 import { getDealCardMarket } from './deal-card-market.js';
-import { getDealCardReport, runDealCardReport, buildPersistedResolver, buildIdentityText, landFactsForScore, projectPropertyInspectionForReport } from './deal-card-report.js';
+import { getDealCardReport, runDealCardReport, buildPersistedResolver, buildIdentityText, landFactsForScore, projectPropertyInspectionForReport, projectPropertyIntelligenceSnapshotForReport } from './deal-card-report.js';
 import { computeDealCardReadiness } from './deal-card-readiness.js';
 import { govDdProvidersStatus } from './providers/gov-dd-providers.js';
 import { addSellerStatedFact, loadSellerStatedFacts, summarizeSellerFacts, SELLER_FACT_KINDS, isSellerFactKind } from './seller-stated-facts.js';
@@ -1330,8 +1335,11 @@ export function propertyIntelligenceMarkdown(input: {
   /** The validated unique comp registry — when present, Comparable Sales lists
    *  each unique property exactly once, never a legacy list with duplicates. */
   compRegistry?: CompRegistry | null;
+  /** Current V2 accepted valuation set, distinct from the larger retained comp
+   * registry rendered for evidence review. */
+  currentCompsValuation?: ReturnType<typeof buildCompsValuationView>;
 }): string {
-  const { deal, report, executiveSummary, discoveryReport, briefing, unifiedReadiness, strategyReadiness, compRegistry } = input;
+  const { deal, report, executiveSummary, discoveryReport, briefing, unifiedReadiness, strategyReadiness, compRegistry, currentCompsValuation } = input;
   const dealTitle = fmtText((deal as { title?: string }).title, `Deal Card #${(report as { dealCardId?: number }).dealCardId ?? ''}`);
   const dcr = discoveryReport;
   const inspection = report.landportalInspection;
@@ -1391,11 +1399,26 @@ export function propertyIntelligenceMarkdown(input: {
       lines.push(`- ${c.primary.kind === 'sold' ? 'SOLD' : 'ACTIVE'}${c.address ? ` | ${c.address}` : ''}${c.apn ? ` | APN ${c.apn}` : ''}${c.acres != null ? ` | ${Math.round(c.acres * 100) / 100} ac` : ''}${c.primary.price != null ? ` | ${fmtMoney(c.primary.price)}` : ''}${c.primary.pricePerAcre != null ? ` | ${fmtMoney(c.primary.pricePerAcre)}/ac` : ''} | ${c.providers.join(' + ')}`);
     }
     lines.push(`Validated unique: ${compRegistry.counts.validatedSold} sold, ${compRegistry.counts.validatedActive} active (${compRegistry.counts.duplicatesMerged} duplicate provider row(s) merged, ${compRegistry.counts.rejected} rejected).`);
+    if (currentCompsValuation) {
+      lines.push(`Accepted valuation set: ${currentCompsValuation.summary.acceptedCount} closed sale${currentCompsValuation.summary.acceptedCount === 1 ? '' : 's'}; the larger registry remains visible as retained evidence, not as FMV inputs.`);
+    }
   } else {
     if (comps.length === 0) lines.push('No comparable rows were extracted in the current run.');
     for (const c of comps.slice(0, 20) as Array<Record<string, unknown>>) {
       lines.push(`- ${fmtText(c.status, 'unknown')}${c.address ? ` | ${c.address}` : ''}${c.apn ? ` | APN ${c.apn}` : ''}${c.acres ? ` | ${c.acres} ac` : ''}${c.price ? ` | ${fmtMoney(c.price)}` : ''}${c.pricePerAcre ? ` | ${fmtMoney(c.pricePerAcre)}/ac` : ''}${c.distanceMiles ? ` | ${c.distanceMiles} mi` : ''}`);
     }
+  }
+  lines.push('');
+  lines.push(`## Valuation`);
+  if (report.valuation?.primary?.value != null) {
+    lines.push(`- Supported fair market value: ${fmtMoney(report.valuation.primary.value)}`);
+    lines.push(`- Basis: ${report.valuation.primary.label}. ${report.valuation.primary.note}`);
+    lines.push(`- Confidence: ${report.valuation.confidence}`);
+    if (report.valuation.valueRange) {
+      lines.push(`- Supported range: ${fmtMoney(report.valuation.valueRange.low)}–${fmtMoney(report.valuation.valueRange.high)}`);
+    }
+  } else {
+    lines.push(`No supported fair market value is available from current accepted evidence.${report.valuation?.nextAction ? ` ${report.valuation.nextAction}` : ''}`);
   }
   lines.push('');
   lines.push(`## Market Pulse`);
@@ -4733,7 +4756,48 @@ export function registerLandosRoutes(app: Hono): void {
       };
     }
     const landPortalValue = landPortalValuationStats(report.landportalInspection?.comparables, subjectAcres);
-    const projectedValuation = valuationFromRegistry(registry, subjectAcres, report.valuation, report.bestComps, report.landportalInspection?.comparables);
+    const currentCompsValuation = buildCompsValuationView(id);
+    const currentValuationSummary = currentCompsValuation?.summary ?? null;
+    // V2's persisted accepted-comp selection is the current valuation truth.
+    // The legacy report calculation remains a fallback for cards that predate
+    // that projection, but it may not deny a supported V2 value merely because
+    // no legacy LandPortal inspection row was materialized.
+    const currentProjectedValuation = currentValuationSummary?.fmv
+      ? {
+          primary: {
+            id: 'current_accepted_closed_sales',
+            label: currentValuationSummary.basisLabel,
+            value: currentValuationSummary.fmv.central,
+            ppa: currentValuationSummary.medianPricePerAcre,
+            kind: 'comp_sold' as const,
+            rank: 1,
+            note: currentValuationSummary.statusReason,
+          },
+          supporting: [],
+          confidence: currentValuationSummary.confidence === 'high'
+            ? 'high' as const
+            : currentValuationSummary.confidence === 'moderate' ? 'medium' as const : 'low' as const,
+          conflict: false,
+          conflictNote: null,
+          valueRange: {
+            low: currentValuationSummary.fmv.low ?? currentValuationSummary.fmv.central,
+            high: currentValuationSummary.fmv.high ?? currentValuationSummary.fmv.central,
+            basisId: 'current_accepted_closed_sales',
+          },
+          nextAction: currentValuationSummary.acquisitionLockedReason,
+        }
+      : null;
+    const projectedValuation = currentProjectedValuation
+      ?? valuationFromRegistry(registry, subjectAcres, report.valuation, report.bestComps, report.landportalInspection?.comparables);
+    if (currentValuationSummary?.status === 'supported') {
+      report.ddFactChecklist = report.ddFactChecklist.map((row) => {
+        if (!row.value || !/valuation remains separate and is pending accepted closed subject-band evidence/i.test(row.value)) return row;
+        return {
+          ...row,
+          value: row.value.replace(/\s*Parcel-level valuation remains separate and is pending accepted closed subject-band evidence\.?/i, '').trim(),
+        };
+      });
+    }
     const reconciledWetlandText = report.reconciliation?.wetlands?.primary ?? '';
     const reconciledWetlandMatch = reconciledWetlandText.match(/(\d+(?:\.\d+)?)\s*%/);
     const reconciledWetlandPct = reconciledWetlandMatch
@@ -4767,8 +4831,10 @@ export function registerLandosRoutes(app: Hono): void {
       parcelVerified: report.parcelVerified,
       verificationSource: report.parcelVerificationStatus,
       compCount: registry.counts.validatedSold,
-      valuationCompCount: landPortalValue.count,
-      valuationReady: landPortalValue.count > 0 && landPortalValue.averagePricePerAcre != null && subjectAcres != null && subjectAcres > 0,
+      valuationCompCount: currentValuationSummary?.acceptedCount ?? landPortalValue.count,
+      valuationReady: currentValuationSummary
+        ? currentValuationSummary.status === 'supported' && currentValuationSummary.fmv != null
+        : landPortalValue.count > 0 && landPortalValue.averagePricePerAcre != null && subjectAcres != null && subjectAcres > 0,
       valuationConflict: projectedValuation.conflict,
       thinMarketClusterSupported: registry.clusterAnalysis?.thinMarketSupported ?? false,
       marketPulseAvailable: !!growthSummary,
@@ -4848,7 +4914,7 @@ export function registerLandosRoutes(app: Hono): void {
       report.strategySummary = refreshed.strategySummary;
       report.mostViableStrategy = refreshed.mostViableStrategy;
     }
-    return { registry, projectedValuation, operatorRecord, recordedEvidence, canonical, subjectAcres };
+    return { registry, projectedValuation, operatorRecord, recordedEvidence, canonical, subjectAcres, currentCompsValuation };
   };
 
   /** The gate-aware executive summary every report consumer builds — pricing
@@ -4932,15 +4998,21 @@ export function registerLandosRoutes(app: Hono): void {
     const publicRun = new PublicIntelligenceStore().load(id)?.run;
     const terminalStatus = terminalParcelStatus(deal);
     if (terminalStatus) return c.json(terminalParcelError(terminalStatus), 409);
-    const report = projectPublicScreening(getDealCardReport(id), publicRun);
+    const legacyReport = getDealCardReport(id);
+    const currentSnapshot = propertyIntelligenceView(id).snapshot;
+    const compatibleReport = legacyReport.exists
+      ? legacyReport
+      : projectPropertyIntelligenceSnapshotForReport(currentSnapshot, legacyReport);
+    const report = projectPublicScreening(compatibleReport ?? legacyReport, publicRun);
     if (!report.exists) return c.json({ error: 'run Property Intelligence before downloading a report' }, 400);
     const cardId = subjectCardId(deal);
     if (cardId) report.landportalInspection = projectPropertyInspectionForReport(cardId);
     mergeStoredBrowserFacts(report, id);
     const sellerSummary = summarizeSellerFacts(cardId ? loadSellerStatedFacts(cardId) : []);
-    const browserMarketIntel = await browserIntelFor(deal as unknown as Record<string, unknown>);
-    const { summarizeGrowthDrivers } = await import('./browser-market-intelligence.js');
-    const growthSummary = loadGrowthSummary(cardId ?? null) ?? summarizeGrowthDrivers(browserMarketIntel as never);
+    // A download is a pure projection over retained truth. It must never start a
+    // browser/news research lane merely because an optional growth snapshot is
+    // absent; null is the honest persisted state.
+    const growthSummary = loadGrowthSummary(cardId ?? null);
     // The downloadable report runs the SAME canonical projection + gated
     // executive summary as the live card — a download can never carry a more
     // favorable strategy/valuation story than the dashboard (WS3 finding F8).
@@ -4951,7 +5023,7 @@ export function registerLandosRoutes(app: Hono): void {
       hasCountyVerification: !!cardId && loadCountyVerificationRecords(cardId).length > 0,
     });
     const briefing = buildDiscoveryBriefing(report, readiness, sellerSummary);
-    const executiveSummary = gatedExecutiveSummaryFor(report, growthSummary, publicRun, projection);
+    const executiveSummary = gatedExecutiveSummaryFor(report, growthSummary ?? undefined, publicRun, projection);
     const confirmedForDiscovery = confirmParcelForDeal(id);
     const discoveryReport = confirmedForDiscovery
       ? buildConfirmedParcelDiscoveryReport(confirmedForDiscovery, report, executiveSummary, buildDiscoveryIntake(deal))
@@ -4963,6 +5035,7 @@ export function registerLandosRoutes(app: Hono): void {
       unifiedReadiness: projection.canonical.unifiedReadiness,
       strategyReadiness: projection.canonical.strategyReadiness,
       compRegistry: projection.canonical.compRegistry,
+      currentCompsValuation: projection.currentCompsValuation ?? undefined,
     });
     const inspection = cardId ? loadPropertyInspection(cardId) : null;
     const imagePaths = (inspection?.assets ?? []).map((a) => a.storedPath).filter((p) => {
@@ -10402,6 +10475,51 @@ export function registerLandosRoutes(app: Hono): void {
     readPipelineStage,
   };
 
+  const currentDealBrainProjection = (
+    dealCardId: number,
+    dossier = (() => {
+      const source = acquisitionPropertyFile(dealCardId);
+      return source ? buildAcquisitionDossier(source) : null;
+    })(),
+  ) => projectCurrentDealBrainGuidance(listDealBrainGuidance(dealCardId), {
+    acceptedCompCount: dossier?.valuation.acceptedCompCount ?? 0,
+    supportedFmv: dossier?.valuation.fairMarketValue ?? null,
+  });
+
+  const produceDealBrainReply = async (input: {
+    dealCardId: number;
+    message: string;
+    questionEntryId: number;
+    staleReplyIds: number[];
+  }): Promise<void> => {
+    const source = acquisitionPropertyFile(input.dealCardId);
+    if (!source) throw new Error('no canonical property file is available for this Deal Card');
+    const dossier = buildAcquisitionDossier(source);
+    const state = readIntelligenceStackState(input.dealCardId, intelligenceStackReadDeps);
+    const current = currentDealBrainProjection(input.dealCardId, dossier);
+    const thread = current.thread
+      .filter((entry) => entry.id !== input.questionEntryId)
+      .map((entry) => ({ role: entry.role, text: entry.text }));
+    const analyst = createIntelligenceExecutor();
+    const run = await analyst.run({
+      dossier,
+      judgmentPromptBuilder: () => dealBrainChatPrompt({
+        dossier,
+        deal: state.products.deal,
+        quickFlip: state.quickFlip,
+        thread,
+        question: input.message,
+      }),
+    });
+    const reply = run.raw.replace(/\s+/g, ' ').trim().slice(0, 2_000);
+    if (!reply) throw new Error('the Deal Brain returned an empty reply');
+    appendDealBrainGuidance(input.dealCardId, 'deal_brain', reply);
+    // Retire only after a replacement has safely persisted. A failed refresh
+    // keeps the old row for audit while the current-truth projection still
+    // prevents its contradiction from reaching the operator.
+    retireDealBrainReplies(input.dealCardId, input.staleReplyIds);
+  };
+
   // Deal-scoped War Room opening context. Registered here because every
   // builder it reuses (property file, dossier, stack state, guidance) is a
   // closure of this route module. SELECT-only: the same reads the Deal Card
@@ -10423,7 +10541,7 @@ export function registerLandosRoutes(app: Hono): void {
     const dealLabel = `${labelCore || (typeof dealTitle === 'string' && dealTitle ? dealTitle : 'Property identity pending')} · Deal ${dealCardId}`;
 
     const state = readIntelligenceStackState(dealCardId, intelligenceStackReadDeps);
-    const guidance = listDealBrainGuidance(dealCardId).slice(-6);
+    const guidance = currentDealBrainProjection(dealCardId, dossier).thread.slice(-6);
     const readOf = (product: unknown): string | null => {
       const read = (product as { read?: unknown } | null | undefined)?.read;
       return typeof read === 'string' && read.trim() ? read.trim() : null;
@@ -10525,6 +10643,7 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     const state = readIntelligenceStackState(id, intelligenceStackReadDeps);
+    const dealBrain = currentDealBrainProjection(id);
     // Reconciliation state is SELECT-only here: the persisted record, whether
     // a run is in flight, and which persisted conflicts the seam could act on.
     // Nothing on this GET (or any page load) ever invokes a capability.
@@ -10538,7 +10657,11 @@ export function registerLandosRoutes(app: Hono): void {
       : [];
     return c.json({
       ...state,
-      guidance: listDealBrainGuidance(id),
+      guidance: dealBrain.thread,
+      dealBrainFreshness: {
+        staleReplyCount: dealBrain.staleReplies.length,
+        staleReasons: dealBrain.staleReplies.map((entry) => entry.staleReason),
+      },
       run: intelligenceStackRuns.get(id) ?? null,
       dealBrainRun: dealBrainRuns.get(id) ?? null,
       reconciliation: readDerivedSnapshot<IntelligenceReconciliationRecord>(id, INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE),
@@ -10764,7 +10887,15 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
-    return c.json({ thread: listDealBrainGuidance(id), run: dealBrainRuns.get(id) ?? null });
+    const projection = currentDealBrainProjection(id);
+    return c.json({
+      thread: projection.thread,
+      freshness: {
+        staleReplyCount: projection.staleReplies.length,
+        staleReasons: projection.staleReplies.map((entry) => entry.staleReason),
+      },
+      run: dealBrainRuns.get(id) ?? null,
+    });
   });
 
   app.post('/api/landos/deal-cards/:id/deal-brain', async (c) => {
@@ -10778,31 +10909,19 @@ export function registerLandosRoutes(app: Hono): void {
     if (inFlight && !inFlight.error) {
       return c.json({ error: 'The Deal Brain is still answering the previous message.' }, 409);
     }
-    appendDealBrainGuidance(id, 'operator', message);
+    const operatorEntry = appendDealBrainGuidance(id, 'operator', message);
+    const staleReplyIds = currentDealBrainProjection(id).staleReplies.map((entry) => entry.id);
     const startedAt = new Date().toISOString();
     dealBrainRuns.set(id, { startedAt, error: null });
 
     void (async () => {
       try {
-        const source = acquisitionPropertyFile(id);
-        if (!source) throw new Error('no canonical property file is available for this Deal Card');
-        const dossier = buildAcquisitionDossier(source);
-        const state = readIntelligenceStackState(id, intelligenceStackReadDeps);
-        const thread = listDealBrainGuidance(id).map((entry) => ({ role: entry.role, text: entry.text }));
-        const analyst = createIntelligenceExecutor();
-        const run = await analyst.run({
-          dossier,
-          judgmentPromptBuilder: () => dealBrainChatPrompt({
-            dossier,
-            deal: state.products.deal,
-            quickFlip: state.quickFlip,
-            thread: thread.slice(0, -1),
-            question: message,
-          }),
+        await produceDealBrainReply({
+          dealCardId: id,
+          message,
+          questionEntryId: operatorEntry.id,
+          staleReplyIds,
         });
-        const reply = run.raw.replace(/\s+/g, ' ').trim().slice(0, 2_000);
-        if (!reply) throw new Error('the Deal Brain returned an empty reply');
-        appendDealBrainGuidance(id, 'deal_brain', reply);
         dealBrainRuns.delete(id);
       } catch (error) {
         const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
@@ -10811,7 +10930,46 @@ export function registerLandosRoutes(app: Hono): void {
       }
     })();
 
-    return c.json({ thread: listDealBrainGuidance(id), running: true }, 202);
+    return c.json({ thread: currentDealBrainProjection(id).thread, running: true }, 202);
+  });
+
+  // Refresh only a retained Deal Brain synthesis that current canonical truth
+  // has superseded. This reuses persisted evidence and performs one model read;
+  // it never invokes research, providers, readiness backfill, or capabilities.
+  app.post('/api/landos/deal-cards/:id/deal-brain/refresh', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    const inFlight = dealBrainRuns.get(id);
+    if (inFlight && !inFlight.error) {
+      return c.json({ error: 'The Deal Brain is still answering the previous message.' }, 409);
+    }
+    const entries = listDealBrainGuidance(id);
+    const projection = currentDealBrainProjection(id);
+    if (!projection.staleReplies.length) {
+      return c.json({ outcome: 'current', thread: projection.thread, running: false });
+    }
+    const latestStale = projection.staleReplies[projection.staleReplies.length - 1];
+    const question = entries.filter((entry) => entry.role === 'operator' && entry.id < latestStale.id).at(-1);
+    if (!question) return c.json({ error: 'No retained operator question exists for the stale synthesis.' }, 409);
+    const startedAt = new Date().toISOString();
+    dealBrainRuns.set(id, { startedAt, error: null });
+    void (async () => {
+      try {
+        await produceDealBrainReply({
+          dealCardId: id,
+          message: question.text,
+          questionEntryId: question.id,
+          staleReplyIds: projection.staleReplies.map((entry) => entry.id),
+        });
+        dealBrainRuns.delete(id);
+      } catch (error) {
+        const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
+        logger.error({ event: 'deal_brain_refresh_failed', dealCardId: id, msg: detail }, 'deal_brain_refresh_failed');
+        dealBrainRuns.set(id, { startedAt, error: `The Deal Brain could not refresh: ${detail}` });
+      }
+    })();
+    return c.json({ outcome: 'refreshing', thread: projection.thread, running: true }, 202);
   });
 
   // Land use, zoning and by-right subdivision projection alone, for refresh

@@ -16,7 +16,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
 import {
   Phone, MessageSquare, Mail, StickyNote, ListPlus, Pencil, ExternalLink,
-  LayoutDashboard, Map, Activity, UserRound, CalendarClock, Users,
+  LayoutDashboard, Map, Activity, UserRound, CalendarClock, Users, FileDown,
 } from 'lucide-preact';
 import { apiGet, apiPost, chatId, legacyUrl } from '@/lib/api';
 import {
@@ -758,6 +758,16 @@ export function AcquisitionWorkspaceV2() {
           <button type="button" class="awv2-ctl"><StickyNote size={14} /> Add note</button>
           <button type="button" class="awv2-ctl"><ListPlus size={14} /> Add task</button>
           <button type="button" class="awv2-ctl"><Pencil size={14} /> Edit</button>
+          <a
+            class="awv2-ctl"
+            href={`/api/landos/deal-cards/${dealId}/report/download?format=pdf`}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="property-intelligence-report-download"
+            title="Download the current Property Intelligence report as PDF"
+          >
+            <FileDown size={14} /> Property Intelligence PDF
+          </a>
           <button
             type="button"
             class="awv2-ctl"

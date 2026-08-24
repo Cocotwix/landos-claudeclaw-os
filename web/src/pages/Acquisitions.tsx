@@ -108,7 +108,7 @@ export function Acquisitions() {
       {section === 'discovery' && (
         <SectionShell
           title="Discovery"
-          body="Seller Intelligence for each deal — motivation, call prep, discovery notes, follow-up drafts, and communication history — lives on the Seller tab of each Deal Card. Open a property to work its discovery."
+          body="Seller Intelligence for each deal — motivation, call prep, discovery notes, follow-up drafts, and communication history — lives in Deal Activity in the Acquisition Workspace. Open a property to work its discovery."
           cta="Open Deal Library"
           onClick={() => setSection('library')}
         />
@@ -116,7 +116,7 @@ export function Acquisitions() {
       {section === 'offers' && (
         <SectionShell
           title="Offers"
-          body="Offer readiness, the preliminary acquisition range, deal economics, and confirm-before-offer checks live on the Strategy tab of each Deal Card. LandOS organizes the inputs; the offer decision stays yours."
+          body="Offer readiness and Deal Brain strategy live on Overview; the acquisition range, valuation, and supporting comps live in Property & Market. LandOS organizes the inputs; the offer decision stays yours."
           cta="Open Deal Library"
           onClick={() => setSection('library')}
         />
@@ -124,7 +124,7 @@ export function Acquisitions() {
       {section === 'reports' && (
         <SectionShell
           title="Reports"
-          body="The generated Property Intelligence Report — run, re-run, and PDF download — lives on the Documents tab of each Deal Card. Open a property to generate or download its report."
+          body="Recorded documents and official-source links live in Property & Market. Open an Acquisition Workspace to review the retained evidence for that property."
           cta="Open Deal Library"
           onClick={() => setSection('library')}
         />

@@ -12,6 +12,8 @@ import { _initTestLandosDb, getLandosDb, logModelCall } from './db.js';
 import { emptyLpPropertySummary } from './landportal-client.js';
 import { createOpportunity, getOpportunityByDealCardId, listOpportunityHistory } from './opportunity.js';
 import { linkPropertyToDeal } from './deal-card.js';
+import { PropertyIntelligenceStore } from './property-intelligence-store.js';
+import { initialSpecialistRecords, type PropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
 
 // The live DD routes now default to the parcel-identity CAPABILITY. These route
 // tests exercise the verification BRIDGE mapping, so delegate the capability to
@@ -1184,6 +1186,91 @@ describe('LandOS routes - canonical comp-map projection', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
       expect((db.prepare('SELECT COUNT(*) AS count FROM landos_comp WHERE deal_card_id = ?').get(id) as { count: number }).count).toBe(before.comps);
       expect((db.prepare('SELECT COUNT(*) AS count FROM landos_geocode_cache').get() as { count: number }).count).toBe(before.geocodes);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('LandOS routes - current Property Intelligence report compatibility', () => {
+  it('downloads Markdown and PDF from a promoted V2 snapshot without a legacy report row or research call', async () => {
+    const propertyResponse = await post('/api/landos/property-cards', {
+      entity: 'TY_LAND_BIZ', activeInputAddress: '100 Current Truth Rd, Fairview, TN 37062',
+      city: 'Fairview', county: 'Williamson', state: 'TN', apn: '042-123.00-TEST', owner: 'CURRENT OWNER',
+      acres: 10, verified: true, verificationSource: 'Official parcel fixture',
+    });
+    const property = ((await propertyResponse.json()) as any).card;
+    const dealResponse = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Current report fixture' });
+    const deal = ((await dealResponse.json()) as any).dealCard;
+    expect(linkPropertyToDeal({ dealCardId: deal.id, cardId: property.id, role: 'subject' }).error).toBeUndefined();
+
+    const addComp = (index: number, price: number) => post(`/api/landos/deal-cards/${deal.id}/comps`, {
+      sourceLabel: 'Other', canonicalSource: 'Recorded sale fixture', sourceUrl: `https://example.test/sale-${index}`,
+      addressDesc: `${index} Accepted Sale Rd, Fairview, TN 37062`, county: 'Williamson', state: 'TN',
+      price, priceKind: 'sale', saleOrListDate: '2026-02-01', acres: 10, status: 'verified_sale',
+      propertyClass: 'vacant_land', classification: 'accepted_closed_sale',
+    });
+    expect((await addComp(1, 90_000)).status).toBe(201);
+    expect((await addComp(2, 100_000)).status).toBe(201);
+    expect((await addComp(3, 110_000)).status).toBe(201);
+
+    const runId = `report-compat-${deal.id}`;
+    const startedAt = '2026-08-20T13:00:00.000Z';
+    const completedAt = '2026-08-20T13:05:00.000Z';
+    const snapshot: PropertyIntelligenceSnapshot = {
+      snapshotVersion: 5, dealCardId: deal.id, runId, sequence: 1, isPrimary: true, status: 'complete',
+      startedAt, completedAt, durationMs: 300_000,
+      identity: {
+        state: 'confirmed', normalizedAddress: property.active_input_address, county: 'Williamson', state_: 'TN',
+        apn: property.apn, apnVariants: [property.apn], owner: property.owner, ownerMailing: null,
+        situs: property.active_input_address, acres: 10, acreageBasis: 'assessed', coordinates: null,
+        hasParcelGeometry: false, sourceConfidence: 'high', conflicts: [], explanation: 'Confirmed by official parcel fixture.',
+      },
+      facts: [{
+        key: 'market_pulse', label: 'Market Pulse',
+        value: 'Persisted area market context. Parcel-level valuation remains separate and is pending accepted closed subject-band evidence.',
+        grade: 'likely_indication', source: 'LandOS Market Pulse', sourceUrl: null, retrievedAt: completedAt, note: null,
+      }], governmentRecords: [], dueDiligence: [],
+      comps: {
+        policyExplanation: 'Accepted closed-sale policy.', landPortalUsable: false, landPortalRowsSeen: 0,
+        caps: { zillow: 5, redfin: 5 }, sold: [], active: [], landHomeOnly: [], rejected: [],
+        duplicatesMerged: 0, totalCollected: 3, summaryLine: 'Three accepted closed sales retained.',
+      },
+      valuation: {
+        priceable: true, range: { low: 1, high: 2 }, pricePerAcreRange: { low: 0.1, high: 0.2 },
+        likelyRetail: { low: 1, high: 2 }, dispositionRange: { low: 1, high: 2 },
+        basis: 'Deliberately stale snapshot value.', adjustments: [], confidence: 'low',
+        uncertainty: [], materialGaps: [], notPriceableReason: null, nextActionToPrice: null, workingValue: 2,
+      },
+      strategies: [], recommendation: { preferredStrategy: null, why: '', whatWouldChangeIt: [], posture: 'undetermined', postureWhy: '' },
+      evidence: [], specialists: [], headline: { keyOpportunity: '', topRisks: [], confidence: 'high', confidenceWhy: 'Current persisted snapshot.' },
+      blockers: [], missingInformation: [], nextActions: [],
+    };
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId, dealCardId: deal.id, trigger: 'operator', startedAt, specialists: initialSpecialistRecords() });
+    store.completeRun({ runId, dealCardId: deal.id, status: 'complete', completedAt, snapshot });
+
+    const db = getLandosDb();
+    expect((db.prepare('SELECT COUNT(*) AS count FROM landos_deal_card_report WHERE deal_card_id = ?').get(deal.id) as { count: number }).count).toBe(0);
+    const fetchSpy = vi.fn(async () => { throw new Error('report download must not start research'); });
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const markdownResponse = await get(`/api/landos/deal-cards/${deal.id}/report/download?format=md`);
+      const markdown = await markdownResponse.text();
+      expect(markdownResponse.status, markdown).toBe(200);
+      expect(markdownResponse.headers.get('content-type')).toContain('text/markdown');
+      expect(markdown).toContain('Validated unique: 3 sold');
+      expect(markdown).toContain('Accepted valuation set: 3 closed sales');
+      expect(markdown).toContain('Supported fair market value: $100,000');
+      expect(markdown).not.toContain('Deliberately stale snapshot value');
+      expect(markdown).not.toContain('pending accepted closed subject-band evidence');
+
+      const pdfResponse = await get(`/api/landos/deal-cards/${deal.id}/report/download?format=pdf`);
+      expect(pdfResponse.status).toBe(200);
+      expect(pdfResponse.headers.get('content-type')).toContain('application/pdf');
+      expect(Buffer.from(await pdfResponse.arrayBuffer()).subarray(0, 4).toString()).toBe('%PDF');
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect((db.prepare('SELECT COUNT(*) AS count FROM landos_deal_card_report WHERE deal_card_id = ?').get(deal.id) as { count: number }).count).toBe(0);
     } finally {
       vi.unstubAllGlobals();
     }
