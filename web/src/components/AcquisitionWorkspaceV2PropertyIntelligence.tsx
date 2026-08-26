@@ -553,7 +553,70 @@ function MarketCard({ rec }: { rec: MarketContextRecordView }) {
 
 // ── Section ────────────────────────────────────────────────────────────
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus, acquisitionIntelligence, developmentIntelligence }: {
+
+/** Market Intelligence — Market Pulse + Market Research as one connected
+ * read. Extracted so the Market deal page renders the exact same canonical
+ * panel the Property & Market workspace used to inline. */
+export function MarketIntelligencePanel({ market, aiRead }: {
+  market: MarketContextView | null;
+  aiRead?: AcquisitionIntelligenceView | null;
+}) {
+  return (
+    <>
+      <section data-domain="market" class="awv2-panel" id="market-intelligence">
+        <div class="awv2-panel-title">
+          Market Intelligence <span class="awv2-src-tag">{market?.source || 'LandOS Market Research'} — Market Pulse + Market Research, one connected read</span>
+        </div>
+        {market ? (
+          <>
+            <div class="awv2-market-read">
+              <strong>{market.read?.headline || market.read?.summary || market.interpretation || 'No concise market read is retained.'}</strong>
+              {market.read?.resolvedVia && <span>Resolved via {market.read.resolvedVia}</span>}
+              {market.read?.note && <span>{market.read.note}</span>}
+              <span>Competition: {market.liquidity?.competition != null ? market.liquidity.competition : 'unmeasured'}</span>
+            </div>
+            {/* The comparison that bears on this parcel: the subject's own
+                acreage band beside the fastest-moving one. Four headline
+                numbers alone never say whether the subject's band is the
+                liquid one. Collector diagnostics stay collapsed below. */}
+            <div class="awv2-dx-bands" aria-label="Acreage band comparison">
+              {[market.subjectBand, market.fastestBand]
+                .filter((record): record is MarketContextRecordView => !!record?.available && !!record.metrics)
+                .map((record, index) => (
+                  <div class="awv2-dx-band" data-role={index === 0 ? 'subject' : 'liquid'}>
+                    <small>{index === 0 ? 'Subject band' : 'Most liquid band'}</small>
+                    <b>{record.acreageBandLabel || record.acreageBand || record.label}</b>
+                    <MetricRow
+                      label={`${record.label} figures`}
+                      metrics={[
+                        { label: '$ / acre', value: fmtMetric('medianPricePerAcre', record.metrics!.medianPricePerAcre) ?? '' },
+                        { label: 'Median DOM', value: fmtMetric('medianDaysOnMarket', record.metrics!.medianDaysOnMarket) ?? '' },
+                        { label: 'Sell-through', value: fmtMetric('sellThroughRate', record.metrics!.sellThroughRate) ?? '' },
+                        { label: 'Months supply', value: fmtMetric('monthsOfSupply', record.metrics!.monthsOfSupply) ?? '' },
+                      ]}
+                    />
+                  </div>
+                ))}
+            </div>
+            <WhatItMeans read={aiRead ?? null} topic="market" heading="What it means for this property" />
+            <Disclosure label="Market records, methodology and collector diagnostics">
+              <div class="awv2-mkt-grid">
+                <MarketCard rec={market.county} />
+                <MarketCard rec={market.zip} />
+                <MarketCard rec={market.subjectBand} />
+                <MarketCard rec={market.fastestBand} />
+              </div>
+            </Disclosure>
+          </>
+        ) : (
+          <div class="awv2-pi-note">No LandOS Market Research context was returned for this lead.</div>
+        )}
+      </section>
+    </>
+  );
+}
+
+export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus, acquisitionIntelligence, developmentIntelligence, showMarket = true }: {
   snap: PiSnapshot;
   /**
    * The persisted Acquisition Intelligence read and its controls.
@@ -564,6 +627,9 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
    * structured read stays whole behind one expansion at the end. Rendering
    * never starts a reasoning run.
    */
+  /** The Market deal page owns Market Intelligence; the Property page passes
+   * false so the same panel is not duplicated across pages. */
+  showMarket?: boolean;
   acquisitionIntelligence?: {
     read: AcquisitionIntelligenceView | null;
     readiness: AcquisitionIntelligenceReadiness | null;
@@ -1554,55 +1620,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
       </section>
 
       {/* ── Market context (LandOS Market Research) ── */}
-      <section data-domain="market" class="awv2-panel" id="market-intelligence">
-        <div class="awv2-panel-title">
-          Market Intelligence <span class="awv2-src-tag">{market?.source || 'LandOS Market Research'} — Market Pulse + Market Research, one connected read</span>
-        </div>
-        {market ? (
-          <>
-            <div class="awv2-market-read">
-              <strong>{market.read?.headline || market.read?.summary || market.interpretation || 'No concise market read is retained.'}</strong>
-              {market.read?.resolvedVia && <span>Resolved via {market.read.resolvedVia}</span>}
-              {market.read?.note && <span>{market.read.note}</span>}
-              <span>Competition: {market.liquidity?.competition != null ? market.liquidity.competition : 'unmeasured'}</span>
-            </div>
-            {/* The comparison that bears on this parcel: the subject's own
-                acreage band beside the fastest-moving one. Four headline
-                numbers alone never say whether the subject's band is the
-                liquid one. Collector diagnostics stay collapsed below. */}
-            <div class="awv2-dx-bands" aria-label="Acreage band comparison">
-              {[market.subjectBand, market.fastestBand]
-                .filter((record): record is MarketContextRecordView => !!record?.available && !!record.metrics)
-                .map((record, index) => (
-                  <div class="awv2-dx-band" data-role={index === 0 ? 'subject' : 'liquid'}>
-                    <small>{index === 0 ? 'Subject band' : 'Most liquid band'}</small>
-                    <b>{record.acreageBandLabel || record.acreageBand || record.label}</b>
-                    <MetricRow
-                      label={`${record.label} figures`}
-                      metrics={[
-                        { label: '$ / acre', value: fmtMetric('medianPricePerAcre', record.metrics!.medianPricePerAcre) ?? '' },
-                        { label: 'Median DOM', value: fmtMetric('medianDaysOnMarket', record.metrics!.medianDaysOnMarket) ?? '' },
-                        { label: 'Sell-through', value: fmtMetric('sellThroughRate', record.metrics!.sellThroughRate) ?? '' },
-                        { label: 'Months supply', value: fmtMetric('monthsOfSupply', record.metrics!.monthsOfSupply) ?? '' },
-                      ]}
-                    />
-                  </div>
-                ))}
-            </div>
-            <WhatItMeans read={aiRead} topic="market" heading="What it means for this property" />
-            <Disclosure label="Market records, methodology and collector diagnostics">
-              <div class="awv2-mkt-grid">
-                <MarketCard rec={market.county} />
-                <MarketCard rec={market.zip} />
-                <MarketCard rec={market.subjectBand} />
-                <MarketCard rec={market.fastestBand} />
-              </div>
-            </Disclosure>
-          </>
-        ) : (
-          <div class="awv2-pi-note">No LandOS Market Research context was returned for this lead.</div>
-        )}
-      </section>
+      {showMarket && <MarketIntelligencePanel market={market} aiRead={aiRead} />}
 
       {/* ── Comparable research summary ── */}
       <div class="awv2-grid cols-3-2">

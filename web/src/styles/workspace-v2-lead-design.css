@@ -950,3 +950,58 @@
 .awv2-strategy-more > summary:hover { color: var(--awv2-bone); border-color: var(--awv2-brass); }
 
 .awv2-record-backstory p.lede { color: var(--awv2-bone); font-size: 13.5px; }
+
+/* ── Deal-contextual sidebar (deal page separation) ─────────────────────
+   The persistent secondary navigation inside one opened deal. It is NOT the
+   main LandOS department sidebar: it exists only while a deal record is open
+   and every link preserves the deal identity. Minimal styling on purpose —
+   this is information architecture, not a redesign. */
+.awv2-deal-layout { display: flex; align-items: flex-start; gap: 0; }
+.awv2-deal-sidebar {
+  position: sticky;
+  top: 0;
+  flex: 0 0 218px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  padding: 14px 10px 20px 16px;
+  min-height: 60vh;
+  border-right: 1px solid var(--awv2-line);
+}
+.awv2-deal-sidebar-title {
+  padding: 2px 8px 8px;
+  color: var(--awv2-bone-faint);
+  font-size: 10.5px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.awv2-deal-sidebar a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--awv2-bone-faint);
+  text-decoration: none;
+  min-width: 0;
+}
+.awv2-deal-sidebar a:hover { color: var(--awv2-bone); border-color: var(--awv2-line); }
+.awv2-deal-sidebar a > span { display: grid; min-width: 0; }
+.awv2-deal-sidebar b { color: var(--awv2-bone); font-size: 12.5px; line-height: 1.25; }
+.awv2-deal-sidebar small { overflow: hidden; color: var(--awv2-bone-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.awv2-deal-sidebar a.active { border-color: color-mix(in srgb, var(--awv2-dom-action) 45%, var(--awv2-line)); background: linear-gradient(145deg, rgba(241,189,107,.14), rgba(241,189,107,.03)); }
+.awv2-deal-sidebar a[data-domain="property"].active { border-color: color-mix(in srgb, var(--awv2-dom-property) 50%, var(--awv2-line)); background: linear-gradient(145deg, rgba(110,168,255,.14), rgba(110,168,255,.03)); }
+.awv2-deal-sidebar a[data-domain="market"].active { border-color: color-mix(in srgb, var(--awv2-dom-market, #7ad0a5) 50%, var(--awv2-line)); }
+.awv2-deal-sidebar a[data-domain="valuation"].active { border-color: color-mix(in srgb, var(--awv2-dom-valuation, #d9a94e) 50%, var(--awv2-line)); }
+.awv2-deal-sidebar a[data-domain="strategy"].active { border-color: color-mix(in srgb, var(--awv2-dom-strategy, #c39bd8) 50%, var(--awv2-line)); }
+.awv2-deal-sidebar a[data-domain="evidence"].active { border-color: color-mix(in srgb, var(--awv2-dom-evidence, #9aa7b8) 50%, var(--awv2-line)); }
+.awv2-deal-layout > .awv2-col { flex: 1 1 auto; min-width: 0; }
+.awv2-documents { display: grid; gap: 16px; align-content: start; }
+.awv2-documents-list { display: grid; gap: 6px; margin: 10px 0; padding: 0; list-style: none; }
+.awv2-documents-list a { display: inline-flex; align-items: center; gap: 7px; color: var(--awv2-bone); text-transform: capitalize; }
+@media (max-width: 900px) {
+  .awv2-deal-layout { display: block; }
+  .awv2-deal-sidebar { position: static; display: flex; flex-wrap: wrap; min-height: 0; border-right: 0; border-bottom: 1px solid var(--awv2-line); }
+  .awv2-deal-sidebar small { display: none; }
+}

@@ -253,7 +253,12 @@ interface OverviewSectionProps {
     error: string | null;
     onAsk: (message: string) => void;
   } | null;
+  /** Which deal page's sections to render; defaults to the Overview command center. */
+  pageFilter?: OverviewPageFilter;
 }
+
+/** The deal pages whose sections this component owns and renders. */
+export type OverviewPageFilter = 'overview' | 'property' | 'market' | 'strategy';
 
 const unique = (items: Array<string | null | undefined>) => Array.from(new Set(items.filter((item): item is string => !!item?.trim())));
 
@@ -364,7 +369,12 @@ export function OverviewSection({
   specialistReads,
   dealBrain,
   researchReadiness,
+  pageFilter = 'overview',
 }: OverviewSectionProps) {
+  // Deal-page ownership: this section set renders one page's sections at a
+  // time. 'overview' keeps the command center; 'property', 'market' and
+  // 'strategy' render only the sections those pages own.
+  const show = (owner: OverviewPageFilter) => owner === pageFilter;
   const developmentIntelligence = accessView?.developmentIntelligence ?? null;
   const identity = snap.identity ?? {};
   const operator = snap.operatorAnalysis;
@@ -669,12 +679,15 @@ export function OverviewSection({
     ...(soilsSeptic ? [{ label: 'Septic outlook', value: soilsSeptic.categoryLabel, tone: 'risk' }] : []),
   ];
 
+  // Only the Overview command center is the page's <main>; on the Property,
+  // Market and Strategy pages these owned sections render inside that page.
+  const Root = (pageFilter === 'overview' ? 'main' : 'div') as 'main';
   return (
-    <main class="awv2-main awv2-overview" data-testid="acquisition-overview">
-      {developmentIntelligence && <OwnerAcquisitionCard dossier={developmentIntelligence} />}
+    <Root class="awv2-main awv2-overview" data-testid="acquisition-overview" data-page-filter={pageFilter}>
+      {show('overview') && developmentIntelligence && <OwnerAcquisitionCard dossier={developmentIntelligence} />}
       {/* ── 1. Decision band: the operator decision and its key metrics lead
              the page; every narrative and evidence surface follows. ── */}
-      <section class="awv2-overview-decisionband" data-domain="action" aria-label="Operator decision">
+      {show('overview') && <section class="awv2-overview-decisionband" data-domain="action" aria-label="Operator decision">
         <div class="awv2-command-head">
           <div><div class="awv2-dom-eyebrow" data-dom="action">Decision</div><h2>{decisionHeadline}</h2></div>
           <span class="awv2-decision-state"><Target size={14} /> Acquisition read</span>
@@ -693,7 +706,7 @@ export function OverviewSection({
           <div><small>Next best action</small><b>{acquisitionNextAction?.label || nextActions[0] || 'Review the current evidence'}</b></div>
         </div>
         {decisionSummary !== decisionHeadline && <details class="awv2-decision-rationale"><summary>Decision rationale</summary><p>{decisionSummary}</p></details>}
-      </section>
+      </section>}
 
       {/* ── 1a. The four intelligence scores and the quick-flip status, right
              at the decision area: PROPERTY / MARKET / SELLER / DEAL as compact
@@ -701,7 +714,7 @@ export function OverviewSection({
              deterministic quick-flip economic screen beside them. SELLER shows
              honestly Unknown pre-contact. Numbers are shorthand; the reads
              behind them live in the Deal Read and on Page 2. ── */}
-      {intelligence && (
+      {show('overview') && intelligence && (
         <IntelligenceScoreStrip
           scores={intelligence.scores}
           quickFlip={intelligence.quickFlip}
@@ -716,7 +729,7 @@ export function OverviewSection({
              persisted specialist products rendered as compact current
              opinions, not the raw reports. Seller is honestly pre-contact
              until real communication exists. Rendering runs nothing. ── */}
-      {specialistReads && (
+      {show('overview') && specialistReads && (
         <SpecialistReadsPanel
           property={specialistReads.property}
           market={specialistReads.market}
@@ -734,7 +747,7 @@ export function OverviewSection({
              usable answer, what is honestly unresolved, and what is simply
              missing. Compact by default; the full checklist is one control
              away. Rendering it never runs research. ── */}
-      {researchReadiness && (
+      {show('overview') && researchReadiness && (
         <ResearchReadinessStrip
           manifest={researchReadiness.manifest}
           loading={researchReadiness.loading}
@@ -754,7 +767,7 @@ export function OverviewSection({
              conflict, visual observation, unknown and next action — is
              persisted and rendered whole on Property & Market. Printing all of
              it here is what buried the acquisition command center. ── */}
-      {acquisitionIntelligence && (
+      {show('overview') && acquisitionIntelligence && (
         <DealReadCard
           read={acquisitionIntelligence.read}
           readiness={acquisitionIntelligence.readiness}
@@ -773,7 +786,7 @@ export function OverviewSection({
       {/* ── 2b. Deal Brain: ask LandOS about this deal. Operator input is
              stored as deal-specific guidance — never a canonical property
              fact — and replies come from the current deal file. ── */}
-      {dealBrain && (
+      {show('overview') && dealBrain && (
         <>
           {developmentIntelligence && dealBrain.thread.length > 0 && <div class="awv2-pi-note"><b>Historical / superseded guidance:</b> existing Deal Brain replies predate the recorded-document and development reconciliation shown above. They remain retained as history and must not override current acreage, improvement, access, market, or strategy truth.</div>}
           <DealBrainAsk
@@ -786,7 +799,7 @@ export function OverviewSection({
         </>
       )}
 
-      <section class="awv2-overview-hero" data-domain="property" aria-label="Subject property">
+      {show('overview') && <section class="awv2-overview-hero" data-domain="property" aria-label="Subject property">
         <div class="awv2-overview-aerial">
           {heroSrc
             ? <img src={heroSrc} alt={`LandPortal parcel and site context for ${address}`} />
@@ -829,11 +842,11 @@ export function OverviewSection({
           </dl>
           {snap.subjectParcelUrl && <a href={snap.subjectParcelUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} /> Open parcel evidence</a>}
         </div>
-      </section>
+      </section>}
 
       {/* ── 2. Valuation: the decision-relevant figures, House Value naming.
              Deep methodology and the audit ledger live in Comps & Valuation. ── */}
-      <section class="awv2-overview-valuation" data-domain="valuation" aria-label="Current valuation">
+      {show('overview') && <section class="awv2-overview-valuation" data-domain="valuation" aria-label="Current valuation">
         <div class="section-heading"><div><span class="awv2-dom-eyebrow" data-dom="valuation">Valuation</span><h2>{showHouseBreakdown ? 'Land + house + whole property' : currentImproved ? 'Land value established separately; whole-property value pending' : 'Current property valuation'}</h2></div><button type="button" onClick={openCompsValuation}>{openCompsValuationLabel}</button></div>
         {cvSummary ? (
           <>
@@ -851,10 +864,10 @@ export function OverviewSection({
             {cvSummary?.acquisitionLevels && <div class="land-basis-references"><div><span>{currentImproved ? 'Opening reference (40% of land value, rounded)' : 'Opening reference (40% of current property value, rounded)'}</span><b>{landBasisOpeningReference ?? usd(cvSummary.acquisitionLevels.pct40)}</b></div><div><span>{currentImproved ? 'Target reference (50% of land value, rounded)' : 'Target reference (50% of current property value, rounded)'}</span><b>{usd(cvSummary.acquisitionLevels.pct50)}</b></div><div><span>{currentImproved ? 'Ceiling reference (60% of land value, rounded)' : 'Ceiling reference (60% of current property value, rounded)'}</span><b>{usd(cvSummary.acquisitionLevels.pct60)}</b></div><p>{currentImproved ? 'Land-basis references derived from land value only. They are not completed whole-property offer recommendations.' : 'Acquisition references derive from the supported current vacant-property value.'} All references are rounded to the nearest $500.</p></div>}
           </>
         ) : <p class="empty">Canonical Comps &amp; Valuation state has not been produced yet.</p>}
-      </section>
+      </section>}
 
       {/* ── 3. Score and risks ── */}
-      <section class="awv2-overview-decision" data-domain="risk" aria-label="Score and major risks">
+      {show('overview') && <section class="awv2-overview-decision" data-domain="risk" aria-label="Score and major risks">
         <div class="summary"><span class="awv2-dom-eyebrow" data-dom="risk">Risk scan</span><div class={`awv2-risk-count ${blockerCount ? 'open' : 'clear'}`}>{blockerCount ? <AlertTriangle size={20} /> : <CheckCircle2 size={20} />}<b>{blockerCount}</b><span>{blockerCount === 1 ? 'deal blocker' : 'deal blockers'}</span></div></div>
         <ScoreCard view={operator?.scores?.property} />
         <div class="risks">
@@ -867,14 +880,14 @@ export function OverviewSection({
             </div>
           ))}</div>
         </div>
-      </section>
+      </section>}
 
       {/* ── 3a. Public record + planning history ──
           Assessment, market value, annual tax and the provider's own estimate
           are decision inputs an operator asks for first, and the retained
           planning record is the story of what has already been attempted on
           this parcel. All of it was retained and none of it reached this page. */}
-      {(publicRecordTiles.length > 0 || backstory) && (
+      {show('property') && (publicRecordTiles.length > 0 || backstory) && (
         <section class="awv2-overview-record" data-domain="property" aria-label="Public record and planning history">
           <div class="section-heading">
             <div>
@@ -926,7 +939,7 @@ export function OverviewSection({
           an absence: it names the exit, what already supports it, and the one
           thing standing between the operator and pursuing it. Printing only
           "strategy selection is pending" threw all of that away. */}
-      {(strategies.length > 0 || developmentIntelligence?.recommendation) && (
+      {show('strategy') && (strategies.length > 0 || developmentIntelligence?.recommendation) && (
         <section class="awv2-overview-strategy" data-domain="strategy" aria-label="Exit strategy">
           <div class="section-heading">
             <div>
@@ -975,9 +988,15 @@ export function OverviewSection({
           )}
         </section>
       )}
+      {show('strategy') && !(strategies.length > 0 || developmentIntelligence?.recommendation) && (
+        <section class="awv2-overview-strategy" data-domain="strategy" aria-label="Exit strategy">
+          <div class="section-heading"><div><span class="awv2-dom-eyebrow" data-dom="strategy">Strategy</span><h2>No exit strategy assessed yet</h2></div></div>
+          <p class="awv2-strategy-why">The strategy lane has not produced an assessment for this deal. Run the acquisition intelligence from Overview to populate it.</p>
+        </section>
+      )}
 
       {/* ── 4. Market intelligence ── */}
-      <section class="awv2-overview-market" data-domain="market" aria-label="Market intelligence">
+      {show('market') && <section class="awv2-overview-market" data-domain="market" aria-label="Market intelligence">
         <div class="section-heading"><div><span class="awv2-dom-eyebrow" data-dom="market">Market intelligence</span><h2>Local market read</h2></div><button type="button" onClick={() => onOpenSection('property-intelligence')}>Open Market Intelligence →</button></div>
         {marketTiles.length > 0
           ? <div class="awv2-market-tiles">{marketTiles.slice(0, 5).map((tile) => <div data-kind={tile.kind}><span>{tile.label}</span><b>{tile.value}</b><i /></div>)}</div>
@@ -1054,9 +1073,9 @@ export function OverviewSection({
             )}
           </details>
         )}
-      </section>
+      </section>}
 
-      <section class={`awv2-overview-listing awv2-marketing-compact ${listing?.onMarket ? 'active' : 'inactive'}`} data-domain="evidence" aria-label="Public marketing status">
+      {show('market') && <section class={`awv2-overview-listing awv2-marketing-compact ${listing?.onMarket ? 'active' : 'inactive'}`} data-domain="evidence" aria-label="Public marketing status">
         <div class="awv2-marketing-state">
           <span class="awv2-dom-eyebrow" data-dom="evidence">Public marketing</span>
           <h2>{listing?.onMarket ? listing.statusLabel : 'Off Market'}</h2>
@@ -1065,9 +1084,9 @@ export function OverviewSection({
             : 'No verified public listing'}</p>
         </div>
         <button type="button" onClick={openListingEvidence}>View listing evidence →</button>
-      </section>
+      </section>}
 
-      <section class="awv2-overview-access" data-domain="property" aria-label="Access evidence ladder">
+      {show('property') && <section class="awv2-overview-access" data-domain="property" aria-label="Access evidence ladder">
         <div class="section-heading"><div><span class="awv2-dom-eyebrow" data-dom="property">Access</span><h2>{accessEstablished ? 'Access established' : 'Physical evidence is not legal proof'}</h2></div><button type="button" onClick={() => onOpenSection('property-intelligence')}>Open property evidence →</button></div>
         <p>{accessConclusion}</p>
         {/* Established access keeps its evidence ladder as collapsed
@@ -1081,23 +1100,23 @@ export function OverviewSection({
         ) : (
           <div class="ladder">{accessTiers.map((tier, index) => <div class={`rung ${tier.tone}`}><span class="number">{index + 1}</span><div><small>{tier.label}</small><b>{tier.state}</b>{tier.detail && <p>{tier.detail}</p>}</div></div>)}</div>
         )}
-      </section>
+      </section>}
 
-      {visualBuyerSummary && (
+      {show('property') && visualBuyerSummary && (
         <section class="awv2-overview-access" data-domain="evidence" aria-label="Visual buyer summary">
           <div class="section-heading"><div><span>{visualBuyerSummaryLabel}</span><h2>{visualBuyerSummary.physicalCharacter || 'Physical character not summarized'}</h2></div><button type="button" onClick={onOpenVisualBuyerAnalysis}>{visualBuyerAnalysisLabel}</button></div>
           <p><b>Buyer appeal:</b> {visualBuyerSummary.mainBuyerAppeal || 'Not summarized'} · <b>Top concern:</b> {visualBuyerSummary.topConcern || 'Not summarized'}</p>
         </section>
       )}
 
-      {soilsSeptic && (
+      {show('property') && soilsSeptic && (
         <section class="awv2-overview-access" data-domain="risk" aria-label="Septic outlook">
           <div class="section-heading"><div><span>Septic outlook</span><h2>{soilsSeptic.categoryLabel}</h2></div><button type="button" onClick={() => { onOpenSection('property-intelligence'); requestAnimationFrame(() => document.getElementById('soils-septic')?.scrollIntoView({ behavior: 'smooth' })); }}>Open soils &amp; septic evidence →</button></div>
           <p>{soilsSeptic.conclusion} Field testing remains required.</p>
         </section>
       )}
 
-      <section class="awv2-overview-closeout" data-domain="action" aria-label="Unresolved diligence and next action">
+      {show('overview') && <section class="awv2-overview-closeout" data-domain="action" aria-label="Unresolved diligence and next action">
         <div>
           <span>Still unresolved</span>
           <h2>Diligence queue</h2>
@@ -1113,9 +1132,9 @@ export function OverviewSection({
             <div class="awv2-action-row"><b>{index + 1}</b><span><strong>{item.label}</strong>{item.detail && <small>{item.detail}</small>}</span><ArrowUpRight size={15} /></div>
           ))}</div>
         </div>
-      </section>
+      </section>}
 
-      {(methodology.length > 0 || askingPrice != null) && <details class="awv2-overview-methodology"><summary>Supporting assumptions and secondary details</summary>{askingPrice != null && <p>Seller-stated asking price: {formatUsd(askingPrice)}.</p>}<ul>{methodology.map((item) => <li>{item}</li>)}</ul></details>}
-    </main>
+      {show('overview') && (methodology.length > 0 || askingPrice != null) && <details class="awv2-overview-methodology"><summary>Supporting assumptions and secondary details</summary>{askingPrice != null && <p>Seller-stated asking price: {formatUsd(askingPrice)}.</p>}<ul>{methodology.map((item) => <li>{item}</li>)}</ul></details>}
+    </Root>
   );
 }

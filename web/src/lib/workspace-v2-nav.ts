@@ -1,27 +1,37 @@
-// Acquisition Workspace V2 section navigation.
+// Acquisition Workspace V2 deal-page navigation.
 //
-// Section switching is client-side: the page loads the property record once
-// and reuses it across sections, so changing sections must never trigger a
-// full document navigation or refetch. These helpers are pure so the
-// URL/section contract stays testable in node.
+// The deal workspace is seven focused pages behind one persistent deal
+// sidebar. Page switching is client-side: the workspace loads the property
+// record once and reuses it across pages, so changing pages must never
+// trigger a full document navigation or refetch. These helpers are pure so
+// the URL/page contract stays testable in node.
 
-export type WorkspaceV2Section = 'Overview' | 'Property & Market' | 'Deal Activity';
-export type PropertyMarketView = 'property-intelligence' | 'comps-valuation';
+export type WorkspaceV2Page =
+  | 'overview' | 'property' | 'market' | 'comps'
+  | 'strategy' | 'seller' | 'documents';
 
-// Three operator workspaces. Property Intelligence, Comps & Valuation, Market
-// Intelligence and diligence are one top-level Property & Market workspace;
-// their legacy deep links remain valid as internal views.
-export const SECTION_SLUGS: Record<string, string> = {
-  Overview: 'overview',
-  'Property & Market': 'property-market',
-  'Deal Activity': 'deal-activity',
+/** The seven deal pages, in sidebar order. */
+export const DEAL_PAGES: Array<{ slug: WorkspaceV2Page; label: string; hint: string }> = [
+  { slug: 'overview', label: 'Overview', hint: 'Deal command center' },
+  { slug: 'property', label: 'Property', hint: 'Land, evidence & diligence' },
+  { slug: 'market', label: 'Market', hint: 'Market Intelligence & research' },
+  { slug: 'comps', label: 'Comps & Valuation', hint: 'Comparables & supported value' },
+  { slug: 'strategy', label: 'Strategy & Underwriting', hint: 'Exits & acquisition economics' },
+  { slug: 'seller', label: 'Seller & Activity', hint: 'Seller, comms & timeline' },
+  { slug: 'documents', label: 'Documents', hint: 'Reports, evidence & files' },
+];
+
+const PAGE_SLUGS = new Set<string>(DEAL_PAGES.map((p) => p.slug));
+
+// Old section/inner-view deep links keep working: each legacy slug maps to
+// the deal page that now owns that content.
+const LEGACY_SECTION_TO_PAGE: Record<string, WorkspaceV2Page> = {
+  'overview': 'overview',
+  'property-market': 'property',
+  'property-intelligence': 'property',
+  'comps-valuation': 'comps',
+  'deal-activity': 'seller',
 };
-
-const VALID_STORED_SLUGS = new Set([
-  ...Object.values(SECTION_SLUGS),
-  'property-intelligence',
-  'comps-valuation',
-]);
 
 // ── Canonical workspace routing ────────────────────────────────────────
 //
@@ -41,17 +51,17 @@ function sessionStore(): KVStore | null {
   try { return window.sessionStorage; } catch { return null; }
 }
 
-/** Record the deal (and its active section) the operator is using in V2 so
+/** Record the deal (and its active page) the operator is using in V2 so
  * navigating elsewhere and returning restores the same record this session. */
 export function rememberWorkspaceDeal(
   dealId: number,
-  sectionSlug: string,
+  pageSlug: string,
   store: KVStore | null = sessionStore(),
 ): void {
   if (!store) return;
   try {
     store.setItem(LAST_DEAL_KEY, String(dealId));
-    store.setItem(sectionKey(dealId), sectionSlug);
+    store.setItem(sectionKey(dealId), pageSlug);
   } catch { /* private mode — return-to-deal simply resets */ }
 }
 
@@ -64,40 +74,38 @@ export function lastWorkspaceDealId(store: KVStore | null = sessionStore()): num
 }
 
 /** Canonical V2 href for one deal, restoring that deal's most recently used
- * section this session (Overview stays the bare canonical URL). */
+ * page this session (Overview stays the bare canonical URL). */
 export function dealWorkspaceHref(dealId: number, store: KVStore | null = sessionStore()): string {
   let slug: string | null = null;
   try { slug = store?.getItem(sectionKey(dealId)) ?? null; } catch { slug = null; }
   const base = `${WORKSPACE_V2_PATH}?deal=${dealId}`;
-  const valid = slug && slug !== 'overview' && VALID_STORED_SLUGS.has(slug);
-  return valid ? `${base}&section=${slug}` : base;
+  // A stored legacy section slug from a prior session maps to its owning page.
+  const page = slug ? (PAGE_SLUGS.has(slug) ? (slug as WorkspaceV2Page) : LEGACY_SECTION_TO_PAGE[slug]) : null;
+  return page && page !== 'overview' ? `${base}&page=${page}` : base;
 }
 
-/** Derive the active section from a location search string. */
-export function readSection(search: string): WorkspaceV2Section {
-  const slug = new URLSearchParams(search).get('section');
-  if (slug === 'property-market' || slug === 'property-intelligence' || slug === 'comps-valuation') return 'Property & Market';
-  if (slug === 'deal-activity') return 'Deal Activity';
-  return 'Overview';
-}
-
-/** Preserve the operator's internal Property & Market view while presenting
- * one top-level workspace in the record navigation. */
-export function readPropertyMarketView(search: string): PropertyMarketView {
-  return new URLSearchParams(search).get('section') === 'comps-valuation'
-    ? 'comps-valuation'
-    : 'property-intelligence';
+/** Derive the active deal page from a location search string. `page=` is the
+ * canonical param; legacy `section=` deep links resolve to their owner. */
+export function readPage(search: string): WorkspaceV2Page {
+  const params = new URLSearchParams(search);
+  const page = params.get('page');
+  if (page && PAGE_SLUGS.has(page)) return page as WorkspaceV2Page;
+  const legacy = params.get('section');
+  if (legacy && LEGACY_SECTION_TO_PAGE[legacy]) return LEGACY_SECTION_TO_PAGE[legacy];
+  return 'overview';
 }
 
 /**
- * Build the href for a section, preserving every other query param (deal,
- * token, …). Overview is the canonical bare URL: its `section` param is
- * removed rather than written.
+ * Build the href for a deal page, preserving every other query param (deal,
+ * token, …). Overview is the canonical bare URL: its `page` param is removed
+ * rather than written. Any legacy `section` param is dropped: the deal page
+ * model owns the URL from here on.
  */
-export function sectionHref(pathname: string, search: string, slug: string): string {
+export function pageHref(pathname: string, search: string, slug: string): string {
   const params = new URLSearchParams(search);
-  if (slug === 'overview') params.delete('section');
-  else params.set('section', slug);
+  params.delete('section');
+  if (slug === 'overview' || !PAGE_SLUGS.has(slug)) params.delete('page');
+  else params.set('page', slug);
   const qs = params.toString();
   return pathname + (qs ? `?${qs}` : '');
 }

@@ -16,15 +16,16 @@ import { useEffect, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
 import {
   Phone, MessageSquare, Mail, StickyNote, ListPlus, Pencil, ExternalLink,
-  LayoutDashboard, Map, Activity, UserRound, CalendarClock, Users, FileDown,
+  LayoutDashboard, Map, UserRound, CalendarClock, Users, FileDown,
+  LineChart, Scale, Target, FolderOpen,
 } from 'lucide-preact';
 import { apiGet, apiPost, chatId, legacyUrl } from '@/lib/api';
 import {
-  readSection, readPropertyMarketView, sectionHref, rememberWorkspaceDeal, lastWorkspaceDealId,
-  SECTION_SLUGS, type WorkspaceV2Section, type PropertyMarketView,
+  readPage, pageHref, rememberWorkspaceDeal, lastWorkspaceDealId,
+  DEAL_PAGES, type WorkspaceV2Page,
 } from '@/lib/workspace-v2-nav';
 import {
-  PropertyIntelligenceSection,
+  PropertyIntelligenceSection, MarketIntelligencePanel,
   type MarketContextView, type PiCompRow,
   type SoilDetail, type BrowseruseResp, type StreetViewView, type VisualBuyerAnalysisView,
   type MissingDiligenceView, type AccessPresentationView, type SoilsSepticView,
@@ -192,14 +193,26 @@ const matchNum = (s: string | undefined, re: RegExp): string | null => {
   return m ? m[1] : null;
 };
 
-const WORKSPACE_SECTIONS = ['Overview', 'Property & Market', 'Deal Activity'] as const;
-
-// Legend rail: each section's swatch matches the domain hue its surfaces use,
-// so the nav reads as the legend for the page (see workspace-v2-lead-design.css).
-const SECTION_DOMAINS: Record<string, string> = {
-  'Overview': 'action',
-  'Property & Market': 'property',
-  'Deal Activity': 'action',
+// Deal sidebar: icon + domain swatch per page (see workspace-v2-lead-design.css
+// and workspace-v2-deal-nav.css). This is the deal-contextual navigation, NOT
+// the main LandOS department sidebar.
+const PAGE_ICONS: Record<WorkspaceV2Page, typeof LayoutDashboard> = {
+  overview: LayoutDashboard,
+  property: Map,
+  market: LineChart,
+  comps: Scale,
+  strategy: Target,
+  seller: UserRound,
+  documents: FolderOpen,
+};
+const PAGE_DOMAINS: Record<WorkspaceV2Page, string> = {
+  overview: 'action',
+  property: 'property',
+  market: 'market',
+  comps: 'valuation',
+  strategy: 'strategy',
+  seller: 'action',
+  documents: 'evidence',
 };
 
 // The acquisition lifecycle this workspace will grow through. "New lead" is
@@ -239,33 +252,20 @@ export function AcquisitionWorkspaceV2() {
   // reused across sections, so a tab change never reloads the document,
   // refetches the property record, or reruns research. pushState keeps the
   // URL shareable and back/forward working; popstate re-derives the section.
-  const [section, setSection] = useState<WorkspaceV2Section>(() => readSection(window.location.search));
-  // The Property & Market inner view is STATE, not a value derived at render
-  // time from window.location. Both inner views live under the same top-level
-  // section, so switching between them leaves `section` unchanged; a derived
-  // read of window.location.search therefore never re-evaluated and the URL and
-  // the rendered view drifted apart — clicking "Valuation & comps" rewrote the
-  // URL while the Property & diligence view stayed mounted, so the comps
-  // workspace (and with it the whole persisted comparable universe) never
-  // rendered at all. Deriving it into state keeps the rendered view and the URL
-  // the same fact for every section change, forward, back, and inner tab.
-  const [propertyMarketView, setPropertyMarketView] = useState<PropertyMarketView>(
-    () => readPropertyMarketView(window.location.search),
-  );
+  const [page, setPage] = useState<WorkspaceV2Page>(() => readPage(window.location.search));
   const syncNavFromUrl = () => {
-    setSection(readSection(window.location.search));
-    setPropertyMarketView(readPropertyMarketView(window.location.search));
+    setPage(readPage(window.location.search));
   };
   useEffect(() => {
     const onPop = () => syncNavFromUrl();
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
-  const switchSection = (e: MouseEvent, slug: string) => {
+  const switchPage = (e: MouseEvent, slug: string) => {
     // Let modified clicks (new tab, etc.) behave like normal links.
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
-    const href = sectionHref(window.location.pathname, window.location.search, slug);
+    const href = pageHref(window.location.pathname, window.location.search, slug);
     if (href !== window.location.pathname + window.location.search) {
       window.history.pushState(null, '', href);
     }
@@ -275,11 +275,8 @@ export function AcquisitionWorkspaceV2() {
   // Remember the deal + section the operator is using so every "back to the
   // workspace" path this session restores this exact record and section.
   useEffect(() => {
-    if (dealId != null) rememberWorkspaceDeal(
-      dealId,
-      new URLSearchParams(window.location.search).get('section') ?? 'overview',
-    );
-  }, [section, dealId]);
+    if (dealId != null) rememberWorkspaceDeal(dealId, page);
+  }, [page, dealId]);
 
   const [deal, setDeal] = useState<DealResp | null>(null);
   const [market, setMarket] = useState<MarketContextView | null>(null);
@@ -708,7 +705,8 @@ export function AcquisitionWorkspaceV2() {
   // literally as "&amp;" to the operator.
   const openCompsValuationLabel = 'Open Comps & Valuation →';
   const onOpenSection = (slug: 'property-intelligence' | 'comps-valuation') => {
-    const href = sectionHref(window.location.pathname, window.location.search, slug);
+    const target = slug === 'comps-valuation' ? 'comps' : 'property';
+    const href = pageHref(window.location.pathname, window.location.search, target);
     if (href !== window.location.pathname + window.location.search) window.history.pushState(null, '', href);
     // Same contract as switchSection: BOTH the section and the inner view are
     // re-derived from the URL, or a jump between the two Property & Market
@@ -813,63 +811,124 @@ export function AcquisitionWorkspaceV2() {
         </div>
       </header>
 
-      <div class="awv2-body awv2-body-composed">
-        {/* ── Workspace navigation ── */}
-        <nav class="awv2-workspace-nav" aria-label="Lead workspace areas">
-          {WORKSPACE_SECTIONS.map((s, index) => {
-            const Icon = index === 0 ? LayoutDashboard : index === 1 ? Map : Activity;
+      <div class="awv2-body awv2-body-composed awv2-deal-layout">
+        {/* ── Deal-contextual sidebar: the seven pages of THIS deal. This is
+            not the LandOS department sidebar — it exists only while a deal
+            record is open, and every link preserves the record identity. ── */}
+        <nav class="awv2-deal-sidebar" aria-label="Deal pages" data-testid="deal-sidebar">
+          <span class="awv2-deal-sidebar-title">Deal workspace</span>
+          {DEAL_PAGES.map((entry) => {
+            const Icon = PAGE_ICONS[entry.slug];
             return (
               <a
-                href={sectionHref(window.location.pathname, window.location.search, SECTION_SLUGS[s])}
-                class={section === s ? 'active' : ''}
-                data-domain={SECTION_DOMAINS[s]}
-                onClick={(e) => switchSection(e as unknown as MouseEvent, SECTION_SLUGS[s])}
+                href={pageHref(window.location.pathname, window.location.search, entry.slug)}
+                class={page === entry.slug ? 'active' : ''}
+                aria-current={page === entry.slug ? 'page' : undefined}
+                data-domain={PAGE_DOMAINS[entry.slug]}
+                data-testid={`deal-nav-${entry.slug}`}
+                onClick={(e) => switchPage(e as unknown as MouseEvent, entry.slug)}
               >
-                <Icon size={17} aria-hidden="true" />
-                <span>
-                  <b>{s}</b>
-                  <small>{index === 0 ? 'Decision command center' : index === 1 ? 'Property, valuation, comps & evidence' : 'Seller, next action & timeline'}</small>
-                </span>
+                <Icon size={16} aria-hidden="true" />
+                <span><b>{entry.label}</b><small>{entry.hint}</small></span>
               </a>
             );
           })}
         </nav>
 
         <div class="awv2-col">
-        {/* Research run status. Rendered outside the section switch because
+        {/* Research run status. Rendered outside the page switch because
             "is research still gathering, and what is it retrieving right now?"
-            is a question about the lead, not about the tab being viewed. */}
+            is a question about the lead, not about the page being viewed. */}
         <div class="awv2-runstatus-slot">
           <PropertyIntelligenceRunStatus dealId={dealId} onRunSettled={() => setReloadNonce((n) => n + 1)} />
         </div>
-        {section === 'Property & Market' ? (
-          <main class="awv2-main awv2-property-market" data-testid="property-market-workspace">
-            <div class="awv2-property-market-head">
-              <div>
-                <span class="awv2-dom-eyebrow" data-dom="property">Property &amp; Market</span>
-                <h2>One due-diligence workspace</h2>
-                <p>Parcel facts, physical evidence, market context and the valuation decision share one canonical record.</p>
-              </div>
-              <div class="awv2-property-market-tabs" role="tablist" aria-label="Property and market views">
-                <a role="tab" aria-selected={propertyMarketView === 'property-intelligence'} class={propertyMarketView === 'property-intelligence' ? 'active' : ''} href={sectionHref(window.location.pathname, window.location.search, 'property-intelligence')} onClick={(e) => switchSection(e as unknown as MouseEvent, 'property-intelligence')}>Property &amp; diligence</a>
-                <a role="tab" aria-selected={propertyMarketView === 'comps-valuation'} class={propertyMarketView === 'comps-valuation' ? 'active' : ''} href={sectionHref(window.location.pathname, window.location.search, 'comps-valuation')} onClick={(e) => switchSection(e as unknown as MouseEvent, 'comps-valuation')}>Valuation &amp; comps</a>
-              </div>
-            </div>
-            <nav class="awv2-zone-index" aria-label="Workspace zones">
-              {propertyMarketView === 'property-intelligence' ? <>
-                <a href="#pi-subject">Subject</a><a href="#access-road-frontage">Access</a><a href="#terrain-buildability">Terrain</a><a href="#environmental-soils">Environmental</a><a href="#zoning-land-use">Zoning</a><a href="#utilities-septic">Utilities</a><a href="#assessment-tax">Assessment</a><a href="#visual-evidence">Visual evidence</a><a href="#market-intelligence">Market</a><a href="#research-status">Diligence</a><a href="#remaining-diligence">Remaining</a><a href="#full-acquisition-intelligence">Full read</a>
-              </> : <>
-                <a href="#valuation-decision">Valuation</a><a href="#comparable-sales">Comparable sales</a><a href="#valuation-market-intelligence">Market</a><a href="#valuation-methodology">Methodology</a>
-              </>}
-            </nav>
-            {/* Comparable evidence handoff. The diligence view is NOT the comp
-                surface and must not restate the comparables, but it also must
-                not let a thin FMV set read as "there are no comps": the retained
-                universe and the strict FMV-qualifying set are stated as two
-                separate numbers, with one obvious way through to the real
-                records. Counts only — the named properties live one click away
-                on the canonical surface. */}
-            {propertyMarketView === 'property-intelligence' && compsValuation && (
+        {(page === 'overview' || page === 'property' || page === 'market' || page === 'strategy') && (
+          <OverviewSection
+            pageFilter={page}
+            snap={snap}
+            address={address}
+            zip={zip}
+            heroSrc={heroUrl ? tok(heroUrl) : null}
+            visualCount={visualCount}
+            seller={seller}
+            askingPrice={askingPrice}
+            researchStatus={researchStatus}
+            accessView={accessView}
+            soilsSeptic={soilsSeptic}
+            narrative={narrative}
+            visualBuyerSummary={visualBuyerSummary}
+            visualBuyerSummaryLabel={visualBuyerSummaryLabel}
+            visualBuyerAnalysisLabel={visualBuyerAnalysisLabel}
+            onOpenVisualBuyerAnalysis={(e) => switchPage(e as unknown as MouseEvent, 'property')}
+            exactAddressListings={exactAddressListings}
+            market={market}
+            landPortalFacts={landPortalFacts}
+            landUseIntelligence={landUseIntelligence}
+            acquisitionIntelligence={{
+              read: aiRead,
+              readiness: aiReadiness,
+              runtime: aiRuntime,
+              stale: aiStale,
+              running: aiRunning,
+              error: aiError,
+              onRun: runAcquisitionIntelligence,
+            }}
+            intelligence={{
+              scores: aiRead?.scores ?? null,
+              quickFlip: intelQuickFlip,
+              cashVerdict: aiRead?.sellerPriceVerdict?.verdict ?? null,
+              phaseLabel: intelPhase ? PHASE_LABEL[intelPhase] ?? intelPhase : null,
+              whatChanged: aiRead?.whatChanged ?? null,
+            }}
+            specialistReads={{
+              property: propertyIntelRead,
+              market: marketIntelRead,
+              seller: sellerIntel,
+              stale: specialistStale,
+              reconcile: {
+                record: reconciliation,
+                eligible: reconcileEligible,
+                running: reconcileRunning,
+                error: reconcileError,
+                onReconcile: runIntelligenceReconcile,
+              },
+              acreage: {
+                record: acreageExtent,
+                running: acreageRunning,
+                error: acreageError,
+                onReconcile: runAcreageReconcile,
+                resolvingDependents: acreageResolvingDependents,
+                onResolveDependents: runAcreageDependentResolve,
+              },
+            }}
+            dealBrain={{
+              thread: dealBrainThread,
+              running: dealBrainRunning,
+              error: dealBrainError,
+              onAsk: askDealBrain,
+            }}
+            compsValuation={compsValuation}
+            valuationBasisLabel={valuationBasisLabel}
+            landBasisOpeningReference={landBasisOpeningReference}
+            openCompsValuationLabel={openCompsValuationLabel}
+            openCompsValuation={openCompsValuation}
+            acquisitionNextAction={acq?.nextAction ?? null}
+            researchReadiness={{
+              manifest: readiness,
+              loading,
+              error: readinessError,
+              running: readinessRunning,
+              onBackfill: runResearchBackfill,
+            }}
+            formatUsd={usd}
+            onOpenSection={onOpenSection}
+          />
+        )}
+        {page === 'property' && (
+          <main class="awv2-main awv2-property-market" data-testid="property-page">
+            {/* Comparable evidence handoff: counts only — the named records
+                live on the Comps & Valuation page. */}
+            {compsValuation && (
               <section class="awv2-panel awv2-cv-handoff" data-domain="evidence" aria-label="Comparable evidence" data-testid="pi-comps-handoff">
                 <div class="awv2-cv-handoffcounts">
                   <span><i>Retained comparables</i><b data-testid="pi-comps-handoff-retained">{compsValuation.canonicalCompCount ?? compsValuation.comps.length}</b></span>
@@ -877,31 +936,38 @@ export function AcquisitionWorkspaceV2() {
                 </div>
                 <p class="awv2-pi-note">
                   Retained comparable evidence is not the same set as the sales allowed to price the subject. Every retained
-                  candidate — core, directional and excluded alike — stays visible with its own reason on the comps surface.
+                  candidate — core, directional and excluded alike — stays visible with its own reason on the comps page.
                 </p>
                 <button type="button" class="awv2-cv-cta" data-testid="pi-comps-handoff-open" onClick={openCompsValuation}>
                   View comps →
                 </button>
               </section>
             )}
-            {propertyMarketView === 'comps-valuation' ? (
-              <CompsValuationSection dealId={dealId} initial={compsValuation} onViewChange={setCompsValuation} />
-            ) : (
-              <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} landPortalFacts={landPortalFacts} taxStatus={taxStatus}
-                acquisitionIntelligence={{
-                  read: aiRead,
-                  readiness: aiReadiness,
-                  runtime: aiRuntime,
-                  stale: aiStale,
-                  running: aiRunning,
-                  error: aiError,
-                  onRun: runAcquisitionIntelligence,
-                }}
-              />
-            )}
+            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} landPortalFacts={landPortalFacts} taxStatus={taxStatus} showMarket={false}
+              acquisitionIntelligence={{
+                read: aiRead,
+                readiness: aiReadiness,
+                runtime: aiRuntime,
+                stale: aiStale,
+                running: aiRunning,
+                error: aiError,
+                onRun: runAcquisitionIntelligence,
+              }}
+            />
           </main>
-        ) : section === 'Deal Activity' ? (
-          <main class="awv2-main awv2-deal-activity" data-testid="deal-activity-workspace">
+        )}
+        {page === 'market' && (
+          <main class="awv2-main awv2-property-market" data-testid="market-page">
+            <MarketIntelligencePanel market={market} aiRead={aiRead} />
+          </main>
+        )}
+        {page === 'comps' && (
+          <main class="awv2-main awv2-property-market" data-testid="comps-page">
+            <CompsValuationSection dealId={dealId} initial={compsValuation} onViewChange={setCompsValuation} />
+          </main>
+        )}
+        {page === 'seller' && (
+          <main class="awv2-main awv2-deal-activity" data-testid="seller-activity-page">
             <section class="awv2-activity-seller" data-domain="action">
               <div class="awv2-dom-eyebrow" data-dom="action">Seller</div>
               <UserRound size={34} aria-hidden="true" />
@@ -955,86 +1021,44 @@ export function AcquisitionWorkspaceV2() {
               </div>
             </section>
           </main>
-        ) : (
-        <OverviewSection
-          snap={snap}
-          address={address}
-          zip={zip}
-          heroSrc={heroUrl ? tok(heroUrl) : null}
-          visualCount={visualCount}
-          seller={seller}
-          askingPrice={askingPrice}
-          researchStatus={researchStatus}
-          accessView={accessView}
-          soilsSeptic={soilsSeptic}
-          narrative={narrative}
-          visualBuyerSummary={visualBuyerSummary}
-          visualBuyerSummaryLabel={visualBuyerSummaryLabel}
-          visualBuyerAnalysisLabel={visualBuyerAnalysisLabel}
-          onOpenVisualBuyerAnalysis={(e) => switchSection(e as unknown as MouseEvent, 'property-intelligence')}
-          exactAddressListings={exactAddressListings}
-          market={market}
-          landPortalFacts={landPortalFacts}
-          landUseIntelligence={landUseIntelligence}
-          acquisitionIntelligence={{
-            read: aiRead,
-            readiness: aiReadiness,
-            runtime: aiRuntime,
-            stale: aiStale,
-            running: aiRunning,
-            error: aiError,
-            onRun: runAcquisitionIntelligence,
-          }}
-          intelligence={{
-            scores: aiRead?.scores ?? null,
-            quickFlip: intelQuickFlip,
-            cashVerdict: aiRead?.sellerPriceVerdict?.verdict ?? null,
-            phaseLabel: intelPhase ? PHASE_LABEL[intelPhase] ?? intelPhase : null,
-            whatChanged: aiRead?.whatChanged ?? null,
-          }}
-          specialistReads={{
-            property: propertyIntelRead,
-            market: marketIntelRead,
-            seller: sellerIntel,
-            stale: specialistStale,
-            reconcile: {
-              record: reconciliation,
-              eligible: reconcileEligible,
-              running: reconcileRunning,
-              error: reconcileError,
-              onReconcile: runIntelligenceReconcile,
-            },
-            acreage: {
-              record: acreageExtent,
-              running: acreageRunning,
-              error: acreageError,
-              onReconcile: runAcreageReconcile,
-              resolvingDependents: acreageResolvingDependents,
-              onResolveDependents: runAcreageDependentResolve,
-            },
-          }}
-          dealBrain={{
-            thread: dealBrainThread,
-            running: dealBrainRunning,
-            error: dealBrainError,
-            onAsk: askDealBrain,
-          }}
-          compsValuation={compsValuation}
-          valuationBasisLabel={valuationBasisLabel}
-          landBasisOpeningReference={landBasisOpeningReference}
-          openCompsValuationLabel={openCompsValuationLabel}
-          openCompsValuation={openCompsValuation}
-          acquisitionNextAction={acq?.nextAction ?? null}
-          researchReadiness={{
-            manifest: readiness,
-            loading,
-            error: readinessError,
-            running: readinessRunning,
-            onBackfill: runResearchBackfill,
-          }}
-          formatUsd={usd}
-          onOpenSection={onOpenSection}
-        />
+        )}
+        {page === 'documents' && (
+          <main class="awv2-main awv2-documents" data-testid="documents-page">
+            <section class="awv2-panel" data-domain="evidence">
+              <div class="awv2-panel-title">Generated reports</div>
+              <p class="awv2-pi-note">Reports are generated from the current retained deal file; downloading one runs no research.</p>
+              <a
+                class="awv2-ctl"
+                href={`/api/landos/deal-cards/${dealId}/report/download?format=pdf`}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="documents-property-intelligence-pdf"
+              >
+                <FileDown size={14} /> Property Intelligence PDF
+              </a>
+            </section>
+            <section class="awv2-panel" data-domain="evidence">
+              <div class="awv2-panel-title">Retained evidence &amp; document artifacts</div>
+              {(snap.evidence ?? []).filter((item) => item.viewUrl).length ? (
+                <ul class="awv2-documents-list" data-testid="documents-evidence-list">
+                  {(snap.evidence ?? []).filter((item) => item.viewUrl).map((item) => (
+                    <li>
+                      <a href={item.viewUrl!} target="_blank" rel="noopener noreferrer">
+                        <ExternalLink size={13} /> {(item.label ?? item.id).replace(/^inspection-/, '').replace(/[_-]/g, ' ')}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p class="awv2-pi-note">No document or visual artifacts have been retained for this deal yet.</p>
+              )}
+              {snap.subjectParcelUrl && (
+                <a class="awv2-ctl" href={snap.subjectParcelUrl} target="_blank" rel="noopener noreferrer">
+                  <ExternalLink size={14} /> Subject parcel evidence (LandPortal)
+                </a>
+              )}
+            </section>
+          </main>
         )}
         </div>
       </div>

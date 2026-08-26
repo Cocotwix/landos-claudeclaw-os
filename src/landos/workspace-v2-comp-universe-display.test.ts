@@ -29,18 +29,17 @@ const PAGE_SRC = read('web/src/pages/AcquisitionWorkspaceV2.tsx');
 const CV_SRC = read('web/src/components/AcquisitionWorkspaceV2CompsValuation.tsx');
 
 describe('the comps surface renders the canonical persisted comp universe', () => {
-  it('holds the Property & Market inner view in state, not a render-time URL read', () => {
-    // A bare `const propertyMarketView = readPropertyMarketView(...)` is the
-    // defect: it only re-evaluates when something else re-renders the page.
-    expect(PAGE_SRC).not.toMatch(/const\s+propertyMarketView\s*=\s*readPropertyMarketView\(/);
-    expect(PAGE_SRC).toMatch(/useState<PropertyMarketView>\(\s*\n?\s*\(\)\s*=>\s*readPropertyMarketView\(/);
+  it('holds the active deal page in state, not a render-time URL read', () => {
+    // A bare `const page = readPage(...)` is the defect: it only re-evaluates
+    // when something else re-renders the page.
+    expect(PAGE_SRC).not.toMatch(/const\s+page\s*=\s*readPage\(/);
+    expect(PAGE_SRC).toMatch(/useState<WorkspaceV2Page>\(\(\) => readPage\(/);
   });
 
-  it('re-derives BOTH the section and the inner view from the URL on every nav change', () => {
-    expect(PAGE_SRC).toMatch(/setSection\(readSection\(window\.location\.search\)\)/);
-    expect(PAGE_SRC).toMatch(/setPropertyMarketView\(readPropertyMarketView\(window\.location\.search\)\)/);
+  it('re-derives the page from the URL on every nav change', () => {
+    expect(PAGE_SRC).toMatch(/setPage\(readPage\(window\.location\.search\)\)/);
     // Both the click path and back/forward go through the same sync.
-    const switchBody = PAGE_SRC.slice(PAGE_SRC.indexOf('const switchSection'));
+    const switchBody = PAGE_SRC.slice(PAGE_SRC.indexOf('const switchPage'));
     expect(switchBody.slice(0, 600)).toMatch(/syncNavFromUrl\(\)/);
     const popBody = PAGE_SRC.slice(PAGE_SRC.indexOf('const onPop'));
     expect(popBody.slice(0, 200)).toMatch(/syncNavFromUrl\(\)/);

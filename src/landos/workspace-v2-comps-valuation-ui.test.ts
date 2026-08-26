@@ -32,15 +32,14 @@ const IDENTITY_SRC = read('web/src/components/CompRecordIdentity.tsx');
 const PROVENANCE_SRC = read('web/src/lib/comp-provenance.ts');
 
 describe('Comps & Valuation is a live V2 section', () => {
-  it('has a real section slug so the URL round-trips and refresh restores it', () => {
-    expect(NAV_SRC).toMatch(/'Property & Market': 'property-market'/);
-    expect(NAV_SRC).toMatch(/'Overview' \| 'Property & Market' \| 'Deal Activity'/);
-    expect(NAV_SRC).toMatch(/readPropertyMarketView/);
+  it('has a real page slug so the URL round-trips and refresh restores it', () => {
+    expect(NAV_SRC).toMatch(/slug: 'comps', label: 'Comps & Valuation'/);
+    expect(NAV_SRC).toMatch(/'comps-valuation': 'comps'/);
+    expect(NAV_SRC).toMatch(/readPage/);
   });
 
   it('mounts from the page-level record with props — opening the tab fetches nothing', () => {
-    expect(PAGE_SRC).toMatch(/section === 'Property & Market'/);
-    expect(PAGE_SRC).toMatch(/propertyMarketView === 'comps-valuation'/);
+    expect(PAGE_SRC).toMatch(/page === 'comps'/);
     expect(PAGE_SRC).toMatch(/<CompsValuationSection dealId=\{dealId\} initial=\{compsValuation\}/);
     expect(PAGE_SRC).toMatch(/compsValuation \?\? null/);
     // The section component never refetches its record on mount.

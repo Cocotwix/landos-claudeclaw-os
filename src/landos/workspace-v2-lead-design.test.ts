@@ -51,13 +51,14 @@ describe('lead-card design system layer', () => {
     expect(imports[imports.length - 1]).toBe('workspace-v2-lead-design.css');
   });
 
-  it('renders exactly three visually distinct top-level workspaces', () => {
-    expect(PAGE_SRC).toMatch(/SECTION_DOMAINS/);
-    expect(PAGE_SRC).toMatch(/data-domain=\{SECTION_DOMAINS\[s\]\}/);
-    expect(PAGE_SRC).toContain("['Overview', 'Property & Market', 'Deal Activity']");
-    expect(PAGE_SRC).toContain('awv2-workspace-nav');
+  it('renders the persistent deal sidebar with the seven deal pages', () => {
+    expect(PAGE_SRC).toMatch(/PAGE_DOMAINS/);
+    expect(PAGE_SRC).toMatch(/data-domain=\{PAGE_DOMAINS\[entry\.slug\]\}/);
+    expect(PAGE_SRC).toContain('awv2-deal-sidebar');
+    // The old horizontal deal navigation is gone.
+    expect(PAGE_SRC).not.toContain('awv2-workspace-nav');
     expect(PAGE_SRC).not.toContain('Soon');
-    expect(DESIGN_CSS).toMatch(/\.awv2-workspace-nav\s*\{[^}]*grid-template-columns:\s*repeat\(3,/);
+    expect(DESIGN_CSS).toMatch(/\.awv2-deal-sidebar\s*\{/);
   });
 
   it('keeps the header parcel identity chips (APN, acreage, county) canonical', () => {
@@ -157,12 +158,13 @@ describe('ws1 QA repairs stay repaired', () => {
     expect(OVERVIEW).toContain('rounded to the nearest $500');
   });
 
-  it('consolidates property diligence and valuation under Property & Market', () => {
-    expect(PAGE_SRC).toContain("section === 'Property & Market'");
-    expect(PAGE_SRC).toContain("propertyMarketView === 'property-intelligence'");
-    expect(PAGE_SRC).toContain("propertyMarketView === 'comps-valuation'");
-    expect(PAGE_SRC).toContain('Property &amp; diligence');
-    expect(PAGE_SRC).toContain('Valuation &amp; comps');
+  it('gives property, market, comps, strategy, seller and documents their own pages', () => {
+    expect(PAGE_SRC).toContain("page === 'property'");
+    expect(PAGE_SRC).toContain("page === 'market'");
+    expect(PAGE_SRC).toContain("page === 'comps'");
+    expect(PAGE_SRC).toContain("page === 'seller'");
+    expect(PAGE_SRC).toContain("page === 'documents'");
+    expect(PAGE_SRC).toContain('pageFilter={page}');
   });
 });
 

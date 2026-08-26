@@ -80,7 +80,7 @@ describe('new leads land in V2 immediately after creation', () => {
 
 describe('the operator can always return to V2', () => {
   it('V2 remembers the active deal and section for this session', () => {
-    expect(V2).toMatch(/rememberWorkspaceDeal\([\s\S]*?new URLSearchParams\(window\.location\.search\)\.get\('section'\) \?\? 'overview'/);
+    expect(V2).toMatch(/rememberWorkspaceDeal\(dealId, page\)/);
     expect(NAV).toMatch(/landos\.workspaceV2\.lastDeal/);
   });
 
