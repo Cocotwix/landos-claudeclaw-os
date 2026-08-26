@@ -185,18 +185,63 @@ export interface MarketWebEvidence {
 
 export type SellerIntelligenceState = 'pre_contact' | 'established';
 
+/** One material seller-trajectory change between the prior versioned read and
+ *  the current one. Only meaningful changes are carried; "no material change"
+ *  is a valid trajectory. */
+export interface SellerMaterialChange {
+  dimension: string;
+  priorState: string | null;
+  currentState: string;
+  /** increased | decreased | improved | worsened | stable | new | resolved | unclear */
+  direction: string | null;
+  evidence: string | null;
+  whyItMatters: string | null;
+}
+
+/** There is NO numerical Seller Score. The product is a timestamped, versioned
+ *  CURRENT SELLER READ plus SELLER TRAJECTORY, both formed by re-reading the
+ *  actual communication record — prior reads are historical interpretations,
+ *  never evidence. */
 export interface SellerIntelligenceProduct extends ProductBase {
   state: SellerIntelligenceState;
-  /** Null is the honest pre-contact answer: "Not established". */
-  score: number | null;
+  /** Monotonic version. Prior reads are superseded, never overwritten — the
+   *  snapshot history is the version chain and this is its ordinal. */
+  version: number;
+  /** The deal lifecycle phase this read was formed under — the same behavior
+   *  means different things at different phases. */
+  phase: DealPhase;
+  /** CURRENT SELLER READ: what is our read of this seller and transaction
+   *  RIGHT NOW, through the latest meaningful interaction. Pre-contact this is
+   *  honestly "Pending". Never a permanent psychological profile. */
   read: string;
+  /** SELLER TRAJECTORY: what changed vs the prior read, what stayed stable,
+   *  and why the changes matter. "No material change" is valid. */
+  sellerTrajectory: string | null;
+  materialChanges: SellerMaterialChange[];
   motivation: string | null;
+  reasonForSelling: string | null;
   priceExpectation: string | null;
+  priceMovement: string | null;
+  priceFlexibility: string | null;
   timeline: string | null;
+  urgency: string | null;
   decisionMakers: string | null;
   objections: string[];
+  concerns: string[];
+  alternatives: string | null;
   negotiationPosture: string | null;
+  communicationStyle: string | null;
+  responsiveness: string | null;
+  followThrough: string | null;
+  termsFlexibility: string | null;
+  commitments: string[];
   bestApproach: string | null;
+  transactionLikelihood: string | null;
+  whatMattersMostNow: string | null;
+  nextConversationObjective: string | null;
+  /** Confidence carried at one evidence weight: Confirmed | Well supported |
+   *  Likely | Possible | Unresolved. */
+  evidenceWeight: string | null;
   /** Always attributed — a seller statement never becomes a verified
    *  property fact by appearing here. */
   sellerReportedFacts: Array<{ statement: string; attribution: string }>;
@@ -207,6 +252,10 @@ export interface SellerIntelligenceProduct extends ProductBase {
   unknowns: Array<{ question: string; whyItMatters: string | null }>;
   /** The single next question most worth asking the seller. */
   nextQuestion: string | null;
+  /** Stage A prose, preserved verbatim; empty string pre-contact. */
+  expertReview: string;
+  /** generatedAt of the immediately prior version, when one exists. */
+  priorVersionGeneratedAt: string | null;
 }
 
 /** The Deal Brain read. A strict superset of the V1 Acquisition Intelligence
@@ -217,6 +266,8 @@ export interface DealIntelligenceProduct extends AcquisitionIntelligenceResult {
   scores: {
     property: { score: number | null; quality: IntelligenceQuality | null; source: ScoreSource };
     market: { score: number | null; quality: IntelligenceQuality | null; source: ScoreSource };
+    /** score is retained for old-snapshot shape compatibility and is always
+     *  null going forward: the numerical Seller Score is removed. */
     seller: { score: number | null; state: SellerIntelligenceState };
     deal: { score: number | null; label: string | null };
   };
@@ -269,7 +320,7 @@ export interface IntelligencePassContext {
 const LAYER_SCHEMAS: Record<Exclude<IntelligenceLayerId, 'deal'>, string> = {
   property: '"property":{"score":0,"read":"","strengths":[],"constraints":[{"title":"","why":"","severity":"high|medium|low"}],"potential":[],"unusual":[],"externalities":[],"development_potential":"","configurations":[{"label":"","status":"physically_plausible|regulatorily_plausible|unresolved|not_supported","prerequisites":[]}],"conflicts":[{"subject":"","record_claim":"","grounded_visual":"","interpretation":"","recommended_verification":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}]}',
   market: '"market":{"score":0,"read":"","overall_market_quality":{"grade":null,"read":""},"exit_product_fits":[{"product":"","grade":"A|B|C|D","expected_days":null,"confidence":"","read":""}],"liquidity_read":"","area_story":"","buyer_pool":"","best_signals":[],"risks":[],"exit_implications":[],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}],"web_evidence":[{"query":"","title":"","url":"https://...","source_type":"official_primary|primary|secondary|community","material_claim":"","evidence_snippet":"","confidence":""}]}',
-  seller: '"seller":{"score":0,"read":"","motivation":"","price_expectation":"","timeline":"","decision_makers":"","objections":[],"negotiation_posture":"","best_approach":"","seller_reported_facts":[{"statement":"","attribution":""}],"follow_ups":[],"contradictions":[{"subject":"","earlier":"","later":"","interpretation":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_question":""}',
+  seller: '"seller":{"current_seller_read":"","seller_trajectory":"","material_changes":[{"dimension":"","prior_state":"","current_state":"","direction":"increased|decreased|improved|worsened|stable|new|resolved|unclear","evidence":"","why_it_matters":""}],"motivation":"","reason_for_selling":"","price_expectation":"","price_movement":"","price_flexibility":"","timeline":"","urgency":"","decision_makers":"","objections":[],"concerns":[],"alternatives":"","negotiation_posture":"","communication_style":"","responsiveness":"","follow_through":"","terms_flexibility":"","commitments":[],"transaction_likelihood":"","what_matters_most_now":"","best_approach":"","next_conversation_objective":"","seller_reported_facts":[{"statement":"","attribution":""}],"follow_ups":[],"contradictions":[{"subject":"","earlier":"","later":"","interpretation":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_question":"","evidence_weight":"Confirmed|Well supported|Likely|Possible|Unresolved"}',
 };
 
 const DEAL_SCHEMA = '"deal":{"deal_read":{"headline":"","judgment":"","confidence":"Confirmed|Well supported|Likely|Unresolved"},'
@@ -405,8 +456,8 @@ export function intelligenceStackPrompt(
     canonicalScoreLine('Property score', context.canonicalScores.property),
     canonicalScoreLine('Market score', context.canonicalScores.market),
     context.sellerEstablished
-      ? canonicalScoreLine('Seller score', context.canonicalScores.seller)
-      : 'Seller score: NOT ESTABLISHED — no seller contact yet. That is normal pre-call; never fabricate motivation from ownership records.',
+      ? 'Seller: there is NO numerical seller score. Produce the CURRENT SELLER READ and SELLER TRAJECTORY from the communication record.'
+      : 'Seller: PRE-CONTACT — no seller communication yet. That is normal pre-call; never fabricate motivation from ownership records.',
     '=== END SCORES ===',
     context.readinessHeadline ? `Research readiness: ${context.readinessHeadline}.` : '',
     context.knownUnresolved.length
@@ -681,8 +732,12 @@ export function specialistLayerPrompt(
         sellerDoctrineSection(dossier),
         'Act as an experienced acquisitions negotiator and human-behavior specialist. Ground every inference in',
         'recorded calls, transcripts, texts, emails, forms, notes, offers, response timing, contradictions or',
-        'follow-through. Assess motivation, expectations, flexibility, decision control, objections, trust, leverage,',
-        'communication style and the next conversation objective. Never manufacture psychology from public records.',
+        'follow-through. There is NO numerical seller score: produce the CURRENT SELLER READ (what is our read of',
+        'this seller and transaction right now, through the latest meaningful interaction) and the SELLER',
+        'TRAJECTORY (what changed, what stayed stable, why it matters - "no material change" is valid). Interpret',
+        'behavior in the current deal phase: the same behavior means different things at different phases. Assess',
+        'motivation, expectations, flexibility, decision control, objections, trust, leverage, communication style',
+        'and the next conversation objective. Never manufacture psychology from public records.',
       ];
 
   return [
@@ -1048,6 +1103,134 @@ export function dealBrainChatPrompt(input: {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
+/** Renders the immediate prior versioned Seller Read for trajectory
+ * comparison. Prior reads are HISTORICAL INTERPRETATIONS, never evidence:
+ * actual communication is ground truth and outranks any prior model read. */
+function priorSellerReadSection(prior: Partial<SellerIntelligenceProduct> | null | undefined): string {
+  if (!prior || prior.state !== 'established' || !prior.read) {
+    return [
+      'No prior established Seller Read exists - this is Seller Read v1. The SELLER TRAJECTORY then covers the',
+      'evolution visible INSIDE the communication record itself (initial position to current position), or states',
+      'plainly that a trajectory is not yet established.',
+    ].join('\n');
+  }
+  return [
+    `=== PRIOR SELLER READ (v${prior.version ?? 1}${prior.generatedAt ? `, ${prior.generatedAt}` : ''}${prior.phase ? `, phase ${prior.phase}` : ''}) - HISTORICAL INTERPRETATION, NOT EVIDENCE ===`,
+    prior.read,
+    prior.sellerTrajectory ? `Prior trajectory: ${prior.sellerTrajectory}` : '',
+    '=== END PRIOR SELLER READ ===',
+    '',
+    'Do NOT merely edit this prior read. Re-read the complete communication record, form a NEW current read from',
+    'the evidence through the latest meaningful interaction, and only then compare against this prior read to',
+    'produce the SELLER TRAJECTORY: what changed, what remained stable, and why the changes matter. Where the',
+    'evidence contradicts the prior read, the evidence wins.',
+  ].filter(Boolean).join('\n');
+}
+
+/** Seller Stage A: a genuine free expert review over the complete persisted
+ * seller communication record, chronologically, in phase context. Natural
+ * prose, preserved verbatim; extraction happens separately in Stage B. */
+export function sellerExpertReviewPrompt(
+  dossier: AcquisitionDossier,
+  prior: Partial<SellerIntelligenceProduct> | null | undefined,
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+): string {
+  const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
+  return [
+    `You are LandOS Seller Intelligence - a senior land-acquisitions negotiator and evidence-grounded human-behavior specialist. Review the seller relationship for ${subject}. Current deal phase: ${DEAL_PHASE_LABEL[context.phase]}.`,
+    '',
+    specialistContextEnvelope(dossier, context, envelope),
+    '',
+    NO_RESEARCH_RULE,
+    '',
+    '=== COMPLETE CURRENT SELLER COMMUNICATION RECORD (JSON) ===',
+    JSON.stringify(sellerDossierView(dossier)),
+    '=== END SELLER RECORD ===',
+    '',
+    sellerDoctrineSection(dossier),
+    '',
+    priorSellerReadSection(prior),
+    '',
+    'All currently available authorized seller communication evidence has been assembled above. The relationship',
+    'may have evolved over days, weeks, or months - read the complete communication history chronologically and',
+    'understand the current lifecycle phase. Do not merely summarize messages or fields.',
+    '',
+    'Form your CURRENT SELLER READ from the complete evidence through the latest meaningful interaction: based on',
+    'everything known right now, what is our read of this seller and this transaction? Then compare that current',
+    'read against the prior seller state and explain the SELLER TRAJECTORY - what changed, what remained stable,',
+    'and why those changes matter. Only material changes belong in the trajectory; "no material change since the',
+    'prior read" is a valid answer. Pay attention to price movement, timing, urgency, responsiveness,',
+    'follow-through, decision dynamics, objections, terms, commitments, contradictions, and stated versus observed',
+    'behavior.',
+    '',
+    'PHASE CONTEXT MATTERS. The same behavior means different things at different phases: before an offer, slow',
+    'replies may indicate low engagement; under contract, low communication may be completely normal; immediately',
+    'before closing, unexpected silence may be material. Interpret behavior in phase context - never mechanically',
+    'score responsiveness.',
+    '',
+    'Tell the acquisitions team: what this seller appears to want now, what matters most now, what changed, what',
+    'remained stable, how realistic or flexible the current position appears, who currently controls the decision,',
+    'what objections actually matter, what transaction risks exist, what remains unknown, what communication',
+    'approach best fits the current relationship, and what the next conversation should accomplish.',
+    '',
+    'HARD EVIDENCE RULES. Ground every interpretation in actual communication or recorded behavior - seller words,',
+    'writing, price changes, repeated statements, response timing, follow-through, missed commitments,',
+    'contradictions, objections, questions, offer/counter history, actions over time. Keep RECORDED EVENT,',
+    'SELLER-REPORTED, FACT, INTERPRETATION, HYPOTHESIS, CONTRADICTION, and UNKNOWN strictly separate and label',
+    'them as you reason; never silently promote seller-reported or interpretive material into fact. Do not',
+    'manufacture psychology: never infer distress, desperation, vulnerability, impairment, protected',
+    'characteristics, or willingness to accept a lower price from public records, demographics, age, ownership',
+    'duration, tax records, condition, or location. Carry confidence at one evidence weight: Confirmed, Well',
+    'supported, Likely, Possible, or Unresolved.',
+    '',
+    'KEEP SELLER AUTHORITY IN LANE. You assess motivation, flexibility, expectations, posture, readiness, and',
+    'qualitative transaction likelihood; you recommend communication approach, questions, and the next',
+    'conversation objective. You do NOT determine buy/pass, the final offer amount, a walk-away amount, the final',
+    'acquisition strategy, or contractual commitments - Deal Brain owns that synthesis.',
+    ...contextLines(context),
+    '',
+    'Think freely within the Seller/negotiation domain. Produce a complete natural-language expert review, not',
+    'JSON and not a field-by-field recap. Use enough length to preserve useful reasoning (normally 800-2,500',
+    'words; never exceed 4,000).',
+  ].filter(Boolean).join('\n');
+}
+
+/** Seller Stage B: operational extraction only. It cannot rewrite Stage A. */
+export function sellerStructuredExtractionPrompt(
+  dossier: AcquisitionDossier,
+  expertReview: string,
+  prior: Partial<SellerIntelligenceProduct> | null | undefined,
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+): string {
+  const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
+  return [
+    `You are LandOS Seller Intelligence. You have ALREADY produced your free expert review of the seller relationship for ${subject}. Now extract its operational content into the structured Seller product. Phase: ${DEAL_PHASE_LABEL[context.phase]}.`,
+    '',
+    specialistContextEnvelope(dossier, context, envelope),
+    '',
+    '=== YOUR EXPERT REVIEW (verbatim - the source of truth for this extraction) ===',
+    expertReview,
+    '=== END EXPERT REVIEW ===',
+    '',
+    priorSellerReadSection(prior),
+    '',
+    'EXTRACTION RULES. Extract only what the review actually supports - do not add new conclusions, do not soften',
+    "or strengthen the review's judgments, and do not resolve what the review left unresolved. There is NO",
+    'numerical seller score anywhere. "current_seller_read" is the concise current read; "seller_trajectory"',
+    'states what changed, what stayed stable, and why it matters; "material_changes" carries ONLY material',
+    'dimension changes (direction one of increased|decreased|improved|worsened|stable|new|resolved|unclear) -',
+    'never force every dimension into a change; an empty list with a "no material change" trajectory is valid.',
+    'Keep every seller_reported_facts entry attributed. Leave a field empty ("" or []) when the review does not',
+    'establish it.',
+    '',
+    'Reply with ONE JSON object and nothing else, containing exactly this top-level key: "seller".',
+    'Use exactly this shape:',
+    `{${LAYER_SCHEMAS.seller}}`,
+  ].filter(Boolean).join('\n');
+}
+
 function pick(source: Record<string, unknown>, ...names: string[]): unknown {
   for (const name of names) {
     if (source[name] !== undefined && source[name] !== null) return source[name];
@@ -1176,8 +1359,24 @@ export interface ParsedMarketLayer {
 }
 
 export interface ParsedSellerLayer {
-  score: number | null;
   read: string | null;
+  sellerTrajectory: string | null;
+  materialChanges: SellerMaterialChange[];
+  reasonForSelling: string | null;
+  priceMovement: string | null;
+  priceFlexibility: string | null;
+  urgency: string | null;
+  concerns: string[];
+  alternatives: string | null;
+  communicationStyle: string | null;
+  responsiveness: string | null;
+  followThrough: string | null;
+  termsFlexibility: string | null;
+  commitments: string[];
+  transactionLikelihood: string | null;
+  whatMattersMostNow: string | null;
+  nextConversationObjective: string | null;
+  evidenceWeight: string | null;
   motivation: string | null;
   priceExpectation: string | null;
   timeline: string | null;
@@ -1332,8 +1531,40 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
   const sellerSource = pick(parsed, 'seller');
   const seller: ParsedSellerLayer | null = isRecord(sellerSource)
     ? {
-      score: asScore(pick(sellerSource, 'score', 'workability')),
-      read: asLine(pick(sellerSource, 'read', 'sellerRead', 'summary'), 1_800),
+      read: asLine(pick(sellerSource, 'currentSellerRead', 'read', 'sellerRead', 'summary'), 2_400),
+      sellerTrajectory: asLine(pick(sellerSource, 'sellerTrajectory', 'trajectory', 'whatChanged'), 2_400),
+      materialChanges: (Array.isArray(pick(sellerSource, 'materialChanges')) ? pick(sellerSource, 'materialChanges') as unknown[] : [])
+        .map((item) => {
+          if (!isRecord(item)) return null;
+          const dimension = asLine(pick(item, 'dimension'), 120);
+          const currentState = asLine(pick(item, 'currentState', 'current'), 500);
+          if (!dimension || !currentState) return null;
+          return {
+            dimension,
+            priorState: asLine(pick(item, 'priorState', 'prior'), 500),
+            currentState,
+            direction: asLine(pick(item, 'direction'), 40),
+            evidence: asLine(pick(item, 'evidence'), 600),
+            whyItMatters: asLine(pick(item, 'whyItMatters'), 600),
+          };
+        })
+        .filter((item): item is SellerMaterialChange => !!item)
+        .slice(0, 10),
+      reasonForSelling: asLine(pick(sellerSource, 'reasonForSelling'), 600),
+      priceMovement: asLine(pick(sellerSource, 'priceMovement'), 600),
+      priceFlexibility: asLine(pick(sellerSource, 'priceFlexibility', 'currentPriceFlexibility'), 600),
+      urgency: asLine(pick(sellerSource, 'urgency', 'currentUrgency'), 600),
+      concerns: asLines(pick(sellerSource, 'concerns', 'currentConcerns'), 6),
+      alternatives: asLine(pick(sellerSource, 'alternatives', 'currentAlternatives'), 600),
+      communicationStyle: asLine(pick(sellerSource, 'communicationStyle'), 400),
+      responsiveness: asLine(pick(sellerSource, 'responsiveness'), 500),
+      followThrough: asLine(pick(sellerSource, 'followThrough'), 500),
+      termsFlexibility: asLine(pick(sellerSource, 'termsFlexibility'), 500),
+      commitments: asLines(pick(sellerSource, 'commitments'), 6),
+      transactionLikelihood: asLine(pick(sellerSource, 'transactionLikelihood', 'currentTransactionLikelihood'), 600),
+      whatMattersMostNow: asLine(pick(sellerSource, 'whatMattersMostNow'), 600),
+      nextConversationObjective: asLine(pick(sellerSource, 'nextConversationObjective'), 600),
+      evidenceWeight: asLine(pick(sellerSource, 'evidenceWeight', 'confidence'), 80),
       motivation: asLine(pick(sellerSource, 'motivation'), 600),
       priceExpectation: asLine(pick(sellerSource, 'priceExpectation', 'askingPrice'), 400),
       timeline: asLine(pick(sellerSource, 'timeline'), 400),

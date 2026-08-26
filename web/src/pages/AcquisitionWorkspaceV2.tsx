@@ -998,16 +998,38 @@ export function AcquisitionWorkspaceV2() {
               <div class="awv2-dom-eyebrow" data-dom="action">Seller Intelligence</div>
               {sellerIntel?.state === 'established' ? (
                 <div class="awv2-seller-intel-body">
-                  <h3>{sellerIntel.read}</h3>
+                  {/* WHAT IS TRUE NOW + WHAT CHANGED lead; history stays in the
+                      versioned snapshot chain, never cluttering this view. */}
+                  <h3 data-testid="seller-current-read">{sellerIntel.read}</h3>
+                  {sellerIntel.version != null && <p class="awv2-seller-intel-version">Current Seller Read · v{sellerIntel.version}{sellerIntel.generatedAt ? ` · ${new Date(sellerIntel.generatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}{sellerIntel.evidenceWeight ? ` · ${sellerIntel.evidenceWeight}` : ''}</p>}
+                  {sellerIntel.sellerTrajectory && (
+                    <div class="awv2-seller-intel-trajectory" data-testid="seller-trajectory">
+                      <b>What changed</b>
+                      <p>{sellerIntel.sellerTrajectory}</p>
+                      {(sellerIntel.materialChanges ?? []).filter((change) => change.dimension).map((change) => (
+                        <p class="awv2-seller-intel-change"><span class="tag">{change.direction || 'changed'}</span> <b>{change.dimension}</b>{change.priorState ? ` ${change.priorState} →` : ''} {change.currentState}{change.whyItMatters ? ` — ${change.whyItMatters}` : ''}</p>
+                      ))}
+                    </div>
+                  )}
                   <div class="awv2-seller-intel-grid">
-                    {sellerIntel.score != null && <p><b>Workability</b> {sellerIntel.score}/100</p>}
+                    {sellerIntel.whatMattersMostNow && <p><b>What matters most now</b> {sellerIntel.whatMattersMostNow}</p>}
+                    {sellerIntel.nextConversationObjective && <p><b>Next conversation objective</b> {sellerIntel.nextConversationObjective}</p>}
+                    {sellerIntel.transactionLikelihood && <p><b>Transaction likelihood</b> {sellerIntel.transactionLikelihood}</p>}
                     {sellerIntel.motivation && <p><b>Motivation</b> {sellerIntel.motivation}</p>}
                     {sellerIntel.priceExpectation && <p><b>Price expectation</b> {sellerIntel.priceExpectation}</p>}
+                    {sellerIntel.priceMovement && <p><b>Price movement</b> {sellerIntel.priceMovement}</p>}
                     {sellerIntel.timeline && <p><b>Timeline</b> {sellerIntel.timeline}</p>}
+                    {sellerIntel.urgency && <p><b>Urgency</b> {sellerIntel.urgency}</p>}
                     {sellerIntel.decisionMakers && <p><b>Decision makers</b> {sellerIntel.decisionMakers}</p>}
                     {sellerIntel.negotiationPosture && <p><b>Negotiation posture</b> {sellerIntel.negotiationPosture}</p>}
-                    {sellerIntel.bestApproach && <p><b>Best way to work this seller</b> {sellerIntel.bestApproach}</p>}
+                    {sellerIntel.bestApproach && <p><b>Best communication approach</b> {sellerIntel.bestApproach}</p>}
                   </div>
+                  {!!sellerIntel.unknowns?.filter((item) => item.question).length && (
+                    <div class="awv2-seller-intel-unknowns" data-testid="seller-controlling-unknowns">
+                      <b>Controlling unknowns</b>
+                      {sellerIntel.unknowns.filter((item) => item.question).slice(0, 5).map((item) => <p>? {item.question}{item.whyItMatters ? ` — ${item.whyItMatters}` : ''}</p>)}
+                    </div>
+                  )}
                   {!!sellerIntel.sellerReportedFacts?.length && (
                     <div class="awv2-seller-intel-reported">
                       <b>Seller-reported (attributed, not verified property facts)</b>
@@ -1015,10 +1037,17 @@ export function AcquisitionWorkspaceV2() {
                     </div>
                   )}
                   {!!sellerIntel.followUps?.length && <p class="awv2-seller-intel-follow"><b>Follow-ups:</b> {sellerIntel.followUps.join('; ')}</p>}
+                  {!!sellerIntel.expertReview && (
+                    <details class="awv2-seller-intel-review" data-testid="seller-expert-review">
+                      <summary>Full expert seller review</summary>
+                      <div class="awv2-seller-intel-review-body">{sellerIntel.expertReview.split(/\n{2,}/).map((paragraph) => <p>{paragraph}</p>)}</div>
+                    </details>
+                  )}
                 </div>
               ) : (
                 <p class="awv2-seller-intel-precontact">
-                  Seller score: not established · Pre-contact. Seller Intelligence fills in from real
+                  Current Seller Read: Pending — no meaningful seller communication yet. Seller
+                  Trajectory: not established. Seller Intelligence fills in from real
                   communication — nothing is inferred from ownership records.
                 </p>
               )}

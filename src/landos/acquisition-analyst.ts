@@ -239,6 +239,19 @@ export interface SpecialistExecutionPlan {
     dossier: AcquisitionDossier,
     observations: VisualObservationDraft[],
   ) => string;
+  /** Seller Stage A: free expert review over the complete persisted seller
+   * communication record plus the immediate prior versioned Seller Read.
+   * Natural prose, preserved verbatim. */
+  sellerReviewPrompt?: (
+    dossier: AcquisitionDossier,
+    observations: VisualObservationDraft[],
+  ) => string;
+  /** Seller Stage B extraction over the exact Stage A review. */
+  sellerExtractionPrompt?: (
+    expertReview: string,
+    dossier: AcquisitionDossier,
+    observations: VisualObservationDraft[],
+  ) => string;
   /** The Deal Brain prompt, built AFTER the specialist layers return so the
    *  chair synthesizes from the fresh structured products. */
   dealPrompt: (
@@ -273,6 +286,8 @@ export interface AnalystRunOutput {
   marketExpertReview?: string;
   /** Exact Property Stage A prose when the two-stage Property path ran. */
   propertyExpertReview?: string;
+  /** Exact Seller Stage A prose when the two-stage Seller path ran. */
+  sellerExpertReview?: string;
 }
 
 /** The seam every caller uses. Tests substitute a fake; nothing outside this

@@ -57,6 +57,8 @@ import {
   marketExpertReviewPrompt,
   marketStructuredExtractionPrompt,
   propertyExpertReviewPrompt,
+  sellerExpertReviewPrompt,
+  sellerStructuredExtractionPrompt,
   propertyStructuredExtractionPrompt,
   parseIntelligenceLayers,
   qualityForScore,
@@ -172,8 +174,13 @@ export function marketLayerFingerprint(
   });
 }
 
-export function sellerLayerFingerprint(dossier: AcquisitionDossier, sellerEstablished: boolean): string {
-  return hash({ seller: dossier.seller, sellerEstablished });
+export function sellerLayerFingerprint(dossier: AcquisitionDossier, sellerEstablished: boolean, phase: DealPhase): string {
+  // Material inputs only: the persisted seller evidence record (profile,
+  // communications, discovery, seller-reported facts, asking price, people),
+  // whether contact is established, and the material lifecycle phase. No
+  // read-time timestamps — a meaningful new seller event invalidates the
+  // current read; rendering it never does.
+  return hash({ seller: dossier.seller, sellerEstablished, phase });
 }
 
 // ── Run input/output ───────────────────────────────────────────────────────
@@ -336,20 +343,20 @@ export function readIntelligenceStackState(
       ? products.market.inputFingerprint === marketInputFingerprint
       : products.market.layerFingerprint === legacyMarketFingerprint
   );
-  const fingerprints = {
-    property: propertyFingerprint,
-    // A current Market read keeps the identity of its complete output,
-    // including the governed web evidence it produced. Search results are not
-    // part of the pre-run input packet and therefore cannot self-invalidate it.
-    market: marketCurrent ? products.market!.layerFingerprint : legacyMarketFingerprint,
-    seller: sellerLayerFingerprint(dossier, sellerEstablished),
-  };
   const quickFlip = quickFlipFrom(dossier);
   const phase = dealPhaseFor({
     pipelineStage: deps.readPipelineStage?.(dealCardId) ?? null,
     sellerEstablished,
     sellerPriceKnown: dossier.seller.askingPrice != null,
   });
+  const fingerprints = {
+    property: propertyFingerprint,
+    // A current Market read keeps the identity of its complete output,
+    // including the governed web evidence it produced. Search results are not
+    // part of the pre-run input packet and therefore cannot self-invalidate it.
+    market: marketCurrent ? products.market!.layerFingerprint : legacyMarketFingerprint,
+    seller: sellerLayerFingerprint(dossier, sellerEstablished, phase),
+  };
   const dealFingerprint = dealLayerFingerprint(fingerprints, quickFlip, phase, dealCardId);
   return {
     products,
@@ -395,6 +402,8 @@ function preContactSellerProduct(input: {
   layerFingerprint: string;
   dossierFp: string;
   generatedAt: string;
+  phase: DealPhase;
+  prior: SellerIntelligenceProduct | null;
 }): SellerIntelligenceProduct {
   return {
     contractVersion: INTELLIGENCE_STACK_VERSION,
@@ -404,20 +413,40 @@ function preContactSellerProduct(input: {
     layerFingerprint: input.layerFingerprint,
     dossierFingerprint: input.dossierFp,
     state: 'pre_contact',
-    score: null,
-    read: 'Unknown — pre-contact. No seller communication has been recorded for this deal yet, and motivation is never fabricated from ownership records.',
+    version: (input.prior?.version ?? 0) + 1,
+    phase: input.phase,
+    read: 'Pending — no meaningful seller communication has been recorded for this deal yet. Motivation, flexibility, negotiation posture, and transaction likelihood are honestly Unknown; nothing is inferred from ownership records.',
+    sellerTrajectory: 'Not established.',
+    materialChanges: [],
     motivation: null,
+    reasonForSelling: null,
     priceExpectation: null,
+    priceMovement: null,
+    priceFlexibility: null,
     timeline: null,
+    urgency: null,
     decisionMakers: null,
     objections: [],
+    concerns: [],
+    alternatives: null,
     negotiationPosture: null,
+    communicationStyle: null,
+    responsiveness: null,
+    followThrough: null,
+    termsFlexibility: null,
+    commitments: [],
     bestApproach: null,
+    transactionLikelihood: null,
+    whatMattersMostNow: null,
+    nextConversationObjective: null,
+    evidenceWeight: null,
     sellerReportedFacts: [],
     followUps: [],
     contradictions: [],
     unknowns: [],
     nextQuestion: null,
+    expertReview: '',
+    priorVersionGeneratedAt: input.prior?.generatedAt ?? null,
   };
 }
 
@@ -537,7 +566,7 @@ export async function runIntelligenceStack(
   const fingerprints = {
     property: propertyFingerprint,
     market: marketCurrent ? retained.market!.layerFingerprint : legacyMarketFingerprint,
-    seller: sellerLayerFingerprint(dossier, sellerEstablished),
+    seller: sellerLayerFingerprint(dossier, sellerEstablished, phase),
   };
   const guidance = activeOperatorGuidance(input.dealCardId);
   let dealFp = dealLayerFingerprint(fingerprints, quickFlip, phase, input.dealCardId);
@@ -621,6 +650,8 @@ export async function runIntelligenceStack(
       layerFingerprint: fingerprints.seller,
       dossierFp,
       generatedAt,
+      phase,
+      prior: retained.seller,
     });
   }
 
@@ -687,6 +718,10 @@ export async function runIntelligenceStack(
               passContext,
               envelope,
             ),
+          sellerReviewPrompt: (currentDossier) =>
+            sellerExpertReviewPrompt(currentDossier, retained.seller, passContext, envelope),
+          sellerExtractionPrompt: (expertReview, currentDossier) =>
+            sellerStructuredExtractionPrompt(currentDossier, expertReview, retained.seller, passContext, envelope),
           dealPrompt: (freshLayers, currentDossier, observations) =>
             specialistDealPrompt(currentDossier, observations, passContext, envelope, {
               freshLayers,
@@ -903,6 +938,7 @@ export async function runIntelligenceStack(
 
   if (refreshSeller && sellerEstablished) {
     if (!layers?.seller) return failed('The analyst response carried no seller layer.');
+    if (!run?.sellerExpertReview) return failed('The Seller specialist returned no free expert review before extraction.');
     sellerProduct = {
       contractVersion: INTELLIGENCE_STACK_VERSION,
       dealCardId: input.dealCardId,
@@ -911,20 +947,44 @@ export async function runIntelligenceStack(
       layerFingerprint: fingerprints.seller,
       dossierFingerprint: dossierFp,
       state: 'established',
-      score: layers.seller.score,
-      read: layers.seller.read ?? 'The analyst returned no seller read.',
+      // Prior reads are superseded, never overwritten: the snapshot history is
+      // the version chain and this ordinal orders it.
+      version: (retained.seller?.version ?? 0) + 1,
+      phase,
+      read: layers.seller.read ?? 'The analyst returned no current seller read.',
+      sellerTrajectory: layers.seller.sellerTrajectory,
+      materialChanges: layers.seller.materialChanges,
       motivation: layers.seller.motivation,
+      reasonForSelling: layers.seller.reasonForSelling,
       priceExpectation: layers.seller.priceExpectation,
+      priceMovement: layers.seller.priceMovement,
+      priceFlexibility: layers.seller.priceFlexibility,
       timeline: layers.seller.timeline,
+      urgency: layers.seller.urgency,
       decisionMakers: layers.seller.decisionMakers,
       objections: layers.seller.objections,
+      concerns: layers.seller.concerns,
+      alternatives: layers.seller.alternatives,
       negotiationPosture: layers.seller.negotiationPosture,
+      communicationStyle: layers.seller.communicationStyle,
+      responsiveness: layers.seller.responsiveness,
+      followThrough: layers.seller.followThrough,
+      termsFlexibility: layers.seller.termsFlexibility,
+      commitments: layers.seller.commitments,
       bestApproach: layers.seller.bestApproach,
+      transactionLikelihood: layers.seller.transactionLikelihood,
+      whatMattersMostNow: layers.seller.whatMattersMostNow,
+      nextConversationObjective: layers.seller.nextConversationObjective,
+      evidenceWeight: layers.seller.evidenceWeight,
       sellerReportedFacts: layers.seller.sellerReportedFacts,
       followUps: layers.seller.followUps,
       contradictions: layers.seller.contradictions,
       unknowns: layers.seller.unknowns,
       nextQuestion: layers.seller.nextQuestion,
+      // Stage A prose, verbatim and uncapped — the schema above is an
+      // extraction from it, never a bound on it.
+      expertReview: run.sellerExpertReview,
+      priorVersionGeneratedAt: retained.seller?.generatedAt ?? null,
     };
   }
   if (refreshSeller && sellerProduct) {
@@ -932,7 +992,7 @@ export async function runIntelligenceStack(
       dealCardId: input.dealCardId,
       snapshotType: SELLER_INTELLIGENCE_PRODUCT_TYPE,
       payload: sellerProduct,
-      completeness: { state: sellerProduct.state, reportedFacts: sellerProduct.sellerReportedFacts.length },
+      completeness: { state: sellerProduct.state, version: sellerProduct.version, reportedFacts: sellerProduct.sellerReportedFacts.length, materialChanges: sellerProduct.materialChanges.length, expertReview: sellerProduct.expertReview.length },
       changeReason: sellerProduct.state === 'pre_contact'
         ? 'Seller Intelligence recorded as pre-contact: honestly unknown.'
         : `Seller Intelligence read by ${runtimeFor('seller').agentProfile} on ${runtimeFor('seller').model}.`,
@@ -1001,7 +1061,9 @@ export async function runIntelligenceStack(
           source: marketProduct?.scoreSource ?? (canonicalScores.market != null ? 'canonical' : 'none'),
         },
         seller: {
-          score: sellerProduct?.score ?? null,
+          // The numerical Seller Score is removed; the field stays null for
+          // old-snapshot shape compatibility.
+          score: null,
           state: sellerProduct?.state ?? (sellerEstablished ? 'established' : 'pre_contact'),
         },
         deal: { score: null, label: null },

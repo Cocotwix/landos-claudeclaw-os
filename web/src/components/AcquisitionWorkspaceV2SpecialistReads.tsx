@@ -67,8 +67,22 @@ export interface MarketIntelligenceReadView {
 
 export interface SellerIntelligenceReadView {
   state?: string;
-  score?: number | null;
+  version?: number;
+  phase?: string;
   read?: string;
+  sellerTrajectory?: string | null;
+  materialChanges?: Array<{ dimension?: string; priorState?: string | null; currentState?: string; direction?: string | null; evidence?: string | null; whyItMatters?: string | null }>;
+  whatMattersMostNow?: string | null;
+  nextConversationObjective?: string | null;
+  transactionLikelihood?: string | null;
+  urgency?: string | null;
+  priceMovement?: string | null;
+  priceFlexibility?: string | null;
+  responsiveness?: string | null;
+  followThrough?: string | null;
+  termsFlexibility?: string | null;
+  evidenceWeight?: string | null;
+  expertReview?: string;
   motivation?: string | null;
   priceExpectation?: string | null;
   timeline?: string | null;
@@ -603,17 +617,20 @@ function SellerReadCard({ product, stale }: { product: SellerIntelligenceReadVie
     <article class="awv2-panel awv2-specialist" data-domain="action" data-testid="specialist-read-seller">
       <header class="awv2-specialist-head">
         <div class="awv2-dom-eyebrow" data-dom="action"><UserRound size={13} /> Seller Intelligence</div>
-        {established && <ScoreChip score={product?.score} quality="Workability" />}
+        {established && product?.version != null && <span class="awv2-specialist-version">Read v{product.version}</span>}
       </header>
       {!established ? (
         <p class="awv2-specialist-empty" data-testid="specialist-seller-precontact">
-          Unknown · pre-contact. No seller communication has been recorded for this deal yet.
-          Seller Intelligence reasons only over the real communication record — nothing is
-          inferred from ownership records.
+          Pending · pre-contact. No meaningful seller communication has been recorded for this
+          deal yet. Seller Intelligence reasons only over the real communication record — nothing
+          is inferred from ownership records.
         </p>
       ) : (
         <>
-          {product?.read && <p class="awv2-specialist-read">{product.read}</p>}
+          {product?.read && <p class="awv2-specialist-read" data-testid="seller-current-read"><b>Current seller read</b> {product.read}</p>}
+          {product?.sellerTrajectory && <p class="awv2-specialist-line" data-testid="seller-trajectory"><b>What changed</b> {product.sellerTrajectory}</p>}
+          {product?.whatMattersMostNow && <p class="awv2-specialist-line"><b>What matters most now</b> {product.whatMattersMostNow}</p>}
+          {product?.nextConversationObjective && <p class="awv2-specialist-line"><b>Next conversation</b> {product.nextConversationObjective}</p>}
           {product?.motivation && <p class="awv2-specialist-line"><b>Motivation</b> {product.motivation}</p>}
           {product?.priceExpectation && <p class="awv2-specialist-line"><b>Price</b> {product.priceExpectation}</p>}
           {product?.timeline && <p class="awv2-specialist-line"><b>Timing</b> {product.timeline}</p>}

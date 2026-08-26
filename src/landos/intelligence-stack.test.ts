@@ -135,9 +135,16 @@ const LAYERED_REPLY = {
     risks: ['Thin comp set'], exit_implications: ['Whole-tract exit is slow'], unknowns: [],
   },
   seller: {
-    score: 62, read: 'Motivated but price-anchored.', motivation: 'Relocation', price_expectation: 'About $140,000',
-    timeline: '90 days', decision_makers: 'Single owner', objections: ['Price'],
+    current_seller_read: 'Motivated but price-anchored.',
+    seller_trajectory: 'Motivation appears to have increased; asking price is unchanged.',
+    material_changes: [{ dimension: 'urgency', prior_state: 'unclear', current_state: 'elevated', direction: 'increased', evidence: 'Two seller-initiated follow-ups', why_it_matters: 'Certainty may now outrank price.' }],
+    motivation: 'Relocation', price_expectation: 'About $140,000',
+    timeline: '90 days', urgency: 'Elevated', decision_makers: 'Single owner', objections: ['Price'],
     negotiation_posture: 'Anchor low with evidence.', best_approach: 'Lead with certainty of close.',
+    transaction_likelihood: 'Likely if certainty is offered.',
+    what_matters_most_now: 'Closing certainty.',
+    next_conversation_objective: 'Test flexibility against a certain close.',
+    evidence_weight: 'Well supported',
     seller_reported_facts: [{ statement: 'Seller says septic perked in 2019', attribution: 'Seller call' }],
     follow_ups: ['Confirm deed names'],
   },
@@ -170,6 +177,7 @@ function fakeAnalyst(reply: Record<string, unknown> = LAYERED_REPLY) {
           marketExpertReview: 'A complete free expert market review that separates overall market quality from intact and transformed product fit. '.repeat(3)
             + '\nSOURCE LEDGER\n- Fairview planning | https://fairview-tn.org/planning | official_primary | Nearby phase approval.',
           propertyExpertReview: 'A complete free expert property review that understands the land: terrain, frontage, usable acreage continuity, configurations, and the controlling unknowns. '.repeat(3),
+          sellerExpertReview: 'A complete free expert seller review that reads the communication record chronologically, forms the current seller read, and compares it against the prior versioned read to explain the trajectory. '.repeat(3),
           observations: [],
           warnings: [],
           runtime: { engine: 'hermes', agentProfile: 'landos-acquisition-analyst', provider: 'openai-codex', model: 'gpt-5.6-sol', modelSource: 'default', durationMs: 5 },
@@ -221,8 +229,9 @@ describe('pre-call intelligence run', () => {
 
     const seller = result.products.seller as SellerIntelligenceProduct;
     expect(seller.state).toBe('pre_contact');
-    expect(seller.score).toBeNull();
-    expect(seller.read).toMatch(/Unknown — pre-contact/);
+    expect(seller.version).toBe(1);
+    expect(seller.sellerTrajectory).toBe('Not established.');
+    expect(seller.read).toMatch(/Pending — no meaningful seller communication/);
 
     const deal = result.products.deal as DealIntelligenceProduct;
     expect(deal.phase).toBe('pre_call');
@@ -390,7 +399,15 @@ describe('dependency-aware refresh', () => {
 
     const seller = result.products.seller as SellerIntelligenceProduct;
     expect(seller.state).toBe('established');
-    expect(seller.score).toBe(62);
+    expect(seller.read).toBe('Motivated but price-anchored.');
+    expect(seller.sellerTrajectory).toMatch(/Motivation appears to have increased/);
+    expect(seller.materialChanges[0]).toMatchObject({ dimension: 'urgency', direction: 'increased' });
+    expect(seller.whatMattersMostNow).toBe('Closing certainty.');
+    expect(seller.nextConversationObjective).toBe('Test flexibility against a certain close.');
+    expect(seller.transactionLikelihood).toBe('Likely if certainty is offered.');
+    expect(seller.expertReview).toContain('complete free expert seller review');
+    // The prior read (v1, pre-contact) is superseded, never overwritten.
+    expect(seller.version).toBe(2);
     expect(seller.sellerReportedFacts[0]).toMatchObject({ attribution: 'Seller call' });
 
     const deal = result.products.deal as DealIntelligenceProduct;
@@ -577,7 +594,7 @@ describe('specialist executor plan on the analyst seam', () => {
     // pre-contact seller product rides along as the retained current seller.
     const dealPrompt = plan!.dealPrompt({ property: { read: 'Fresh property read.' } }, dossier, []);
     expect(dealPrompt).toContain('Fresh property read.');
-    expect(dealPrompt).toContain('Unknown — pre-contact');
+    expect(dealPrompt).toContain('Pending — no meaningful seller communication');
   });
 
   it('attaches per-layer specialist runtimes to their products when the executor reports them', async () => {

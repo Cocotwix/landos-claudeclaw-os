@@ -276,6 +276,45 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         };
       };
 
+      // Seller Stage A/B mirrors the accepted Property pattern: a free expert
+      // review over the complete communication record first (natural prose,
+      // preserved verbatim), then a separate structured extraction over that
+      // exact review. The seller specialist never researches — it reasons over
+      // the persisted communication evidence only.
+      const runTwoStageSeller = async () => {
+        const profile = SPECIALIST_PROFILES.seller;
+        const t0 = now();
+        const review = await invoke(
+          specialistInvocationArgs({
+            profile,
+            prompt: plan.sellerReviewPrompt!(input.dossier, observations),
+            model,
+            toolsets: ANALYST_TOOLSETS,
+          }),
+          timeoutMs,
+        );
+        if (!review.trim() || review.trim().length < 200) {
+          throw new Error(`${profile} returned no substantive free expert review`);
+        }
+        const raw = await invoke(
+          specialistInvocationArgs({
+            profile,
+            prompt: plan.sellerExtractionPrompt!(review, input.dossier, observations),
+            model,
+            toolsets: ANALYST_TOOLSETS,
+          }),
+          timeoutMs,
+        );
+        const value = layerRecord(extractJsonObject(raw), 'seller');
+        if (!value) throw new Error(`${profile} returned no parsable seller extraction`);
+        return {
+          layer: 'seller' as const,
+          value,
+          review,
+          runtime: runtimeFor(profile, model, now() - t0),
+        };
+      };
+
       // Property and Seller may begin together. Market is sequenced after the
       // completed Property product because it evaluates Property's plausible
       // product configurations instead of guessing them from acreage bands.
@@ -285,13 +324,17 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
           : runStructuredLayer('property'))
         : null;
       const sellerTask = plan.layers.includes('seller')
-        ? runStructuredLayer('seller').then(
+        ? (plan.sellerReviewPrompt && plan.sellerExtractionPrompt
+          ? runTwoStageSeller()
+          : runStructuredLayer('seller')
+        ).then(
           (result) => ({ ok: true as const, result }),
           (error: unknown) => ({ ok: false as const, error }),
         )
         : null;
       let marketExpertReview: string | undefined;
       let propertyExpertReview: string | undefined;
+      let sellerExpertReview: string | undefined;
 
       if (propertyTask) {
         const result = await propertyTask;
@@ -345,6 +388,8 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         if (!outcome.ok) throw outcome.error;
         merged.seller = outcome.result.value;
         layerRuntimes.seller = outcome.result.runtime;
+        const sellerReview = (outcome.result as { review?: unknown }).review;
+        if (typeof sellerReview === 'string') sellerExpertReview = sellerReview;
       }
 
       if (plan.layers.includes('deal')) {
@@ -378,6 +423,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         layerRuntimes,
         ...(marketExpertReview !== undefined ? { marketExpertReview } : {}),
         ...(propertyExpertReview !== undefined ? { propertyExpertReview } : {}),
+        ...(sellerExpertReview !== undefined ? { sellerExpertReview } : {}),
       };
     },
   };
