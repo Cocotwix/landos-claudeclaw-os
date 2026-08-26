@@ -107,6 +107,11 @@ export interface PropertyIntelligenceProduct extends ProductBase {
   scoreSource: ScoreSource;
   /** The short human answer: is this actually a good parcel? */
   read: string;
+  /** CURRENT EXPERT READ: the specialist's own concise operator brief — a few
+   * short paragraphs of judgment formed from the complete evidence and full
+   * expert review. Never a truncation of expertReview and never a field
+   * recap. Optional because pre-upgrade snapshots do not carry it. */
+  currentExpertRead?: string | null;
   strengths: string[];
   constraints: Array<{ title: string; why: string | null; severity: ConstraintSeverity }>;
   potential: string[];
@@ -141,6 +146,11 @@ export interface MarketIntelligenceProduct extends ProductBase {
   quality: IntelligenceQuality | null;
   scoreSource: ScoreSource;
   read: string;
+  /** CURRENT EXPERT READ: the market specialist's concise operator brief — a
+   * few short paragraphs of judgment from the complete market evidence and
+   * full expert review, never a metric recap or a truncation. Optional
+   * because pre-upgrade snapshots do not carry it. */
+  currentExpertRead?: string | null;
   /** Value and liquidity are different — this is the liquidity answer. */
   liquidityRead: string | null;
   areaStory: string | null;
@@ -264,6 +274,11 @@ export interface SellerIntelligenceProduct extends ProductBase {
 export interface DealIntelligenceProduct extends AcquisitionIntelligenceResult {
   intelligenceVersion: typeof INTELLIGENCE_STACK_VERSION;
   phase: DealPhase;
+  /** CURRENT DEAL READ: the Deal Brain's concise executive brief synthesizing
+   * the current specialist products and deterministic economics — a few short
+   * paragraphs, never a repeat of the specialist reads. Optional because
+   * pre-upgrade snapshots do not carry it. */
+  currentDealRead?: string | null;
   scores: {
     property: { score: number | null; quality: IntelligenceQuality | null; source: ScoreSource };
     market: { score: number | null; quality: IntelligenceQuality | null; source: ScoreSource };
@@ -319,12 +334,12 @@ export interface IntelligencePassContext {
 }
 
 const LAYER_SCHEMAS: Record<Exclude<IntelligenceLayerId, 'deal'>, string> = {
-  property: '"property":{"score":0,"read":"","strengths":[],"constraints":[{"title":"","why":"","severity":"high|medium|low"}],"potential":[],"unusual":[],"externalities":[],"development_potential":"","configurations":[{"label":"","status":"physically_plausible|regulatorily_plausible|unresolved|not_supported","prerequisites":[]}],"conflicts":[{"subject":"","record_claim":"","grounded_visual":"","interpretation":"","recommended_verification":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}]}',
-  market: '"market":{"score":0,"read":"","overall_market_quality":{"grade":null,"read":""},"exit_product_fits":[{"product":"","grade":"A|B|C|D","expected_days":null,"confidence":"","read":""}],"liquidity_read":"","area_story":"","buyer_pool":"","best_signals":[],"risks":[],"exit_implications":[],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}],"web_evidence":[{"query":"","title":"","url":"https://...","source_type":"official_primary|primary|secondary|community","material_claim":"","evidence_snippet":"","confidence":""}]}',
+  property: '"property":{"score":0,"read":"","current_expert_read":"","strengths":[],"constraints":[{"title":"","why":"","severity":"high|medium|low"}],"potential":[],"unusual":[],"externalities":[],"development_potential":"","configurations":[{"label":"","status":"physically_plausible|regulatorily_plausible|unresolved|not_supported","prerequisites":[]}],"conflicts":[{"subject":"","record_claim":"","grounded_visual":"","interpretation":"","recommended_verification":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}]}',
+  market: '"market":{"score":0,"read":"","current_expert_read":"","overall_market_quality":{"grade":null,"read":""},"exit_product_fits":[{"product":"","grade":"A|B|C|D","expected_days":null,"confidence":"","read":""}],"liquidity_read":"","area_story":"","buyer_pool":"","best_signals":[],"risks":[],"exit_implications":[],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}],"web_evidence":[{"query":"","title":"","url":"https://...","source_type":"official_primary|primary|secondary|community","material_claim":"","evidence_snippet":"","confidence":""}]}',
   seller: '"seller":{"current_seller_read":"","seller_trajectory":"","material_changes":[{"dimension":"","prior_state":"","current_state":"","direction":"increased|decreased|improved|worsened|stable|new|resolved|unclear","evidence":"","why_it_matters":""}],"motivation":"","reason_for_selling":"","price_expectation":"","price_movement":"","price_flexibility":"","timeline":"","urgency":"","decision_makers":"","objections":[],"concerns":[],"alternatives":"","negotiation_posture":"","communication_style":"","responsiveness":"","follow_through":"","terms_flexibility":"","commitments":[],"transaction_likelihood":"","what_matters_most_now":"","best_approach":"","next_conversation_objective":"","seller_reported_facts":[{"statement":"","attribution":""}],"follow_ups":[],"contradictions":[{"subject":"","earlier":"","later":"","interpretation":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_question":"","evidence_weight":"Confirmed|Well supported|Likely|Possible|Unresolved"}',
 };
 
-const DEAL_SCHEMA = '"deal":{"deal_read":{"headline":"","judgment":"","confidence":"Confirmed|Well supported|Likely|Unresolved"},'
+const DEAL_SCHEMA = '"deal":{"deal_read":{"headline":"","judgment":"","confidence":"Confirmed|Well supported|Likely|Unresolved"},"current_deal_read":"",'
   + '"property_story":[],"market_story":[],'
   + '"opportunities":[{"title":"","why":"","what_would_confirm":""}],'
   + '"constraints":[{"title":"","why":"","severity":"high|medium|low"}],'
@@ -502,6 +517,8 @@ export function intelligenceStackPrompt(
       ? `Cite images only by these exact keys: ${visualKeys.join(', ')}.`
       : 'There are no image keys to cite.',
     '',
+    ...(context.layers.some((layer) => layer === 'property' || layer === 'market') ? [CURRENT_EXPERT_READ_RULE, ''] : []),
+    ...(context.layers.includes('deal') ? [CURRENT_DEAL_READ_RULE, ''] : []),
     `Reply with ONE JSON object and nothing else, containing exactly these top-level keys: ${context.layers.map((layer) => `"${layer}"`).join(', ')}.`,
     'Use exactly these shapes:',
     `{${schemas.join(',')}}`,
@@ -643,6 +660,32 @@ const NO_RESEARCH_RULE = [
 
 const SCORE_RULE = 'Every "score" field is YOUR integer judgment from 0 to 100 — replace the placeholder, never echo 0.';
 
+/** The Overview intelligence product. One doctrine string shared by every
+ *  path that can produce a specialist layer, so the executors cannot drift. */
+const CURRENT_EXPERT_READ_RULE = [
+  '"current_expert_read" is the CURRENT EXPERT READ — the intelligence product the operator sees first on the',
+  'deal Overview. It is NOT a summary of fields, NOT an excerpt or truncation of the expert review, and NOT a',
+  'shorter list of the same facts. Having weighed the COMPLETE evidence and your full expert reasoning, brief',
+  'the operator the way a very good senior specialist in this domain would after reviewing the entire file:',
+  'what actually matters right now, why it matters, what the evidence means for this deal, and the single most',
+  'decision-changing opportunity, problem, or unknown. Connect the evidence rather than enumerating it; leave',
+  'immaterial detail out. Write 2-4 short paragraphs separated by blank lines — no fixed word count, and',
+  'conciseness is subordinate to material completeness: include anything genuinely decision-changing, nothing',
+  'else. Keep FACT, SELLER-REPORTED, OBSERVATION, INTERPRETATION, HYPOTHESIS, and UNKNOWN distinctions honest',
+  'in the prose — an unresolved matter or unproven configuration must read as a hypothesis, never as fact.',
+].join('\n');
+
+const CURRENT_DEAL_READ_RULE = [
+  '"current_deal_read" is the CURRENT DEAL READ — the executive brief the operator sees on the deal Overview.',
+  'Taking the current specialist products, deterministic economics, strategies, documents, stage, and blockers',
+  'together, say what the operator should think about this deal right now: what it currently looks like, the',
+  'best current executable strategy, the highest-upside hypothesis, why it may work, what could kill it, what',
+  'matters most now, and what should happen next — but only the parts that are material and supported. Do NOT',
+  'repeat the Property and Market reads paragraph-for-paragraph; synthesize them. Write 2-4 short paragraphs',
+  'separated by blank lines — no fixed word count; conciseness is subordinate to material completeness. Keep',
+  'unresolved matters phrased as hypotheses or unknowns, never as facts.',
+].join('\n');
+
 function contextLines(context: IntelligencePassContext): string[] {
   return [
     context.readinessHeadline ? `Research readiness: ${context.readinessHeadline}.` : '',
@@ -765,6 +808,7 @@ export function specialistLayerPrompt(
     ...layerSections,
     ...contextLines(context),
     '',
+    ...(layer === 'seller' ? [] : [CURRENT_EXPERT_READ_RULE, '']),
     SCORE_RULE,
     '',
     `Reply with ONE JSON object and nothing else, containing exactly this top-level key: "${layer}".`,
@@ -851,6 +895,8 @@ export function propertyStructuredExtractionPrompt(
     'Extract Property Score as PROPERTY QUALITY only: usable land and its continuity, parcel shape, frontage and practical access, terrain and slope, utility position, environmental burden, development flexibility, externalities, physical marketability, and unresolved intrinsic Property risk. It is NOT the Market, Seller, or Deal score; never score market conditions, seller behavior, or the final investment judgment here.',
     'Preserve the strongest stable operator conclusions from the review: the concise thesis in read, what helps in strengths, what binds in constraints with honest severity, upside in potential, easy-to-miss findings in unusual, surrounding-use burdens in externalities, the development story in development_potential, each plausible configuration with its status and controlling prerequisites in configurations, record-vs-observation contradictions in conflicts with the ONE bounded verification each, evidence gaps in unknowns, and the next material Property actions in next_actions. Do not add a new conclusion merely to fill a field, and do not invent a configuration the review did not support.',
     'Keep observation-vs-fact discipline during extraction: a visual observation stays an observation; recommended verifications stay named, not performed.',
+    CURRENT_EXPERT_READ_RULE,
+    'For current_expert_read here: this one field is NOT extraction — it is your own fresh operator brief written from the complete expert review above, answering "what should the operator understand about this land itself right now?" It must stay consistent with the review and add no new fact.',
     '=== CANONICAL LANDOS SCORES ===',
     canonicalScoreLineFor('Property score', context.canonicalScores.property),
     '=== END SCORES ===',
@@ -933,6 +979,8 @@ export function marketStructuredExtractionPrompt(
     'Retain the A/B/C/D timing doctrine and separate Overall Market Quality from Subject / Exit Product Market Fit. Market Research acreage bands do not limit the product universe. For a hypothetical product not yet created, use grade null and expected_days null unless the review actually supports post-creation resale timing; do not use D as a substitute for entitlement duration. Do not privilege Quick Flip.',
     'Keep Market authority in lane during extraction. Market fields may state strong market implications, required positioning, or that hypothetical yield deserves no present market credit. They must not issue the final buy/pass decision, offer or walk-away price, or conditional acquisition instruction; Deal Brain owns that synthesis.',
     'For web_evidence, extract only sources that appear in the review SOURCE LEDGER and require an http(s) URL. Do not fabricate a citation. LandOS supplies retrieved_at after this call.',
+    CURRENT_EXPERT_READ_RULE,
+    'For current_expert_read here: this one field is NOT extraction — it is your own fresh operator brief written from the complete expert review above, answering "what should the operator understand about this market, and this property\'s fit inside it, right now?" Identify the market story of this particular deal. It must stay consistent with the review and add no new fact or source.',
     SCORE_RULE,
     '',
     'Reply with ONE JSON object and nothing else, containing exactly this top-level key: "market".',
@@ -1043,6 +1091,8 @@ export function specialistDealPrompt(
     visualKeys.length
       ? `Cite images only by these exact keys: ${visualKeys.join(', ')}.`
       : 'There are no image keys to cite.',
+    '',
+    CURRENT_DEAL_READ_RULE,
     '',
     'Reply with ONE JSON object and nothing else, containing exactly this top-level key: "deal".',
     'Use exactly this shape:',
@@ -1254,6 +1304,21 @@ function pick(source: Record<string, unknown>, ...names: string[]): unknown {
   return undefined;
 }
 
+/** Multi-paragraph prose, preserved without truncation: the Current Expert
+ *  Read is an editorial product — its length is the model's judgment, never a
+ *  parser cap. Whitespace is normalized within lines; paragraph breaks stay. */
+function asProse(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value
+    .replace(/\r\n/g, '\n')
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/[ \t]+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+  return normalized || null;
+}
+
 function asLine(value: unknown, max = 800): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (typeof value !== 'string') return null;
@@ -1332,6 +1397,7 @@ export interface ParsedVisualConflict {
 export interface ParsedPropertyLayer {
   score: number | null;
   read: string | null;
+  currentExpertRead: string | null;
   strengths: string[];
   constraints: Array<{ title: string; why: string | null; severity: ConstraintSeverity }>;
   potential: string[];
@@ -1351,6 +1417,7 @@ export interface ParsedPropertyLayer {
 export interface ParsedMarketLayer {
   score: number | null;
   read: string | null;
+  currentExpertRead: string | null;
   liquidityRead: string | null;
   areaStory: string | null;
   buyerPool: string | null;
@@ -1407,6 +1474,7 @@ export interface ParsedSellerLayer {
 
 export interface ParsedDealExtras {
   score: number | null;
+  currentDealRead: string | null;
   bestStrategy: { strategy: string; why: string | null } | null;
   highestUpsideHypothesis: { strategy: string; why: string | null; prerequisites: string[] } | null;
   additionalUpside: Array<{ title: string; why: string | null; worthIt: string | null }>;
@@ -1434,6 +1502,7 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
     ? {
       score: asScore(pick(propertySource, 'score')),
       read: asLine(pick(propertySource, 'read', 'propertyRead', 'summary'), 1_800),
+      currentExpertRead: asProse(pick(propertySource, 'currentExpertRead', 'currentRead')),
       strengths: asLines(pick(propertySource, 'strengths'), 8),
       constraints: asConstraints(pick(propertySource, 'constraints')),
       potential: asLines(pick(propertySource, 'potential', 'propertyPotential', 'upside'), 6),
@@ -1481,6 +1550,7 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
     ? {
       score: asScore(pick(marketSource, 'score')),
       read: asLine(pick(marketSource, 'read', 'marketRead', 'summary'), 1_800),
+      currentExpertRead: asProse(pick(marketSource, 'currentExpertRead', 'currentRead')),
       liquidityRead: asLine(pick(marketSource, 'liquidityRead', 'liquidity'), 800),
       areaStory: asLine(pick(marketSource, 'areaStory', 'growthStory', 'area'), 1_000),
       buyerPool: asLine(pick(marketSource, 'buyerPool', 'targetBuyer', 'likelyBuyerPool'), 600),
@@ -1621,6 +1691,7 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
   const dealExtras: ParsedDealExtras | null = dealRecord
     ? {
       score: asScore(pick(dealRecord, 'score', 'dealScore')),
+      currentDealRead: asProse(pick(dealRecord, 'currentDealRead', 'currentRead')),
       bestStrategy: isRecord(bestStrategySource)
         ? (() => {
           const strategy = asLine(pick(bestStrategySource, 'strategy', 'name', 'title'), 160);

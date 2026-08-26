@@ -34,6 +34,9 @@ export interface AcquisitionIntelligenceView {
     durationMs?: number;
   };
   dealRead?: { headline?: string; judgment?: string; confidence?: string };
+  /** Persisted CURRENT DEAL READ — the Deal Brain's concise executive brief
+   *  produced with the deal product. Absent on pre-upgrade snapshots. */
+  currentDealRead?: string | null;
   propertyStory?: string[];
   marketStory?: string[];
   opportunities?: Array<{ title?: string; why?: string | null; whatWouldConfirm?: string | null }>;

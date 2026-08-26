@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AcquisitionDossier } from './acquisition-intelligence-dossier.js';
 import {
   marketExpertReviewPrompt,
+  propertyStructuredExtractionPrompt,
   marketStructuredExtractionPrompt,
   parseIntelligenceLayers,
   type IntelligencePassContext,
@@ -117,5 +118,62 @@ describe('two-stage Market expert doctrine', () => {
     }));
     expect(parsed?.market?.overallMarketQuality.grade).toBe('B');
     expect(parsed?.market?.exitProductFits[0]).toMatchObject({ grade: null, expectedDays: null });
+  });
+});
+
+describe('current expert reads', () => {
+  it('parses multi-paragraph current reads verbatim with no truncation cap', () => {
+    const paragraphA = `The tract is physically stronger than the slope figure suggests. ${'Evidence detail. '.repeat(160)}`.trim();
+    const paragraphB = 'The main open question is septic feasibility, which controls the estate-lot hypothesis.';
+    const parsed = parseIntelligenceLayers(JSON.stringify({
+      property: { read: 'Short thesis.', current_expert_read: `${paragraphA}\n\n${paragraphB}` },
+      market: { read: 'Market thesis.', current_expert_read: 'Liquidity favors smaller products.\n\nThe intact tract is the slow path.' },
+      deal: { current_deal_read: 'Taken together, the deal currently hinges on basis.\n\nNext: the discovery call.', reads: {} },
+    }));
+    // Verbatim paragraphs, joined by blank lines — never sliced to a char cap.
+    expect(parsed?.property?.currentExpertRead).toBe(`${paragraphA}\n\n${paragraphB}`);
+    expect(parsed?.property?.currentExpertRead?.length).toBeGreaterThan(2_000);
+    expect(parsed?.market?.currentExpertRead).toContain('slow path');
+    expect(parsed?.dealExtras?.currentDealRead).toContain('discovery call');
+  });
+
+  it('keeps old snapshots compatible: a missing current read parses to null', () => {
+    const parsed = parseIntelligenceLayers(JSON.stringify({
+      property: { read: 'Legacy structured read.' },
+      market: { read: 'Legacy market read.' },
+      deal: { reads: {} },
+    }));
+    expect(parsed?.property?.currentExpertRead).toBeNull();
+    expect(parsed?.market?.currentExpertRead).toBeNull();
+    expect(parsed?.dealExtras?.currentDealRead).toBeNull();
+  });
+
+  it('instructs every specialist path to produce a genuine judgment read, never a truncation', () => {
+    const dossier = {
+      dealCardId: 89,
+      identity: { displayAddress: '0 Kingwood Blvd, Fairview, TN', apn: '042', county: 'Williamson', stateCode: 'TN', state: 'confirmed' },
+      acreage: { canonicalAcres: 51.11, source: 'Assessor', confidence: 'high', extentExplanation: null },
+      visuals: [],
+      seller: { sellerReportedFacts: [], communications: [], discovery: [] },
+      conflicts: [],
+      visualObservations: [],
+      market: {}, comps: {}, physical: {}, access: {}, subdivision: {}, utilities: {}, history: {}, valuation: {}, landUse: {},
+      coverage: { present: [], absent: [] },
+    } as unknown as AcquisitionDossier;
+    const context = {
+      phase: 'pre_call',
+      canonicalScores: { property: null, market: null, seller: null },
+      knownUnresolved: [],
+      guidance: [],
+    } as unknown as IntelligencePassContext;
+    const envelope = { dealCardId: 89, generatedAt: '2026-08-25T00:00:00.000Z', contextFingerprint: 'fp' };
+    const property = propertyStructuredExtractionPrompt(dossier, [], 'Review.', context, envelope);
+    const market = marketStructuredExtractionPrompt(dossier, { read: 'Property read.' }, 'Review.\n\nSOURCE LEDGER\n- NONE', context, envelope);
+    for (const prompt of [property, market]) {
+      expect(prompt).toContain('"current_expert_read" is the CURRENT EXPERT READ');
+      expect(prompt).toContain('NOT an excerpt or truncation of the expert review');
+      expect(prompt).toContain('2-4 short paragraphs');
+      expect(prompt).toContain('conciseness is subordinate to material completeness');
+    }
   });
 });

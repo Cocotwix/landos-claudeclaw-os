@@ -105,7 +105,16 @@ export function DealReadCard({
 
       {digest && (
         <>
-          {digest.judgment && <p class="awv2-ai-judgment">{digest.judgment}</p>}
+          {/* The persisted Current Deal Read is the Deal Brain's own brief and
+              supersedes the deterministic digest judgment when present.
+              Rendering never generates it. */}
+          {read?.currentDealRead
+            ? (
+              <div class="awv2-ai-judgment" data-testid="deal-current-read">
+                {read.currentDealRead.split(/\n{2,}/).map((paragraph) => <p>{paragraph}</p>)}
+              </div>
+            )
+            : digest.judgment && <p class="awv2-ai-judgment">{digest.judgment}</p>}
           {read?.bestCurrentStrategy?.strategy && (
             <p class="awv2-specialist-line" data-testid="best-current-executable-strategy"><b>Best Current Executable Strategy</b> {read.bestCurrentStrategy.strategy}{read.bestCurrentStrategy.why ? ` — ${read.bestCurrentStrategy.why}` : ''}</p>
           )}

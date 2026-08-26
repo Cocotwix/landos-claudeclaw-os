@@ -802,6 +802,7 @@ export async function runIntelligenceStack(
       quality: qualityForScore(score),
       scoreSource: canonicalScores.property != null ? 'canonical' : layers.property.score != null ? 'analyst' : 'none',
       read: normalizeStrategyTerms(layers.property.read ?? 'The analyst returned no property read.'),
+      currentExpertRead: layers.property.currentExpertRead,
       strengths: layers.property.strengths,
       constraints: layers.property.constraints,
       potential: layers.property.potential,
@@ -904,6 +905,7 @@ export async function runIntelligenceStack(
       quality: qualityForScore(score),
       scoreSource: layers.market.score != null ? 'analyst' : 'none',
       read: layers.market.read ?? 'The analyst returned no market read.',
+      currentExpertRead: layers.market.currentExpertRead,
       liquidityRead: layers.market.liquidityRead,
       areaStory: layers.market.areaStory,
       buyerPool: layers.market.buyerPool,
@@ -1056,6 +1058,7 @@ export async function runIntelligenceStack(
       ...base,
       intelligenceVersion: INTELLIGENCE_STACK_VERSION,
       phase,
+      currentDealRead: layers.dealExtras.currentDealRead,
       scores: {
         property: {
           score: propertyProduct?.score ?? canonicalScores.property,
