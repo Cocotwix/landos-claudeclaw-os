@@ -893,26 +893,41 @@ export function OverviewSection({
             ))}
           </div>
         )}
-        {/* The LandOS subject-boundary treatment. It isolates the red line the
-            retained LandPortal capture already contains and repaints THAT
-            SAME line as a green-white core inside a neon-green glow. No
-            geometry is read, derived, redrawn or researched here: this is a
-            color treatment of pixels that are already on the image. */}
+        {/* ── The LandOS subject-boundary treatment ────────────────────────
+            The retained LandPortal capture already draws the subject boundary.
+            This recolors THAT SAME LINE and nothing else. No geometry is read,
+            fetched, derived or redrawn.
+
+            Two isolations make it specific rather than "recolor everything red":
+
+            1. COLOR. The provider draws the subject outline in pure red
+               (~248,24,8) and neighbouring parcel lines in amber (~240,168,56).
+               Sampling the retained capture, R−G−B separates them by an order
+               of magnitude (0.85 vs 0.06), so a steep threshold on that channel
+               keeps the subject line and drops amber lines, labels and terrain.
+            2. SHAPE. The map pin is the same red as the boundary, but it is a
+               solid blob while the boundary is a thin stroke. An opening
+               (erode then dilate) survives only the blob, and subtracting it
+               leaves the stroke alone. ── */}
         <svg class="awv2-hero-filterdefs" aria-hidden="true" focusable="false"><defs>
           <filter id="landos-subject-neon" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
-            {/* Redness = how far red runs ahead of green and blue. */}
+            {/* Pure-red channel: amber neighbour lines score near zero here. */}
             <feColorMatrix type="matrix" in="SourceGraphic" result="redness" values="
               0 0 0 0 0
               0 0 0 0 0
               0 0 0 0 0
-              1.5 -0.75 -0.75 0 0" />
-            {/* Threshold it so only the drawn boundary survives, not warm terrain. */}
-            <feComponentTransfer in="redness" result="line">
-              <feFuncA type="linear" slope="7" intercept="-2.1" />
+              1 -1 -1 0 0" />
+            <feComponentTransfer in="redness" result="subject">
+              <feFuncA type="linear" slope="14" intercept="-7" />
             </feComponentTransfer>
+            {/* Opening keeps only solid blobs — the map pin — so it can be
+                removed from the mask and left in its original color. */}
+            <feMorphology in="subject" operator="erode" radius="3" result="eroded" />
+            <feMorphology in="eroded" operator="dilate" radius="7" result="blob" />
+            <feComposite in="subject" in2="blob" operator="out" result="line" />
             <feFlood flood-color="#39ff88" result="neon" />
             <feComposite in="neon" in2="line" operator="in" result="neonline" />
-            <feGaussianBlur in="neonline" stdDeviation="3.2" result="glow" />
+            <feGaussianBlur in="neonline" stdDeviation="3" result="glow" />
             <feFlood flood-color="#eafff1" result="corecolor" />
             <feComposite in="corecolor" in2="line" operator="in" result="core" />
             <feMerge>

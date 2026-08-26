@@ -124,7 +124,7 @@
 .awv2-hero-tabs button:hover { color: var(--awv2-bone); border-color: var(--awv2-bone-faint); }
 .awv2-hero-tabs button.on { border-color: #35e57d; background: rgba(53, 229, 125, .12); color: #7dffb2; box-shadow: 0 0 10px rgba(53, 229, 125, .25); }
 .awv2-hero-stage { position: relative; height: clamp(340px, 42vw, 460px); overflow: hidden; background: #0c100d; }
-.awv2-hero-stage > img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.awv2-hero-stage > img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; }
 .awv2-hero-stage .empty { display: grid; place-items: center; height: 100%; color: var(--awv2-bone-faint); }
 .awv2-hero-stage .count { position: absolute; right: 12px; bottom: 12px; padding: 5px 8px; border: 1px solid var(--awv2-line-strong); border-radius: 5px; background: rgba(12,15,13,.86); color: var(--awv2-bone-dim); font: 10px var(--awv2-mono); letter-spacing: .08em; text-transform: uppercase; }
 

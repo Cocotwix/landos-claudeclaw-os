@@ -52,6 +52,29 @@ describe('Deal Workspace header tabs', () => {
     expect(rail).toContain('font-size: 11.5px; font-weight: 800;');
   });
 
+  it('shows every retained visual complete instead of cropping it', () => {
+    const OVERVIEW_CSS2 = readFileSync('web/src/styles/workspace-v2-overview.css', 'utf8');
+    // Contain, centered: the whole capture is visible and its aspect ratio is
+    // preserved; a mismatched capture letterboxes rather than losing content.
+    expect(OVERVIEW_CSS2).toContain('.awv2-hero-stage > img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; }');
+    expect(OVERVIEW_CSS2).not.toMatch(/\.awv2-hero-stage > img \{[^}]*object-fit: cover/);
+  });
+
+  it('neons only the subject outline, not amber neighbours or the map pin', () => {
+    // Color isolation: pure red only. Amber neighbour lines score near zero on
+    // the R-G-B channel, so the steep threshold drops them.
+    expect(OVERVIEW).toContain('1 -1 -1 0 0');
+    expect(OVERVIEW).toContain('slope="14" intercept="-7"');
+    // Shape isolation: an opening isolates the solid map pin so it can be
+    // subtracted from the mask and left in its original color.
+    expect(OVERVIEW).toContain('operator="erode"');
+    // Measured against the retained capture: erode 3 / dilate 7 removes the
+    // pin completely (0 pin pixels left in the mask) while keeping the whole
+    // boundary (7,661 line pixels retained).
+    expect(OVERVIEW).toContain('operator="dilate" radius="7"');
+    expect(OVERVIEW).toContain('in="subject" in2="blob" operator="out"');
+  });
+
   it('recolors the retained subject outline instead of redrawing it', () => {
     expect(OVERVIEW).toContain('id="landos-subject-neon"');
     expect(OVERVIEW).toContain('flood-color="#39ff88"');
