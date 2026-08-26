@@ -299,12 +299,51 @@ export function computeNapkinEconomics(inputs: NapkinEconomicsInputs): NapkinEco
 /** Strategy-lane names that imply an uncertain physical transformation. */
 const SKETCH_PATTERN = /subdiv|split|develop|lot|entitle|rezone|land[- ]home|assemblage/i;
 
+/** One strategy as the Deal Brain acquisition-intelligence read assessed it.
+ *  This is the persisted `strategies[]` block of the current
+ *  `acquisition_intelligence_v1` snapshot — existing structured truth, never
+ *  a new model call. */
+export interface DealBrainStrategyFit {
+  strategy?: string;
+  /** 'strong' | 'possible' | 'weak' | 'rejected' as the read states it. */
+  fit?: string;
+  whyItFits?: string | null;
+  valueCreation?: string | null;
+  whatWeakensIt?: string | null;
+  whatToConfirm?: string | null;
+}
+
+/** Deal Brain fits that count as currently supported enough to project.
+ *  'weak' and 'rejected' never project. */
+const PROJECTABLE_FITS = new Set(['strong', 'possible', 'viable', 'conditional']);
+
+/** Deterministic semantic identity for deduplication across source objects.
+ *  Order matters: transformation words are checked before the generic
+ *  resale words they often co-occur with ("partition followed by resale"). */
+export function strategyIdentity(name: string): string {
+  const n = name.toLowerCase();
+  if (/novation|double[- ]close/.test(n)) return 'novation';
+  if (/major\s+subdiv|entitle|rezone/.test(n)) return 'major-subdivision';
+  if (/partition|split|two[- ]lot|minor\s+subdiv/.test(n)) return 'split-partition';
+  if (/land[- ]home|homesite|estate\s+home/.test(n)) return 'land-home';
+  if (/seller[- ]financ|owner[- ]financ|creative\s+terms/.test(n)) return 'seller-finance';
+  if (/phased|sell[- ]down|multiple\s+(estate\s+)?parcels/.test(n)) return 'phased-sell-down';
+  if (/intact|as[- ]is|patient|quick[- ]flip|resale|hold/.test(n)) return 'intact-resale';
+  return n.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
 export interface StrategyNapkinInputs {
   summary: Pick<CvSummary, 'fmv' | 'acquisitionLevels' | 'status' | 'statusLabel' | 'basisLabel'> | null | undefined;
   quickFlip: Pick<CvQuickFlip, 'technicalMaxOffer' | 'technicalMaxPctOfFmv' | 'totalNonAcquisitionCosts' | 'expectedMarketingDays'> | null | undefined;
   negotiation?: Pick<CvNegotiation, 'hardCeiling' | 'ceilingBasis'> | null;
   screenEconomics?: QuickFlipScreenEconomicsInput | null;
   strategies: OverviewStrategyView[] | null | undefined;
+  /** Persisted Deal Brain strategy assessments (current acquisition-
+   *  intelligence snapshot). Projected deterministically; never re-generated. */
+  dealBrainStrategies?: DealBrainStrategyFit[] | null;
+  /** Deal Brain's persisted best-current-strategy pick, used only to mark
+   *  provenance on the matching scenario. */
+  bestCurrentStrategy?: { strategy?: string; why?: string | null } | null;
 }
 
 /** Build napkin scenarios ONLY from what current deal evidence supports:
@@ -405,6 +444,80 @@ export function buildStrategyNapkins(inputs: StrategyNapkinInputs): NapkinStrate
       sellerFit: null,
       provenance: [`Strategy lane assessment: ${applicability}${s.risk ? ` — risk: ${s.risk}` : ''}`],
     });
+  }
+
+  // 3. Project the persisted Deal Brain strategy assessments. Only fits the
+  //    read currently supports project; weak and rejected never do. Dedup is
+  //    by semantic strategy identity: an already-present scenario (the as-is
+  //    napkin or a lane scenario) is ENRICHED with the Deal Brain evidence
+  //    rather than duplicated.
+  const identityOf = (sc: NapkinStrategyScenario): string =>
+    sc.id === 'as-is-resale' ? 'intact-resale' : strategyIdentity(sc.label);
+  const projectedIdentities = new Set<string>();
+  for (const s of inputs.dealBrainStrategies ?? []) {
+    if (!s?.strategy) continue;
+    const fit = (s.fit ?? '').toLowerCase();
+    if (!PROJECTABLE_FITS.has(fit)) continue;
+    const identity = strategyIdentity(s.strategy);
+    if (projectedIdentities.has(identity)) continue; // same concept twice in the source
+    projectedIdentities.add(identity);
+    const provenanceLine = `Deal Brain strategy assessment: "${s.strategy}" — fit ${fit}`;
+    const existing = scenarios.find((sc) => identityOf(sc) === identity);
+    if (existing) {
+      // Same semantic concept already sketched — carry the Deal Brain truth
+      // onto it instead of showing the concept twice.
+      if (!existing.propertyFit && s.whyItFits) existing.propertyFit = s.whyItFits;
+      if (s.whatToConfirm && !existing.controllingUnknowns.includes(s.whatToConfirm)) {
+        existing.controllingUnknowns.push(s.whatToConfirm);
+      }
+      if (s.whatWeakensIt && !existing.killConditions.includes(s.whatWeakensIt)) {
+        existing.killConditions.push(s.whatWeakensIt);
+      }
+      existing.provenance.push(provenanceLine);
+      continue;
+    }
+    const sketch = SKETCH_PATTERN.test(`${s.strategy} ${s.valueCreation ?? ''}`);
+    const unknowns = [
+      ...(s.whatToConfirm ? [s.whatToConfirm] : []),
+      ...(sketch ? ['Current supported yield / configuration is unresolved — no current product count exists.'] : []),
+    ];
+    scenarios.push({
+      id: `brain-${identity}`,
+      label: s.strategy,
+      strategyType: sketch ? 'transformation_hypothesis' : 'brain_assessed',
+      conceptSummary: s.valueCreation || `Deal Brain assessed "${s.strategy}" as ${fit}.`,
+      napkinSketch: sketch,
+      purchaseBasis: { value: null, kind: 'unknown', source: 'Basis for this concept not yet screened' },
+      roughProductCount: null,
+      roughExitValuePerProduct: null,
+      roughGrossRevenue: null,
+      roughMajorCosts: null,
+      roughHoldSellingAllowance: null,
+      roughTotalInvestment: null,
+      roughNetProfit: null,
+      roughRoiPct: null,
+      roughHoldPeriod: null,
+      confidence: 'incomplete',
+      economics: 'incomplete',
+      incompleteReason: unknowns[0]
+        ? `Concept appears worth further investigation, but economics remain incomplete until: ${unknowns[0]}`
+        : 'Economics remain incomplete — no supported revenue or cost inputs exist yet for this concept.',
+      keyAssumptions: [],
+      controllingUnknowns: unknowns,
+      killConditions: s.whatWeakensIt ? [s.whatWeakensIt] : [],
+      propertyFit: s.whyItFits ?? null,
+      marketFit: null,
+      sellerFit: null,
+      provenance: [provenanceLine],
+    });
+  }
+
+  // Mark Deal Brain's persisted best-current-strategy pick on the scenario it
+  // names, when one matches. Provenance only — no economics are invented.
+  const best = inputs.bestCurrentStrategy;
+  if (best?.strategy) {
+    const target = scenarios.find((sc) => identityOf(sc) === strategyIdentity(best.strategy!));
+    if (target) target.provenance.push('Deal Brain best current strategy');
   }
 
   return scenarios;

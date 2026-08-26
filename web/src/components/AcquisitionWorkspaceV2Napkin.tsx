@@ -13,7 +13,7 @@ import type { OverviewStrategyView } from './AcquisitionWorkspaceV2Overview';
 import {
   buildAcquisitionNapkin, buildStrategyNapkins,
   NAPKIN_KIND_LABEL,
-  type NapkinRange, type NapkinValue,
+  type DealBrainStrategyFit, type NapkinRange, type NapkinValue,
 } from '../lib/napkin-underwriting';
 
 import '../styles/workspace-v2-napkin.css';
@@ -38,7 +38,7 @@ function KindTag({ kind }: { kind: NapkinValue['kind'] }) {
   return <em class={`awv2-nk-kind k-${kind}`}>{NAPKIN_KIND_LABEL[kind]}</em>;
 }
 
-export function NapkinUnderwriting({ compsValuation, quickFlipScreen, askingPrice, strategies, openCompsValuation }: {
+export function NapkinUnderwriting({ compsValuation, quickFlipScreen, askingPrice, strategies, dealBrainStrategies, bestCurrentStrategy, openCompsValuation }: {
   compsValuation: CompsValuationViewData | null;
   /** The persisted quick-flip screen (intelligence stack product). Its
    *  economics.cashMao is the CANONICAL current supported acquisition
@@ -46,6 +46,10 @@ export function NapkinUnderwriting({ compsValuation, quickFlipScreen, askingPric
   quickFlipScreen: { economics?: { cashMao?: number | null; bindingConstraint?: string } | null } | null;
   askingPrice: number | null;
   strategies: OverviewStrategyView[] | null | undefined;
+  /** Persisted Deal Brain strategy assessments (current snapshot). Projected
+   *  deterministically into strategy napkins; rendering runs nothing. */
+  dealBrainStrategies?: DealBrainStrategyFit[] | null;
+  bestCurrentStrategy?: { strategy?: string; why?: string | null } | null;
   openCompsValuation: () => void;
 }) {
   const summary = compsValuation?.summary ?? null;
@@ -53,7 +57,7 @@ export function NapkinUnderwriting({ compsValuation, quickFlipScreen, askingPric
   const negotiation = compsValuation?.negotiation ?? null;
   const screenEconomics = quickFlipScreen?.economics ?? null;
   const napkin = buildAcquisitionNapkin(summary, quickFlip, askingPrice, negotiation, screenEconomics);
-  const scenarios = buildStrategyNapkins({ summary, quickFlip, negotiation, screenEconomics, strategies });
+  const scenarios = buildStrategyNapkins({ summary, quickFlip, negotiation, screenEconomics, strategies, dealBrainStrategies, bestCurrentStrategy });
 
   return (
     <section class="awv2-panel awv2-napkin" data-domain="strategy" aria-label="Napkin underwriting" data-testid="napkin-underwriting">

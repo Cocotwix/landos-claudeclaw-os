@@ -10853,6 +10853,19 @@ export function registerLandosRoutes(app: Hono): void {
     return c.json({
       ...state,
       products: operatorProducts,
+      // The persisted Deal Brain strategy assessments from the retained
+      // current snapshot, served even while the stack marks the deal read
+      // stale: the Napkin layer projects persisted strategy truth
+      // deterministically and labels provenance, and a strategy-fit list does
+      // not become untrue because later seller evidence superseded the read's
+      // freshness fingerprint. `stale` carries that honesty to the client.
+      persistedDealStrategies: state.products.deal
+        ? {
+          strategies: state.products.deal.strategies ?? [],
+          bestCurrentStrategy: state.products.deal.bestCurrentStrategy ?? null,
+          stale: state.stale.deal,
+        }
+        : null,
       guidance: dealBrain.thread,
       dealBrainFreshness: {
         staleReplyCount: dealBrain.staleReplies.length,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildAcquisitionNapkin, buildStrategyNapkins, computeNapkinEconomics,
+  buildAcquisitionNapkin, buildStrategyNapkins, computeNapkinEconomics, strategyIdentity,
 } from './napkin-underwriting';
 
 const SUPPORTED_SUMMARY = {
@@ -175,5 +175,95 @@ describe('strategy napkins', () => {
 
   it('with no FMV and no lane strategies, produces nothing rather than inventing scenarios', () => {
     expect(buildStrategyNapkins({ summary: null, quickFlip: null, strategies: null })).toEqual([]);
+  });
+});
+
+describe('deal-brain strategy projection', () => {
+  const quickFlip = {
+    technicalMaxOffer: 1_850_500, technicalMaxPctOfFmv: 60,
+    totalNonAcquisitionCosts: 520_000, expectedMarketingDays: 300,
+  };
+  const DEAL_89_BRAIN = [
+    {
+      strategy: 'Patient intact acquisition and resale', fit: 'possible',
+      whyItFits: 'Simplest product supported without an assumed lot yield.',
+      valueCreation: 'Buy at a basis compensating for long resale exposure.',
+      whatWeakensIt: 'Grade D liquidity and no seller price.',
+      whatToConfirm: 'Seller price and terms, legal Kingwood Boulevard access.',
+    },
+    {
+      strategy: 'Two-lot partition followed by resale', fit: 'possible',
+      whyItFits: 'Simplest realistic product transformation.',
+      valueCreation: 'Create two independently serviceable acreage products.',
+      whatWeakensIt: 'Only one 22.94–50-foot road throat.',
+      whatToConfirm: 'Survey-based lot geometry and recorded access rights.',
+    },
+    { strategy: 'Single estate homesite or land-home product', fit: 'weak' },
+    { strategy: 'Major subdivision or entitlement', fit: 'rejected', whatToConfirm: 'Former 119 lots covered a different assemblage.' },
+    { strategy: 'Base quick flip within 150 days', fit: 'rejected' },
+  ];
+
+  it('projects only supported fits: possible/strong project, weak and rejected never do', () => {
+    const scenarios = buildStrategyNapkins({
+      summary: SUPPORTED_SUMMARY, quickFlip, strategies: [],
+      screenEconomics: { cashMao: 1_850_500, bindingConstraint: 'sixty_pct_of_fmv' },
+      dealBrainStrategies: DEAL_89_BRAIN,
+    });
+    const ids = scenarios.map((s) => s.id);
+    expect(ids).toContain('as-is-resale');
+    expect(ids).toContain('brain-split-partition');
+    expect(ids.some((i) => /land-home|major-subdivision|novation|quick/.test(i))).toBe(false);
+    expect(scenarios).toHaveLength(2);
+  });
+
+  it('deduplicates by semantic identity: the intact deal-brain strategy enriches the as-is napkin instead of duplicating it', () => {
+    const scenarios = buildStrategyNapkins({
+      summary: SUPPORTED_SUMMARY, quickFlip, strategies: [],
+      screenEconomics: { cashMao: 1_850_500, bindingConstraint: 'sixty_pct_of_fmv' },
+      dealBrainStrategies: DEAL_89_BRAIN,
+      bestCurrentStrategy: { strategy: 'Pursue only a deeply discounted acquisition for patient intact resale.', why: null },
+    });
+    const intact = scenarios.filter((s) => /intact|as[- ]is/i.test(`${s.id} ${s.label}`));
+    expect(intact).toHaveLength(1);
+    expect(intact[0].id).toBe('as-is-resale');
+    expect(intact[0].economics).toBe('complete'); // acquisition napkin economics untouched
+    expect(intact[0].provenance.join(' ')).toMatch(/Deal Brain strategy assessment.*fit possible/);
+    expect(intact[0].provenance).toContain('Deal Brain best current strategy');
+    expect(intact[0].killConditions.join(' ')).toMatch(/Grade D liquidity/);
+  });
+
+  it('keeps the projected two-lot partition an incomplete napkin sketch with no fabricated economics', () => {
+    const scenarios = buildStrategyNapkins({
+      summary: SUPPORTED_SUMMARY, quickFlip, strategies: [], dealBrainStrategies: DEAL_89_BRAIN,
+    });
+    const split = scenarios.find((s) => s.id === 'brain-split-partition')!;
+    expect(split.napkinSketch).toBe(true);
+    expect(split.economics).toBe('incomplete');
+    expect(split.purchaseBasis.value).toBeNull();
+    expect(split.roughProductCount).toBeNull(); // no lot count invented — historic 119-lot plan never becomes yield
+    expect(split.roughGrossRevenue).toBeNull();
+    expect(split.roughNetProfit).toBeNull();
+    expect(split.controllingUnknowns.join(' ')).toMatch(/Survey-based lot geometry/);
+    expect(split.killConditions.join(' ')).toMatch(/road throat/);
+  });
+
+  it('collapses duplicate concepts across lane and deal-brain sources deterministically', () => {
+    const scenarios = buildStrategyNapkins({
+      summary: SUPPORTED_SUMMARY, quickFlip,
+      strategies: [{ strategy: 'Simple Split', applicability: 'conditional', valueCreationPath: 'Split into two lots' }],
+      dealBrainStrategies: DEAL_89_BRAIN,
+    });
+    const splits = scenarios.filter((s) => strategyIdentity(s.label) === 'split-partition');
+    expect(splits).toHaveLength(1);
+    expect(splits[0].id).toBe('lane-simple-split'); // richer existing scenario kept, enriched
+    expect(splits[0].provenance.join(' ')).toMatch(/Deal Brain strategy assessment/);
+  });
+
+  it('is deterministic and read-only over its inputs shape', () => {
+    const inputs = {
+      summary: SUPPORTED_SUMMARY, quickFlip, strategies: [] as never[],
+      dealBrainStrategies: DEAL_89_BRAIN,
+    };
+    expect(buildStrategyNapkins(inputs)).toEqual(buildStrategyNapkins(inputs));
   });
 });

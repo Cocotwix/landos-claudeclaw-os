@@ -63,6 +63,7 @@ import {
 } from '../components/AcquisitionWorkspaceV2SpecialistReads';
 import type { ResearchReadinessManifestView } from '../components/AcquisitionWorkspaceV2ResearchReadiness';
 import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
+import type { DealBrainStrategyFit } from '../lib/napkin-underwriting';
 import type { LandUseView, RetainedLandUseIntelligenceView } from '../components/AcquisitionWorkspaceV2LandUse';
 import '../styles/workspace-v2.css';
 // Loaded AFTER the base sheet: the comps identity + readability corrections
@@ -103,6 +104,14 @@ interface IntelligenceStackResp {
   quickFlip?: QuickFlipScreenView | null;
   phase?: string | null;
   sellerEstablished?: boolean;
+  /** Persisted Deal Brain strategy assessments from the retained current
+   *  snapshot — served even while the deal read is staleness-hidden, so the
+   *  deterministic napkin projection can consume persisted strategy truth. */
+  persistedDealStrategies?: {
+    strategies?: DealBrainStrategyFit[];
+    bestCurrentStrategy?: { strategy?: string; why?: string | null } | null;
+    stale?: boolean;
+  } | null;
   sufficiency?: { ok?: boolean; reason?: string | null } | null;
   guidance?: DealBrainThreadEntry[];
   runtime?: AcquisitionIntelligenceRuntimeStatus | null;
@@ -309,6 +318,10 @@ export function AcquisitionWorkspaceV2() {
   // opening or reloading a Deal Card must not start a reasoning run, so the
   // only thing that produces a new read is the operator pressing refresh.
   const [aiRead, setAiRead] = useState<DealIntelligenceView | null>(null);
+  // Persisted strategy truth for the napkin projection: survives the
+  // staleness-hiding of the operator deal read (the persisted snapshot is
+  // still the retained current strategy assessment).
+  const [persistedDealStrategies, setPersistedDealStrategies] = useState<IntelligenceStackResp['persistedDealStrategies']>(null);
   const [aiReadiness, setAiReadiness] = useState<AcquisitionIntelligenceReadiness | null>(null);
   const [aiRuntime, setAiRuntime] = useState<AcquisitionIntelligenceRuntimeStatus | null>(null);
   const [aiStale, setAiStale] = useState(false);
@@ -398,6 +411,7 @@ export function AcquisitionWorkspaceV2() {
         if (dead) return;
         setReadiness(rr?.manifest ?? null);
         setAiRead(ai?.products?.deal ?? null);
+        setPersistedDealStrategies(ai?.persistedDealStrategies ?? null);
         setAiReadiness(ai?.sufficiency ? { ok: ai.sufficiency.ok, reason: ai.sufficiency.reason } : null);
         setAiRuntime(ai?.runtime ?? null);
         setAiStale(ai?.stale?.deal === true);
@@ -443,6 +457,7 @@ export function AcquisitionWorkspaceV2() {
       if (ai.run && !ai.run.error) return;
       setAiRunning(false);
       setAiRead(ai.products?.deal ?? null);
+      setPersistedDealStrategies(ai.persistedDealStrategies ?? null);
       setAiStale(ai.stale?.deal === true);
       setAiError(ai.run?.error ?? (ai.products?.deal ? null : 'The analyst did not produce a read for this property.'));
       setIntelQuickFlip(ai.quickFlip ?? ai.products?.deal?.quickFlip ?? null);
@@ -853,6 +868,8 @@ export function AcquisitionWorkspaceV2() {
             quickFlipScreen={intelQuickFlip}
             askingPrice={askingPrice}
             strategies={snap.strategies ?? null}
+            dealBrainStrategies={persistedDealStrategies?.strategies ?? aiRead?.strategies ?? null}
+            bestCurrentStrategy={persistedDealStrategies?.bestCurrentStrategy ?? aiRead?.bestCurrentStrategy ?? null}
             openCompsValuation={openCompsValuation}
           />
         )}
