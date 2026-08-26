@@ -208,7 +208,7 @@ interface OverviewSectionProps {
     running: string[] | null;
     onBackfill: (itemIds?: string[]) => void;
   } | null;
-  onOpenSection: (slug: 'property-intelligence' | 'comps-valuation') => void;
+  onOpenSection: (slug: 'property-intelligence' | 'comps-valuation' | 'market') => void;
   formatUsd: (value: number) => string;
   /** The canonical retained LandPortal parcel fact sheet. */
   landPortalFacts?: ParcelFactSheetView | null;
@@ -737,6 +737,8 @@ export function OverviewSection({
           stale={specialistReads.stale}
           reconcile={specialistReads.reconcile ?? null}
           acreage={specialistReads.acreage ?? null}
+          onOpenPropertyPage={() => onOpenSection('property-intelligence')}
+          onOpenMarketPage={() => onOpenSection('market')}
         />
       )}
 

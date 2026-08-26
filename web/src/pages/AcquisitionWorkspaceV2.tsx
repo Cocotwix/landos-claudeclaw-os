@@ -50,14 +50,15 @@ import type {
   QuickFlipScreenView,
   SellerIntelligenceView,
 } from '../components/AcquisitionWorkspaceV2IntelligenceStack';
-import type {
-  AcreageExtentView,
-  IntelligenceReconciliationView,
-  MarketIntelligenceReadView,
-  PropertyIntelligenceReadView,
-  ReconcileEligibleView,
-  SellerIntelligenceReadView,
-  SpecialistStaleView,
+import {
+  PropertyReadCard, MarketReadCard,
+  type AcreageExtentView,
+  type IntelligenceReconciliationView,
+  type MarketIntelligenceReadView,
+  type PropertyIntelligenceReadView,
+  type ReconcileEligibleView,
+  type SellerIntelligenceReadView,
+  type SpecialistStaleView,
 } from '../components/AcquisitionWorkspaceV2SpecialistReads';
 import type { ResearchReadinessManifestView } from '../components/AcquisitionWorkspaceV2ResearchReadiness';
 import type { OfficialParcelGisView } from '../components/AcquisitionWorkspaceV2OfficialParcelGis';
@@ -704,8 +705,8 @@ export function AcquisitionWorkspaceV2() {
   // Plain text, not markup: JSX escapes strings, so an entity here renders
   // literally as "&amp;" to the operator.
   const openCompsValuationLabel = 'Open Comps & Valuation →';
-  const onOpenSection = (slug: 'property-intelligence' | 'comps-valuation') => {
-    const target = slug === 'comps-valuation' ? 'comps' : 'property';
+  const onOpenSection = (slug: 'property-intelligence' | 'comps-valuation' | 'market') => {
+    const target = slug === 'comps-valuation' ? 'comps' : slug === 'market' ? 'market' : 'property';
     const href = pageHref(window.location.pathname, window.location.search, target);
     if (href !== window.location.pathname + window.location.search) window.history.pushState(null, '', href);
     // Same contract as switchSection: BOTH the section and the inner view are
@@ -926,6 +927,14 @@ export function AcquisitionWorkspaceV2() {
         )}
         {page === 'property' && (
           <main class="awv2-main awv2-property-market" data-testid="property-page">
+            {/* The Property page owns the full Property Intelligence specialist
+                read, including the complete persisted expert review. Rendering
+                runs nothing — this is the same fetched product. */}
+            {propertyIntelRead && (
+              <section class="awv2-specialist-reads awv2-specialist-full" aria-label="Property Intelligence specialist read">
+                <PropertyReadCard product={propertyIntelRead} stale={specialistStale?.property === true} full />
+              </section>
+            )}
             {/* Comparable evidence handoff: counts only — the named records
                 live on the Comps & Valuation page. */}
             {compsValuation && (
@@ -958,6 +967,14 @@ export function AcquisitionWorkspaceV2() {
         )}
         {page === 'market' && (
           <main class="awv2-main awv2-property-market" data-testid="market-page">
+            {/* The Market page owns the full Market Intelligence specialist
+                read, including the complete persisted expert review. Rendering
+                runs nothing — this is the same fetched product. */}
+            {marketIntelRead && (
+              <section class="awv2-specialist-reads awv2-specialist-full" aria-label="Market Intelligence specialist read">
+                <MarketReadCard product={marketIntelRead} stale={specialistStale?.market === true} full />
+              </section>
+            )}
             <MarketIntelligencePanel market={market} aiRead={aiRead} />
           </main>
         )}

@@ -57,6 +57,9 @@ export interface MarketIntelligenceReadView {
   } | null;
   fastestBand?: string | null;
   overallMarketQuality?: { grade?: string | null; read?: string | null };
+  /** The persisted free-form expert market review (verbatim). Rendered only
+   * on the Market page; Overview keeps the concise read. */
+  expertReview?: string;
   exitProductFits?: Array<{ product?: string; grade?: string | null; expectedDays?: number | null; confidence?: string | null; read?: string | null }>;
   generatedAt?: string;
   runtime?: RuntimeView;
@@ -370,7 +373,10 @@ function AcreageExtentPanel({ acreage }: { acreage: AcreageExtentControls }) {
   );
 }
 
-function PropertyReadCard({ product, stale, reconcile, acreage }: {
+export function PropertyReadCard({ product, stale, reconcile, acreage, full = false, onOpenFull }: {
+  /** true only on the Property page — the owner of the full expert review. */
+  full?: boolean;
+  onOpenFull?: () => void;
   product: PropertyIntelligenceReadView | null;
   stale?: boolean;
   reconcile?: PropertyReconcileControls | null;
@@ -463,11 +469,19 @@ function PropertyReadCard({ product, stale, reconcile, acreage }: {
               ))}
             </div>
           )}
-          {product.expertReview && (
+          {full && product.expertReview && (
             <details class="awv2-specialist-details" data-testid="specialist-property-expert-review">
               <summary>Full expert review ({Math.round(product.expertReview.length / 1000)}k chars)</summary>
               {product.expertReview.split(/\n{2,}/).map((paragraph) => <p style="white-space:pre-wrap">{paragraph}</p>)}
             </details>
+          )}
+          {!full && product.expertReview && (
+            <p class="awv2-specialist-line" data-testid="specialist-property-expert-review-pointer">
+              <b>Full expert review</b> {Math.round(product.expertReview.length / 1000)}k chars —{' '}
+              {onOpenFull
+                ? <button type="button" class="awv2-specialist-openfull" onClick={onOpenFull}>read it on the Property page →</button>
+                : 'on the Property page.'}
+            </p>
           )}
           {lines(product.unusual, 3).length > 0 && (
             <div class="awv2-specialist-list"><b>Unusual</b>{lines(product.unusual, 3).map((item) => <span>• {item}</span>)}</div>
@@ -500,7 +514,13 @@ function PropertyReadCard({ product, stale, reconcile, acreage }: {
 
 const perAcre = (value: number): string => `$${Math.round(value).toLocaleString('en-US')}/ac`;
 
-function MarketReadCard({ product, stale }: { product: MarketIntelligenceReadView | null; stale?: boolean }) {
+export function MarketReadCard({ product, stale, full = false, onOpenFull }: {
+  product: MarketIntelligenceReadView | null;
+  stale?: boolean;
+  /** true only on the Market page — the owner of the full expert review. */
+  full?: boolean;
+  onOpenFull?: () => void;
+}) {
   const band = product?.subjectBand;
   return (
     <article class="awv2-panel awv2-specialist" data-domain="market" data-testid="specialist-read-market">
@@ -553,6 +573,20 @@ function MarketReadCard({ product, stale }: { product: MarketIntelligenceReadVie
             <div class="awv2-specialist-list"><b>Unknowns</b>
               {(product.unknowns ?? []).filter((item) => item.question).slice(0, 3).map((item) => <span>? {item.question}</span>)}
             </div>
+          )}
+          {full && product.expertReview && (
+            <details class="awv2-specialist-details" data-testid="specialist-market-expert-review">
+              <summary>Full expert review ({Math.round(product.expertReview.length / 1000)}k chars)</summary>
+              {product.expertReview.split(/\n{2,}/).map((paragraph) => <p style="white-space:pre-wrap">{paragraph}</p>)}
+            </details>
+          )}
+          {!full && product.expertReview && (
+            <p class="awv2-specialist-line" data-testid="specialist-market-expert-review-pointer">
+              <b>Full expert review</b> {Math.round(product.expertReview.length / 1000)}k chars —{' '}
+              {onOpenFull
+                ? <button type="button" class="awv2-specialist-openfull" onClick={onOpenFull}>read it on the Market page →</button>
+                : 'on the Market page.'}
+            </p>
           )}
         </>
       )}
@@ -619,18 +653,22 @@ function SellerReadCard({ product, stale }: { product: SellerIntelligenceReadVie
 
 // ── The strip ──────────────────────────────────────────────────────────────
 
-export function SpecialistReadsPanel({ property, market: marketProduct, seller, stale, reconcile, acreage }: {
+export function SpecialistReadsPanel({ property, market: marketProduct, seller, stale, reconcile, acreage, onOpenPropertyPage, onOpenMarketPage }: {
   property: PropertyIntelligenceReadView | null;
   market: MarketIntelligenceReadView | null;
   seller: SellerIntelligenceReadView | null;
   stale: SpecialistStaleView | null;
   reconcile?: PropertyReconcileControls | null;
   acreage?: AcreageExtentControls | null;
+  onOpenPropertyPage?: () => void;
+  onOpenMarketPage?: () => void;
 }) {
+  // Overview strip: concise current reads only. The full Property and Market
+  // expert reviews are owned by their deal pages (full={false} here).
   return (
     <section class="awv2-specialist-reads" aria-label="Specialist intelligence reads" data-testid="specialist-reads">
-      <PropertyReadCard product={property} stale={stale?.property === true && !!property} reconcile={reconcile} acreage={acreage} />
-      <MarketReadCard product={marketProduct} stale={stale?.market === true && !!marketProduct} />
+      <PropertyReadCard product={property} stale={stale?.property === true && !!property} reconcile={reconcile} acreage={acreage} full={false} onOpenFull={onOpenPropertyPage} />
+      <MarketReadCard product={marketProduct} stale={stale?.market === true && !!marketProduct} full={false} onOpenFull={onOpenMarketPage} />
       <SellerReadCard product={seller} stale={stale?.seller === true && !!seller} />
     </section>
   );

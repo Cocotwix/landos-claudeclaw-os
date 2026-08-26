@@ -1005,3 +1005,9 @@
   .awv2-deal-sidebar { position: static; display: flex; flex-wrap: wrap; min-height: 0; border-right: 0; border-bottom: 1px solid var(--awv2-line); }
   .awv2-deal-sidebar small { display: none; }
 }
+
+/* Full specialist read on its owning page: one full-width card, not the
+   three-across Overview strip. Overview's pointer link matches list text. */
+.awv2-specialist-full { display: block; }
+.awv2-specialist-full .awv2-specialist { max-width: none; }
+.awv2-specialist-openfull { padding: 0; border: 0; background: none; color: var(--awv2-brass-bright, #f1bd6b); cursor: pointer; font: inherit; text-decoration: underline; }
