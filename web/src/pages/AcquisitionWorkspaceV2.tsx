@@ -25,6 +25,10 @@ import {
   DEAL_PAGES, type WorkspaceV2Page,
 } from '@/lib/workspace-v2-nav';
 import {
+  createDealWorkspaceExecutor, registerDealWorkspaceBridge, unregisterDealWorkspaceBridge,
+  type DealWorkspaceBridge,
+} from '@/lib/deal-workspace-actions';
+import {
   PropertyIntelligenceSection, MarketIntelligencePanel,
   type MarketContextView, type PiCompRow,
   type SoilDetail, type BrowseruseResp, type StreetViewView, type VisualBuyerAnalysisView,
@@ -272,16 +276,39 @@ export function AcquisitionWorkspaceV2() {
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
-  const switchPage = (e: MouseEvent, slug: string) => {
-    // Let modified clicks (new tab, etc.) behave like normal links.
-    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    e.preventDefault();
+  // The ONE canonical client-side page navigation: sidebar clicks and the
+  // deal-workspace action layer both resolve here so the two paths can never
+  // evolve independently. pushState only — no reload, no refetch, no research.
+  const navigateToPage = (slug: string) => {
     const href = pageHref(window.location.pathname, window.location.search, slug);
     if (href !== window.location.pathname + window.location.search) {
       window.history.pushState(null, '', href);
     }
     syncNavFromUrl();
   };
+  const switchPage = (e: MouseEvent, slug: string) => {
+    // Let modified clicks (new tab, etc.) behave like normal links.
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    navigateToPage(slug);
+  };
+
+  // Deal Workspace Action Layer V1: expose the deterministic read/execute
+  // bridge for the future Deal Brain / Max control layer. Context is derived
+  // from the live URL so it is always sync-correct after navigation.
+  useEffect(() => {
+    if (dealId == null) return;
+    const getContext = () => ({ dealId, currentPage: readPage(window.location.search) });
+    const bridge: DealWorkspaceBridge = {
+      getContext,
+      executeAction: createDealWorkspaceExecutor({
+        getContext,
+        navigateToPage: (page) => navigateToPage(page),
+      }),
+    };
+    registerDealWorkspaceBridge(bridge);
+    return () => unregisterDealWorkspaceBridge(bridge);
+  }, [dealId]);
 
   // Remember the deal + section the operator is using so every "back to the
   // workspace" path this session restores this exact record and section.
