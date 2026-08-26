@@ -207,3 +207,18 @@
 .awv2-specialist-read { font-size: 14px; line-height: 1.62; color: var(--awv2-bone, #e7ede4); }
 .awv2-specialist-currentread { display: grid; gap: 10px; }
 .awv2-specialist-head .awv2-dom-eyebrow { font-size: 12px; font-weight: 700; letter-spacing: .12em; }
+
+/* ── Overview: wide human reads ────────────────────────────────────────────
+   Property and Market are senior-employee briefings, not report columns. On
+   the Overview command center each takes the full measure of the page so the
+   prose has a readable rhythm; Seller stays compact while it is pre-contact.
+   The full report blocks remain owned by the Property and Market pages. */
+.awv2-overview .awv2-specialist-reads { grid-template-columns: 1fr; gap: 14px; }
+.awv2-overview .awv2-specialist { gap: 11px; padding: 20px 24px; }
+.awv2-overview .awv2-specialist-head .awv2-dom-eyebrow { font-size: 11.5px; font-weight: 800; letter-spacing: .13em; }
+.awv2-overview .awv2-specialist-currentread { display: grid; gap: 13px; max-width: 108ch; padding-left: 14px; border-left: 2px solid color-mix(in srgb, currentcolor 22%, transparent); }
+.awv2-overview .awv2-specialist-currentread .awv2-specialist-read { font-size: 15px; line-height: 1.72; color: var(--awv2-bone, #e9f0e7); }
+.awv2-overview .awv2-specialist-read { font-size: 15px; line-height: 1.7; }
+.awv2-overview .awv2-specialist-line { font-size: 13px; line-height: 1.6; }
+.awv2-overview [data-testid="specialist-read-seller"] { padding: 14px 20px; }
+.awv2-overview [data-testid="specialist-read-seller"] .awv2-specialist-read { font-size: 13.5px; line-height: 1.55; }

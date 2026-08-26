@@ -166,3 +166,65 @@
 /* The strategy cell shows the short label; a verbose persisted strategy line
    clamps rather than growing the strip. */
 .awv2-econ-strip .strategy b { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; }
+
+/* ── Final operator pass ───────────────────────────────────────────────── */
+
+/* The top strategy is now a short canonical identity, never a sentence, so it
+   reads as one confident line instead of clamped prose. */
+.awv2-econ-strip .strategy b { -webkit-line-clamp: 2; font-size: 17px; }
+
+/* Strategy clarity: base case, leading value-add and higher-upside are three
+   distinct reads and must look like three distinct reads. */
+.awv2-strategy-clarity { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; overflow: hidden; margin-top: 10px; border: 1px solid var(--awv2-line-strong); border-radius: 12px; background: var(--awv2-line); }
+.awv2-strategy-clarity .cell { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 12px 18px; background: var(--awv2-panel); }
+.awv2-strategy-clarity .cell small { color: var(--awv2-bone-faint); font: 700 10px var(--awv2-mono); letter-spacing: .13em; text-transform: uppercase; }
+.awv2-strategy-clarity .cell b { overflow-wrap: anywhere; color: var(--awv2-bone); font-size: 15.5px; line-height: 1.3; }
+.awv2-strategy-clarity .cell i { color: var(--awv2-bone-faint); font-size: 11px; font-style: normal; }
+.awv2-strategy-clarity .cell.lead { background: color-mix(in srgb, var(--awv2-moss) 9%, var(--awv2-panel)); }
+.awv2-strategy-clarity .cell.lead b { color: var(--awv2-moss); }
+.awv2-strategy-clarity .screen { grid-column: 1 / -1; margin: 0; padding: 10px 18px; background: var(--awv2-panel); border-top: 1px solid var(--awv2-line); color: var(--awv2-bone-dim); font-size: 12.5px; line-height: 1.5; }
+
+/* Property fact rail: category headings read as headings at a glance. */
+.awv2-hero-rail { gap: 13px; width: min(360px, 40%); }
+.awv2-hero-rail .fact small { color: #d6ead1; font-size: 11.5px; font-weight: 800; letter-spacing: .12em; }
+.awv2-hero-rail .fact b { color: #ffffff; font-size: 15px; font-weight: 650; line-height: 1.4; }
+.awv2-hero-rail .fact i { color: #a9baa6; font-size: 11.5px; }
+
+/* Market — by acreage band: wide, scannable, the as-is band standing out. */
+.awv2-overview-bandtable { padding: 16px 18px 14px; border: 1px solid var(--awv2-line-strong); border-radius: 12px; background: var(--awv2-panel); }
+.awv2-bandtable-scroll { overflow-x: auto; }
+.awv2-overview-bandtable table { width: 100%; border-collapse: collapse; }
+.awv2-overview-bandtable thead th { padding: 8px 12px; border-bottom: 1px solid var(--awv2-line-strong); color: var(--awv2-bone-faint); font: 700 10.5px var(--awv2-mono); letter-spacing: .12em; text-align: left; text-transform: uppercase; white-space: nowrap; }
+.awv2-overview-bandtable tbody td { padding: 13px 12px; border-bottom: 1px solid var(--awv2-line); color: var(--awv2-bone); font: 600 15px var(--awv2-mono); white-space: nowrap; }
+.awv2-overview-bandtable tbody td:first-child { font: 600 14px inherit; font-family: inherit; white-space: normal; }
+.awv2-overview-bandtable tbody td b { font-weight: 700; }
+.awv2-overview-bandtable tbody td em { display: block; margin-top: 3px; color: var(--awv2-moss); font: 700 9.5px var(--awv2-mono); font-style: normal; letter-spacing: .12em; text-transform: uppercase; }
+.awv2-overview-bandtable tbody td em.target { color: var(--awv2-brass-bright); }
+.awv2-overview-bandtable tbody tr[data-subject="true"] { background: color-mix(in srgb, var(--awv2-moss) 12%, transparent); }
+.awv2-overview-bandtable tbody tr[data-subject="true"] td { color: #f4f8f1; box-shadow: inset 3px 0 0 var(--awv2-moss); }
+.awv2-overview-bandtable tbody tr[data-target="true"] td { box-shadow: inset 3px 0 0 var(--awv2-brass); }
+.awv2-bandtable-note { margin: 10px 0 0; color: var(--awv2-bone-dim); font-size: 13px; line-height: 1.55; }
+.awv2-bandtable-note.read { color: var(--awv2-bone); }
+
+/* Research & system status: the system controls close the page. */
+.awv2-system-status { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--awv2-line); }
+.awv2-system-status-title { margin-bottom: 9px; color: var(--awv2-bone-faint); font: 700 10px var(--awv2-mono); letter-spacing: .14em; text-transform: uppercase; }
+.awv2-system-status .awv2-runstatus-slot { opacity: .92; }
+
+/* Compact research readiness: the count and the decision-changing items only. */
+.awv2-rr-strip.compact { max-height: none; }
+
+@media (max-width: 1100px) {
+  .awv2-strategy-clarity { grid-template-columns: 1fr; }
+}
+
+/* ── Overview command center: one column, DOM order is page order ──────────
+   The Overview used a twelve-column map with an explicit grid-row per section.
+   Any child without an assignment fell into a single 1/12 column and rendered
+   as a stripe of orphaned vertical text down the page, and every reorder had
+   to re-number the whole map by hand. On the command center the sections are
+   full-width bands read top to bottom, so the container states that once and
+   the source order is the operator's order. The Property, Market and Strategy
+   pages keep their multi-column map. */
+.awv2-overview[data-page-filter="overview"] { grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; }
+.awv2-overview[data-page-filter="overview"] > * { grid-column: 1 / -1 !important; grid-row: auto !important; }

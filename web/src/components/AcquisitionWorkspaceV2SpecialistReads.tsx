@@ -499,9 +499,12 @@ export function PropertyReadCard({ product, stale, reconcile, acreage, full = fa
               ))}
             </div>
           )}
-          {(() => {
+          {full && (() => {
             // Grounded visual/record conflicts lead: a record claim the retained
             // imagery disputes is the finding the operator must not scroll past.
+            // Conflicts, the official-record reconciliation controls and the
+            // acreage-extent record are Property-page report detail: the
+            // Overview shows the current expert read and hands off.
             const conflicts = (product.conflicts ?? []).filter((item) => item.subject || item.statement);
             const grounded = conflicts.filter((item) => /grounded visual/i.test(item.statement ?? ''));
             const rest = conflicts.filter((item) => !grounded.includes(item));
@@ -600,7 +603,7 @@ export function PropertyReadCard({ product, stale, reconcile, acreage, full = fa
           )}
         </>
       )}
-      {acreage && <AcreageExtentPanel acreage={acreage} />}
+      {full && acreage && <AcreageExtentPanel acreage={acreage} />}
       <ReadFooter generatedAt={product?.generatedAt} runtime={product?.runtime} stale={stale} />
     </article>
   );

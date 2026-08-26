@@ -94,7 +94,7 @@ const shortDate = (iso: string | null): string | null => {
     : at.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-export function ResearchReadinessStrip({ manifest, loading, error, running, onBackfill }: Props) {
+export function ResearchReadinessStrip({ manifest, loading, error, running, onBackfill, compact = false }: Props & { compact?: boolean }) {
   const [expanded, setExpanded] = useState(false);
 
   if (loading && !manifest) {
@@ -156,9 +156,15 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
         </div>
       </header>
 
-      {/* The strip itself: one chip per checklist item, color-coded. */}
-      <ul class="awv2-rr-strip">
-        {manifest.items.map((item) => (
+      {/* The strip itself: one chip per checklist item, color-coded. On the
+          Overview the strip is COMPACT — only the items that actually change a
+          decision (blocking, or an unresolved/blocked status) are chipped; the
+          full checklist stays one control away in Research & system status. */}
+      <ul class={`awv2-rr-strip${compact ? ' compact' : ''}`}>
+        {(compact
+          ? manifest.items.filter((item) => item.blocksIntelligence || item.status === 'red' || item.status === 'yellow').slice(0, 6)
+          : manifest.items
+        ).map((item) => (
           <li
             key={item.id}
             class={`awv2-rr-chip s-${item.status}${item.blocksIntelligence ? ' blocking' : ''}`}
@@ -170,7 +176,7 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
         ))}
       </ul>
 
-      <div class="awv2-rr-actions">
+      {!compact && <div class="awv2-rr-actions">
         <button
           type="button"
           class="awv2-rr-backfill"
@@ -192,10 +198,10 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
           One operator projection over all required property research. Not Required is excluded from the denominator.
           Reading this card runs no research. Backfill runs only blocked items a registered capability owns.
         </span>
-      </div>
+      </div>}
       {error && <p class="awv2-rr-error">{error}</p>}
 
-      {expanded && (
+      {!compact && expanded && (
         <div class="awv2-rr-detail">
           {GROUP_ORDER.map((key) => {
             const group = groups[key];

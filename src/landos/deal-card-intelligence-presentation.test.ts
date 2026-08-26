@@ -99,7 +99,7 @@ describe('Page 1 — duplication with the Deal Read is reduced', () => {
   it('keeps the useful property overview intact', () => {
     for (const kept of [
       'Average slope', 'Buildability', 'Wetlands', 'FEMA flood',
-      'Road access', 'Property score', 'Risk signals', 'Operator actions',
+      'Road access', 'Risk signals', 'Operator actions',
       'Assessment, tax &amp; planning history',
     ]) {
       expect(OVERVIEW_SRC).toContain(kept);

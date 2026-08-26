@@ -915,12 +915,6 @@ export function AcquisitionWorkspaceV2() {
         </nav>
 
         <div class="awv2-col">
-        {/* Research run status. Rendered outside the page switch because
-            "is research still gathering, and what is it retrieving right now?"
-            is a question about the lead, not about the page being viewed. */}
-        <div class="awv2-runstatus-slot">
-          <PropertyIntelligenceRunStatus dealId={dealId} onRunSettled={() => setReloadNonce((n) => n + 1)} />
-        </div>
         {/* Strategy & Underwriting opens with the deterministic Napkin
             Underwriting screen: Acquisition Napkin on the canonical supported
             FMV, then Strategy Napkins. Rendering runs no model or research. */}
@@ -945,6 +939,7 @@ export function AcquisitionWorkspaceV2() {
             heroVisuals={heroVisuals}
             subjectPolygon={subjectPolygon}
             topStrategy={persistedDealStrategies?.bestCurrentStrategy?.strategy ?? aiRead?.bestCurrentStrategy?.strategy ?? null}
+            dealStrategies={persistedDealStrategies?.strategies ?? aiRead?.strategies ?? null}
             visualCount={visualCount}
             seller={seller}
             askingPrice={askingPrice}
@@ -1027,7 +1022,30 @@ export function AcquisitionWorkspaceV2() {
                 runs nothing — this is the same fetched product. */}
             {propertyIntelRead && (
               <section class="awv2-specialist-reads awv2-specialist-full" aria-label="Property Intelligence specialist read">
-                <PropertyReadCard product={propertyIntelRead} stale={specialistStale?.property === true} full />
+                {/* The Property page owns the conflict wall, the official-record
+                    reconciliation controls and the acreage-extent record that
+                    the Overview no longer prints. They are passed here, not
+                    dropped. */}
+                <PropertyReadCard
+                  product={propertyIntelRead}
+                  stale={specialistStale?.property === true}
+                  full
+                  reconcile={{
+                    record: reconciliation,
+                    eligible: reconcileEligible,
+                    running: reconcileRunning,
+                    error: reconcileError,
+                    onReconcile: runIntelligenceReconcile,
+                  }}
+                  acreage={{
+                    record: acreageExtent,
+                    running: acreageRunning,
+                    error: acreageError,
+                    onReconcile: runAcreageReconcile,
+                    resolvingDependents: acreageResolvingDependents,
+                    onResolveDependents: runAcreageDependentResolve,
+                  }}
+                />
               </section>
             )}
             {/* Comparable evidence handoff: counts only — the named records
@@ -1201,6 +1219,18 @@ export function AcquisitionWorkspaceV2() {
             </section>
           </main>
         )}
+
+        {/* ── Research & system status. These are controls over the research
+            SYSTEM, not the deal, so they close the page instead of consuming
+            the premium space above the property. Behaviour is unchanged: the
+            operator can still inspect lanes, refresh resolution and re-run
+            research from here. ── */}
+        <section class="awv2-system-status" aria-label="Research and system status" data-testid="research-system-status">
+          <div class="awv2-system-status-title">Research &amp; system status</div>
+          <div class="awv2-runstatus-slot">
+            <PropertyIntelligenceRunStatus dealId={dealId} onRunSettled={() => setReloadNonce((n) => n + 1)} />
+          </div>
+        </section>
         </div>
       </div>
     </div>

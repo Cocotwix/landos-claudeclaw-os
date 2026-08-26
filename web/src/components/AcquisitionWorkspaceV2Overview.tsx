@@ -195,6 +195,9 @@ interface OverviewSectionProps {
   subjectPolygon?: LatLng[] | null;
   /** The persisted best current executable strategy label. */
   topStrategy?: string | null;
+  /** The persisted structured strategy candidates and their fit, as the
+   *  strategy lane wrote them. Overview reads them; it never invents one. */
+  dealStrategies?: Array<{ strategy?: string | null; fit?: string | null }> | null;
   visualCount: number;
   seller: { name?: string; phone?: string; email?: string } | null;
   askingPrice: number | null;
@@ -292,24 +295,44 @@ const structureLabel = (type: string | null | undefined, improved: boolean): str
   return type.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 };
 
-function ScoreCard({ view }: { view?: OverviewScoreView }) {
-  const score = view?.score ?? null;
-  const tone = score == null ? 'pending' : score < 50 ? 'weak' : score < 70 ? 'moderate' : 'strong';
-  return (
-    <section class="awv2-overview-score" aria-label="Property score">
-      <div class="awv2-overview-score-number">
-        <span class={tone}>{score ?? 'Pending'}</span>
-        <small>{score == null ? 'Property score' : `${view?.rating || 'Unrated'} property score`}</small>
-      </div>
-      <div class="awv2-overview-score-drivers">
-        <div><b>Positives</b>{(view?.strongestPositiveFactors?.length ? view.strongestPositiveFactors : ['No positive driver retained yet']).slice(0, 2).map((item) => <span class="positive">+ {item}</span>)}</div>
-        <div><b>Risks</b>{(view?.mainDeductions?.length ? view.mainDeductions : ['No scored negative driver retained']).slice(0, 2).map((item) => <span class="negative">− {item}</span>)}</div>
-        <div><b>Could change</b>{(view?.materiallyChangeWith?.length ? view.materiallyChangeWith : ['No additional score driver retained']).slice(0, 2).map((item) => <span>· {item}</span>)}</div>
-      </div>
-      {view?.explanation && <details class="awv2-overview-details"><summary>Score detail</summary><p>{view.explanation}</p></details>}
-    </section>
-  );
-}
+/**
+ * Strategy semantics, deterministic and evidence-bound.
+ *
+ * A structured strategy candidate's own fit decides whether it is supported.
+ * Nothing here invents a strategy, a yield, or a lot size: the candidates are
+ * exactly the ones the strategy lane persisted for this subject.
+ */
+const SUPPORTED_STRATEGY_FIT = /^(viable|possible|likely|conditional)$/i;
+/** A product transformation: the parcel is sold as something other than itself. */
+const VALUE_ADD_STRATEGY = /partition|subdivi|split|lot|entitle|rezon|develop|parcel out/i;
+/** The aggressive end of that: a full development or entitlement thesis. */
+const MAJOR_UPSIDE_STRATEGY = /major subdivi|entitlement|development|master plan/i;
+/** Above this the Overview must show that transformation was actually screened
+ *  before intact resale is presented as the value-maximizing exit. */
+const LARGE_ACREAGE_SCREEN_ACRES = 20;
+
+/**
+ * A short canonical strategy IDENTITY from the structured candidate name.
+ * Never a sentence, never model-shortened: connectors are trimmed and the
+ * remaining identity is title-cased. A value that reads as prose rather than a
+ * strategy name (a Deal Brain instruction sentence, for instance) is refused.
+ */
+const shortStrategyLabel = (raw: string | null | undefined): string | null => {
+  const text = (raw ?? '').trim();
+  if (!text) return null;
+  // An instruction sentence is not a strategy identity.
+  if (/[.!?]/.test(text.slice(0, -1)) || text.split(/\s+/).length > 8) return null;
+  const base = text
+    .replace(/\s*(?:,|—|-)?\s*(?:followed by|then|for)\s+.*$/i, '')
+    .replace(/\s+and\s+resale$/i, '')
+    .replace(/[.]+$/, '')
+    .trim();
+  if (!base) return null;
+  const words = base.split(/\s+/).slice(0, 4);
+  return words
+    .map((word) => (/^(?:a|an|of|or|to|by|the)$/i.test(word) ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(' ');
+};
 
 /**
  * One exit, read in four lines: fit, why it fits, the main blocker, the next
@@ -407,6 +430,7 @@ export function OverviewSection({
   heroVisuals,
   subjectPolygon,
   topStrategy,
+  dealStrategies,
   visualCount,
   seller,
   askingPrice,
@@ -502,11 +526,12 @@ export function OverviewSection({
     record: MarketContextRecordView | null | undefined,
     label: string,
     isSubject: boolean,
-  ): { label: string; pricePerAcre: string; dom: string; sellThrough: string; monthsSupply: string; sold: string; isSubject: boolean } | null => {
+  ): { label: string; band: string | null; pricePerAcre: string; dom: string; sellThrough: string; monthsSupply: string; sold: string; isSubject: boolean } | null => {
     const metrics = record?.available ? record.metrics : null;
     if (!metrics) return null;
     return {
       label: record?.acreageBandLabel || label,
+      band: record?.acreageBand ?? null,
       pricePerAcre: metrics.medianPricePerAcre != null ? usd(metrics.medianPricePerAcre) : '—',
       dom: metrics.medianDaysOnMarket != null ? `${Math.round(metrics.medianDaysOnMarket)} d` : '—',
       sellThrough: metrics.sellThroughRate != null ? `${Math.round(metrics.sellThroughRate)}%` : '—',
@@ -724,10 +749,74 @@ export function OverviewSection({
     ? wholePropertyValue
     : cvSummary?.fmv?.central ?? null;
   const econLevels = cvSummary?.acquisitionLevels ?? null;
-  const stripStrategy = topStrategy
-    || developmentIntelligence?.recommendation?.strategy
-    || recommendation?.preferredStrategy
+
+  // ── Strategy semantics ────────────────────────────────────────────────
+  // BASE CASE, LEADING VALUE-ADD and HIGHER-UPSIDE HYPOTHESIS are three
+  // different things and the Overview had been collapsing them into one
+  // contradictory label. Each is resolved from the persisted structured
+  // candidates and their own stated fit; none is invented, and a candidate the
+  // lane rejected never becomes a hypothesis the operator is shown.
+  const strategyCandidates = (dealStrategies ?? [])
+    .filter((item): item is { strategy: string; fit?: string | null } => !!item?.strategy?.trim());
+  const supportedCandidates = strategyCandidates.filter((item) => SUPPORTED_STRATEGY_FIT.test((item.fit ?? '').trim()));
+  const baseCaseCandidate = supportedCandidates.find((item) => !VALUE_ADD_STRATEGY.test(item.strategy)) ?? null;
+  const valueAddCandidate = supportedCandidates
+    .find((item) => VALUE_ADD_STRATEGY.test(item.strategy) && !MAJOR_UPSIDE_STRATEGY.test(item.strategy)) ?? null;
+  const higherUpsideCandidate = supportedCandidates.find((item) => MAJOR_UPSIDE_STRATEGY.test(item.strategy)) ?? null;
+  const baseCaseLabel = shortStrategyLabel(baseCaseCandidate?.strategy) ?? null;
+  const valueAddLabel = shortStrategyLabel(valueAddCandidate?.strategy) ?? null;
+  const higherUpsideLabel = shortStrategyLabel(higherUpsideCandidate?.strategy) ?? null;
+  // A supported value-add product leads when one exists; otherwise the base
+  // case does. The persisted top-strategy field is used only when it is an
+  // actual strategy identity — never when it is a Deal Brain instruction.
+  const stripStrategy = valueAddLabel
+    || baseCaseLabel
+    || shortStrategyLabel(topStrategy)
+    || shortStrategyLabel(developmentIntelligence?.recommendation?.strategy)
+    || shortStrategyLabel(recommendation?.preferredStrategy)
     || null;
+  const stripStrategyBasis = valueAddLabel
+    ? 'Leading value-add'
+    : baseCaseLabel ? 'Base case' : stripStrategy ? 'Best current executable' : null;
+  // Large-acreage screen: a big tract must be shown to have had product
+  // transformation actually evaluated before intact resale reads as the
+  // value-maximizing exit. It never asserts that a split works.
+  const largeAcreage = (headingAcres ?? 0) >= LARGE_ACREAGE_SCREEN_ACRES;
+  const largeAcreageScreen = !largeAcreage
+    ? null
+    : valueAddLabel
+      ? `Large-acreage screen: a product transformation (${valueAddLabel}) is currently supported and leads the read. It is not proven; confirm it before pricing it.`
+      : strategyCandidates.some((item) => VALUE_ADD_STRATEGY.test(item.strategy))
+        ? 'Large-acreage screen: product transformation was evaluated and no split or partition is currently supported, so the base case leads.'
+        : 'Large-acreage screen: no product-transformation candidate has been assessed for this tract yet.';
+
+  // ── Market, by acreage band ───────────────────────────────────────────
+  // The deterministic band comparison, read straight from persisted Market
+  // Research. Rendering it runs no research and calls no model. A band whose
+  // record carries no recorded sales is omitted rather than shown as zeros.
+  const overviewBandRows = [
+    bandRow(market?.subjectBand, 'Subject band', true),
+    bandRow(market?.fastestBand, 'Fastest-selling band', false),
+    bandRow(market?.zip, 'ZIP, all acreage', false),
+    bandRow(market?.county, 'County, all acreage', false),
+  ].filter((row): row is NonNullable<typeof row> => row != null && row.sold !== '—' && row.sold !== '0');
+  const marketGeographyLabel = market?.geography?.county
+    ? `${market.geography.county} County${market.geography.state ? `, ${market.geography.state}` : ''}`
+    : market?.geography?.zip ? `ZIP ${market.geography.zip}` : 'Local market';
+  // A TARGET / SELL band is only claimed when the supported value-add strategy
+  // actually states a product size. A two-lot partition that never establishes
+  // lot acreage leaves this honestly unresolved.
+  const targetProductAcres = numberIn(valueAddCandidate?.strategy ?? null, /([\d.]+)\s*(?:\+\/-\s*)?(?:acre|ac)/i);
+  const bandContains = (band: string | null, acres: number): boolean => {
+    if (!band || band === 'all') return false;
+    const range = band.match(/^([\d.]+)\s*-\s*([\d.]+)$/);
+    if (range) return acres >= Number(range[1]) && acres < Number(range[2]);
+    const open = band.match(/^([\d.]+)\s*\+$/);
+    return open ? acres >= Number(open[1]) : false;
+  };
+  const targetBandRow = targetProductAcres != null
+    ? overviewBandRows.find((row) => !row.isSubject && bandContains(row.band, targetProductAcres)) ?? null
+    : null;
 
   // ── Hero visual switcher ───────────────────────────────────────────────
   // Only visuals LandOS actually retains are offered; the MAP mode appears
@@ -760,20 +849,6 @@ export function OverviewSection({
   return (
     <Root class="awv2-main awv2-overview" data-testid="acquisition-overview" data-page-filter={pageFilter}>
       {show('property') && developmentIntelligence && <OwnerAcquisitionCard dossier={developmentIntelligence} />}
-      {/* ── 1. Decision band: the operator decision and its key metrics lead
-             the page; every narrative and evidence surface follows. ── */}
-      {show('overview') && <section class="awv2-overview-decisionband" data-domain="action" aria-label="Operator decision">
-        <div class="awv2-command-head">
-          <div><div class="awv2-dom-eyebrow" data-dom="action">Decision</div><h2>{decisionHeadline}</h2></div>
-          <span class="awv2-decision-state"><Target size={14} /> Acquisition read</span>
-        </div>
-        <div class="awv2-decision-action">
-          <ArrowUpRight size={22} aria-hidden="true" />
-          <div><small>Next best action</small><b>{acquisitionNextAction?.label || nextActions[0] || 'Review the current evidence'}</b></div>
-        </div>
-        {decisionSummary !== decisionHeadline && <details class="awv2-decision-rationale"><summary>Decision rationale</summary><p>{decisionSummary}</p></details>}
-      </section>}
-
       {/* ── 1m. Top deal economics strip: FMV, the 40% and 60% acquisition-
              screen endpoints (never 50%), the seller's actual ask, and the
              top strategy label — the whole deal in one glance, straight from
@@ -783,8 +858,21 @@ export function OverviewSection({
         <div class="cell"><small>40%</small><b>{econLevels ? usd(econLevels.pct40) : 'Pending'}</b><i>Opening reference</i></div>
         <div class="cell"><small>60%</small><b>{econLevels ? usd(econLevels.pct60) : 'Pending'}</b><i>Ceiling reference</i></div>
         <div class="cell ask"><small>Seller ask</small><b>{askingPrice != null ? usd(askingPrice) : 'Not yet known'}</b><i>{askingPrice != null ? 'Seller-stated' : 'No ask collected'}</i></div>
-        <div class="cell strategy"><small>Top strategy</small><b>{stripStrategy || 'Pending'}</b><i>{stripStrategy ? 'Best current executable' : 'Not yet selected'}</i></div>
+        <div class="cell strategy"><small>Top strategy</small><b>{stripStrategy || 'Pending'}</b><i>{stripStrategyBasis ?? 'Not yet selected'}</i></div>
       </section>}
+
+      {/* ── 1m2. Strategy clarity: the base case, the leading value-add
+             product and any still-supported higher-upside hypothesis are three
+             different reads and are named as three different things. Each is a
+             persisted structured candidate; none is invented here. ── */}
+      {show('overview') && (baseCaseLabel || valueAddLabel || higherUpsideLabel) && (
+        <section class="awv2-strategy-clarity" data-domain="valuation" aria-label="Strategy semantics" data-testid="overview-strategy-clarity">
+          {baseCaseLabel && <div class="cell"><small>Base case</small><b>{baseCaseLabel}</b><i>Minimal transformation</i></div>}
+          <div class="cell lead"><small>Leading value-add strategy</small><b>{valueAddLabel || 'None currently supported'}</b><i>{valueAddLabel ? 'Supported, not proven' : 'Base case leads'}</i></div>
+          <div class="cell"><small>Higher-upside hypothesis</small><b>{higherUpsideLabel || 'None currently supported'}</b><i>{higherUpsideLabel ? 'Supported hypothesis' : 'Not carried forward'}</i></div>
+          {largeAcreageScreen && <p class="screen">{largeAcreageScreen}</p>}
+        </section>
+      )}
 
       {/* ── 1n. Full-width landscape property hero: the retained parcel
              visuals as the visual centerpiece, with the retained-geometry
@@ -873,21 +961,49 @@ export function OverviewSection({
         />
       )}
 
-      {/* ── 1b. Research readiness: the checklist underneath every judgment
-             on this page. It sits directly under the decision band because a
-             decision is only as good as the research it stands on, and this
-             is the one surface that says plainly what ran, what returned a
-             usable answer, what is honestly unresolved, and what is simply
-             missing. Compact by default; the full checklist is one control
-             away. Rendering it never runs research. ── */}
-      {show('overview') && researchReadiness && (
-        <ResearchReadinessStrip
-          manifest={researchReadiness.manifest}
-          loading={researchReadiness.loading}
-          error={researchReadiness.error}
-          running={researchReadiness.running}
-          onBackfill={researchReadiness.onBackfill}
-        />
+      {/* ── 1a3. Market — by acreage band. The deterministic comparison that
+             says how land actually moves here, straight from persisted Market
+             Research. Rendering it runs no research and calls no model. Only
+             metrics the record actually carries are columned; the subject's
+             own AS-IS band is highlighted, and a TARGET band is highlighted
+             only when a supported strategy states a real product size. ── */}
+      {show('overview') && overviewBandRows.length > 0 && (
+        <section class="awv2-overview-bandtable" data-domain="market" aria-label="Market by acreage band" data-testid="overview-market-bands">
+          <div class="section-heading">
+            <div>
+              <span class="awv2-dom-eyebrow" data-dom="market">Market — by acreage band</span>
+              <h2>How land actually moves here · {marketGeographyLabel}</h2>
+            </div>
+            <button type="button" onClick={() => onOpenSection('market')}>Open Market →</button>
+          </div>
+          <div class="awv2-bandtable-scroll">
+            <table>
+              <thead>
+                <tr><th>Acreage band</th><th>Median $/ac</th><th>Median DOM</th><th>Sell-through</th><th>Months supply</th><th>Recorded sales</th></tr>
+              </thead>
+              <tbody>
+                {overviewBandRows.map((row) => (
+                  <tr
+                    key={row.label}
+                    data-subject={row.isSubject ? 'true' : 'false'}
+                    data-target={targetBandRow && row.label === targetBandRow.label ? 'true' : 'false'}
+                  >
+                    <td><b>{row.label}</b>{row.isSubject ? <em>As-is band</em> : targetBandRow && row.label === targetBandRow.label ? <em class="target">Target / sell band</em> : null}</td>
+                    <td>{row.pricePerAcre}</td>
+                    <td>{row.dom}</td>
+                    <td>{row.sellThrough}</td>
+                    <td>{row.monthsSupply}</td>
+                    <td>{row.sold}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {!targetBandRow && valueAddLabel && (
+            <p class="awv2-bandtable-note">Target / sell band unresolved: {valueAddLabel} does not yet establish a product size, so no band is claimed as the exit band.</p>
+          )}
+          {marketReadHeadline && <p class="awv2-bandtable-note read">{marketReadHeadline}</p>}
+        </section>
       )}
 
       {/* ── 2. The acquisitions judgment, compressed to a Deal Read. It sits
@@ -959,7 +1075,6 @@ export function OverviewSection({
       {/* ── 3. Score and risks ── */}
       {show('overview') && <section class="awv2-overview-decision" data-domain="risk" aria-label="Score and major risks">
         <div class="summary"><span class="awv2-dom-eyebrow" data-dom="risk">Risk scan</span><div class={`awv2-risk-count ${blockerCount ? 'open' : 'clear'}`}>{blockerCount ? <AlertTriangle size={20} /> : <CheckCircle2 size={20} />}<b>{blockerCount}</b><span>{blockerCount === 1 ? 'deal blocker' : 'deal blockers'}</span></div></div>
-        <ScoreCard view={operator?.scores?.property} />
         <div class="risks">
           <h2>Risk signals</h2>
           <div class="awv2-risk-items">{(riskItems.length ? riskItems : [{ label: 'No material risk retained', detail: 'Continue ordinary diligence', tone: 'pending' as const }]).slice(0, 4).map((item) => (
@@ -1216,13 +1331,32 @@ export function OverviewSection({
           ))}</div>
         </div>
         <div class="next">
-          <span>What happens next</span>
-          <h2>Operator actions</h2>
+          <span>Operator actions</span>
+          <h2>{decisionHeadline}</h2>
+          {decisionSummary !== decisionHeadline && <details class="awv2-decision-rationale"><summary>Decision rationale</summary><p>{decisionSummary}</p></details>}
           <div class="awv2-action-rows">{actionCards.map((item, index) => (
             <div class="awv2-action-row"><b>{index + 1}</b><span><strong>{item.label}</strong>{item.detail && <small>{item.detail}</small>}</span><ArrowUpRight size={15} /></div>
           ))}</div>
         </div>
       </section>}
+
+      {/* ── 1b. Research readiness: the checklist underneath every judgment
+             on this page. It sits directly under the decision band because a
+             decision is only as good as the research it stands on, and this
+             is the one surface that says plainly what ran, what returned a
+             usable answer, what is honestly unresolved, and what is simply
+             missing. Compact by default; the full checklist is one control
+             away. Rendering it never runs research. ── */}
+      {show('overview') && researchReadiness && (
+        <ResearchReadinessStrip
+          manifest={researchReadiness.manifest}
+          loading={researchReadiness.loading}
+          error={researchReadiness.error}
+          running={researchReadiness.running}
+          onBackfill={researchReadiness.onBackfill}
+          compact
+        />
+      )}
 
       {show('overview') && (methodology.length > 0 || askingPrice != null) && <details class="awv2-overview-methodology"><summary>Supporting assumptions and secondary details</summary>{askingPrice != null && <p>Seller-stated asking price: {formatUsd(askingPrice)}.</p>}<ul>{methodology.map((item) => <li>{item}</li>)}</ul></details>}
     </Root>

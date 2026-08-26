@@ -172,11 +172,15 @@ describe('Acquisition Workspace V2 Overview is an executive dashboard', () => {
     expect(OVERVIEW_CSS).toMatch(/\.awv2-overview-valuation \.whole b/);
   });
 
-  it('keeps score arithmetic and methodology secondary', () => {
-    expect(OVERVIEW).toMatch(/<details class="awv2-overview-details">/);
+  it('keeps methodology secondary and the score wall off the Overview', () => {
     expect(OVERVIEW).toMatch(/<details class="awv2-overview-methodology">/);
-    expect(OVERVIEW).toMatch(/Positives/);
-    expect(OVERVIEW).toMatch(/Risks/);
-    expect(OVERVIEW).toMatch(/Could change/);
+    // The score-driver wall (Positives / Risks / Could change) and its
+    // score-detail disclosure are gone from the Overview: the property score
+    // is presented once, in the intelligence score strip, and the disclosure
+    // inside the risk grid is what rendered as a column of orphaned vertical
+    // text down the lower page. The drivers stay owned by the Property page.
+    expect(OVERVIEW).not.toMatch(/Could change/);
+    expect(OVERVIEW).not.toMatch(/function ScoreCard/);
+    expect(OVERVIEW).toMatch(/Risk signals/);
   });
 });
