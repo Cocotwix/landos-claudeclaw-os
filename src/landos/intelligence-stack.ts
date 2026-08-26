@@ -184,6 +184,44 @@ export function sellerLayerFingerprint(dossier: AcquisitionDossier, sellerEstabl
   return hash({ seller: dossier.seller, sellerEstablished, phase });
 }
 
+/**
+ * Is the retained Seller product still a truthful current read?
+ *
+ * Normally that is fingerprint equality. The one semantic exception is the
+ * deterministic PRE-CONTACT product: it asserts exactly one thing — that no
+ * meaningful seller communication has been recorded yet — and every field it
+ * carries is null/empty except `phase`. Its truth therefore depends on the
+ * material seller state, not on the internal shape of `dossier.seller`. When a
+ * later build adds, renames or reshapes fields inside that slice (attribution
+ * labels, subject lines, temporal wrappers), the seller reality has not moved
+ * and the honest "Pending" read must not blink out of the operator's Overview.
+ *
+ * This is NOT "pre-contact can never go stale". Contact being established
+ * (`sellerEstablished`, which covers persisted communications, discovery and a
+ * present seller with a stated asking price), a lifecycle phase change, or
+ * substantive seller-reported information all still invalidate it.
+ */
+export function sellerLayerCurrent(input: {
+  product: SellerIntelligenceProduct | null;
+  dossier: AcquisitionDossier;
+  sellerEstablished: boolean;
+  phase: DealPhase;
+  fingerprint: string;
+}): boolean {
+  const { product } = input;
+  if (!product) return false;
+  if (product.layerFingerprint === input.fingerprint) return true;
+  // A pre-contact product written before `phase` was carried on the contract
+  // recorded no phase claim at all. It is accepted only while the deal is still
+  // in the phase such a read is written for, so any material lifecycle move
+  // away from pre-call still stales it.
+  const phaseUnchanged = product.phase == null ? input.phase === 'pre_call' : product.phase === input.phase;
+  return product.state === 'pre_contact'
+    && !input.sellerEstablished
+    && phaseUnchanged
+    && input.dossier.seller.sellerReportedFacts.length === 0;
+}
+
 // ── Run input/output ───────────────────────────────────────────────────────
 
 export interface IntelligenceStackDeps {
@@ -350,13 +388,24 @@ export function readIntelligenceStackState(
     sellerEstablished,
     sellerPriceKnown: dossier.seller.askingPrice != null,
   });
+  const sellerInputFingerprint = sellerLayerFingerprint(dossier, sellerEstablished, phase);
+  const sellerCurrent = sellerLayerCurrent({
+    product: products.seller,
+    dossier,
+    sellerEstablished,
+    phase,
+    fingerprint: sellerInputFingerprint,
+  });
   const fingerprints = {
     property: propertyFingerprint,
     // A current Market read keeps the identity of its complete output,
     // including the governed web evidence it produced. Search results are not
     // part of the pre-run input packet and therefore cannot self-invalidate it.
     market: marketCurrent ? products.market!.layerFingerprint : legacyMarketFingerprint,
-    seller: sellerLayerFingerprint(dossier, sellerEstablished, phase),
+    // Same rule for a current Seller read: the Deal layer's seller dependency
+    // is the identity of the seller read it actually consumed, so a Seller
+    // product that is still truthful cannot cascade a false Deal staleness.
+    seller: sellerCurrent ? products.seller!.layerFingerprint : sellerInputFingerprint,
   };
   const dealFingerprint = dealLayerFingerprint(fingerprints, quickFlip, phase, dealCardId);
   return {
@@ -364,8 +413,8 @@ export function readIntelligenceStackState(
     stale: {
       property: !products.property || products.property.layerFingerprint !== fingerprints.property,
       market: !marketCurrent,
-      seller: !products.seller || products.seller.layerFingerprint !== fingerprints.seller,
-      deal: !marketCurrent || !products.deal || products.deal.layerFingerprints?.deal !== dealFingerprint,
+      seller: !sellerCurrent,
+      deal: !marketCurrent || !sellerCurrent || !products.deal || products.deal.layerFingerprints?.deal !== dealFingerprint,
     },
     quickFlip,
     phase,
@@ -564,10 +613,18 @@ export async function runIntelligenceStack(
       ? retained.market.inputFingerprint === marketInputFingerprint
       : retained.market.layerFingerprint === legacyMarketFingerprint
   );
+  const sellerInputFingerprint = sellerLayerFingerprint(dossier, sellerEstablished, phase);
+  const sellerCurrent = sellerLayerCurrent({
+    product: retained.seller,
+    dossier,
+    sellerEstablished,
+    phase,
+    fingerprint: sellerInputFingerprint,
+  });
   const fingerprints = {
     property: propertyFingerprint,
     market: marketCurrent ? retained.market!.layerFingerprint : legacyMarketFingerprint,
-    seller: sellerLayerFingerprint(dossier, sellerEstablished, phase),
+    seller: sellerCurrent ? retained.seller!.layerFingerprint : sellerInputFingerprint,
   };
   const guidance = activeOperatorGuidance(input.dealCardId);
   let dealFp = dealLayerFingerprint(fingerprints, quickFlip, phase, input.dealCardId);
@@ -584,9 +641,8 @@ export async function runIntelligenceStack(
   // stale Property product, and any new Property read must invalidate Market.
   if (refreshMarket && propertyStale) refreshProperty = true;
   if (refreshProperty) refreshMarket = true;
-  const sellerStale = !retained.seller
-    || retained.seller.layerFingerprint !== fingerprints.seller
-    || (sellerEstablished && retained.seller.state === 'pre_contact');
+  const sellerStale = !sellerCurrent
+    || (sellerEstablished && retained.seller!.state === 'pre_contact');
   const refreshSeller = wants('seller', sellerStale);
   // The Deal read depends on every other layer, the calculation and guidance:
   // it refreshes whenever any of them does, or its own inputs moved.

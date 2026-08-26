@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { RefreshCw } from 'lucide-preact';
 import { apiGet, apiPost } from '@/lib/api';
+import { resolutionLabel, runStatusLabel } from '@/lib/run-status-state';
 
 const POLL_INTERVAL_MS = 2500;
 
@@ -138,6 +139,10 @@ export function PropertyIntelligenceRunStatus(props: {
   const [starting, setStarting] = useState(false);
   const [refreshingResolution, setRefreshingResolution] = useState(false);
   const [resolution, setResolution] = useState<PropertyResolutionView | null>(null);
+  // "We read it and there is none" is a different statement from "we could not
+  // read it". Only a successful read sets these.
+  const [runLoaded, setRunLoaded] = useState(false);
+  const [resolutionLoaded, setResolutionLoaded] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   // Drives the elapsed clock while a run is in flight without refetching.
@@ -149,27 +154,38 @@ export function PropertyIntelligenceRunStatus(props: {
   settledCb.current = onRunSettled;
 
   const poll = useCallback(async (): Promise<boolean> => {
-    try {
-      const [data, propertyResolution] = await Promise.all([
-        apiGet<ProgressResp>(`/api/landos/deal-cards/${dealId}/property-intelligence/progress`),
-        apiGet<PropertyResolutionResp>(`/api/landos/deal-cards/${dealId}/property-resolution`).catch(() => ({ result: null })),
-      ]);
-      if (dead.current) return false;
+    // The run record and the resolution record are two independent truths.
+    // They are read independently so one failing request can never erase — or
+    // prevent the first load of — the other. A request that fails leaves the
+    // last known good value on screen and, when nothing has ever loaded, the
+    // panel says the status is unavailable rather than asserting it never ran.
+    const [progressResult, resolutionResult] = await Promise.allSettled([
+      apiGet<ProgressResp>(`/api/landos/deal-cards/${dealId}/property-intelligence/progress`),
+      apiGet<PropertyResolutionResp>(`/api/landos/deal-cards/${dealId}/property-resolution`),
+    ]);
+    if (dead.current) return false;
+    if (progressResult.status === 'fulfilled') {
+      const data = progressResult.value;
       setRun(data?.run ?? null);
       setLanes(Array.isArray(data?.specialists) ? data.specialists : []);
       setOutcomes(data?.laneOutcomes ?? null);
-      setResolution(propertyResolution.result ?? null);
-      const running = data?.run?.status === 'running';
-      // The transition out of `running` is the moment the run's writes are on
-      // the record, so that is when the workspace is told to reload.
-      if (wasRunning.current && !running) settledCb.current?.();
-      wasRunning.current = running;
-      return running;
-    } catch {
+      setRunLoaded(true);
+    }
+    if (resolutionResult.status === 'fulfilled') {
+      setResolution(resolutionResult.value?.result ?? null);
+      setResolutionLoaded(true);
+    }
+    if (progressResult.status !== 'fulfilled') {
       // A failed poll is not a failed run. Keep the last known state on screen
       // rather than blanking a panel the operator is actively watching.
       return wasRunning.current;
     }
+    const running = progressResult.value?.run?.status === 'running';
+    // The transition out of `running` is the moment the run's writes are on
+    // the record, so that is when the workspace is told to reload.
+    if (wasRunning.current && !running) settledCb.current?.();
+    wasRunning.current = running;
+    return running;
   }, [dealId]);
 
   useEffect(() => {
@@ -228,7 +244,7 @@ export function PropertyIntelligenceRunStatus(props: {
   // Nothing has ever run for this lead and nothing is running now: the panel
   // still appears, because "no research has been run" is itself the status the
   // operator needs, and the control to start it belongs with it.
-  const runLabel = run?.status ? RUN_WORD[run.status] : 'No research run has been recorded for this lead';
+  const runLabel = runStatusLabel(run?.status, runLoaded, (status) => RUN_WORD[status as RunView['status']]);
   const elapsed = elapsedLabel(run?.startedAt, running ? null : run?.completedAt);
 
   const active = lanes.filter((lane) => lane.status === 'running');
@@ -261,7 +277,7 @@ export function PropertyIntelligenceRunStatus(props: {
             </div>
           )}
           <div class="awv2-runstatus-current" data-testid="deal-card-property-resolution">
-            Property Resolution: <b>{resolution?.subjectResolution ?? 'NOT RUN'}</b>
+            Property Resolution: <b>{resolutionLabel(resolution?.subjectResolution, resolutionLoaded)}</b>
             {resolution?.facts?.canonicalIdentity?.apn ? ` · APN ${resolution.facts.canonicalIdentity.apn}` : ''}
             {resolution?.evidence?.length ? ` · ${resolution.evidence.length} source${resolution.evidence.length === 1 ? '' : 's'}` : ''}
           </div>
