@@ -169,6 +169,7 @@ import {
 } from './comps-valuation-capability.js';
 import {
   ZONING_SUBDIVISION_CAPABILITY_ID,
+  projectZoningSubdivisionWithCurrentTruth,
   type LandUseResearchOutcome,
 } from './zoning-subdivision-capability.js';
 import { PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID } from './property-development-history-capability.js';
@@ -206,6 +207,7 @@ import {
   INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE,
   capabilityInvocationFor,
   derivePropertyCapabilityRequests,
+  projectCurrentIntelligenceReconciliation,
   runIntelligenceReconciliation,
   validateIntelligenceCapabilityRequest,
   type IntelligenceReconciliationRecord,
@@ -295,7 +297,7 @@ import {
   runPropertyBackstoryForDeal,
   runSubdivisionIntelligenceForDeal,
 } from './post-resolution-capabilities.js';
-import { readControllingAuthority, readCurrentZoning } from './land-use-intelligence-store.js';
+import { readControllingAuthority, readCurrentZoning, readZoningStandards } from './land-use-intelligence-store.js';
 import { readPropertyBackstory } from './property-backstory-store.js';
 import { readPreCallIntelligenceHandoff } from './pre-call-intelligence-handoff.js';
 import { MissionGraphStore } from './mission-graph-store.js';
@@ -303,6 +305,7 @@ import { readFanOutMission } from './mission-graph-runner.js';
 import { canonicalPropertyInputForDeal, governmentArtifactEvidence, makeLivePropertyIntelligenceCollectors, type ExactAddressWebResult } from './property-intelligence-live.js';
 import { executePropertyProvider, type NormalizedPropertyEvidence, type PropertyProviderAdapter } from './property-intelligence-contract.js';
 import { gatherCardImages, loadCardVisionAnalysis } from './browser-vision.js';
+import { investigatePropertyWithGev, loadCardGevSpatialAnalysis } from './gev-property-investigation.js';
 import { sanitizeVisualIntelligenceRecord, type VisualIntelligenceRecord } from './visual-intelligence.js';
 import { buildDealOperatorAnalysis, emptyDealOperatorContext, runWholeCardOperatorAnalyst, type DealOperatorContext, type OperatorResearchAttempt, type ResearchAttemptStatus } from './deal-operator-analysis.js';
 import { ManagedIdentityRepository, EnvironmentManagedEmailProvider, managedIdentityStatus } from './managed-identity.js';
@@ -5644,14 +5647,13 @@ export function registerLandosRoutes(app: Hono): void {
       topMissingDdFacts: (r.ddFactChecklist ?? []).filter((x) => x.status === 'needs_verification' && !x.noConnectedSource).map((x) => x.label).slice(0, 4),
     };
   };
-  const acqView = (id: number) => {
+  const acqView = (id: number, options: { includeDeepWorkspaceData?: boolean } = {}) => {
     const acq = getAcquisition(id);
     const report = getDealCardReport(id);
     const deal = getDealCard(id);
     const propertyCardId = deal ? subjectCardId(deal) : null;
-    const inspection = propertyCardId ? loadPropertyInspection(propertyCardId) : null;
     const na = acquisitionNextAction(acq, { ddParcelVerified: report.parcelVerified });
-    return {
+    const core = {
       acquisition: acq,
       stageLabel: ACQUISITION_STAGE_LABEL[acq.stage],
       nextAction: na,
@@ -5659,6 +5661,11 @@ export function registerLandosRoutes(app: Hono): void {
       callPrep: buildCallPrep(acq, na, acqContext(id)),
       playbook: acquisitionPlaybook(),
       trainingReadiness: acquisitionTrainingReadiness(),
+    };
+    if (options.includeDeepWorkspaceData === false) return core;
+    const inspection = propertyCardId ? loadPropertyInspection(propertyCardId) : null;
+    return {
+      ...core,
       canonicalState: canonicalDealStateFor(id),
       subjectListing: propertyCardId ? loadSubjectListingDetail(propertyCardId) : null,
       landPortalFacts: inspection ? buildParcelFactSheet(inspection.parcelFacts) : null,
@@ -5670,7 +5677,9 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
-    return c.json(acqView(id));
+    return c.json(acqView(id, {
+      includeDeepWorkspaceData: c.req.query('view') !== 'workspace-v2-overview',
+    }));
   });
   app.post('/api/landos/deal-cards/:id/acquisition/profile', async (c) => {
     const id = Number(c.req.param('id'));
@@ -8937,6 +8946,8 @@ export function registerLandosRoutes(app: Hono): void {
     // current. The stored run record stays untouched; the superseded figure
     // remains retained inside the acreage-extent record with provenance.
     const canonicalExtentAcres = readAcreageExtentRecord(dealCardId)?.decision.canonicalAcres ?? null;
+    const currentLandUseAtRead = buildRetainedLandUseIntelligenceView(dealCardId);
+    const currentZoningAtRead = currentLandUseAtRead?.currentZoning ?? null;
     const presentedSource = storedSnapshot
       ? {
           ...storedSnapshot,
@@ -8949,8 +8960,17 @@ export function registerLandosRoutes(app: Hono): void {
             : storedSnapshot.identity,
           dueDiligence: normalizeDiscoveryAccessItems(
             storedSnapshot.dueDiligence,
-            storedSnapshot.identity.situs ?? storedSnapshot.identity.normalizedAddress,
-          ),
+            storedSnapshot.identity.normalizedAddress ?? storedSnapshot.identity.situs,
+          ).map((item) => currentZoningAtRead?.established && /zoning|land use/i.test(`${item.key} ${item.label}`)
+            ? {
+                ...item,
+                verdict: 'good' as const,
+                grade: 'confirmed_fact' as const,
+                headline: `Current zoning: ${currentZoningAtRead.districtCode ?? currentZoningAtRead.statement ?? 'established'}.`,
+                detail: `${currentZoningAtRead.statement ?? 'Current parcel-specific official zoning is established.'}${currentZoningAtRead.authorityName ? ` Authority: ${currentZoningAtRead.authorityName}.` : ''} Historical and requested districts remain history only.`,
+                missing: [],
+              }
+            : item),
           specialists: rederiveSpecialistDelivery(storedSnapshot.specialists, storedSnapshot.evidence),
         }
       : null;
@@ -9712,7 +9732,10 @@ export function registerLandosRoutes(app: Hono): void {
     // modified.
     const accessPresentation = (() => {
       if (!snapshot) return null;
-      const situs = snapshot.identity.situs ?? snapshot.identity.normalizedAddress;
+      // `normalizedAddress` can legitimately be the assessor's parcel
+      // description (for example "Map 042 Parcel 123"). The operator access
+      // read needs the resolved street serving the subject when one exists.
+      const situs = snapshot.identity.displayAddress ?? snapshot.identity.normalizedAddress ?? snapshot.identity.situs;
       const read = readDiscoveryAccess(snapshot.dueDiligence, situs);
       const entrance = apparentEntranceFromObservations(linkInspection?.visualObservations ?? [], read.road);
       // The captures actually retained for this subject. Every reference a
@@ -9805,12 +9828,15 @@ export function registerLandosRoutes(app: Hono): void {
       // than surviving because it was once stored.
       const entranceSupported = entrance.confirmed && reconciliation.apparentPhysicalAccess;
       return {
-        // Recorded legal access is the only establishing rung. Provider
-        // frontage and landlocked flags remain source-separated signals.
-        established: reconciliation.verifiedLegalAccess,
+        // Ordinary acquisition-screening access follows the LandOS operator
+        // rule. Recorded/title proof remains a separate evidence rung.
+        established: read.established || reconciliation.verifiedLegalAccess,
         providerSignal: read.providerSignal,
         road: read.road,
         legalAccess: reconciliation.verifiedLegalAccess
+          ? reconciliation.byTier.verified_legal[0]?.statement ?? 'Verified by recorded instrument'
+          : read.display,
+        recordedLegalAccess: reconciliation.verifiedLegalAccess
           ? reconciliation.byTier.verified_legal[0]?.statement ?? 'Verified by recorded instrument'
           : null,
         frontageFt: read.frontageFt,
@@ -9912,19 +9938,22 @@ export function registerLandosRoutes(app: Hono): void {
         : accessPresentation?.providerSignal === 'landlocked_flag'
           ? 'Provider flags the parcel landlocked'
           : 'Provider signal unresolved';
+      const currentLandUse = buildRetainedLandUseIntelligenceView(dealCardId);
       return buildDevelopmentIntelligence({
         dealCardId,
         records: listPublicRecordOutcomes(dealCardId),
         acres: canonicalExtentAcres ?? snapshot?.identity.acres ?? num(subject.acres),
         owner: str(subject.owner) || null,
         providerAccessSignal: providerSignal,
-        recordedLegalAccess: accessPresentation?.established
-          ? accessPresentation.legalAccess ?? 'Verified recorded legal access'
+        recordedLegalAccess: accessPresentation?.recordedLegalAccess
+          ? accessPresentation.recordedLegalAccess
           : 'Not verified from a recorded instrument',
         surveyedFrontage: 'Not verified by a retained survey',
         physicalEntrance: accessPresentation?.apparentEntranceConfirmed
           ? accessPresentation.apparentEntrance
           : 'Not confirmed from retained imagery',
+        accessEstablished: accessPresentation?.established === true,
+        currentZoning: currentLandUse?.currentZoning ?? null,
       });
     })();
     return {
@@ -10097,6 +10126,11 @@ export function registerLandosRoutes(app: Hono): void {
       // built on top of the parcel evidence. Read-time projection over the
       // retained determination; SELECT-only.
       landUse: buildLandUseView(dealCardId),
+      // The current district's already-persisted adopted-code projection is a
+      // separate source-race product. Join it here so a later GIS promotion of
+      // the district does not strand the matching uses and dimensional rules.
+      // SELECT-only: this never reruns zoning research.
+      zoningStandards: readZoningStandards(dealCardId),
       // The source-racing lanes promote their own snapshots and never write a
       // land_use_determination row, so this is the only way their confirmed
       // authority, backstory and subdivision rules reach the panel.
@@ -10136,6 +10170,37 @@ export function registerLandosRoutes(app: Hono): void {
     };
   };
 
+  const propertyIntelligenceProgressView = (dealCardId: number) => {
+    propertyIntelligenceStore.reclaimStaleRuns();
+    const primary = propertyIntelligenceStore.primaryRun(dealCardId);
+    const latest = propertyIntelligenceStore.latestRun(dealCardId);
+    const progressRun = latest ?? primary;
+    return {
+      run: progressRun
+        ? {
+            runId: progressRun.runId,
+            sequence: progressRun.sequence,
+            status: progressRun.status,
+            trigger: progressRun.trigger,
+            startedAt: progressRun.startedAt,
+            completedAt: progressRun.completedAt,
+            error: progressRun.error,
+            failureCategory: progressRun.failureCategory,
+            isPrimary: progressRun.isPrimary,
+          }
+        : null,
+      specialists: progressRun && progressRun.status === 'running'
+        ? propertyIntelligenceStore.listSpecialists(progressRun.runId).map((row) => ({
+            id: row.id, label: row.label, role: row.role, status: row.status, summary: row.summary,
+            failureCategory: row.failureCategory, failureMessage: row.failureMessage, retryable: row.retryable,
+            evidenceCount: row.evidenceCount, startedAt: row.startedAt, completedAt: row.completedAt, durationMs: row.durationMs,
+          }))
+        : primary?.snapshot?.specialists ?? [],
+      snapshotStatus: primary?.snapshot?.status ?? null,
+      progressive: progressRun && progressRun.status === 'running' ? progressRun.progress ?? null : null,
+    };
+  };
+
   // Read the joined snapshot + live specialist progress. SELECT-only: opening a
   // Deal Card never starts research, calls a provider, or writes evidence.
   app.get('/api/landos/deal-cards/:id/property-intelligence', (c) => {
@@ -10145,6 +10210,29 @@ export function registerLandosRoutes(app: Hono): void {
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const cardId = subjectCardId(deal) ?? null;
     const propertyIntelligence = propertyIntelligenceView(id);
+    if (c.req.query('view') === 'workspace-v2') {
+      return c.json({
+        propertyIntelligence: {
+          snapshot: propertyIntelligence.snapshot,
+          streetView: propertyIntelligence.streetView,
+          missingDiligence: propertyIntelligence.missingDiligence,
+          access: propertyIntelligence.access,
+          soilsSeptic: propertyIntelligence.soilsSeptic,
+          visualBuyerAnalysis: propertyIntelligence.visualBuyerAnalysis,
+          visualBuyerNarrative: propertyIntelligence.visualBuyerNarrative,
+          researchStatus: propertyIntelligence.researchStatus,
+          exactAddressListings: propertyIntelligence.exactAddressListings,
+          compsValuation: propertyIntelligence.compsValuation,
+          officialParcelGis: propertyIntelligence.officialParcelGis,
+          landUse: propertyIntelligence.landUse,
+          landUseIntelligence: propertyIntelligence.landUseIntelligence,
+          landPortalFacts: propertyIntelligence.landPortalFacts,
+          taxStatus: propertyIntelligence.taxStatus,
+        },
+        marketContext: marketContextFor(deal),
+        landPortalFacts: propertyIntelligence.landPortalFacts,
+      });
+    }
     return c.json({
       propertyIntelligence,
       // Historical uploads and retained evidence remain available without
@@ -10161,6 +10249,7 @@ export function registerLandosRoutes(app: Hono): void {
       compsValuation: propertyIntelligence.compsValuation,
       officialParcelGis: propertyIntelligence.officialParcelGis,
       landUse: propertyIntelligence.landUse,
+      zoningStandards: propertyIntelligence.zoningStandards,
       landUseIntelligence: propertyIntelligence.landUseIntelligence,
     });
   });
@@ -10250,6 +10339,66 @@ export function registerLandosRoutes(app: Hono): void {
    *  reads that already exist. Nothing here researches; every call is a SELECT.
    *  Retained visuals are resolved to their files on this machine so the analyst
    *  can actually look at them rather than read a URL. */
+  /** Pure retained Market Pulse projection for specialist reasoning. It never
+   * calls Census, search, geocoding, or the browser. Collector route narration
+   * and filesystem paths are deliberately omitted. */
+  const retainedMarketPulseForSpecialist = (dealCardId: number, propertyCardId: number | null): unknown => {
+    const retained = propertyCardId != null ? propertyResearchStore.loadForProperty(propertyCardId) : null;
+    const latestEvidence = (providerId: string, field: string) => (retained?.evidence ?? [])
+      .filter((item) => item.providerId === providerId && item.field === field)
+      .sort((a, b) => b.retrievedAt.localeCompare(a.retrievedAt))[0] ?? null;
+    const pulse = latestEvidence('landos_market_pulse', 'market_pulse');
+    const retainedDataCenter = latestEvidence('brockovich_data_center_map', 'data_center_watch');
+    const cached = loadMarketScan<MarketScanResult>(dealCardId, 'market_scan');
+    const scan = cached?.payload;
+    return {
+      contractVersion: 'market-pulse-specialist-file-v1',
+      retainedMissionEvidence: {
+        marketPulse: pulse ? {
+          value: pulse.value,
+          sourceUrl: pulse.sourceUrl,
+          retrievedAt: pulse.retrievedAt,
+          confidence: pulse.confidence,
+        } : null,
+        dataCenterWatch: retainedDataCenter ? {
+          value: retainedDataCenter.value,
+          sourceUrl: retainedDataCenter.sourceUrl,
+          retrievedAt: retainedDataCenter.retrievedAt,
+          confidence: retainedDataCenter.confidence,
+        } : null,
+      },
+      marketScan: scan ? {
+        area: scan.area,
+        generatedAt: scan.generatedAt,
+        dataCenterWatch: {
+          status: scan.dataCenterWatch.status,
+          area: scan.dataCenterWatch.area,
+          summary: scan.dataCenterWatch.summary,
+          verdict: scan.dataCenterWatch.verdict ?? null,
+          whyItMatters: scan.dataCenterWatch.whyItMatters,
+          generatedAt: scan.dataCenterWatch.generatedAt,
+          items: scan.dataCenterWatch.items,
+          unverifiedNearbyCandidates: scan.dataCenterWatch.unverifiedNearbyCandidates ?? [],
+          mapEvidence: scan.dataCenterWatch.browserMapEvidence ? {
+            sourceUrl: scan.dataCenterWatch.browserMapEvidence.sourceUrl,
+            radiusMiles: scan.dataCenterWatch.browserMapEvidence.radiusMiles,
+            attemptedAt: scan.dataCenterWatch.browserMapEvidence.attemptedAt,
+          } : null,
+        },
+        growthSignals: {
+          status: scan.growthSignals.status,
+          area: scan.growthSignals.area,
+          summary: scan.growthSignals.summary,
+          generatedAt: scan.growthSignals.generatedAt,
+          items: scan.growthSignals.items,
+        },
+        landMarketWeb: scan.landMarketWeb ?? null,
+        acreageMatrix: scan.acreageMatrix ?? null,
+      } : null,
+      retainedAt: cached ? new Date(cached.createdAt * 1_000).toISOString() : null,
+    };
+  };
+
   const acquisitionPropertyFile = (dealCardId: number): AcquisitionPropertyFileSource | null => {
     const deal = getDealCard(dealCardId);
     if (!deal) return null;
@@ -10310,14 +10459,32 @@ export function registerLandosRoutes(app: Hono): void {
         capturedAt: captureTimeFor(observation.sourceImage),
         pixelGrounded: true,
       }));
+      // The GEV spatial lane is ADDITIVE: it grounds different pixels (God's
+      // Eye View captures) through the same base64→vision path, so its
+      // observations append to whichever imagery lane wins rather than
+      // competing with it.
+      const gev = loadCardGevSpatialAnalysis(cardId);
+      const fromGev = gev?.ok
+        ? gev.observations.map((observation) => ({
+          category: 'spatial_context',
+          observation: `[${observation.view}] ${observation.observation}`,
+          signal: observation.signal,
+          confidence: observation.confidence,
+          sourceImage: observation.sourceImage,
+          model: gev.model,
+          analyzedAt: gev.generatedAt,
+          capturedAt: gev.generatedAt,
+          pixelGrounded: true,
+        }))
+        : [];
       // Same analyzer behind both lanes — carry the newer run, not a merge of
       // observations that may describe superseded imagery.
       if (fromAnalysis.length && fromVi.length) {
         const analysisAt = Date.parse(analysis?.generatedAt ?? '') || 0;
         const viAt = Date.parse(vi?.visionAnalyzedAt ?? vi?.generatedAt ?? '') || 0;
-        return viAt > analysisAt ? fromVi : fromAnalysis;
+        return [...(viAt > analysisAt ? fromVi : fromAnalysis), ...fromGev];
       }
-      return fromAnalysis.length ? fromAnalysis : fromVi;
+      return [...(fromAnalysis.length ? fromAnalysis : fromVi), ...fromGev];
     })();
 
     return {
@@ -10325,6 +10492,7 @@ export function registerLandosRoutes(app: Hono): void {
       propertyCardId: cardId,
       propertyIntelligence: propertyIntelligenceView(dealCardId) as unknown,
       marketContext: marketContextFor(deal) as unknown,
+      marketPulse: retainedMarketPulseForSpecialist(dealCardId, cardId),
       documentRegistry: documentRegistryForCard(cardId, { dealCardId }) as unknown,
       dealCard: deal as unknown,
       // The persisted seller evidence: Acquisitions CRM state (profile, comm
@@ -10642,21 +10810,47 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
-    const state = readIntelligenceStackState(id, intelligenceStackReadDeps);
-    const dealBrain = currentDealBrainProjection(id);
+    // This GET previously assembled the complete Property file twice: once for
+    // stack staleness and again for Deal Brain freshness. Reuse the exact same
+    // SELECT-only source inside this request so both projections reason over
+    // identical persisted truth without rebuilding comps, market research,
+    // evidence, visuals and development history a second time.
+    let retainedPropertyFile: AcquisitionPropertyFileSource | null | undefined;
+    const readPropertyFileOnce = (dealCardId: number): AcquisitionPropertyFileSource | null => {
+      if (dealCardId !== id) return acquisitionPropertyFile(dealCardId);
+      if (retainedPropertyFile === undefined) retainedPropertyFile = acquisitionPropertyFile(dealCardId);
+      return retainedPropertyFile;
+    };
+    const state = readIntelligenceStackState(id, {
+      ...intelligenceStackReadDeps,
+      readPropertyFile: readPropertyFileOnce,
+    });
+    // Historical products remain retained in derived-snapshot history, but a
+    // stale product is not a current operator read and does not project onto
+    // Overview while its evidence fingerprint is superseded.
+    const operatorProducts = {
+      property: state.stale.property ? null : state.products.property,
+      market: state.stale.market ? null : state.products.market,
+      seller: state.stale.seller ? null : state.products.seller,
+      deal: state.stale.deal ? null : state.products.deal,
+    };
+    const dealBrainDossier = retainedPropertyFile ? buildAcquisitionDossier(retainedPropertyFile) : null;
+    const dealBrain = currentDealBrainProjection(id, dealBrainDossier);
     // Reconciliation state is SELECT-only here: the persisted record, whether
     // a run is in flight, and which persisted conflicts the seam could act on.
     // Nothing on this GET (or any page load) ever invokes a capability.
-    const reconcileEligible = state.products.property
-      ? derivePropertyCapabilityRequests(state.products.property, id)
+    const reconcileEligible = operatorProducts.property
+      ? derivePropertyCapabilityRequests(operatorProducts.property, id)
         .map((request) => ({
           conflictSubject: request.evidenceConflictRefs[0] ?? null,
           issueType: request.issueType,
           requestedCapability: request.requestedCapability,
         }))
       : [];
+    const retainedReconciliation = readDerivedSnapshot<IntelligenceReconciliationRecord>(id, INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE);
     return c.json({
       ...state,
+      products: operatorProducts,
       guidance: dealBrain.thread,
       dealBrainFreshness: {
         staleReplyCount: dealBrain.staleReplies.length,
@@ -10664,7 +10858,7 @@ export function registerLandosRoutes(app: Hono): void {
       },
       run: intelligenceStackRuns.get(id) ?? null,
       dealBrainRun: dealBrainRuns.get(id) ?? null,
-      reconciliation: readDerivedSnapshot<IntelligenceReconciliationRecord>(id, INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE),
+      reconciliation: projectCurrentIntelligenceReconciliation(retainedReconciliation, operatorProducts.property),
       reconcileRun: intelligenceReconcileRuns.get(id) ?? null,
       reconcileEligible,
       // Official acreage / parcel-extent reconciliation: SELECT-only here.
@@ -10702,6 +10896,9 @@ export function registerLandosRoutes(app: Hono): void {
         }, {
           ...intelligenceStackReadDeps,
           analyst: createIntelligenceExecutor(),
+          // Bounded God's Eye View spatial investigation before the Property
+          // specialist reasons — best-effort; failures degrade to warnings.
+          investigateSpatial: (dealCardId, dossier) => investigatePropertyWithGev(dealCardId, dossier),
           runBackfill: async (itemIds: string[]) => {
             const report = await runResearchReadinessBackfill(
               id,
@@ -11559,10 +11756,11 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const subject = dealCardAssessorTaxSubject(id);
     if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    const retained = new CapabilityInvocationStore().latestForProperty(subject.cardId, id, ZONING_SUBDIVISION_CAPABILITY_ID);
     return c.json({
       capability: ZONING_SUBDIVISION_CAPABILITY_ID,
       propertyCardId: subject.cardId,
-      result: new CapabilityInvocationStore().latestForProperty(subject.cardId, id, ZONING_SUBDIVISION_CAPABILITY_ID),
+      result: projectZoningSubdivisionWithCurrentTruth(retained, readCurrentZoning(id)),
     });
   });
 
@@ -11680,7 +11878,7 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
-    const view = propertyIntelligenceView(id);
+    const view = propertyIntelligenceProgressView(id);
     // The completion metric the operator reads, computed HERE so no surface can
     // invent its own. The panel used to count every settled lane — including
     // the ones that answered nothing and the one that was externally blocked —
@@ -11696,8 +11894,8 @@ export function registerLandosRoutes(app: Hono): void {
       run: view.run,
       specialists: view.specialists,
       laneOutcomes,
-      snapshotStatus: view.snapshot?.status ?? null,
-      progressive: view.progressive ?? null,
+      snapshotStatus: view.snapshotStatus,
+      progressive: view.progressive,
     });
   });
 

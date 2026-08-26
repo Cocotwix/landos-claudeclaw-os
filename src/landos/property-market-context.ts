@@ -22,6 +22,7 @@
 // read and the Comps & Valuation liquidity context can never disagree.
 
 import {
+  ACREAGE_BANDS,
   ACREAGE_BAND_LABEL,
   comparePeriods,
   isCountyFips,
@@ -41,6 +42,12 @@ import {
   type MarketMatrixResolution,
   type MatchLevel,
 } from './market-matrix-read.js';
+import {
+  getMrGeoSummary,
+  listMrSnapshots,
+  type MarketResearchFilters,
+  type MrGeoMetricRow,
+} from './market-research-snapshots.js';
 
 export const PROPERTY_MARKET_CONTEXT_SOURCE = 'LandOS Market Research';
 
@@ -153,6 +160,154 @@ export interface PropertyMarketContext {
   /** Comps & Valuation liquidity/competition context (concise). */
   liquidity: MarketLiquidityProjection;
   interpretation: string;
+  /** The complete current Market Research product for the subject's county and
+   * ZIP. This is deliberately separate from the concise operator projection
+   * above: specialists reason over every retained band; surfaces can keep using
+   * the compact county/ZIP/subject-band read. */
+  research: CompleteMarketResearchProduct;
+}
+
+export interface CompleteMarketResearchRow {
+  geography: 'county' | 'zip';
+  geographyKey: string;
+  geographyLabel: string;
+  snapshotId: number;
+  snapshotPeriod: string;
+  snapshotCollectedAt: string;
+  snapshotStatus: 'collecting' | 'retained';
+  filterKey: string;
+  filters: MarketResearchFilters;
+  acreageBand: AcreageBand;
+  side: 'sold';
+  metrics: MarketMetrics;
+  confidence: 'high';
+  provider: string;
+  sourceRef: string;
+  observedAt: string;
+  prior: MrGeoMetricRow['prior'];
+}
+
+export interface CompleteMarketResearchProduct {
+  contractVersion: 'market-research-subject-file-v1';
+  source: typeof PROPERTY_MARKET_CONTEXT_SOURCE;
+  countyFips: string | null;
+  countyName: string | null;
+  zip: string | null;
+  subjectAcres: number | null;
+  subjectBands: AcreageBand[];
+  rows: CompleteMarketResearchRow[];
+  countyRows: CompleteMarketResearchRow[];
+  zipRows: CompleteMarketResearchRow[];
+  periods: string[];
+  fastestCountyBands: Array<{ acreageBand: AcreageBand; daysOnMarket: number | null; sellThroughRate: number | null; salesCount: number | null }>;
+  strongestCountyBands: Array<{ acreageBand: AcreageBand; sellThroughRate: number | null; absorptionRate: number | null; salesCount: number | null }>;
+}
+
+/**
+ * Complete current Market Research packet for one subject geography.
+ *
+ * The quarterly store owns the producer contract. Each retained acreage-band
+ * snapshot is read directly by its exact county and ZIP key; no subject-band
+ * resolution or geography fallback narrows this packet before the market
+ * specialist sees it. One newest retained snapshot per acreage band is carried,
+ * with its full metric row and provenance.
+ */
+export function completeMarketResearchFor(input: {
+  countyFips: string | null;
+  countyName: string | null;
+  zip: string | null;
+  subjectAcres: number | null;
+}): CompleteMarketResearchProduct {
+  const snapshots = listMrSnapshots()
+    .filter((snapshot) => snapshot.filters.status === 'sold' && snapshot.filters.propertyType === 'land')
+    .sort((a, b) => b.quarter.localeCompare(a.quarter) || b.id - a.id);
+  const collectedBands = ACREAGE_BANDS.filter((band) => band !== '50+');
+
+  const rows: CompleteMarketResearchRow[] = [];
+  const append = (geography: 'county' | 'zip', geographyKey: string | null, geographyLabel: string): void => {
+    if (!geographyKey) return;
+    for (const band of collectedBands) {
+      let summary: ReturnType<typeof getMrGeoSummary> = null;
+      let snapshot: ReturnType<typeof listMrSnapshots>[number] | null = null;
+      // A newer collection may still be in progress and not have reached this
+      // geography. Choose the newest snapshot that ACTUALLY contains the exact
+      // county/ZIP row instead of treating the newest global snapshot as a miss.
+      for (const candidate of snapshots) {
+        if (candidate.filters.acreageBand !== band) continue;
+        const candidateSummary = getMrGeoSummary(candidate.id, geographyKey);
+        if (!candidateSummary) continue;
+        snapshot = candidate;
+        summary = candidateSummary;
+        break;
+      }
+      if (!snapshot || !summary) continue;
+      rows.push({
+        geography,
+        geographyKey,
+        geographyLabel,
+        snapshotId: snapshot.id,
+        snapshotPeriod: snapshot.quarter,
+        snapshotCollectedAt: snapshot.collectedAt,
+        snapshotStatus: snapshot.status,
+        filterKey: snapshot.filterKey,
+        filters: snapshot.filters,
+        acreageBand: snapshot.filters.acreageBand,
+        side: 'sold',
+        metrics: summary.row.metrics,
+        confidence: 'high',
+        provider: summary.row.provider || snapshot.provider,
+        sourceRef: summary.row.sourceRef,
+        observedAt: summary.row.observedAt,
+        prior: summary.row.prior,
+      });
+    }
+  };
+
+  append('county', input.countyFips ? `county:${input.countyFips}` : null, input.countyName ?? input.countyFips ?? 'County');
+  append('zip', input.zip ? `zip:${input.zip}` : null, input.zip ? `ZIP ${input.zip}` : 'ZIP');
+  rows.sort((a, b) => a.geography.localeCompare(b.geography)
+    || ACREAGE_BANDS.indexOf(a.acreageBand) - ACREAGE_BANDS.indexOf(b.acreageBand));
+
+  const countyBandRows = rows.filter((row) => row.geography === 'county' && row.acreageBand !== 'all');
+  const fastestCountyBands = countyBandRows
+    .filter((row) => row.metrics.daysOnMarket != null || row.metrics.sellThroughRate != null)
+    .sort((a, b) => (a.metrics.daysOnMarket ?? Number.POSITIVE_INFINITY) - (b.metrics.daysOnMarket ?? Number.POSITIVE_INFINITY)
+      || (b.metrics.sellThroughRate ?? Number.NEGATIVE_INFINITY) - (a.metrics.sellThroughRate ?? Number.NEGATIVE_INFINITY))
+    .slice(0, 4)
+    .map((row) => ({
+      acreageBand: row.acreageBand,
+      daysOnMarket: row.metrics.daysOnMarket,
+      sellThroughRate: row.metrics.sellThroughRate,
+      salesCount: row.metrics.salesCount,
+    }));
+  const strongestCountyBands = countyBandRows
+    .filter((row) => row.metrics.sellThroughRate != null || row.metrics.absorptionRate != null || row.metrics.salesCount != null)
+    .sort((a, b) => (b.metrics.sellThroughRate ?? Number.NEGATIVE_INFINITY) - (a.metrics.sellThroughRate ?? Number.NEGATIVE_INFINITY)
+      || (b.metrics.absorptionRate ?? Number.NEGATIVE_INFINITY) - (a.metrics.absorptionRate ?? Number.NEGATIVE_INFINITY)
+      || (b.metrics.salesCount ?? Number.NEGATIVE_INFINITY) - (a.metrics.salesCount ?? Number.NEGATIVE_INFINITY))
+    .slice(0, 4)
+    .map((row) => ({
+      acreageBand: row.acreageBand,
+      sellThroughRate: row.metrics.sellThroughRate,
+      absorptionRate: row.metrics.absorptionRate,
+      salesCount: row.metrics.salesCount,
+    }));
+
+  return {
+    contractVersion: 'market-research-subject-file-v1',
+    source: PROPERTY_MARKET_CONTEXT_SOURCE,
+    countyFips: input.countyFips,
+    countyName: input.countyName,
+    zip: input.zip,
+    subjectAcres: input.subjectAcres,
+    subjectBands: acreageBandsForAcres(input.subjectAcres),
+    rows,
+    countyRows: rows.filter((row) => row.geography === 'county'),
+    zipRows: rows.filter((row) => row.geography === 'zip'),
+    periods: [...new Set(rows.map((row) => row.snapshotPeriod))].sort().reverse(),
+    fastestCountyBands,
+    strongestCountyBands,
+  };
 }
 
 function toContextMetrics(m: MarketMetrics): MarketContextMetrics {
@@ -511,6 +666,12 @@ export function propertyMarketContextFor(input: {
     read,
     liquidity,
     interpretation: '',
+    research: completeMarketResearchFor({
+      countyFips: fips,
+      countyName: countyName ?? input.county,
+      zip: input.zip,
+      subjectAcres: acres,
+    }),
   };
   context.interpretation = buildInterpretation(context);
   return context;

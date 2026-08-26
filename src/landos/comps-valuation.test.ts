@@ -23,6 +23,7 @@ import {
   computeImprovementValuation,
   detectImprovedProperty,
   readSubjectImprovement,
+  reconcileSubjectImprovementWithCurrentTruth,
   reconcileNegotiation,
   setCompValuationSelection,
   haversineMiles,
@@ -1236,5 +1237,26 @@ describe('subject improvement scope (land comps price land, never a whole proper
     const read = readSubjectImprovement(null);
     expect(read.improved).toBe(false);
     expect(read.wholePropertyPending).toBe(false);
+  });
+
+  it('lets current official no-building truth supersede an older provider improvement overlay', () => {
+    const retained = readSubjectImprovement(inspection(
+      { 'Building SqFt': '1534', Acres: '51.11' },
+      [{ label: 'Existing improvement', detail: 'Older provider record reports an improvement.' }],
+    ));
+    const reconciled = reconcileSubjectImprovementWithCurrentTruth(
+      retained,
+      'no_current_building_on_assessor_record',
+      'Official current parcel reconciliation reports no building.',
+    );
+    expect(reconciled).toMatchObject({
+      improved: false,
+      type: 'vacant_land',
+      buildingSqft: null,
+      valuationScope: 'whole_property',
+      wholePropertyPending: false,
+    });
+    expect(reconciled.wholePropertyNote).toBeNull();
+    expect(retained.improved).toBe(true);
   });
 });

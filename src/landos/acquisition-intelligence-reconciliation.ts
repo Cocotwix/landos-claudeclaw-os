@@ -71,6 +71,7 @@ interface Source {
   propertyIntelligence?: unknown;
   marketContext?: unknown;
   dealCard?: unknown;
+  acreageExtent?: unknown;
 }
 
 /**
@@ -83,6 +84,7 @@ export function reconcileMaterialFacts(source: Source): MaterialFactConflict[] {
   const snapshot = at(pi, 'snapshot');
   const lpf = at(pi, 'landPortalFacts');
   const access = at(pi, 'access');
+  const development = at(pi, 'developmentIntelligence');
   const lui = at(pi, 'landUseIntelligence');
   const gis = at(pi, 'officialParcelGis');
   const cv = at(pi, 'compsValuation');
@@ -97,6 +99,11 @@ export function reconcileMaterialFacts(source: Source): MaterialFactConflict[] {
       const acres = num(value);
       if (acres != null && acres > 0) candidates.push({ acres, value: `${fmt(acres)} ac`, source });
     };
+    const canonicalExtentAcres = num(at(source.acreageExtent, 'decision.canonicalAcres'));
+    const canonicalExtentSource = text(at(source.acreageExtent, 'decision.canonicalSource'), 160);
+    if (canonicalExtentAcres != null) {
+      push(canonicalExtentAcres, `Canonical acreage reconciliation${canonicalExtentSource ? ` (${canonicalExtentSource})` : ''}`);
+    }
     const basis = text(at(snapshot, 'identity.acreageBasis'), 40);
     push(at(snapshot, 'identity.acres'), `Canonical parcel identity${basis ? ` (${basis})` : ''}`);
     push(at(lpf, 'acres'), 'LandPortal parcel record');
@@ -106,13 +113,18 @@ export function reconcileMaterialFacts(source: Source): MaterialFactConflict[] {
     const distinct = candidates.filter((candidate, index) =>
       candidates.findIndex((other) => !materiallyDifferent(other.acres, candidate.acres)) === index);
     if (distinct.length > 1) {
-      const official = distinct.find((candidate) => /GIS/i.test(candidate.source));
+      const adoptedCanonical = canonicalExtentAcres == null
+        ? null
+        : distinct.find((candidate) => !materiallyDifferent(candidate.acres, canonicalExtentAcres));
+      const official = adoptedCanonical ?? distinct.find((candidate) => /GIS/i.test(candidate.source));
       conflicts.push({
         subject: 'acreage',
         statement: `Retained acreage differs across sources: ${distinct.map((candidate) => `${candidate.value} (${candidate.source})`).join(' vs ')}.`,
         values: distinct.map(({ value, source: from }) => ({ value, source: from })),
         resolution: official ? 'resolved' : 'unresolved',
-        reason: official
+        reason: adoptedCanonical
+          ? `The retained official acreage/extent reconciliation establishes ${adoptedCanonical.value} as the current parcel. Other figures remain provenance or historical extent, not competing current acreage.`
+          : official
           ? `The official county GIS parcel record outranks the other retained sources for parcel area, so ${official.value} is the working acreage.`
           : 'No retained source outranks the others for parcel area: assessed, listed and valuation acreages are different measurements, not a stronger and a weaker one.',
         decisionAtRisk: 'Price per acre, total value and any lot-yield arithmetic all scale directly with the acreage chosen.',
@@ -149,14 +161,17 @@ export function reconcileMaterialFacts(source: Source): MaterialFactConflict[] {
   }
 
   // ── Access ──────────────────────────────────────────────────────────────
-  // A "not landlocked" parcel flag and an unproven legal-access rung are not
-  // the same claim, and the difference decides whether a deal is buildable.
+  // Acquisition-screening access and recorded/title verification are separate
+  // questions. A road/frontage + not-landlocked read establishes ordinary
+  // operator access; lack of a retained deed instrument remains diligence and
+  // is not a competing current conclusion.
   {
     const landLocked = text(at(lpf, 'access.landLocked'), 20);
     const verifiedLegal = at(access, 'evidence.verifiedLegalAccess') === true;
     const reportedLegal = at(access, 'evidence.reportedLegalAccess') === true;
     const claimsAccess = /^no$/i.test(landLocked ?? '') || /\byes\b/i.test(text(at(access, 'legalAccess'), 80) ?? '');
-    if (claimsAccess && !verifiedLegal) {
+    const screeningEstablished = at(access, 'established') === true;
+    if (claimsAccess && !screeningEstablished && !verifiedLegal) {
       conflicts.push({
         subject: 'access',
         statement: `The parcel record reports access${landLocked ? ` (land locked: ${landLocked})` : ''}, but no recorded instrument establishing legal access has been retained.`,
@@ -168,8 +183,8 @@ export function reconcileMaterialFacts(source: Source): MaterialFactConflict[] {
           },
         ],
         resolution: 'unresolved',
-        reason: 'A parcel flag and apparent physical access are lower rungs than a recorded instrument; only the recorded instrument establishes legal access.',
-        decisionAtRisk: 'Buildability, financeability and resale all depend on legal access actually existing, not on the parcel record saying the tract is not landlocked.',
+        reason: 'The retained property file does not carry enough road/frontage evidence to establish ordinary acquisition-screening access.',
+        decisionAtRisk: 'Ordinary acquisition screening needs a credible way in; recorded/title confirmation remains later diligence after screening access is established.',
       });
     }
   }
@@ -207,7 +222,10 @@ export function reconcileMaterialFacts(source: Source): MaterialFactConflict[] {
     const zoningAuthority = text(at(lui, 'currentZoning.authorityName'), 120)
       ?? text(at(lui, 'authority.municipality'), 120);
     const subdivisionAuthority = text(at(lui, 'subdivision.authorityName'), 120);
-    const key = (value: string | null) => (value ?? '').toLowerCase().replace(/[^a-z]/g, '');
+    const key = (value: string | null) => [...new Set(
+      ((value ?? '').toLowerCase().match(/[a-z]+/g) ?? [])
+        .filter((token) => !/^(?:city|county|of|official|zoning|map|public|character|districts?|planning|codes?|municipal|commission)$/.test(token)),
+    )].join('');
     if (zoningAuthority && subdivisionAuthority && key(zoningAuthority) !== key(subdivisionAuthority)) {
       conflicts.push({
         subject: 'jurisdiction',
@@ -227,6 +245,8 @@ export function reconcileMaterialFacts(source: Source): MaterialFactConflict[] {
   {
     const parcelImproved = at(lpf, 'improvement.improved');
     const valuationImproved = at(cv, 'subjectImprovement.improved');
+    const currentImprovement = text(at(development, 'currentTruth.improvementStatus'), 120);
+    const officialNoBuilding = /no_current_building|no buildings/i.test(currentImprovement ?? '');
     if (typeof parcelImproved === 'boolean' && typeof valuationImproved === 'boolean'
       && parcelImproved !== valuationImproved) {
       conflicts.push({
@@ -236,8 +256,10 @@ export function reconcileMaterialFacts(source: Source): MaterialFactConflict[] {
           { value: parcelImproved ? 'Improved' : 'Vacant', source: 'LandPortal parcel record' },
           { value: valuationImproved ? 'Improved' : 'Vacant land', source: 'LandOS valuation scope' },
         ],
-        resolution: 'unresolved',
-        reason: 'Neither source is a physical inspection, and the valuation scope and the parcel record are describing the subject at different times.',
+        resolution: officialNoBuilding ? 'resolved' : 'unresolved',
+        reason: officialNoBuilding
+          ? 'The current official assessor reconciliation establishes no current building. The older provider improvement claim remains retained as superseded property history.'
+          : 'Neither source is a physical inspection, and the valuation scope and the parcel record are describing the subject at different times.',
         decisionAtRisk: 'Whether the value is a land value or a whole-property value, and whether land comps alone can price the deal.',
       });
     }

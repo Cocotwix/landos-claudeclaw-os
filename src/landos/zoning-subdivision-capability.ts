@@ -386,6 +386,53 @@ export type ZoningSubdivisionFacts = JsonObject & {
   summary: string;
 };
 
+const supersededCurrentZoningGap = (value: string): boolean =>
+  /current zoning|zoning district|parcel-specific zoning gis|establish (?:the )?district|current district/i.test(value);
+
+/**
+ * Compatibility projection for a retained capability invocation. The
+ * invocation remains immutable evidence of what that run knew, while a newer
+ * canonical current-zoning determination wins on every operator read without
+ * rerunning the capability or its research lanes.
+ */
+export function projectZoningSubdivisionWithCurrentTruth(
+  result: CapabilityResult | null,
+  currentZoning: CurrentZoningDetermination | null,
+): CapabilityResult | null {
+  if (!result || !currentZoning?.established || !currentZoning.districtCode) return result;
+  const facts = result.facts as ZoningSubdivisionFacts;
+  const byRight = facts.subdivisionByRight;
+  return {
+    ...result,
+    facts: {
+      ...facts,
+      zoning: {
+        ...facts.zoning,
+        established: true,
+        districtCode: currentZoning.districtCode,
+        districtName: currentZoning.districtName,
+        presence: 'present',
+        statement: `Current zoning: ${currentZoning.districtCode}. Established from current parcel-specific official evidence.`,
+        confidence: currentZoning.confidence,
+        governingAuthority: currentZoning.authorityName,
+        historicalReferences: currentZoning.historicalReferences.concat(currentZoning.requestedZoning).map((row) => ({
+          kind: row.kind,
+          value: row.value,
+          asOf: row.asOf,
+          sourceUrl: row.sourceUrl,
+          neverEstablishesCurrentZoning: true as const,
+        })),
+        limitations: currentZoning.limitations.filter((item) => !supersededCurrentZoningGap(item)),
+      },
+      subdivisionByRight: byRight
+        ? { ...byRight, missingInputs: byRight.missingInputs.filter((item) => !supersededCurrentZoningGap(item)) }
+        : byRight,
+    },
+    warnings: result.warnings.filter((item) => !supersededCurrentZoningGap(item)),
+    missingInformation: result.missingInformation.filter((item) => !supersededCurrentZoningGap(item)),
+  };
+}
+
 /** The canonical subject this capability was handed, never one it chose. */
 interface ZoningSubdivisionSubject {
   propertyCardId: number | null;

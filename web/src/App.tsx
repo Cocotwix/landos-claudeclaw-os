@@ -21,6 +21,7 @@ import { LandOS } from '@/pages/LandOS';
 import { PropertyBoard } from '@/pages/PropertyBoard';
 import { MarketIntelligence } from '@/pages/MarketIntelligence';
 import { MarketResearch } from '@/pages/MarketResearch';
+import { GodsEyeView } from '@/pages/GodsEyeView';
 import { BrowserAgent } from '@/pages/BrowserAgent';
 import { BrowserTraining } from '@/pages/BrowserTraining';
 import { Forge } from '@/pages/Forge';
@@ -78,6 +79,9 @@ export function App() {
           </Route>
           <Route path="/legacy/deal/:id">{(params: { id: string }) => <LegacyDealCard id={params.id} />}</Route>
           <Route path="/dept/market-research"><MarketResearch /></Route>
+          {/* God's Eye View is a full department application (vendored upstream,
+              no iframe), not a generic department hub page. */}
+          <Route path="/dept/gods-eye-view"><GodsEyeView /></Route>
           <Route path="/dept/:slug">{(params: { slug: string }) => <Department slug={params.slug} />}</Route>
           <Route path="/landos"><LandOS /></Route>
           <Route path="/board"><PropertyBoard /></Route>

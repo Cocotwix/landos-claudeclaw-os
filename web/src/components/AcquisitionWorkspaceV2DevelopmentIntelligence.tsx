@@ -5,7 +5,7 @@ export interface DevelopmentIntelligenceView {
   researchStatus: { run: 'complete'; underwriting: 'resolved' | 'material_items_unresolved'; note: string };
   currentTruth: {
     owner: string | null; acreage: number | null; improvementStatus: string; improvementNote: string | null;
-    providerAccessSignal: string; recordedLegalAccess: string; surveyedFrontage: string; physicalEntrance: string;
+    providerAccessSignal: string; recordedLegalAccess: string; surveyedFrontage: string; physicalEntrance: string; accessStatus: string;
   };
   acquisitionHistory: Array<{ date: string | null; event: string; owner: string | null; acreage: number | null; instrument: string | null; consideration: string | null; confidence: string; sourceTitle: string }>;
   documents: Array<{ category: string; title: string; authority: string; instrument: string | null; summary: string; retrievalStatus: string; imageStatus: 'available' | 'not_publicly_available' | 'not_applicable'; sourceUrl: string | null; artifactUrl: string | null }>;
@@ -47,6 +47,7 @@ export function DevelopmentIntelligencePanel({ dossier }: { dossier: Development
 
       <h3>Four separate access questions</h3>
       <div class="awv2-kv">
+        <div><span>Acquisition-screening access</span><b>{current.accessStatus}</b></div>
         <div><span>Provider / physical signal</span><b>{current.providerAccessSignal}</b></div>
         <div><span>Recorded legal access</span><b>{current.recordedLegalAccess}</b></div>
         <div><span>Surveyed frontage</span><b>{current.surveyedFrontage}</b></div>

@@ -424,14 +424,15 @@ describe('reading the workspace runs no GIS research', () => {
   });
 
   // Test 15.
-  it('the readiness strip names what it counts, so it cannot read as a lane count', () => {
+  it('the readiness strip exposes one operator completeness projection, not a second lane count', () => {
     const strip = read('web/src/components/AcquisitionWorkspaceV2ResearchReadiness.tsx');
-    // It measures diligence INPUTS across 19 items; the run panel measures
-    // research LANES. Two different denominators must never both render as a
-    // bare "N / M".
-    expect(strip).toMatch(/research inputs ready/i);
-    expect(strip).toMatch(/not the research lane count|different measure|lane/i);
-    // And it must not borrow the lane vocabulary.
+    expect(strip).toMatch(/operator\.headline/);
+    expect(strip).toMatch(/returned/);
+    expect(strip).toMatch(/partial/);
+    expect(strip).toMatch(/unresolved/);
+    expect(strip).toMatch(/blocked/);
+    expect(strip).toMatch(/not required/i);
+    expect(strip).toMatch(/excluded from the denominator/i);
     expect(strip).not.toMatch(/required lanes returned/);
   });
 });

@@ -14,7 +14,7 @@
 
 import {
   Landmark, Users, Megaphone, Map, Binoculars, GraduationCap,
-  Tag, FileSignature, DollarSign, Cpu, Wrench,
+  Tag, FileSignature, DollarSign, Cpu, Wrench, Globe,
 } from 'lucide-preact';
 
 export type DeptStatus = 'operational' | 'partial' | 'shell';
@@ -115,6 +115,23 @@ export const DEPARTMENTS: DepartmentDef[] = [
     surfaces: [
       { label: 'Market Research workspace', href: '/dept/market-research', description: 'Heat Map + Drill Deep over retained quarterly land market snapshots.', status: 'live' },
       { label: 'Market Intelligence', href: '/market', description: 'The Market Matrix: county-level facts answering where to buy.', status: 'live' },
+    ],
+  },
+  {
+    slug: 'gods-eye-view',
+    label: "God's Eye View",
+    icon: Globe,
+    status: 'operational',
+    purpose: 'The shared spatial environment: a photorealistic 3D globe with live aircraft, ships, satellites, earthquakes, cameras, and infrastructure — full standalone world exploration today, and the spatial surface other departments will open with property context.',
+    primaryQuestion: 'What does the world — or this property — actually look like right now?',
+    records: ['Saved Scene', 'Annotation', 'Measurement', 'Route'],
+    capabilities: [
+      'Photorealistic 3D globe (Google 3D Tiles)', 'Live aircraft & ships', 'Satellites & orbits',
+      'Earthquakes & fires', 'Public cameras', 'Infrastructure layers', 'Annotations & measurements',
+      'Saved scenes & share links',
+    ],
+    surfaces: [
+      { label: "God's Eye View", href: '/dept/gods-eye-view', description: 'The complete world-exploration console, vendored from the open-source upstream.', status: 'live' },
     ],
   },
   {

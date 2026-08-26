@@ -17,10 +17,10 @@
 // state the authority boundary explicitly; bot memory is cognitive, LandOS
 // current evidence is factual truth on every run.
 //
-// Reasoning-only foundation: profiles are created with --no-skills and no
-// browsing/terminal-facing toolsets are granted at invocation time. The
-// governed capability-request seam stays on the LandOS side (MCP bridge);
-// nothing here gives a specialist free research tools.
+// Reasoning-only foundation: profiles are created with --no-skills. LandOS
+// grants governed search only to the Market Stage A invocation; Stage B and
+// every other specialist remain on the non-research clarify toolset. Profile
+// provisioning itself grants no free terminal or research workflow.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -45,7 +45,7 @@ export const SPECIALIST_PROFILES = [
     title: 'Market + Area Intelligence',
     template: 'landos-market',
     description:
-      'LandOS Market + Area Intelligence specialist: reasons over comps, submarkets, liquidity, competition, and area development direction to say what market the subject competes in and what the area means for value and strategy. Never researches; requests bounded LandOS verification.',
+      'LandOS Market + Area Intelligence specialist: reads the complete market file and may use governed public web search for material gaps and time-sensitive market evidence. LandOS remains canonical.',
     vision: false,
   },
   {
@@ -143,6 +143,10 @@ function verifyProfile(spec) {
     }
     if (config?.memory?.memory_enabled !== true) failures.push(`${spec.name}: memory.memory_enabled is not true`);
     if (config?.memory?.user_profile_enabled !== true) failures.push(`${spec.name}: memory.user_profile_enabled is not true`);
+    if (spec.name === 'landos-market') {
+      if (String(config?.web?.backend || '').trim() !== 'ddgs') failures.push(`${spec.name}: web.backend is not ddgs`);
+      if (String(config?.web?.search_backend || '').trim() !== 'ddgs') failures.push(`${spec.name}: web.search_backend is not ddgs`);
+    }
     if (spec.vision) {
       if (!String(config?.auxiliary?.vision?.provider || '').trim()) failures.push(`${spec.name}: auxiliary.vision.provider is not set`);
       if (!String(config?.auxiliary?.vision?.model || '').trim()) failures.push(`${spec.name}: auxiliary.vision.model is not set`);
@@ -190,6 +194,10 @@ function provisionProfile(spec) {
   set('memory.user_profile_enabled', 'true');
   set('terminal.backend', 'local');
   set('terminal.cwd', workspace);
+  if (spec.name === 'landos-market') {
+    set('web.backend', 'ddgs');
+    set('web.search_backend', 'ddgs');
+  }
   if (spec.vision) {
     set('auxiliary.vision.provider', SPECIALIST_VISION_PROVIDER);
     set('auxiliary.vision.model', SPECIALIST_VISION_MODEL);
@@ -201,6 +209,14 @@ function provisionProfile(spec) {
   for (const [sourceRelative, targetRelative] of SEEDED) {
     const target = path.join(profileHome, targetRelative);
     if (!fs.existsSync(target)) copyFile(path.join(templates, sourceRelative), target);
+    else if (spec.name === 'landos-market' && targetRelative === path.join('memories', 'MEMORY.md')) {
+      // One narrow migration for the obsolete research prohibition. Preserve
+      // every other learned memory line in the persistent profile.
+      const obsolete = 'LandOS is the canonical system of record. This profile reasons over market evidence LandOS assembled; it never collects evidence, never researches, and never writes a comp, valuation, band, or deal state.';
+      const replacement = fs.readFileSync(path.join(templates, sourceRelative), 'utf8').split(/\r?\n/, 1)[0];
+      const current = fs.readFileSync(target, 'utf8');
+      if (current.includes(obsolete)) fs.writeFileSync(target, current.replace(obsolete, replacement), 'utf8');
+    }
   }
 }
 

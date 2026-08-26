@@ -152,7 +152,12 @@ interface DealResp {
 }
 interface AcqResp {
   stageLabel?: string;
-  acquisition?: { stage?: string; profile?: { nextFollowUpDate?: string }; commLog?: unknown[]; discovery?: unknown[] };
+  acquisition?: {
+    stage?: string;
+    profile?: { name?: string; phone?: string; email?: string; nextFollowUpDate?: string };
+    commLog?: unknown[];
+    discovery?: unknown[];
+  };
   nextAction?: { label?: string; reason?: string };
 }
 interface ActivityResp { events?: { kind: string; summary: string; createdAt: number }[] }
@@ -357,15 +362,11 @@ export function AcquisitionWorkspaceV2() {
       try {
         const [d, i, a, act, bu] = await Promise.all([
           apiGet<DealResp>(`/api/landos/deal-cards/${dealId}`),
-          apiGet<IntelResp>(`/api/landos/deal-cards/${dealId}/property-intelligence`),
-          apiGet<AcqResp>(`/api/landos/deal-cards/${dealId}/acquisition`).catch(() => null),
+          apiGet<IntelResp>(`/api/landos/deal-cards/${dealId}/property-intelligence?view=workspace-v2`),
+          apiGet<AcqResp>(`/api/landos/deal-cards/${dealId}/acquisition?view=workspace-v2-overview`).catch(() => null),
           apiGet<ActivityResp>(`/api/landos/deal-cards/${dealId}/activity`).catch(() => null),
           apiGet<BrowseruseResp>(`/api/landos/deal-cards/${dealId}/browseruse`).catch(() => null),
         ]);
-        const rr = await apiGet<{ manifest?: ResearchReadinessManifestView }>(
-          `/api/landos/deal-cards/${dealId}/research-readiness`,
-        ).catch(() => null);
-        const ai = await apiGet<IntelligenceStackResp>(`/api/landos/deal-cards/${dealId}/intelligence`).catch(() => null);
         if (dead) return;
         setDeal(d); setSnap(i?.propertyIntelligence?.snapshot ?? null); setMarket(i?.marketContext ?? null); setAcq(a); setActivity(act);
         setSoils(bu?.soilDetails ?? null);
@@ -383,6 +384,19 @@ export function AcquisitionWorkspaceV2() {
         setCompsValuation(i?.propertyIntelligence?.compsValuation ?? null);
         setLandPortalFacts(i?.propertyIntelligence?.landPortalFacts ?? i?.landPortalFacts ?? null);
         setTaxStatus(i?.propertyIntelligence?.taxStatus ?? null);
+        // Overview is usable from the canonical Deal, Property and Acquisition
+        // reads above. Research Readiness and the specialist stack are
+        // secondary persisted projections; let them hydrate immediately after
+        // first paint instead of keeping the entire workspace behind their
+        // expensive staleness/read-model rebuilds.
+        setLoading(false);
+        const [rr, ai] = await Promise.all([
+          apiGet<{ manifest?: ResearchReadinessManifestView }>(
+            `/api/landos/deal-cards/${dealId}/research-readiness`,
+          ).catch(() => null),
+          apiGet<IntelligenceStackResp>(`/api/landos/deal-cards/${dealId}/intelligence`).catch(() => null),
+        ]);
+        if (dead) return;
         setReadiness(rr?.manifest ?? null);
         setAiRead(ai?.products?.deal ?? null);
         setAiReadiness(ai?.sufficiency ? { ok: ai.sufficiency.ok, reason: ai.sufficiency.reason } : null);
@@ -670,7 +684,14 @@ export function AcquisitionWorkspaceV2() {
   // label; the two are different measures and must never share a name.
   const followUp = acq?.acquisition?.profile?.nextFollowUpDate || null;
 
-  const seller = deal?.dealCard?.people?.[0] || null;
+  // Seller identity belongs to the Acquisitions profile even when the Deal
+  // Card has no duplicated person row. This does not manufacture seller
+  // intelligence: the specialist layer independently remains pre-contact
+  // until communication evidence exists.
+  const acquisitionSeller = acq?.acquisition?.profile;
+  const seller = acquisitionSeller?.name
+    ? { name: acquisitionSeller.name, phone: acquisitionSeller.phone, email: acquisitionSeller.email }
+    : deal?.dealCard?.people?.[0] || null;
   const askingPrice = deal?.dealCard?.asking_price ?? null;
   const cvSummary = compsValuation?.summary ?? null;
   const canonicalValuationSummary = cvSummary;

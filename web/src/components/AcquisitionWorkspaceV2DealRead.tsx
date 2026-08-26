@@ -106,6 +106,12 @@ export function DealReadCard({
       {digest && (
         <>
           {digest.judgment && <p class="awv2-ai-judgment">{digest.judgment}</p>}
+          {read?.bestCurrentStrategy?.strategy && (
+            <p class="awv2-specialist-line" data-testid="best-current-executable-strategy"><b>Best Current Executable Strategy</b> {read.bestCurrentStrategy.strategy}{read.bestCurrentStrategy.why ? ` — ${read.bestCurrentStrategy.why}` : ''}</p>
+          )}
+          {read?.highestUpsideHypothesis?.strategy && (
+            <p class="awv2-specialist-line" data-testid="highest-upside-hypothesis"><b>Highest-Upside Hypothesis</b> {read.highestUpsideHypothesis.strategy}{read.highestUpsideHypothesis.why ? ` — ${read.highestUpsideHypothesis.why}` : ''}</p>
+          )}
 
           <div class="awv2-dealread-columns">
             {digest.interesting.length > 0 && (

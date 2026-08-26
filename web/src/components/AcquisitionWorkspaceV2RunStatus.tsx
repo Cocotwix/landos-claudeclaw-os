@@ -254,9 +254,9 @@ export function PropertyIntelligenceRunStatus(props: {
             The diagnostic "how many lanes ran" is still available by
             expanding the lane list below.
           */}
-          {!running && outcomes && outcomes.requiredTotal > 0 && (
+          {!running && outcomes && outcomes.requiredTotal > 0 && expanded && (
             <div class="awv2-runstatus-current" data-testid="run-status-lane-outcomes">
-              <b>{outcomes.headline}</b>
+              <b>Run-lane execution detail: {outcomes.headline}</b>
               <span class="awv2-runstatus-outcome-breakdown"> · {outcomes.breakdown}</span>
             </div>
           )}

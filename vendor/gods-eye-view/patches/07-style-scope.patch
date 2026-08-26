@@ -1,0 +1,14 @@
+--- /c/Users/tbutt/AppData/Local/Temp/claude/C--Users-tbutt-claudeclaw-os/c050059c-8b26-4002-94ee-3e936b218858/scratchpad/gev-review/src/style.css	2026-08-24 18:02:16.000000000 -0400
++++ vendor/gods-eye-view/upstream/style.css	2026-08-25 12:12:32.181658900 -0400
+@@ -36,7 +36,10 @@
+   box-sizing: border-box;
+ }
+ 
+-html, body {
++/* LandOS patch 07: page-level rules apply only while the God's Eye View
++   route is active (html.gev-active toggled by the host adapter), so the
++   stylesheet can stay loaded without restyling the rest of LandOS. */
++html.gev-active, html.gev-active body {
+   width: 100%;
+   height: 100%;
+   overflow: hidden;

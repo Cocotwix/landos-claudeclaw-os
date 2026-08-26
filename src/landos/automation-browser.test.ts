@@ -5,7 +5,7 @@
 // debugging port. These tests pin the question that actually matters: is this
 // MY Chrome, running MY profile?
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_AUTOMATION_PORT,
@@ -123,6 +123,33 @@ describe('verifyAutomationOwnership', () => {
     });
     expect(result.owned).toBe(false);
     expect(result.reason).toContain('declares no --user-data-dir');
+  });
+
+  it('retries a transient empty Windows process query without weakening profile ownership', async () => {
+    const commandLine = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(`chrome.exe --remote-debugging-port=9224 --user-data-dir=${LANDOS_PROFILE} --no-first-run`);
+    const result = await verifyAutomationOwnership(config(), {
+      fetchImpl: versionResponder(CHROME_VERSION),
+      pidForPort: async () => 35708,
+      commandLine,
+      sleep: async () => undefined,
+    });
+    expect(result.owned).toBe(true);
+    expect(commandLine).toHaveBeenCalledTimes(2);
+  });
+
+  it('still fails closed after three unreadable process queries', async () => {
+    const commandLine = vi.fn(async () => null);
+    const result = await verifyAutomationOwnership(config(), {
+      fetchImpl: versionResponder(CHROME_VERSION),
+      pidForPort: async () => 45708,
+      commandLine,
+      sleep: async () => undefined,
+    });
+    expect(result.owned).toBe(false);
+    expect(result.reason).toContain('after 3 bounded attempts; refusing to attach');
+    expect(commandLine).toHaveBeenCalledTimes(3);
   });
 
   it('refuses a foreign runtime squatting the port', async () => {

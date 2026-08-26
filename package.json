@@ -75,7 +75,8 @@
     "agent:start": "node dist/index.js --agent",
     "uninstall": "bash scripts/uninstall.sh",
     "build:warroom-client": "esbuild warroom/client.js --bundle --outfile=warroom/client.bundle.js --format=iife --global-name=PipecatWarRoom",
-    "landos:browser": "tsx src/landos/automation-browser-cli.ts"
+    "landos:browser": "tsx src/landos/automation-browser-cli.ts",
+    "landos:browser:qa": "tsx scripts/qa/landos-browser-qa-cli.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.1",

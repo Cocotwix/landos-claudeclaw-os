@@ -1,0 +1,200 @@
+--- /c/Users/tbutt/AppData/Local/Temp/claude/C--Users-tbutt-claudeclaw-os/c050059c-8b26-4002-94ee-3e936b218858/scratchpad/gev-review/src/src/main.js	2026-08-24 18:02:16.000000000 -0400
++++ vendor/gods-eye-view/upstream/src/main.js	2026-08-25 12:57:53.078487200 -0400
+@@ -32,8 +32,11 @@
+ } from './renderGovernor.js';
+ import { installScopeMask } from './scopeMask.js';
+ import { initFirstRunExperience } from './firstRunExperience.js';
++import { destroyScopeMask } from './scopeMask.js';
+ 
+-initLogoGaze();
++// LandOS patch 02 (see ../patches/PATCHES.md): logo gaze starts inside init()
++// so the host can remove its window listeners on destroy. Standalone upstream
++// behavior is preserved by the auto-boot guard at the bottom of this file.
+ 
+ /**
+  * Extract a human-readable error message from any thrown value.
+@@ -66,28 +69,42 @@
+  * Initializes CesiumJS with Google Photorealistic 3D Tiles,
+  * style system, intelligence HUD, location presets, and share links.
+  */
+-async function init() {
++async function init(hostOptions = {}) {
+   const loadingScreen = document.getElementById('loading-screen');
+   const loaderStatus = loadingScreen.querySelector('.loader-status');
+ 
+   try {
+     loaderStatus.textContent = 'Configuring viewer...';
+ 
++    const removeLogoGaze = initLogoGaze();
++
+     // Set Cesium Ion token for World Terrain
+-    const cesiumToken = import.meta.env.CESIUM_ION_TOKEN;
++    // LandOS patch 02: token may arrive from the host at runtime instead of a
++    // build-time define. Neither is configured in LandOS today.
++    const cesiumToken = hostOptions.cesiumIonToken || import.meta.env.CESIUM_ION_TOKEN;
+     if (cesiumToken) {
+       Cesium.Ion.defaultAccessToken = cesiumToken;
+     }
+ 
+     // Set Google Maps API key for 3D Tiles
+-    const googleApiKey = import.meta.env.GOOGLE_MAPS_API_KEY;
+-    if (!googleApiKey) {
+-      throw new Error('GOOGLE_MAPS_API_KEY not found. Set it as an environment variable.');
++    // LandOS patch 02: the key is a runtime value from the host (operator
++    // Settings), never baked into the bundle. A missing key no longer aborts
++    // the app — the keyless OSM/Cesium-globe path below is the honest
++    // fallback, matching the tileset-failure behavior upstream already has.
++    const googleApiKey = hostOptions.googleMapsKey || import.meta.env.GOOGLE_MAPS_API_KEY || '';
++    if (googleApiKey) {
++      Cesium.GoogleMaps.defaultApiKey = googleApiKey;
+     }
+-    Cesium.GoogleMaps.defaultApiKey = googleApiKey;
+-
+-    // Expose API key globally for geocoding in locations.js
+-    window.__GOOGLE_MAPS_API_KEY__ = googleApiKey;
++    // LandOS patch 02: the window global feeds the client-side Google
++    // GEOCODING calls (locations.js, annotationResolver.js, voice actions).
++    // Under the host, the approved key is Map-Tiles-only, so geocoding stays
++    // hard-off unless the host explicitly opts in later — this guarantees the
++    // Geocoding API is never contacted regardless of how the key is
++    // restricted, not merely expected to fail. Geocoded search degrades to
++    // its honest unavailable state.
++    window.__GOOGLE_MAPS_API_KEY__ = (googleApiKey && hostOptions.enableGeocoding === true)
++      ? googleApiKey
++      : undefined;
+ 
+     // Create the Cesium viewer with minimal chrome
+     const viewer = new Cesium.Viewer('cesiumContainer', {
+@@ -153,23 +170,50 @@
+     viewer.scene.skyAtmosphere.saturationShift = -0.12;
+     viewer.scene.skyAtmosphere.brightnessShift = -0.08;
+ 
+-    loaderStatus.textContent = 'Loading Google 3D Tiles...';
+     let tileset = null;
+-    try {
+-      // Load Google Photorealistic 3D Tiles
+-      tileset = await Cesium.createGooglePhotorealistic3DTileset({
+-        onlyUsingWithGoogleGeocoder: true,
+-      });
+-      viewer.scene.primitives.add(tileset);
+-      // NOTE: Cesium World Terrain intentionally disabled — conflicts with Google 3D Tiles at high zoom.
+-      // Google Photorealistic 3D Tiles provide their own terrain/elevation.
+-      viewer.scene.globe.show = false;
+-    } catch (tileError) {
+-      console.warn('[Init] Google 3D Tiles unavailable, falling back to Cesium globe:', tileError);
+-      const tileErrorDetail = describeError(tileError);
+-      loaderStatus.textContent = `Google 3D Tiles unavailable (${tileErrorDetail}). Continuing in fallback mode...`;
+-      // Keep Cesium globe visible as fallback instead of aborting the app.
++    let googleSessionBlocked = false;
++    if (!googleApiKey) {
++      // LandOS patch 02: honest keyless state — no Google request is made.
++      loaderStatus.textContent = 'Google 3D Tiles not configured. Continuing with the keyless map...';
+       viewer.scene.globe.show = true;
++    } else {
++      // LandOS patch 02: session safeguard gate. Creating the root tileset is
++      // the billable Google session; the host may refuse it (monthly local
++      // limit reached) and the app continues on the keyless map instead.
++      let allowSession = true;
++      if (typeof hostOptions.beforeGoogleSession === 'function') {
++        try {
++          allowSession = (await hostOptions.beforeGoogleSession()) !== false;
++        } catch {
++          allowSession = true;
++        }
++      }
++      if (!allowSession) {
++        googleSessionBlocked = true;
++        loaderStatus.textContent = 'Google 3D Tiles paused by the monthly session safeguard. Continuing with the keyless map...';
++        viewer.scene.globe.show = true;
++      } else {
++        loaderStatus.textContent = 'Loading Google 3D Tiles...';
++        try {
++          // Load Google Photorealistic 3D Tiles
++          tileset = await Cesium.createGooglePhotorealistic3DTileset({
++            onlyUsingWithGoogleGeocoder: true,
++          });
++          viewer.scene.primitives.add(tileset);
++          // NOTE: Cesium World Terrain intentionally disabled — conflicts with Google 3D Tiles at high zoom.
++          // Google Photorealistic 3D Tiles provide their own terrain/elevation.
++          viewer.scene.globe.show = false;
++          // LandOS patch 02: report the (single, boot-time) session creation
++          // to the host's local usage counter.
++          try { hostOptions.onGoogleSessionCreated?.(); } catch { /* counter is best-effort */ }
++        } catch (tileError) {
++          console.warn('[Init] Google 3D Tiles unavailable, falling back to Cesium globe:', tileError);
++          const tileErrorDetail = describeError(tileError);
++          loaderStatus.textContent = `Google 3D Tiles unavailable (${tileErrorDetail}). Continuing in fallback mode...`;
++          // Keep Cesium globe visible as fallback instead of aborting the app.
++          viewer.scene.globe.show = true;
++        }
++      }
+     }
+ 
+     loaderStatus.textContent = 'Initializing systems...';
+@@ -324,7 +368,22 @@
+       getRenderGovernorDiagnostics,
+       requestRender: governorRequestRender,
+     };
+-    window.__godsEyeView.voiceCommands = initGevVoiceCommands({ viewer, styleManager, dataManager, sceneDirector, annotations });
++    // LandOS patch 02: voice is disabled by default under the host. When it is
++    // off, the voice UI is never injected, no document listeners are bound, no
++    // microphone permission can be requested, and no /api/realtime endpoint is
++    // ever called (those endpoints are not mounted by the host anyway).
++    window.__godsEyeView.voiceCommands = hostOptions.enableVoice === true
++      ? initGevVoiceCommands({ viewer, styleManager, dataManager, sceneDirector, annotations })
++      : null;
++
++    // LandOS patch 02: handles the host needs for suspend/destroy plus honest
++    // provider state for the host UI.
++    window.__godsEyeView.host = {
++      removeLogoGaze,
++      syncVisibilitySuspension,
++      googleKeyConfigured: Boolean(googleApiKey),
++      googleSessionBlocked,
++    };
+ 
+   } catch (error) {
+     console.error("God's Eye View initialization failed:", error);
+@@ -333,4 +392,41 @@
+   }
+ }
+ 
+-init();
++/**
++ * LandOS patch 02 — host lifecycle API.
++ * mountGodsEyeView() runs the normal boot against DOM the host has already
++ * injected; destroyGodsEyeView() is the whole-app teardown upstream never
++ * needed (it owns the page, the host does not).
++ */
++export async function mountGodsEyeView(hostOptions = {}) {
++  await init(hostOptions);
++  return window.__godsEyeView || null;
++}
++
++export async function destroyGodsEyeView() {
++  const app = window.__godsEyeView;
++  if (!app) return;
++  try { app.voiceCommands?.stop?.({ removeUi: true }); } catch { /* teardown is best-effort */ }
++  try { await app.dataManager?.destroyAll?.(); } catch { /* teardown is best-effort */ }
++  try { app.styleManager?.hud?.destroy?.(); } catch { /* teardown is best-effort */ }
++  try { app.cockpitCloudEffects?.destroy?.(); } catch { /* teardown is best-effort */ }
++  try { destroyScopeMask(); } catch { /* teardown is best-effort */ }
++  try { app.host?.removeLogoGaze?.(); } catch { /* teardown is best-effort */ }
++  if (app.host?.syncVisibilitySuspension) {
++    try { document.removeEventListener('visibilitychange', app.host.syncVisibilitySuspension); } catch { /* best-effort */ }
++  }
++  try { app.viewer?.destroy?.(); } catch { /* teardown is best-effort */ }
++  for (const selector of ['#cesium-credits', '#gev-screen-whiteboard-styles', '.gev-screen-whiteboard']) {
++    try { document.querySelectorAll(selector).forEach((el) => el.remove()); } catch { /* best-effort */ }
++  }
++  document.body.classList.remove('cockpit-mode', 'ui-clean-view', 'recording-mode', 'scene-playback-mode');
++  try { delete document.documentElement.dataset.gevStyle; } catch { /* best-effort */ }
++  window.__godsEyeView = undefined;
++  window.__gevAnnotations = undefined;
++  window.__GOOGLE_MAPS_API_KEY__ = undefined;
++}
++
++// Standalone upstream behavior: boot immediately. Under the LandOS host the
++// page sets window.__GEV_HOSTED__ = true before importing this module and
++// calls mountGodsEyeView() itself.
++if (!window.__GEV_HOSTED__) init();

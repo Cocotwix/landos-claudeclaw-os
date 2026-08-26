@@ -213,6 +213,32 @@ export interface SpecialistExecutionPlan {
     dossier: AcquisitionDossier,
     observations: VisualObservationDraft[],
   ) => string;
+  /** Property Stage A: free expert review over the complete Property file plus
+   * grounded observations. Natural prose, preserved verbatim. */
+  propertyReviewPrompt?: (
+    dossier: AcquisitionDossier,
+    observations: VisualObservationDraft[],
+  ) => string;
+  /** Property Stage B extraction over the exact Stage A review. */
+  propertyExtractionPrompt?: (
+    expertReview: string,
+    dossier: AcquisitionDossier,
+    observations: VisualObservationDraft[],
+  ) => string;
+  /** Market-only Stage A, built after Property has completed. Its output is
+   * natural expert prose and is preserved verbatim. */
+  marketReviewPrompt?: (
+    propertyLayer: unknown,
+    dossier: AcquisitionDossier,
+    observations: VisualObservationDraft[],
+  ) => string;
+  /** Market-only Stage B extraction over the exact Stage A review. */
+  marketExtractionPrompt?: (
+    propertyLayer: unknown,
+    expertReview: string,
+    dossier: AcquisitionDossier,
+    observations: VisualObservationDraft[],
+  ) => string;
   /** The Deal Brain prompt, built AFTER the specialist layers return so the
    *  chair synthesizes from the fresh structured products. */
   dealPrompt: (
@@ -243,6 +269,10 @@ export interface AnalystRunOutput {
   /** Per-layer execution provenance when layers ran on different profiles.
    *  Absent on the legacy single-pass analyst. */
   layerRuntimes?: Partial<Record<SpecialistModelLayer, AcquisitionIntelligenceRuntime>>;
+  /** Exact Market Stage A prose when the two-stage Market path ran. */
+  marketExpertReview?: string;
+  /** Exact Property Stage A prose when the two-stage Property path ran. */
+  propertyExpertReview?: string;
 }
 
 /** The seam every caller uses. Tests substitute a fake; nothing outside this

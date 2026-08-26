@@ -95,6 +95,22 @@ describe('Property Intelligence API', () => {
     expect(body.marketContext.fastestBand.available).toBe(false);
   });
 
+  it('serves the bounded Workspace V2 projection without compatibility duplicates', async () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'PI workspace projection card' });
+    const res = await app.request(withToken(`/api/landos/deal-cards/${deal.id}/property-intelligence?view=workspace-v2`));
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, any>;
+    expect(body.propertyIntelligence).toBeDefined();
+    expect(body.propertyIntelligence).toHaveProperty('snapshot');
+    expect(body.propertyIntelligence).toHaveProperty('compsValuation');
+    expect(body).toHaveProperty('marketContext');
+    expect(body).toHaveProperty('landPortalFacts');
+    expect(body.propertyIntelligence).not.toHaveProperty('mission');
+    expect(body.propertyIntelligence).not.toHaveProperty('history');
+    expect(body).not.toHaveProperty('documentRegistry');
+    expect(body).not.toHaveProperty('compsValuation');
+  });
+
   it('returns the persisted snapshot and specialist roster once a run exists', async () => {
     const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'PI snapshot card' });
     const store = new PropertyIntelligenceStore();

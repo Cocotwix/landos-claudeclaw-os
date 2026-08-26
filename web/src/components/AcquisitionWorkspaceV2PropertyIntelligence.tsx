@@ -118,6 +118,7 @@ export interface AccessPresentationView {
   developmentIntelligence?: DevelopmentIntelligenceView | null;
   road: string | null;
   legalAccess: string | null;
+  recordedLegalAccess?: string | null;
   frontageFt: number | null;
   apparentEntrance: string;
   apparentEntranceConfirmed: boolean;
@@ -818,7 +819,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
     },
     { label: 'Working frontage', value: workingFrontage ?? '', sub: frontageConflict ? 'sources conflict' : landPortalFrontage ? 'mapped parcel frontage' : null, tone: frontageConflict ? 'warn' : 'neutral' },
     { label: 'Road', value: accessView?.road || roadName || '', sub: roadName ? 'situs road' : null },
-    { label: 'Recorded legal access', value: accessView?.legalAccess || 'Not verified', sub: 'requires a retained recorded instrument or title confirmation', tone: accessView?.established ? 'good' : 'warn' },
+    { label: 'Recorded legal access', value: accessView?.recordedLegalAccess || 'Not verified', sub: 'requires a retained recorded instrument or title confirmation', tone: accessView?.recordedLegalAccess ? 'good' : 'warn' },
   ];
 
   const terrainMetrics: DxMetric[] = [
@@ -1062,7 +1063,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
               label="Access"
               value="Established"
               tone="good"
-              note={`${accessView.legalAccess ?? 'Verified by retained recorded evidence'}. Provider and physical signals are shown separately.`}
+              note={`${accessView.legalAccess ?? 'LandPortal reports mapped road frontage and Not Landlocked.'} Recorded-instrument review remains ordinary closing diligence and does not downgrade the acquisitions conclusion.`}
               testId="pi-access-established"
             />
           ) : (
@@ -1081,7 +1082,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             <ConflictBanner
               subject="Mapped frontage"
               span={frontageSpan!}
-              resolution="Exact surveyed frontage and recorded legal access require separate confirmation. Narrow or uncertain frontage may materially affect subdivision or development."
+              resolution="Exact frontage requires confirmation. Recorded legal access requires separate confirmation. Narrow or uncertain frontage may materially affect subdivision or development."
             />
           )}
           <WhatItMeans read={aiRead} topic="access" />

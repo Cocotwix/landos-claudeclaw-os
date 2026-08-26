@@ -346,6 +346,8 @@ export interface ResearchReadinessProbe {
    * such as an unavailable lane (red, a backfill candidate).
    */
   unresolved?: boolean;
+  /** A usable but incomplete return, distinct from a fully unresolved answer. */
+  partial?: boolean;
   lastAttemptAt?: string | null;
   lastSuccessAt?: string | null;
   /** Concise operator-facing explanation of the state. */
@@ -370,6 +372,7 @@ export interface ResearchReadinessManifestItem {
   attempted: boolean;
   technicalSuccess: boolean;
   usableEvidence: boolean;
+  partial: boolean;
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   reason: string;
@@ -422,6 +425,46 @@ export interface ResearchReadinessManifest {
   };
   /** Item ids a targeted backfill would run right now, stale items excluded. */
   backfillCandidates: string[];
+  /** One operator-facing projection over the internal workflow accounting. */
+  operatorCompleteness: OperatorResearchCompleteness;
+}
+
+export type OperatorResearchOutcome = 'returned' | 'partial' | 'unresolved' | 'blocked' | 'not_required';
+
+export interface OperatorResearchCompleteness {
+  returned: number;
+  denominator: number;
+  partial: number;
+  unresolved: number;
+  blocked: number;
+  notRequired: number;
+  headline: string;
+  items: Array<{ id: string; label: string; outcome: OperatorResearchOutcome; reason: string }>;
+}
+
+export function projectOperatorResearchCompleteness(items: ResearchReadinessManifestItem[]): OperatorResearchCompleteness {
+  const projected = items.map((item) => {
+    const outcome: OperatorResearchOutcome = item.status === 'gray' ? 'not_required'
+      : item.status === 'red' ? 'blocked'
+        : item.status === 'blue' || item.partial ? 'partial'
+          : item.status === 'yellow' ? 'unresolved'
+            : 'returned';
+    return { id: item.id, label: item.label, outcome, reason: item.reason };
+  });
+  const count = (outcome: OperatorResearchOutcome) => projected.filter((item) => item.outcome === outcome).length;
+  const returned = count('returned');
+  const notRequired = count('not_required');
+  const denominator = projected.length - notRequired;
+  return {
+    returned,
+    denominator,
+    partial: count('partial'),
+    unresolved: count('unresolved'),
+    blocked: count('blocked'),
+    notRequired,
+    headline: `${returned} / ${denominator} Returned`,
+    items: projected,
+  };
 }
 
 const STATUS_LABEL: Record<ResearchReadinessStatus, string> = {
@@ -584,6 +627,7 @@ export function buildResearchReadinessManifest(input: ResearchReadinessManifestI
       attempted: probe.attempted,
       technicalSuccess: probe.technicalSuccess,
       usableEvidence: probe.usableEvidence,
+      partial: probe.partial === true,
       lastAttemptAt: probe.lastAttemptAt ?? null,
       lastSuccessAt: probe.lastSuccessAt ?? null,
       reason,
@@ -606,6 +650,7 @@ export function buildResearchReadinessManifest(input: ResearchReadinessManifestI
   };
 
   const inGroup = (group: ResearchReadinessGroup) => items.filter((item) => item.group === group);
+  const operatorCompleteness = projectOperatorResearchCompleteness(items);
   return {
     contractVersion: 'research-readiness-manifest-v1',
     dealCardId: input.dealCardId,
@@ -623,6 +668,7 @@ export function buildResearchReadinessManifest(input: ResearchReadinessManifestI
     backfillCandidates: items
       .filter((item) => item.status === 'red' && item.machineBackfillAllowed)
       .map((item) => item.id),
+    operatorCompleteness,
   };
 }
 

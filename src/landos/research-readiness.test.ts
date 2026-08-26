@@ -428,6 +428,28 @@ describe('research readiness — intelligence-ready groups', () => {
     expect(manifest.groups.deal.ready).toBe(true);
     expect(manifest.groups.deal.blockingMachineGaps).toEqual([]);
   });
+
+  it('projects one operator completeness count and excludes Not Required from the denominator', () => {
+    const manifest = buildResearchReadinessManifest({
+      dealCardId: 9, propertyCardId: 10, now: NOW,
+      probes: RESEARCH_READINESS_ITEMS.map((item, index) => probe({
+        itemId: item.id,
+        applicable: item.id === 'seller_information' ? false : true,
+        attempted: index !== 2,
+        technicalSuccess: index !== 2,
+        usableEvidence: index > 2 && item.id !== 'seller_information',
+        partial: index === 1,
+        unresolved: index === 0 || index === 1,
+        lastSuccessAt: index > 2 ? RECENT : null,
+        reason: `fixture ${item.id}`,
+      })),
+    });
+    expect(manifest.operatorCompleteness.denominator).toBe(RESEARCH_READINESS_ITEMS.length - 1);
+    expect(manifest.operatorCompleteness.notRequired).toBe(1);
+    expect(manifest.operatorCompleteness.blocked).toBe(1);
+    expect(manifest.operatorCompleteness.partial).toBe(1);
+    expect(manifest.operatorCompleteness.headline).toMatch(/^\d+ \/ \d+ Returned$/);
+  });
 });
 
 describe('research readiness — no research on page load', () => {

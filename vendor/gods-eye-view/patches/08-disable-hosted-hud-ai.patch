@@ -1,0 +1,22 @@
+--- upstream/src/hud.js
++++ vendor/gods-eye-view/upstream/src/hud.js
+@@
+   constructor(viewer) {
+     this.viewer = viewer;
++    // LandOS hosted mode keeps deterministic HUD text and never calls the
++    // deliberately unmounted OpenAI summary endpoint.
++    this._aiSummaryEnabled = window.__GEV_HOSTED__ !== true;
+@@
+-      if (!this._firstSummaryKicked && this._visible && this._latestMetrics) {
++      if (this._aiSummaryEnabled && !this._firstSummaryKicked && this._visible && this._latestMetrics) {
+@@
+-    this._summaryInterval = setInterval(() => {
++    if (this._aiSummaryEnabled) this._summaryInterval = setInterval(() => {
+@@
+   async _updateSummary(animate = false, force = false) {
+     const fallbackText = this._composeSummary();
++    if (!this._aiSummaryEnabled) {
++      this._setSummaryText(fallbackText, animate);
++      this._summaryDirty = false;
++      return;
++    }

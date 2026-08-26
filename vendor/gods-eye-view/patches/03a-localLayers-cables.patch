@@ -1,0 +1,20 @@
+--- /c/Users/tbutt/AppData/Local/Temp/claude/C--Users-tbutt-claudeclaw-os/c050059c-8b26-4002-94ee-3e936b218858/scratchpad/gev-review/src/src/data/localLayers.js	2026-08-24 18:02:16.000000000 -0400
++++ vendor/gods-eye-view/upstream/src/data/localLayers.js	2026-08-25 12:06:43.122323900 -0400
+@@ -1,6 +1,9 @@
+ import { createLocalGeoJsonLayer } from './localGeojson.js';
+ import { createFirmsHeatmapLayer } from './firmsHeatmap.js';
+-import submarineCablesLayer from './telegeographySubmarineCables.js';
++// LandOS patch 03: submarine cables layer removed. The bundled TeleGeography
++// dataset is CC BY-NC-SA (NonCommercial) and this installation supports a
++// business, so the data folder is excluded from the vendored copy and the
++// layer is not registered. See ../patches/PATCHES.md.
+ 
+ // Use Vite's ?url import to properly resolve these assets in dev and build
+ import datacentersUrl from './local_data/datacenters/datacenters.geojsonl?url';
+@@ -47,6 +50,5 @@
+ export default [
+   datacenters,
+   dams,
+-  submarineCablesLayer,
+   fires,
+ ];

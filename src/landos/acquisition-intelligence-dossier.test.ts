@@ -66,6 +66,88 @@ describe('what the dossier carries', () => {
     expect(dossier.visuals.map((visual) => visual.key)).toEqual(['close_parcel_aerial', 'surrounding_area_aerial']);
   });
 
+  it('aligns the live Market producer contract and preserves complete research, Pulse, and actual competitive records', () => {
+    const source = file();
+    const pi = source.propertyIntelligence as Record<string, any>;
+    pi.compsValuation = {
+      summary: { statusLabel: 'Priceable', workingAcres: 51.11, acceptedCount: 1 },
+      counts: { accepted_closed_sale: 1, active_competition: 1 },
+      comps: [
+        { key: 'sold-1', category: 'accepted_closed_sale', categoryLabel: 'Accepted sale', classificationReason: 'Same market', address: '1 Sold Rd', statusLabel: 'Sold', transactionKind: 'closed_sale', priceKind: 'sale', price: 510000, acres: 51, pricePerAcre: 10000, dateIso: '2026-01-01', daysOnMarket: 80, source: 'County', origins: ['County'], inValuationSet: true, operatorExcluded: false },
+        { key: 'active-1', category: 'active_competition', categoryLabel: 'Active', classificationReason: 'Current competition', address: '2 Active Rd', statusLabel: 'Active', transactionKind: 'active_listing', priceKind: 'list', price: 625000, acres: 50, pricePerAcre: 12500, daysOnMarket: 120, source: 'Listing', sourceUrl: 'https://example.com/active', origins: ['Listing'], inValuationSet: false, operatorExcluded: false, listing: { transactionKind: 'active', price: { amount: 625000 }, marketTime: { cumulativeDays: 120 }, characteristics: { acreage: 50 }, evidence: { sourcePage: 'https://example.com/active', provider: 'Listing', diagnostics: { capturedAtIso: '2026-08-25T05:51:20.679Z', route: 'provider-debug' } } } },
+      ],
+    };
+    const researchRows = ['all', '0-1', '1-2', '2-5', '5-10', '10-20', '20-50', '50-100', '100+'].map((acreageBand, index) => ({
+      acreageBand,
+      geography: 'county',
+      metrics: { salesCount: 10 + index, listingCount: 3 + index, daysOnMarket: 30 + index, sellThroughRate: 70 + index, monthsOfSupply: 5 + index },
+    }));
+    source.marketContext = {
+      read: { headline: 'Producer read survives.', acreageBandLabel: '50-100 ac' },
+      liquidity: { medianDaysOnMarket: 180, sellThroughRate: 12, monthsOfSupply: 40, medianPricePerAcre: 9_500 },
+      fastestBand: { acreageBandLabel: '2-5 ac' },
+      interpretation: 'Producer interpretation.',
+      research: { contractVersion: 'market-research-subject-file-v1', countyRows: researchRows, zipRows: [], rows: researchRows },
+    };
+    source.marketPulse = {
+      marketScan: {
+        growthSignals: { items: [{ title: 'Neighbor subdivision phase', status: 'under construction', whyItMatters: 'Sub-one-acre homes are being delivered.', distanceMiles: 0.2 }] },
+        dataCenterWatch: { items: [] },
+      },
+    };
+
+    const dossier = buildAcquisitionDossier(source);
+    expect(dossier.market.overallMarketRead).toBe('Producer read survives.');
+    expect((dossier.market.research as any).rows).toHaveLength(9);
+    expect(dossier.market.acreageBands.map((row) => row.label)).toContain('0-1');
+    expect(dossier.market.developmentSignals[0]?.name).toBe('Neighbor subdivision phase');
+    expect(dossier.comps.acceptedSold[0]).toMatchObject({ key: 'sold-1', price: 510000, acres: 51, inValuationSet: true });
+    expect(dossier.comps.activeCompetition[0]).toMatchObject({ key: 'active-1', daysOnMarket: 120, sourceUrl: 'https://example.com/active' });
+    expect((dossier.comps.activeCompetition[0]?.listing as any).evidence).toEqual({
+      sourcePage: 'https://example.com/active', provider: 'Listing', sourcePages: [], apn: null,
+    });
+    expect(JSON.stringify(dossier.comps)).not.toContain('capturedAtIso');
+    expect(JSON.stringify(dossier.comps)).not.toContain('provider-debug');
+
+    // Read-time provider diagnostics are presentation machinery, not Market
+    // evidence. A fresh diagnostic timestamp must not change the dossier.
+    (pi.compsValuation.comps[1].listing.evidence.diagnostics as any).capturedAtIso = '2026-08-25T05:51:24.773Z';
+    expect(buildAcquisitionDossier(source).comps).toEqual(dossier.comps);
+  });
+
+  it('joins already-persisted adopted-code meaning only when it matches the current district', () => {
+    const source = file();
+    const pi = source.propertyIntelligence as Record<string, any>;
+    pi.landUseIntelligence.currentZoning = {
+      established: true, districtCode: 'CD-3L', statement: 'Current CD-3L.', authorityName: 'Fairview', references: [],
+    };
+    pi.zoningStandards = {
+      established: true,
+      districtCode: 'CD-3L',
+      allowedUses: [{ use: 'House', status: 'permitted' }],
+      standards: {
+        minimumLotSize: 'Not regulated by the district table', density: '2 dwelling units per acre max.',
+        lotWidth: '100 ft. min., 150 ft. max.', frontage: '40% min.', setbacks: '40 ft. min.',
+        heightOrCoverage: '60% max.', principalUses: ['House: Permitted.'],
+        specialConditions: ['Principal building 2 stories max.'],
+        sources: [{ url: 'https://fairview.example.gov/code.pdf' }],
+      },
+      limitations: ['Development-site density applies.'],
+    };
+    const current = buildAcquisitionDossier(source);
+    expect(current.landUse.byRightUses).toEqual(['House (permitted)']);
+    expect(current.landUse.dimensionalStandards).toMatchObject({
+      minimumLotSize: 'Not regulated by the district table',
+      density: '2 dwelling units per acre max.',
+      lotWidth: '100 ft. min., 150 ft. max.',
+    });
+
+    pi.zoningStandards.districtCode = 'R-20';
+    const stale = buildAcquisitionDossier(source);
+    expect(stale.landUse.byRightUses).toEqual([]);
+    expect(stale.landUse.dimensionalStandards.density).toBeNull();
+  });
+
   it('reports coverage honestly, so a thin file cannot read as a complete one', () => {
     const dossier = buildAcquisitionDossier(file());
     expect(dossier.coverage.present).toContain('Property identity');
@@ -75,6 +157,14 @@ describe('what the dossier carries', () => {
   it('runs the material-fact reconciliation as part of assembly', () => {
     const dossier = buildAcquisitionDossier(file());
     expect(dossier.conflicts.map((conflict) => conflict.subject)).toContain('frontage');
+  });
+
+  it('keeps resolved historical values out of the current conflict set', () => {
+    const dossier = buildAcquisitionDossier(file({
+      acreageExtent: { decision: { canonicalAcres: 51.11, canonicalSource: 'Current assessor parcel' } },
+    }));
+    expect(dossier.conflicts.map((conflict) => conflict.subject)).not.toContain('acreage');
+    expect(dossier.acreage?.retainedFigures).toEqual([]);
   });
 
   it('carries the latest official assessor answer — including an honest not-retrieved attempt — with its provenance', () => {

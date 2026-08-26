@@ -141,7 +141,9 @@ export interface AcquisitionDossier {
     displayAddress: string | null;
     apn: string | null;
     county: string | null;
+    city: string | null;
     stateCode: string | null;
+    seller: string | null;
     owner: string | null;
     acres: number | null;
     acreageBasis: string | null;
@@ -175,16 +177,20 @@ export interface AcquisitionDossier {
     femaFloodZone: string | null;
     femaCoveragePct: string | null;
     wetlandsPct: string | null;
+    wetlandsAcres: string | null;
     waterPresent: string | null;
     soils: string | null;
     improvement: string | null;
     parcelShapeNote: string | null;
   };
   access: {
+    established: boolean;
+    operatorStatement: string | null;
     frontageFt: number | null;
     landLocked: string | null;
     roadName: string | null;
     legalAccessStatement: string | null;
+    recordedLegalAccessStatement: string | null;
     evidenceReached: string[];
     outstanding: string[];
   };
@@ -197,6 +203,17 @@ export interface AcquisitionDossier {
     historicalZoningReferences: Array<{ kind: string | null; value: string | null; asOf: string | null; sourceUrl: string | null }>;
     byRightUses: string[];
     manufacturedHousing: string[];
+    dimensionalStandards: {
+      minimumLotSize: string | null;
+      density: string | null;
+      lotWidth: string | null;
+      frontageBuildout: string | null;
+      setbacks: string | null;
+      heightOrCoverage: string | null;
+      principalUses: string[];
+      specialConditions: string[];
+      sourceUrls: string[];
+    };
     limitations: string[];
   };
   subdivision: {
@@ -218,6 +235,8 @@ export interface AcquisitionDossier {
     highlights: string[];
     openQuestions: string[];
     documents: Array<{ label: string; sourceUrl: string | null }>;
+    developmentEvents: Array<{ date: string | null; event: string; status: string; significance: string | null }>;
+    developmentPaths: Array<{ path: string; practicalYield: string; process: string; economics: string; decision: string }>;
   };
   valuation: {
     status: string | null;
@@ -234,6 +253,12 @@ export interface AcquisitionDossier {
     activeCompetitionCount: number | null;
     askingReferenceCount: number | null;
     note: string | null;
+    /** Bounded canonical competitive set from Comps & Valuation. These are the
+     * actual retained records, not aggregate counts. */
+    acceptedSold: MarketCompEvidence[];
+    directional: MarketCompEvidence[];
+    activeCompetition: MarketCompEvidence[];
+    excluded: MarketCompEvidence[];
   };
   market: {
     headline: string | null;
@@ -244,6 +269,19 @@ export interface AcquisitionDossier {
     medianPricePerAcre: number | null;
     fastestBand: string | null;
     interpretation: string | null;
+    overallMarketRead: string | null;
+    developmentSignals: Array<{ name: string; status: string; likelyEffect: string; distanceMiles: number | null }>;
+    acreageBands: Array<{
+      label: string; soldCount: number | null; activeCount: number | null;
+      medianDaysOnMarket: number | null; sellThroughRate: number | null;
+      monthsOfSupply: number | null; likelyResaleTime: string | null;
+    }>;
+    /** Complete current LandOS Market Research product: every retained current
+     * acreage-band row for the exact subject county and ZIP. */
+    research: Unknown;
+    /** Current retained Market Pulse / Market Scan evidence already collected
+     * for this subject market. */
+    marketPulse: Unknown;
   };
   utilities: {
     septicAuthority: string | null;
@@ -352,6 +390,8 @@ export interface PropertyFileSource {
   /** The `/property-intelligence` projection, verbatim. */
   propertyIntelligence?: Unknown;
   marketContext?: Unknown;
+  /** Current retained Market Pulse / Market Scan product and provenance. */
+  marketPulse?: Unknown;
   documentRegistry?: Unknown;
   /** Deal-level operator record: title, asking price, people. */
   dealCard?: Unknown;
@@ -387,14 +427,118 @@ export interface PropertyFileSource {
   now?: () => Date;
 }
 
+export interface MarketCompEvidence {
+  key: string;
+  category: string;
+  categoryLabel: string | null;
+  classificationReason: string | null;
+  address: string | null;
+  county: string | null;
+  state: string | null;
+  status: string | null;
+  transactionKind: string | null;
+  priceKind: string | null;
+  price: number | null;
+  acres: number | null;
+  pricePerAcre: number | null;
+  dateIso: string | null;
+  daysOnMarket: number | null;
+  distanceMiles: number | null;
+  geography: Unknown;
+  propertyClass: string | null;
+  source: string | null;
+  sourceUrl: string | null;
+  origins: string[];
+  inValuationSet: boolean;
+  valuationRole: string | null;
+  valuationWeight: number | null;
+  saleVerification: Unknown;
+  operatorExcluded: boolean;
+  exclusionReason: string | null;
+  listing: Unknown;
+}
+
 const MAX_RULES = 18;
 const MAX_LIST = 10;
 const MAX_VISUALS = 12;
+const MAX_ACCEPTED_COMPS = 30;
+const MAX_DIRECTIONAL_COMPS = 24;
+const MAX_ACTIVE_COMPS = 30;
+const MAX_EXCLUDED_COMPS = 16;
 
 function capped<T>(items: T[], limit: number, what: string, truncation: string[]): T[] {
   if (items.length <= limit) return items;
   truncation.push(`${what}: ${items.length - limit} of ${items.length} not carried into the dossier.`);
   return items.slice(0, limit);
+}
+
+function marketCompEvidence(value: Unknown): MarketCompEvidence | null {
+  const key = text(at(value, 'key'), 240);
+  const category = text(at(value, 'category'), 80);
+  if (!key || !category) return null;
+  return {
+    key,
+    category,
+    categoryLabel: text(at(value, 'categoryLabel'), 200),
+    classificationReason: text(at(value, 'classificationReason'), 800),
+    address: text(at(value, 'address'), 240),
+    county: text(at(value, 'county'), 100),
+    state: text(at(value, 'state'), 20),
+    status: text(at(value, 'statusLabel'), 120),
+    transactionKind: text(at(value, 'transactionKind'), 80),
+    priceKind: text(at(value, 'priceKind'), 40),
+    price: num(at(value, 'price')),
+    acres: num(at(value, 'acres')),
+    pricePerAcre: num(at(value, 'pricePerAcre')),
+    dateIso: text(at(value, 'dateIso'), 40),
+    daysOnMarket: num(at(value, 'daysOnMarket')),
+    distanceMiles: num(at(value, 'distanceMiles')),
+    geography: at(value, 'geography') ?? null,
+    propertyClass: text(at(value, 'propertyClass'), 40),
+    source: text(at(value, 'source'), 200),
+    sourceUrl: text(at(value, 'sourceUrl'), 500),
+    origins: strings(at(value, 'origins'), MAX_LIST, 'Comp origins', []),
+    inValuationSet: at(value, 'inValuationSet') === true,
+    valuationRole: text(at(value, 'valuationRole'), 80),
+    valuationWeight: num(at(value, 'valuationWeight')),
+    saleVerification: at(value, 'saleVerification') ?? null,
+    operatorExcluded: at(value, 'operatorExcluded') === true,
+    exclusionReason: text(at(value, 'exclusionReason'), 500),
+    listing: marketCompListing(at(value, 'listing')),
+  };
+}
+
+/** Stable, decision-useful listing evidence for the Market specialist.
+ * `buildCompsValuationView` also carries presentation diagnostics whose
+ * `capturedAtIso` is generated on every SELECT. Those diagnostics are neither
+ * market evidence nor operator intelligence; carrying them made an unchanged
+ * comp set look different on every read. */
+function marketCompListing(value: Unknown): Unknown {
+  if (!isRecord(value)) return null;
+  const photos = at(value, 'photos');
+  const evidence = at(value, 'evidence');
+  return {
+    transactionKind: at(value, 'transactionKind') ?? null,
+    kindLabel: at(value, 'kindLabel') ?? null,
+    price: at(value, 'price') ?? null,
+    soldDateIso: at(value, 'soldDateIso') ?? null,
+    marketTime: at(value, 'marketTime') ?? null,
+    timeline: at(value, 'timeline') ?? [],
+    description: at(value, 'description') ?? null,
+    characteristics: at(value, 'characteristics') ?? null,
+    photos: isRecord(photos) ? {
+      count: at(photos, 'count') ?? null,
+      hasGenuinePhotos: at(photos, 'hasGenuinePhotos') ?? null,
+      provider: at(photos, 'provider') ?? null,
+      sourcePage: at(photos, 'sourcePage') ?? null,
+    } : null,
+    evidence: isRecord(evidence) ? {
+      sourcePage: at(evidence, 'sourcePage') ?? null,
+      provider: at(evidence, 'provider') ?? null,
+      sourcePages: at(evidence, 'sourcePages') ?? [],
+      apn: at(evidence, 'apn') ?? null,
+    } : null,
+  };
 }
 
 function strings(value: Unknown, limit: number, what: string, truncation: string[], max = 300): string[] {
@@ -412,7 +556,18 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
   const access = at(pi, 'access');
   const landUse = at(pi, 'landUse');
   const lui = at(pi, 'landUseIntelligence');
+  const zoningStandardsCandidate = at(pi, 'zoningStandards');
+  const districtKey = (value: unknown): string => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  // A separately persisted standards product is compatible only when it names
+  // the same CURRENT district. This prevents a later GIS district promotion
+  // from accidentally inheriting the prior district's dimensions.
+  const zoningStandards = districtKey(at(zoningStandardsCandidate, 'districtCode'))
+    && districtKey(at(zoningStandardsCandidate, 'districtCode')) === districtKey(at(lui, 'currentZoning.districtCode'))
+    && at(zoningStandardsCandidate, 'established') === true
+    ? zoningStandardsCandidate
+    : null;
   const cv = at(pi, 'compsValuation');
+  const development = at(pi, 'developmentIntelligence');
   const marketSource = source.marketContext ?? at(pi, 'compsValuation.marketContext');
 
   // Canonical current acreage outranks the mission-snapshot and provider
@@ -423,6 +578,10 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
   const extent = at(source, 'acreageExtent');
   const canonicalAcres = num(at(extent, 'decision.canonicalAcres'));
   const identityAcres = canonicalAcres ?? num(at(snapshot, 'identity.acres')) ?? num(at(lpf, 'acres'));
+  const dealPeople = asArray(at(source.dealCard, 'people'));
+  const sellerName = text(at(source.acquisition, 'profile.name'), 120) ?? dealPeople
+    .map((person) => ({ name: text(at(person, 'name'), 120), role: text(at(person, 'role'), 80) }))
+    .find((person) => person.name && /seller|contact/i.test(person.role ?? ''))?.name ?? null;
   const identity: AcquisitionDossier['identity'] = {
     state: text(at(snapshot, 'identity.state'), 40),
     confirmed: text(at(snapshot, 'identity.state'), 40) === 'confirmed',
@@ -431,7 +590,9 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
       ?? text(at(lpf, 'parcelAddress'), 200),
     apn: text(at(snapshot, 'identity.apn'), 60) ?? text(at(lpf, 'apn'), 60),
     county: text(at(snapshot, 'identity.county'), 80) ?? text(at(lpf, 'county'), 80),
-    stateCode: text(at(snapshot, 'identity.state_'), 8) ?? text(at(lpf, 'stateCode'), 8),
+    city: text(at(snapshot, 'identity.city'), 80) ?? text(at(lpf, 'city'), 80),
+    stateCode: text(at(snapshot, 'identity.stateCode'), 8) ?? text(at(snapshot, 'identity.state_'), 8) ?? text(at(lpf, 'stateCode'), 8),
+    seller: sellerName,
     owner: text(at(snapshot, 'identity.owner'), 120) ?? text(at(lpf, 'owner'), 120),
     acres: identityAcres,
     acreageBasis: canonicalAcres != null
@@ -465,6 +626,10 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     }
     : null;
 
+  const wetlandsPct = text(at(lpf, 'environment.wetlandsPct'), 40);
+  const wetlandsNumber = num(wetlandsPct);
+  const currentImprovement = text(at(development, 'currentTruth.improvementStatus'), 200)
+    ?? text(at(lpf, 'improvement.label'), 200);
   const physical: AcquisitionDossier['physical'] = {
     acres: identityAcres,
     buildablePct: text(at(lpf, 'buildability.pct'), 40),
@@ -474,20 +639,28 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     elevation: text(at(lpf, 'terrain.label'), 200),
     femaFloodZone: text(at(lpf, 'environment.femaFloodZone'), 80),
     femaCoveragePct: text(at(lpf, 'environment.femaCoveragePct'), 40),
-    wetlandsPct: text(at(lpf, 'environment.wetlandsPct'), 40),
+    wetlandsPct,
+    wetlandsAcres: wetlandsNumber != null && identityAcres != null
+      ? String(Math.round(identityAcres * wetlandsNumber) / 100)
+      : null,
     waterPresent: text(at(lpf, 'water.label'), 120),
     soils: text(at(lpf, 'soils.label'), 200),
-    improvement: text(at(lpf, 'improvement.label'), 200),
+    improvement: /no_current_building|no buildings/i.test(currentImprovement ?? '')
+      ? 'No current building established (current official assessor reconciliation)'
+      : currentImprovement,
     parcelShapeNote: text(at(lpf, 'parcelContext.label'), 200),
   };
 
   // Frontage is read from BOTH retained sources on purpose. Where they
   // disagree, reconciliation below carries both values rather than picking.
   const accessSection: AcquisitionDossier['access'] = {
+    established: at(access, 'established') === true,
+    operatorStatement: text(at(access, 'legalAccess'), 400),
     frontageFt: num(at(access, 'frontageFt')) ?? num(at(lpf, 'access.roadFrontageFt')),
     landLocked: text(at(lpf, 'access.landLocked'), 40),
     roadName: text(at(access, 'road'), 120),
     legalAccessStatement: text(at(access, 'legalAccess'), 300),
+    recordedLegalAccessStatement: text(at(access, 'recordedLegalAccess'), 300),
     evidenceReached: asArray(at(access, 'evidence.rungs'))
       .filter((rung) => isRecord(rung) && text(rung.status, 40) !== 'not_evidenced')
       .map((rung) => text(at(rung, 'label'), 80))
@@ -516,9 +689,36 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     authority: text(at(lui, 'currentZoning.authorityName'), 120)
       ?? text(at(lui, 'authority.municipality'), 120),
     historicalZoningReferences: zoningReferences,
-    byRightUses: strings(at(landUse, 'byRightUses'), MAX_LIST, 'By-right uses', truncation),
+    byRightUses: capped(
+      asArray(at(zoningStandards, 'allowedUses'))
+        .map((use) => {
+          const label = text(at(use, 'use'), 180);
+          const status = text(at(use, 'status'), 40);
+          return label ? `${label}${status ? ` (${status})` : ''}` : null;
+        })
+        .filter((value): value is string => !!value),
+      MAX_LIST,
+      'By-right uses',
+      truncation,
+    ),
     manufacturedHousing: strings(at(landUse, 'manufacturedHousing'), MAX_LIST, 'Manufactured-housing findings', truncation),
-    limitations: strings(at(lui, 'currentZoning.limitations'), MAX_LIST, 'Zoning limitations', truncation),
+    dimensionalStandards: {
+      minimumLotSize: text(at(zoningStandards, 'standards.minimumLotSize'), 160),
+      density: text(at(zoningStandards, 'standards.density'), 160),
+      lotWidth: text(at(zoningStandards, 'standards.lotWidth'), 160),
+      frontageBuildout: text(at(zoningStandards, 'standards.frontage'), 160),
+      setbacks: text(at(zoningStandards, 'standards.setbacks'), 200),
+      heightOrCoverage: text(at(zoningStandards, 'standards.heightOrCoverage'), 200),
+      principalUses: strings(at(zoningStandards, 'standards.principalUses'), MAX_LIST, 'Principal uses', truncation),
+      specialConditions: strings(at(zoningStandards, 'standards.specialConditions'), MAX_LIST, 'Zoning special conditions', truncation),
+      sourceUrls: [...new Set(asArray(at(zoningStandards, 'standards.sources'))
+        .map((source) => text(at(source, 'url'), 400))
+        .filter((url): url is string => !!url))],
+    },
+    limitations: [
+      ...strings(at(lui, 'currentZoning.limitations'), MAX_LIST, 'Zoning limitations', truncation),
+      ...strings(at(zoningStandards, 'limitations'), MAX_LIST, 'Zoning standards limitations', truncation),
+    ].slice(0, MAX_LIST),
   };
 
   // The subdivision read comes from two places that answer differently: the
@@ -573,6 +773,29 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
       'Property history documents',
       truncation,
     ),
+    developmentEvents: capped(
+      asArray(at(development, 'developmentHistory')).map((entry) => ({
+        date: text(at(entry, 'date'), 40),
+        event: text(at(entry, 'event'), 300) ?? 'Official development event',
+        status: text(at(entry, 'status'), 500) ?? 'Retained',
+        significance: text(at(entry, 'significance'), 700),
+      })),
+      MAX_LIST,
+      'Development-history events',
+      truncation,
+    ),
+    developmentPaths: capped(
+      asArray(at(development, 'paths')).map((entry) => ({
+        path: text(at(entry, 'path'), 160) ?? 'Development path',
+        practicalYield: text(at(entry, 'practicalYield'), 500) ?? 'Not established',
+        process: text(at(entry, 'process'), 700) ?? 'Not established',
+        economics: text(at(entry, 'economics'), 500) ?? 'Not underwritten',
+        decision: text(at(entry, 'decision'), 300) ?? 'Hold pending evidence',
+      })),
+      MAX_LIST,
+      'Development paths',
+      truncation,
+    ),
   };
 
   const valuation: AcquisitionDossier['valuation'] = {
@@ -596,7 +819,46 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     askingReferenceCount: num(at(cv, 'counts.asking_reference')),
     note: text(at(cv, 'summary.statusReason'), 500)
       ?? text(at(pi, 'canonicalState.comps.conclusion'), 500),
+    acceptedSold: capped(
+      asArray(at(cv, 'comps')).filter((comp) => at(comp, 'inValuationSet') === true)
+        .map(marketCompEvidence).filter((comp): comp is MarketCompEvidence => !!comp),
+      MAX_ACCEPTED_COMPS,
+      'Accepted sold comps',
+      truncation,
+    ),
+    directional: capped(
+      asArray(at(cv, 'comps')).filter((comp) => ['candidate_closed_sale', 'asking_reference', 'improved_context', 'context_only'].includes(String(at(comp, 'category') ?? '')))
+        .map(marketCompEvidence).filter((comp): comp is MarketCompEvidence => !!comp),
+      MAX_DIRECTIONAL_COMPS,
+      'Directional comps',
+      truncation,
+    ),
+    activeCompetition: capped(
+      asArray(at(cv, 'comps')).filter((comp) => at(comp, 'category') === 'active_competition')
+        .map(marketCompEvidence).filter((comp): comp is MarketCompEvidence => !!comp),
+      MAX_ACTIVE_COMPS,
+      'Active competition',
+      truncation,
+    ),
+    excluded: capped(
+      asArray(at(cv, 'comps')).filter((comp) => at(comp, 'operatorExcluded') === true || at(comp, 'category') === 'rejected')
+        .map(marketCompEvidence).filter((comp): comp is MarketCompEvidence => !!comp),
+      MAX_EXCLUDED_COMPS,
+      'Excluded comps',
+      truncation,
+    ),
   };
+
+  const marketResearch = at(marketSource, 'research') ?? null;
+  const countyResearchRows = asArray(at(marketResearch, 'countyRows'));
+  const pulseGrowthItems = asArray(at(source.marketPulse, 'marketScan.growthSignals.items'));
+  const pulseDataCenterItems = asArray(at(source.marketPulse, 'marketScan.dataCenterWatch.items'));
+  const developmentSignals = [...pulseGrowthItems, ...pulseDataCenterItems].map((entry) => ({
+    name: text(at(entry, 'title') ?? at(entry, 'name'), 200) ?? 'Retained market signal',
+    status: text(at(entry, 'status'), 120) ?? 'Status not established',
+    likelyEffect: text(at(entry, 'whyItMatters') ?? at(entry, 'summary'), 600) ?? 'Material effect not established',
+    distanceMiles: num(at(entry, 'distanceMiles')),
+  })).filter((entry) => !/route|provider|collector|search machinery/i.test(`${entry.name} ${entry.likelyEffect}`));
 
   const market: AcquisitionDossier['market'] = {
     headline: text(at(marketSource, 'read.headline'), 300),
@@ -607,6 +869,33 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     medianPricePerAcre: num(at(marketSource, 'liquidity.medianPricePerAcre')),
     fastestBand: text(at(marketSource, 'fastestBand.acreageBandLabel'), 80),
     interpretation: text(at(marketSource, 'interpretation'), 800),
+    // Consume the actual PropertyMarketContext producer contract. `read` and
+    // `research` are authoritative; old phantom fields (`conclusion`,
+    // `developmentAndInfrastructure`, `acreageBands`) are intentionally gone.
+    overallMarketRead: text(at(marketSource, 'read.headline'), 1_000)
+      ?? text(at(marketSource, 'interpretation'), 1_000),
+    developmentSignals: capped(
+      developmentSignals,
+      MAX_LIST,
+      'Material market development signals',
+      truncation,
+    ),
+    acreageBands: capped(
+      countyResearchRows.map((row) => ({
+        label: text(at(row, 'acreageBand'), 80) ?? 'Unknown acreage band',
+        soldCount: num(at(row, 'metrics.salesCount')),
+        activeCount: num(at(row, 'metrics.listingCount')),
+        medianDaysOnMarket: num(at(row, 'metrics.daysOnMarket')),
+        sellThroughRate: num(at(row, 'metrics.sellThroughRate')),
+        monthsOfSupply: num(at(row, 'metrics.monthsOfSupply')),
+        likelyResaleTime: null,
+      })),
+      16,
+      'Market acreage bands',
+      truncation,
+    ),
+    research: marketResearch,
+    marketPulse: source.marketPulse ?? null,
   };
 
   const utilities: AcquisitionDossier['utilities'] = {
@@ -708,7 +997,11 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     truncation,
   );
 
-  const conflicts = reconcileMaterialFacts(source);
+  // The current specialist file carries only OPEN material disagreements.
+  // Resolved provenance remains retained in the underlying records (and in
+  // dedicated acreage/history sections), but must not compete with the
+  // canonical current value simply because it once disagreed.
+  const conflicts = reconcileMaterialFacts(source).filter((conflict) => conflict.resolution === 'unresolved');
 
   const openQuestions = strings(
     at(pi, 'researchStatus.openQuestions'),

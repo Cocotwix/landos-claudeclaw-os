@@ -44,8 +44,9 @@ describe('V2 section switching is client-side over one loaded record', () => {
     expect(PAGE_SRC).toMatch(/\}, \[dealId\]\);/);
     expect(PAGE_SRC).not.toMatch(/\[dealId, section\]/);
     // Exactly one fetch of the property-intelligence record in the page.
-    const piFetches = PAGE_SRC.match(/property-intelligence`/g) || [];
+    const piFetches = PAGE_SRC.match(/property-intelligence\?view=workspace-v2`/g) || [];
     expect(piFetches).toHaveLength(1);
+    expect(PAGE_SRC).toContain('/acquisition?view=workspace-v2-overview`');
   });
 
   it('lets modified clicks (new tab) fall through to normal link behavior', () => {

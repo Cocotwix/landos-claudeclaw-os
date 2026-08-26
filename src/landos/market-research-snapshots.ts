@@ -166,6 +166,18 @@ interface MrSnapshotRow {
   provider: string; collected_at: string; status: 'collecting' | 'retained';
 }
 
+type MrSnapshotMetadata = Omit<MrSnapshot, 'counts'>;
+
+function rowToSnapshotMetadata(r: MrSnapshotRow): MrSnapshotMetadata {
+  let filters: MarketResearchFilters;
+  try { filters = JSON.parse(r.filters_json) as MarketResearchFilters; }
+  catch { filters = fixedInitialFilters(); }
+  return {
+    id: r.id, quarter: r.quarter, filterKey: r.filter_key, filters,
+    provider: r.provider, collectedAt: r.collected_at, status: r.status,
+  };
+}
+
 function snapshotCounts(id: number): MrSnapshot['counts'] {
   const rows = getLandosDb().prepare(
     `SELECT g.level AS level, COUNT(*) AS n FROM landos_mr_metric m
@@ -178,14 +190,24 @@ function snapshotCounts(id: number): MrSnapshot['counts'] {
 }
 
 function rowToSnapshot(r: MrSnapshotRow): MrSnapshot {
-  let filters: MarketResearchFilters;
-  try { filters = JSON.parse(r.filters_json) as MarketResearchFilters; }
-  catch { filters = fixedInitialFilters(); }
   return {
-    id: r.id, quarter: r.quarter, filterKey: r.filter_key, filters,
-    provider: r.provider, collectedAt: r.collected_at, status: r.status,
+    ...rowToSnapshotMetadata(r),
     counts: snapshotCounts(r.id),
   };
+}
+
+function getMrSnapshotMetadata(id: number): MrSnapshotMetadata | null {
+  const row = getLandosDb().prepare('SELECT id, quarter, filter_key, filters_json, provider, collected_at, status FROM landos_mr_snapshot WHERE id = ?')
+    .get(id) as MrSnapshotRow | undefined;
+  return row ? rowToSnapshotMetadata(row) : null;
+}
+
+function priorMrSnapshotMetadata(current: Pick<MrSnapshotMetadata, 'filterKey' | 'quarter'>): MrSnapshotMetadata | null {
+  const row = getLandosDb().prepare(
+    `SELECT id, quarter, filter_key, filters_json, provider, collected_at, status FROM landos_mr_snapshot
+     WHERE filter_key = ? AND quarter < ? ORDER BY quarter DESC, id DESC LIMIT 1`,
+  ).get(current.filterKey, current.quarter) as MrSnapshotRow | undefined;
+  return row ? rowToSnapshotMetadata(row) : null;
 }
 
 /** Get or create the snapshot for a quarter + filter set. NEVER reuses a
@@ -271,7 +293,7 @@ function cleanMetrics(input: Partial<MarketMetrics>): { metrics: MarketMetrics; 
  */
 export function recordMrMetrics(snapshotId: number, rows: MrMetricInput[]): MrWriteResult {
   const db = getLandosDb();
-  const snap = getMrSnapshot(snapshotId);
+  const snap = getMrSnapshotMetadata(snapshotId);
   if (!snap) throw new Error(`Unknown market research snapshot ${snapshotId}`);
   let written = 0, preserved = 0, skipped = 0;
   const insert = db.prepare(
@@ -449,9 +471,9 @@ function parseMetricsJson(s: string): MarketMetrics {
 /** Rows for one level of one snapshot, optionally scoped to a parent geography. */
 export function listMrRows(snapshotId: number, level: MrGeoLevel, parentKey?: string): MrGeoMetricRow[] {
   const db = getLandosDb();
-  const snap = getMrSnapshot(snapshotId);
+  const snap = getMrSnapshotMetadata(snapshotId);
   if (!snap) return [];
-  const prior = priorMrSnapshot(snap);
+  const prior = priorMrSnapshotMetadata(snap);
 
   // A county's ZIP listing is the UNION of canonically-parented ZIPs and
   // provider-listed memberships: a cross-county ZIP is parented to ONE county
@@ -511,14 +533,52 @@ export interface MrGeoSummary {
 }
 
 export function getMrGeoSummary(snapshotId: number, geoKey: string): MrGeoSummary | null {
-  const snap = getMrSnapshot(snapshotId);
+  const db = getLandosDb();
+  const snap = getMrSnapshotMetadata(snapshotId);
   const geo = getMrGeography(geoKey);
   if (!snap || !geo) return null;
-  const rows = listMrRows(snapshotId, geo.level, geo.parentKey || undefined).filter((r) => r.geoKey === geoKey);
-  if (rows.length === 0) return null;
-  const prior = priorMrSnapshot(snap);
+  const current = db.prepare(
+    `SELECT g.geo_key, g.level, g.state, g.fips, g.zip, g.name, g.parent_key,
+            m.metrics_json, m.county_count, m.zip_count, m.provider, m.source_ref, m.observed_at
+     FROM landos_mr_metric m JOIN landos_mr_geography g ON g.id = m.geography_id
+     WHERE m.snapshot_id = ? AND g.geo_key = ?`,
+  ).get(snapshotId, geoKey) as MetricJoinRow | undefined;
+  if (!current) return null;
+  const prior = priorMrSnapshotMetadata(snap);
+  const priorRow = prior
+    ? db.prepare(
+      `SELECT g.geo_key, g.level, g.state, g.fips, g.zip, g.name, g.parent_key,
+              m.metrics_json, m.county_count, m.zip_count, m.provider, m.source_ref, m.observed_at
+       FROM landos_mr_metric m JOIN landos_mr_geography g ON g.id = m.geography_id
+       WHERE m.snapshot_id = ? AND g.geo_key = ?`,
+    ).get(prior.id, geoKey) as MetricJoinRow | undefined
+    : undefined;
+  const childCount = db.prepare(
+    `SELECT COUNT(*) AS n FROM landos_mr_metric m
+     JOIN landos_mr_geography g ON g.id = m.geography_id
+     WHERE m.snapshot_id = ? AND g.parent_key = ?`,
+  ).get(snapshotId, geoKey) as { n: number };
+  const row: MrGeoMetricRow = {
+    geoKey: current.geo_key,
+    level: current.level,
+    state: current.state,
+    fips: current.fips,
+    zip: current.zip,
+    name: current.name,
+    parentKey: current.parent_key,
+    metrics: parseMetricsJson(current.metrics_json),
+    countyCount: current.county_count,
+    zipCount: current.zip_count,
+    provider: current.provider,
+    sourceRef: current.source_ref,
+    observedAt: current.observed_at,
+    prior: priorRow && prior
+      ? { quarter: prior.quarter, collectedAt: prior.collectedAt, metrics: parseMetricsJson(priorRow.metrics_json) }
+      : null,
+    childCount: childCount.n,
+  };
   return {
-    row: rows[0],
+    row,
     snapshot: { id: snap.id, quarter: snap.quarter, collectedAt: snap.collectedAt, filters: snap.filters, provider: snap.provider },
     priorSnapshot: prior ? { quarter: prior.quarter, collectedAt: prior.collectedAt } : null,
   };

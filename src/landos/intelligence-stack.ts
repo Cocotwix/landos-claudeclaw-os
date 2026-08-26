@@ -35,6 +35,7 @@ import {
 } from './acquisition-intelligence-contract.js';
 import { propertyFileIsSufficient } from './acquisition-intelligence-capability.js';
 import {
+  appendDerivedEvidence,
   readDerivedSnapshot,
   writeDerivedSnapshot,
 } from './derived-intelligence-store.js';
@@ -51,9 +52,12 @@ import {
   MARKET_INTELLIGENCE_PRODUCT_TYPE,
   PROPERTY_INTELLIGENCE_PRODUCT_TYPE,
   SELLER_INTELLIGENCE_PRODUCT_TYPE,
-  dealLabelForScore,
   dealPhaseFor,
   intelligenceStackPrompt,
+  marketExpertReviewPrompt,
+  marketStructuredExtractionPrompt,
+  propertyExpertReviewPrompt,
+  propertyStructuredExtractionPrompt,
   parseIntelligenceLayers,
   qualityForScore,
   specialistDealPrompt,
@@ -62,6 +66,7 @@ import {
   type DealPhase,
   type IntelligenceLayerId,
   type MarketIntelligenceProduct,
+  type MarketWebEvidence,
   type PropertyIntelligenceProduct,
   type SellerIntelligenceProduct,
 } from './intelligence-stack-contract.js';
@@ -108,12 +113,62 @@ export function propertyLayerFingerprint(dossier: AcquisitionDossier): string {
   });
 }
 
-export function marketLayerFingerprint(dossier: AcquisitionDossier): string {
+export function marketLayerInputFingerprint(
+  dossier: AcquisitionDossier,
+  propertyFingerprint: string | null = null,
+  propertyProduct: PropertyIntelligenceProduct | null = null,
+): string {
   return hash({
-    acres: dossier.identity.acres,
+    identity: dossier.identity,
+    acreage: dossier.acreage,
+    physical: dossier.physical,
+    access: dossier.access,
+    landUse: dossier.landUse,
+    subdivision: dossier.subdivision,
+    utilities: dossier.utilities,
+    history: dossier.history,
     valuation: dossier.valuation,
     comps: dossier.comps,
     market: dossier.market,
+    coverage: dossier.coverage,
+    propertyFingerprint,
+    propertyProduct: propertyProduct == null ? null : {
+      score: propertyProduct.score,
+      quality: propertyProduct.quality,
+      read: propertyProduct.read,
+      strengths: propertyProduct.strengths,
+      constraints: propertyProduct.constraints,
+      potential: propertyProduct.potential,
+      unusual: propertyProduct.unusual,
+      externalities: propertyProduct.externalities,
+      developmentPotential: propertyProduct.developmentPotential,
+      conflicts: propertyProduct.conflicts,
+      unknowns: propertyProduct.unknowns,
+      nextActions: propertyProduct.nextActions,
+      // The Stage A prose and plausible configurations are Market inputs too:
+      // Market's Stage A consumes the full Property product projection, so a
+      // materially new Property expert read must invalidate the Market read.
+      // Spread-when-present keeps pre-upgrade products hashing identically —
+      // adding these fields must not flag every existing Market read stale.
+      ...((propertyProduct as Partial<PropertyIntelligenceProduct>).configurations !== undefined
+        ? { configurations: (propertyProduct as Partial<PropertyIntelligenceProduct>).configurations }
+        : {}),
+      ...((propertyProduct as Partial<PropertyIntelligenceProduct>).expertReview !== undefined
+        ? { expertReview: (propertyProduct as Partial<PropertyIntelligenceProduct>).expertReview }
+        : {}),
+    },
+  });
+}
+
+export function marketLayerFingerprint(
+  dossier: AcquisitionDossier,
+  propertyFingerprint: string | null = null,
+  webEvidence: readonly MarketWebEvidence[] = [],
+  propertyProduct: PropertyIntelligenceProduct | null = null,
+): string {
+  return hash({
+    inputFingerprint: marketLayerInputFingerprint(dossier, propertyFingerprint, propertyProduct),
+    webEvidence,
   });
 }
 
@@ -132,6 +187,14 @@ export interface IntelligenceStackDeps {
    *  route wires the real orchestrator; nothing here invents a second one. */
   runBackfill?: (itemIds: string[]) => Promise<ResearchReadinessManifest | null>;
   readPipelineStage?: (dealCardId: number) => string | null;
+  /** Bounded, question-driven God's Eye View spatial investigation. Runs only
+   *  when the Property layer is about to re-reason. Best-effort by design: a
+   *  missing browser, missing coordinates, or vision failure degrades to a
+   *  warning and the read proceeds on retained visual evidence. The
+   *  investigator persists its grounded observations through the existing
+   *  vision lane; a positive observationCount tells the stack to rebuild the
+   *  evidence package so prompt, fingerprint, and product stay consistent. */
+  investigateSpatial?: (dealCardId: number, dossier: AcquisitionDossier) => Promise<{ observationCount: number; warnings: string[] }>;
   now?: () => Date;
 }
 
@@ -167,10 +230,33 @@ export interface IntelligenceStackRunResult {
 const isManifest = (value: ResearchReadinessManifest | { error: string }): value is ResearchReadinessManifest =>
   !('error' in value);
 
+/** A "patient quick flip" is a semantic contradiction under the 150-day
+ * LandOS resale doctrine. Enforce the term contract at the product boundary so
+ * a model cannot make slow intact resale look like a passing quick flip. */
+function normalizeStrategyTerms(value: string): string {
+  return value
+    .replace(/\bpatient(?:,)?\s+intact\s+quick\s+flip\b/gi, 'patient intact resale')
+    .replace(/\bpatient\s+quick\s+flip\b/gi, 'patient resale');
+}
+
 function readProducts(dealCardId: number): IntelligenceStackProducts {
+  const property = readDerivedSnapshot<PropertyIntelligenceProduct>(dealCardId, PROPERTY_INTELLIGENCE_PRODUCT_TYPE);
+  const market = readDerivedSnapshot<MarketIntelligenceProduct>(dealCardId, MARKET_INTELLIGENCE_PRODUCT_TYPE);
   return {
-    property: readDerivedSnapshot<PropertyIntelligenceProduct>(dealCardId, PROPERTY_INTELLIGENCE_PRODUCT_TYPE),
-    market: readDerivedSnapshot<MarketIntelligenceProduct>(dealCardId, MARKET_INTELLIGENCE_PRODUCT_TYPE),
+    property: property ? { ...property, read: normalizeStrategyTerms(property.read) } : null,
+    // Zero is not a resale-duration estimate. Older model output sometimes
+    // serialized an unresolved/null duration as 0; keep that retained record,
+    // but never project it as a current operator claim or feed it downstream.
+    market: market ? {
+      ...market,
+      exitProductFits: market.exitProductFits.map((fit) => ({
+        ...fit,
+        expectedDays: typeof fit.expectedDays === 'number' && fit.expectedDays > 0 ? fit.expectedDays : null,
+        read: fit.expectedDays == null || fit.expectedDays <= 0
+          ? fit.read?.replace(/^Expected days are not established; 0 denotes (?:unavailable(?: rather than an immediate sale)?|unavailable)\.\s*/i, 'Expected resale timing is not established. ') ?? null
+          : fit.read,
+      })),
+    } : null,
     seller: readDerivedSnapshot<SellerIntelligenceProduct>(dealCardId, SELLER_INTELLIGENCE_PRODUCT_TYPE),
     deal: readDerivedSnapshot<DealIntelligenceProduct>(dealCardId, DEAL_INTELLIGENCE_PRODUCT_TYPE),
   };
@@ -238,9 +324,24 @@ export function readIntelligenceStackState(
   const manifestOrError = deps.reconcileReadiness(dealCardId);
   const manifest = isManifest(manifestOrError) ? manifestOrError : null;
   const sellerEstablished = sellerEstablishedFrom(manifest, dossier);
+  const propertyFingerprint = propertyLayerFingerprint(dossier);
+  const marketInputFingerprint = marketLayerInputFingerprint(dossier, propertyFingerprint, products.property);
+  const legacyMarketFingerprint = marketLayerFingerprint(
+    dossier,
+    propertyFingerprint,
+    products.market?.webEvidence ?? [],
+  );
+  const marketCurrent = products.market != null && (
+    products.market.inputFingerprint != null
+      ? products.market.inputFingerprint === marketInputFingerprint
+      : products.market.layerFingerprint === legacyMarketFingerprint
+  );
   const fingerprints = {
-    property: propertyLayerFingerprint(dossier),
-    market: marketLayerFingerprint(dossier),
+    property: propertyFingerprint,
+    // A current Market read keeps the identity of its complete output,
+    // including the governed web evidence it produced. Search results are not
+    // part of the pre-run input packet and therefore cannot self-invalidate it.
+    market: marketCurrent ? products.market!.layerFingerprint : legacyMarketFingerprint,
     seller: sellerLayerFingerprint(dossier, sellerEstablished),
   };
   const quickFlip = quickFlipFrom(dossier);
@@ -254,9 +355,9 @@ export function readIntelligenceStackState(
     products,
     stale: {
       property: !products.property || products.property.layerFingerprint !== fingerprints.property,
-      market: !products.market || products.market.layerFingerprint !== fingerprints.market,
+      market: !marketCurrent,
       seller: !products.seller || products.seller.layerFingerprint !== fingerprints.seller,
-      deal: !products.deal || products.deal.layerFingerprints?.deal !== dealFingerprint,
+      deal: !marketCurrent || !products.deal || products.deal.layerFingerprints?.deal !== dealFingerprint,
     },
     quickFlip,
     phase,
@@ -405,10 +506,10 @@ export async function runIntelligenceStack(
   // 2. The shared evidence package.
   const source = deps.readPropertyFile(input.dealCardId);
   if (!source) return failed('No canonical property file is available for this Deal Card.', 'insufficient');
-  const dossier = buildAcquisitionDossier({ ...source, dealCardId: input.dealCardId, now: deps.now });
+  let dossier = buildAcquisitionDossier({ ...source, dealCardId: input.dealCardId, now: deps.now });
   const sufficiency = propertyFileIsSufficient(dossier);
   if (!sufficiency.ok) return failed(sufficiency.reason ?? 'The property file is not sufficient for an intelligence read.', 'insufficient');
-  const dossierFp = dossierFingerprint(dossier);
+  let dossierFp = dossierFingerprint(dossier);
 
   // 3. Deterministic layer: economics, phase, seller state, fingerprints.
   const sellerEstablished = sellerEstablishedFrom(manifest, dossier);
@@ -420,22 +521,39 @@ export async function runIntelligenceStack(
     sellerEstablished,
     sellerPriceKnown: dossier.seller.askingPrice != null,
   });
+  const retained = readProducts(input.dealCardId);
+  const propertyFingerprint = propertyLayerFingerprint(dossier);
+  let marketInputFingerprint = marketLayerInputFingerprint(dossier, propertyFingerprint, retained.property);
+  const legacyMarketFingerprint = marketLayerFingerprint(
+    dossier,
+    propertyFingerprint,
+    retained.market?.webEvidence ?? [],
+  );
+  const marketCurrent = retained.market != null && (
+    retained.market.inputFingerprint != null
+      ? retained.market.inputFingerprint === marketInputFingerprint
+      : retained.market.layerFingerprint === legacyMarketFingerprint
+  );
   const fingerprints = {
-    property: propertyLayerFingerprint(dossier),
-    market: marketLayerFingerprint(dossier),
+    property: propertyFingerprint,
+    market: marketCurrent ? retained.market!.layerFingerprint : legacyMarketFingerprint,
     seller: sellerLayerFingerprint(dossier, sellerEstablished),
   };
   const guidance = activeOperatorGuidance(input.dealCardId);
-  const dealFp = dealLayerFingerprint(fingerprints, quickFlip, phase, input.dealCardId);
+  let dealFp = dealLayerFingerprint(fingerprints, quickFlip, phase, input.dealCardId);
 
   // 4. Dependency-aware refresh: a layer runs only when its inputs moved,
   //    it was explicitly requested, or it has never been produced.
-  const retained = readProducts(input.dealCardId);
   const requested = new Set(input.layers ?? []);
   const wants = (layer: IntelligenceLayerId, stale: boolean): boolean =>
     input.force === true || requested.has(layer) || (requested.size === 0 && stale);
-  const refreshProperty = wants('property', !retained.property || retained.property.layerFingerprint !== fingerprints.property);
-  const refreshMarket = wants('market', !retained.market || retained.market.layerFingerprint !== fingerprints.market);
+  const propertyStale = !retained.property || retained.property.layerFingerprint !== fingerprints.property;
+  let refreshProperty = wants('property', propertyStale);
+  let refreshMarket = wants('market', !marketCurrent);
+  // Market consumes Property Intelligence. A Market refresh cannot read a
+  // stale Property product, and any new Property read must invalidate Market.
+  if (refreshMarket && propertyStale) refreshProperty = true;
+  if (refreshProperty) refreshMarket = true;
   const sellerStale = !retained.seller
     || retained.seller.layerFingerprint !== fingerprints.seller
     || (sellerEstablished && retained.seller.state === 'pre_contact');
@@ -465,6 +583,33 @@ export async function runIntelligenceStack(
       phase,
       warnings,
     };
+  }
+
+  // 4b. Property spatial investigation (bounded, question-driven): when the
+  // Property layer is about to re-reason and a God's Eye View investigator is
+  // wired, capture the material spatial views and ground them through the
+  // vision lane FIRST, then rebuild the evidence package so the prompt, the
+  // fingerprint, and the persisted product all see the same observations.
+  if (refreshProperty && deps.investigateSpatial) {
+    try {
+      const spatial = await deps.investigateSpatial(input.dealCardId, dossier);
+      warnings.push(...spatial.warnings);
+      if (spatial.observationCount > 0) {
+        const refreshedSource = deps.readPropertyFile(input.dealCardId);
+        if (refreshedSource) {
+          dossier = buildAcquisitionDossier({ ...refreshedSource, dealCardId: input.dealCardId, now: deps.now });
+          dossierFp = dossierFingerprint(dossier);
+          fingerprints.property = propertyLayerFingerprint(dossier);
+          marketInputFingerprint = marketLayerInputFingerprint(dossier, fingerprints.property, retained.property);
+          fingerprints.market = marketCurrent
+            ? retained.market!.layerFingerprint
+            : marketLayerFingerprint(dossier, fingerprints.property, retained.market?.webEvidence ?? []);
+          dealFp = dealLayerFingerprint(fingerprints, quickFlip, phase, input.dealCardId);
+        }
+      }
+    } catch (error) {
+      warnings.push(`God's Eye View spatial investigation did not complete: ${error instanceof Error ? error.message.split(/\r?\n/, 1)[0] : String(error)}. The read proceeds on retained visual evidence.`);
+    }
   }
 
   // 5. The seller layer pre-contact is deterministic — honest and free.
@@ -523,15 +668,34 @@ export async function runIntelligenceStack(
           layers: modelLayers,
           layerPrompt: (layer, currentDossier, observations) =>
             specialistLayerPrompt(layer, currentDossier, observations, passContext, envelope),
+          propertyReviewPrompt: (currentDossier, observations) =>
+            propertyExpertReviewPrompt(currentDossier, observations, passContext, envelope),
+          propertyExtractionPrompt: (expertReview, currentDossier, observations) =>
+            propertyStructuredExtractionPrompt(currentDossier, observations, expertReview, passContext, envelope),
+          marketReviewPrompt: (freshProperty, currentDossier) =>
+            marketExpertReviewPrompt(
+              currentDossier,
+              freshProperty ?? retained.property,
+              passContext,
+              envelope,
+            ),
+          marketExtractionPrompt: (freshProperty, expertReview, currentDossier) =>
+            marketStructuredExtractionPrompt(
+              currentDossier,
+              freshProperty ?? retained.property,
+              expertReview,
+              passContext,
+              envelope,
+            ),
           dealPrompt: (freshLayers, currentDossier, observations) =>
             specialistDealPrompt(currentDossier, observations, passContext, envelope, {
               freshLayers,
               retainedProducts: {
-                ...(refreshProperty || !retained.property ? {} : { property: retained.property }),
-                ...(refreshMarket || !retained.market ? {} : { market: retained.market }),
+                ...(refreshProperty || !retained.property || retained.property.layerFingerprint !== fingerprints.property ? {} : { property: retained.property }),
+                ...(refreshMarket || !marketCurrent ? {} : { market: retained.market }),
                 ...(refreshSeller
                   ? (sellerEstablished || !sellerProduct ? {} : { seller: sellerProduct })
-                  : (retained.seller ? { seller: retained.seller } : {})),
+                  : (retained.seller?.layerFingerprint === fingerprints.seller ? { seller: retained.seller } : {})),
               },
             }),
         },
@@ -583,6 +747,7 @@ export async function runIntelligenceStack(
   let propertyProduct = retained.property;
   if (refreshProperty) {
     if (!layers?.property) return failed('The analyst response carried no property layer.');
+    if (!run?.propertyExpertReview) return failed('The Property specialist returned no free expert review before extraction.');
     const score = canonicalScores.property ?? layers.property.score;
     propertyProduct = {
       contractVersion: INTELLIGENCE_STACK_VERSION,
@@ -594,10 +759,13 @@ export async function runIntelligenceStack(
       score,
       quality: qualityForScore(score),
       scoreSource: canonicalScores.property != null ? 'canonical' : layers.property.score != null ? 'analyst' : 'none',
-      read: layers.property.read ?? 'The analyst returned no property read.',
+      read: normalizeStrategyTerms(layers.property.read ?? 'The analyst returned no property read.'),
       strengths: layers.property.strengths,
       constraints: layers.property.constraints,
       potential: layers.property.potential,
+      unusual: layers.property.unusual,
+      externalities: layers.property.externalities,
+      developmentPotential: layers.property.developmentPotential,
       conflicts: [
         ...dossier.conflicts.map((conflict) => ({
           subject: conflict.subject,
@@ -611,12 +779,16 @@ export async function runIntelligenceStack(
       visualObservations: observations.length
         ? observations.map((observation) => ({ visual: observation.visual, observation: observation.observation, basis: observation.basis }))
         : priorVisualObservations,
+      configurations: layers.property.configurations,
+      // Stage A prose, verbatim and uncapped — the schema above is an
+      // extraction from it, never a bound on it.
+      expertReview: run.propertyExpertReview,
     };
     writeDerivedSnapshot({
       dealCardId: input.dealCardId,
       snapshotType: PROPERTY_INTELLIGENCE_PRODUCT_TYPE,
       payload: propertyProduct,
-      completeness: { strengths: propertyProduct.strengths.length, constraints: propertyProduct.constraints.length, unknowns: propertyProduct.unknowns.length },
+      completeness: { strengths: propertyProduct.strengths.length, constraints: propertyProduct.constraints.length, unknowns: propertyProduct.unknowns.length, configurations: propertyProduct.configurations.length, expertReview: propertyProduct.expertReview.length },
       changeReason: `Property Intelligence read by ${runtimeFor('property').agentProfile} on ${runtimeFor('property').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'property_intelligence_read',
@@ -626,17 +798,69 @@ export async function runIntelligenceStack(
   let marketProduct = retained.market;
   if (refreshMarket) {
     if (!layers?.market) return failed('The analyst response carried no market layer.');
-    const score = canonicalScores.market ?? layers.market.score;
+    if (!run?.marketExpertReview) return failed('The Market specialist returned no free expert review before extraction.');
+    const webEvidence: MarketWebEvidence[] = layers.market.webEvidence
+      // Stage B may only extract a URL actually carried by the verbatim Stage A
+      // ledger. This deterministic gate prevents an extraction hallucination
+      // from entering the Evidence Store.
+      .filter((item) => run.marketExpertReview!.includes(item.url))
+      .map((item) => ({ ...item, retrievedAt: generatedAt }));
+    if (webEvidence.length !== layers.market.webEvidence.length) {
+      warnings.push(`${layers.market.webEvidence.length - webEvidence.length} Market web citation(s) were rejected because their URL was absent from the Stage A SOURCE LEDGER.`);
+    }
+    const evidenceResult = appendDerivedEvidence({
+      dealCardId: input.dealCardId,
+      collectorKey: 'market-intelligence-web',
+      actor: INTELLIGENCE_STACK_ACTOR,
+      rows: webEvidence.map((item) => ({
+        domain: 'market_intelligence_web',
+        evidenceKind: 'web_market_claim',
+        factKey: 'market_signal',
+        raw: {
+          query: item.query,
+          title: item.title,
+          evidenceSnippet: item.evidenceSnippet,
+        },
+        normalized: {
+          title: item.title,
+          materialClaim: item.materialClaim,
+          sourceType: item.sourceType,
+          confidence: item.confidence,
+        },
+        sourceName: item.title,
+        sourceUrl: item.url,
+        sourceTier: item.sourceType,
+        confidence: item.confidence ?? 'medium',
+        retrievedAt: item.retrievedAt,
+        dedupeOn: `${item.url}|${item.materialClaim}`,
+      })),
+    });
+    if (evidenceResult.skippedReason && webEvidence.length) warnings.push(`Market web evidence was not attached: ${evidenceResult.skippedReason}`);
+    // Stage A owns governed live search, and its accepted citations are
+    // persisted before the Market snapshot. That evidence can legitimately
+    // change the retained Property-file projection (for example, development
+    // signals or coverage). Fingerprint the post-persistence file so a Market
+    // product cannot invalidate itself on the first SELECT immediately after
+    // the run. This is a read only; it does not run research or another model.
+    const persistedMarketSource = deps.readPropertyFile(input.dealCardId);
+    const persistedMarketDossier = persistedMarketSource
+      ? buildAcquisitionDossier({ ...persistedMarketSource, dealCardId: input.dealCardId, now: deps.now })
+      : dossier;
+    const score = layers.market.score;
+    marketInputFingerprint = marketLayerInputFingerprint(persistedMarketDossier, fingerprints.property, propertyProduct);
+    fingerprints.market = marketLayerFingerprint(persistedMarketDossier, fingerprints.property, webEvidence, propertyProduct);
+    dealFp = dealLayerFingerprint(fingerprints, quickFlip, phase, input.dealCardId);
     marketProduct = {
       contractVersion: INTELLIGENCE_STACK_VERSION,
       dealCardId: input.dealCardId,
       generatedAt,
       runtime: runtimeFor('market'),
       layerFingerprint: fingerprints.market,
+      inputFingerprint: marketInputFingerprint,
       dossierFingerprint: dossierFp,
       score,
       quality: qualityForScore(score),
-      scoreSource: canonicalScores.market != null ? 'canonical' : layers.market.score != null ? 'analyst' : 'none',
+      scoreSource: layers.market.score != null ? 'analyst' : 'none',
       read: layers.market.read ?? 'The analyst returned no market read.',
       liquidityRead: layers.market.liquidityRead,
       areaStory: layers.market.areaStory,
@@ -653,12 +877,24 @@ export async function runIntelligenceStack(
         medianPricePerAcre: dossier.market.medianPricePerAcre,
       },
       fastestBand: dossier.market.fastestBand,
+      overallMarketQuality: layers.market.overallMarketQuality,
+      exitProductFits: layers.market.exitProductFits,
+      expertReview: run.marketExpertReview,
+      webEvidence,
+      nextActions: layers.market.nextActions,
+      webEvidenceIds: evidenceResult.evidenceIds,
     };
     writeDerivedSnapshot({
       dealCardId: input.dealCardId,
       snapshotType: MARKET_INTELLIGENCE_PRODUCT_TYPE,
       payload: marketProduct,
-      completeness: { signals: marketProduct.bestSignals.length, risks: marketProduct.risks.length, unknowns: marketProduct.unknowns.length },
+      completeness: {
+        expertReview: marketProduct.expertReview.length,
+        signals: marketProduct.bestSignals.length,
+        risks: marketProduct.risks.length,
+        unknowns: marketProduct.unknowns.length,
+        webEvidence: marketProduct.webEvidence.length,
+      },
       changeReason: `Market Intelligence read by ${runtimeFor('market').agentProfile} on ${runtimeFor('market').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'market_intelligence_read',
@@ -740,9 +976,6 @@ export async function runIntelligenceStack(
         : usableObservations(propertyProduct?.visualObservations ?? priorVisualObservations),
       warnings: [...normalized.result.warnings],
     };
-    const dealScore = layers.dealExtras.score;
-    if (dealScore == null) warnings.push('The analyst returned no Deal Score; the read is shown without one.');
-
     const whatChanged = describeChanges({
       prior: retained.deal,
       refreshed: refreshedLayers,
@@ -771,11 +1004,15 @@ export async function runIntelligenceStack(
           score: sellerProduct?.score ?? null,
           state: sellerProduct?.state ?? (sellerEstablished ? 'established' : 'pre_contact'),
         },
-        deal: { score: dealScore, label: dealLabelForScore(dealScore) },
+        deal: { score: null, label: null },
       },
       reads: {
         property: layers.dealExtras.reads.property ?? propertyProduct?.read ?? null,
-        market: layers.dealExtras.reads.market ?? marketProduct?.read ?? null,
+        // Market owns the Market read. Deal Brain receives and reasons over
+        // the complete specialist product, but its redundant summary must not
+        // replace the current specialist truth with an older canonical score
+        // or a narrower intact-product interpretation.
+        market: marketProduct?.read ?? layers.dealExtras.reads.market ?? null,
         seller: layers.dealExtras.reads.seller ?? sellerProduct?.read ?? null,
       },
       quickFlip,
@@ -788,6 +1025,9 @@ export async function runIntelligenceStack(
       }),
       bestStrategy: layers.dealExtras.bestStrategy
         ?? (base.strategies[0] ? { strategy: base.strategies[0].strategy, why: base.strategies[0].whyItFits } : null),
+      bestCurrentStrategy: layers.dealExtras.bestStrategy
+        ?? (base.strategies[0] ? { strategy: base.strategies[0].strategy, why: base.strategies[0].whyItFits } : null),
+      highestUpsideHypothesis: layers.dealExtras.highestUpsideHypothesis,
       additionalUpside: layers.dealExtras.additionalUpside,
       discoveryCallObjective: layers.dealExtras.discoveryCallObjective,
       negotiationPosture: layers.dealExtras.negotiationPosture,

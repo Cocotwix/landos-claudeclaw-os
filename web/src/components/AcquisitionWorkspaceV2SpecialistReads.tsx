@@ -25,10 +25,17 @@ export interface PropertyIntelligenceReadView {
   strengths?: string[];
   constraints?: Array<{ title?: string; why?: string | null; severity?: string }>;
   potential?: string[];
+  unusual?: string[];
+  externalities?: string[];
+  developmentPotential?: string | null;
   conflicts?: Array<{ subject?: string; statement?: string; resolution?: string }>;
   unknowns?: Array<{ question?: string; whyItMatters?: string | null }>;
   nextActions?: Array<{ action?: string; why?: string | null }>;
   visualObservations?: Array<{ visual?: string; observation?: string; basis?: string | null }>;
+  configurations?: Array<{ label?: string; status?: string; prerequisites?: string[] }>;
+  /** Stage A prose, preserved verbatim — the full expert review behind the
+   *  structured extraction above. */
+  expertReview?: string;
   generatedAt?: string;
   runtime?: RuntimeView;
 }
@@ -49,6 +56,8 @@ export interface MarketIntelligenceReadView {
     monthsOfSupply?: number | null; medianPricePerAcre?: number | null;
   } | null;
   fastestBand?: string | null;
+  overallMarketQuality?: { grade?: string | null; read?: string | null };
+  exitProductFits?: Array<{ product?: string; grade?: string | null; expectedDays?: number | null; confidence?: string | null; read?: string | null }>;
   generatedAt?: string;
   runtime?: RuntimeView;
 }
@@ -441,6 +450,31 @@ function PropertyReadCard({ product, stale, reconcile, acreage }: {
               ))}
             </details>
           )}
+          {product.developmentPotential && <p class="awv2-specialist-line"><b>Development / subdivision potential</b> {product.developmentPotential}</p>}
+          {(product.configurations ?? []).filter((item) => item.label).length > 0 && (
+            <div class="awv2-specialist-list" data-testid="specialist-property-configurations">
+              <b>Plausible configurations</b>
+              {(product.configurations ?? []).filter((item) => item.label).slice(0, 6).map((item) => (
+                <span>
+                  • {item.label}
+                  {item.status ? ` — ${item.status.replace(/_/g, ' ')}` : ''}
+                  {(item.prerequisites ?? []).length > 0 ? ` (needs: ${(item.prerequisites ?? []).slice(0, 3).join('; ')})` : ''}
+                </span>
+              ))}
+            </div>
+          )}
+          {product.expertReview && (
+            <details class="awv2-specialist-details" data-testid="specialist-property-expert-review">
+              <summary>Full expert review ({Math.round(product.expertReview.length / 1000)}k chars)</summary>
+              {product.expertReview.split(/\n{2,}/).map((paragraph) => <p style="white-space:pre-wrap">{paragraph}</p>)}
+            </details>
+          )}
+          {lines(product.unusual, 3).length > 0 && (
+            <div class="awv2-specialist-list"><b>Unusual</b>{lines(product.unusual, 3).map((item) => <span>• {item}</span>)}</div>
+          )}
+          {lines(product.externalities, 3).length > 0 && (
+            <div class="awv2-specialist-list"><b>Important externalities</b>{lines(product.externalities, 3).map((item) => <span>• {item}</span>)}</div>
+          )}
           {(product.unknowns ?? []).filter((item) => item.question).length > 0 && (
             <div class="awv2-specialist-list"><b>Material unknowns</b>
               {(product.unknowns ?? []).filter((item) => item.question).slice(0, 3).map((item) => <span>? {item.question}</span>)}
@@ -479,6 +513,9 @@ function MarketReadCard({ product, stale }: { product: MarketIntelligenceReadVie
       ) : (
         <>
           {product.read && <p class="awv2-specialist-read">{product.read}</p>}
+          {product.overallMarketQuality?.read && (
+            <p class="awv2-specialist-line"><b>Overall market quality{product.overallMarketQuality.grade ? ` · ${product.overallMarketQuality.grade}` : ''}</b> {product.overallMarketQuality.read}</p>
+          )}
           {product.liquidityRead && <p class="awv2-specialist-line"><b>Liquidity</b> {product.liquidityRead}</p>}
           {band && (band.band || band.medianDaysOnMarket != null || band.medianPricePerAcre != null) && (
             <p class="awv2-specialist-line"><b>Subject band</b> {[
@@ -489,6 +526,14 @@ function MarketReadCard({ product, stale }: { product: MarketIntelligenceReadVie
             ].filter(Boolean).join(' · ')}{product.fastestBand ? ` · fastest band ${product.fastestBand}` : ''}</p>
           )}
           {product.buyerPool && <p class="awv2-specialist-line"><b>Buyer pool</b> {product.buyerPool}</p>}
+          {!!product.exitProductFits?.length && (
+            <details class="awv2-specialist-details" open>
+              <summary>Exit / product market fit</summary>
+              {product.exitProductFits.slice(0, 6).map((item) => (
+                <p><b>{item.product}</b>{item.grade ? ` · Grade ${item.grade}` : ''}{item.expectedDays != null ? ` · ~${Math.round(item.expectedDays)} days` : ''}{item.read ? ` — ${item.read}` : ''}</p>
+              ))}
+            </details>
+          )}
           {product.areaStory && (
             <details class="awv2-specialist-details"><summary>Area story</summary><p>{product.areaStory}</p></details>
           )}

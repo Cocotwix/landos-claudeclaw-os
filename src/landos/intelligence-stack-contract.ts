@@ -32,7 +32,7 @@ import {
 } from './acquisition-intelligence-contract.js';
 import type { CashDealVerdict, NovationGateResult, QuickFlipScreenResult } from './quick-flip-screen.js';
 
-export const INTELLIGENCE_STACK_VERSION = '2.1.0';
+export const INTELLIGENCE_STACK_VERSION = '2.2.0';
 
 // ── Shared vocabulary ──────────────────────────────────────────────────────
 
@@ -109,13 +109,33 @@ export interface PropertyIntelligenceProduct extends ProductBase {
   strengths: string[];
   constraints: Array<{ title: string; why: string | null; severity: ConstraintSeverity }>;
   potential: string[];
+  unusual: string[];
+  externalities: string[];
+  developmentPotential: string | null;
   conflicts: Array<{ subject: string; statement: string; resolution: string }>;
   unknowns: Array<{ question: string; whyItMatters: string | null }>;
   nextActions: Array<{ action: string; why: string | null }>;
   visualObservations: Array<{ visual: string; observation: string; basis: string | null }>;
+  /** Plausible property configurations from the expert review: what the land
+   * could physically/regulatorily become and what controls each path. Status
+   * separates physical plausibility, regulatory plausibility, genuinely
+   * unresolved paths, and paths the evidence does not support. Property never
+   * decides which configuration wins — Market and Deal Brain do. */
+  configurations: Array<{
+    label: string;
+    status: 'physically_plausible' | 'regulatorily_plausible' | 'unresolved' | 'not_supported';
+    prerequisites: string[];
+  }>;
+  /** Stage A output, preserved verbatim. The operational schema above is an
+   * extraction from this review; it does not bound what the expert can notice. */
+  expertReview: string;
 }
 
 export interface MarketIntelligenceProduct extends ProductBase {
+  /** Stable fingerprint of the evidence packet supplied before Stage A.
+   * Search findings produced by this read are output, not a self-invalidating
+   * input. */
+  inputFingerprint?: string;
   score: number | null;
   quality: IntelligenceQuality | null;
   scoreSource: ScoreSource;
@@ -136,6 +156,31 @@ export interface MarketIntelligenceProduct extends ProductBase {
     medianPricePerAcre: number | null;
   } | null;
   fastestBand: string | null;
+  overallMarketQuality: { grade: string | null; read: string | null };
+  exitProductFits: Array<{
+    product: string;
+    grade: 'A' | 'B' | 'C' | 'D' | null;
+    expectedDays: number | null;
+    confidence: string | null;
+    read: string | null;
+  }>;
+  /** Stage A output, preserved verbatim. The operational schema below is an
+   * extraction from this review; it does not bound what the expert can notice. */
+  expertReview: string;
+  webEvidence: MarketWebEvidence[];
+  nextActions: Array<{ action: string; why: string | null }>;
+  webEvidenceIds: number[];
+}
+
+export interface MarketWebEvidence {
+  query: string | null;
+  title: string;
+  url: string;
+  sourceType: 'official_primary' | 'primary' | 'secondary' | 'community';
+  retrievedAt: string;
+  materialClaim: string;
+  evidenceSnippet: string | null;
+  confidence: string | null;
 }
 
 export type SellerIntelligenceState = 'pre_contact' | 'established';
@@ -182,6 +227,8 @@ export interface DealIntelligenceProduct extends AcquisitionIntelligenceResult {
   sellerPriceVerdict: CashDealVerdict;
   novationGate: NovationGateResult;
   bestStrategy: { strategy: string; why: string | null } | null;
+  bestCurrentStrategy: { strategy: string; why: string | null } | null;
+  highestUpsideHypothesis: { strategy: string; why: string | null; prerequisites: string[] } | null;
   /** Upside beyond the base flip, listed only when the juice is worth the
    *  squeeze — the deal never needs these to qualify. */
   additionalUpside: Array<{ title: string; why: string | null; worthIt: string | null }>;
@@ -220,12 +267,12 @@ export interface IntelligencePassContext {
 }
 
 const LAYER_SCHEMAS: Record<Exclude<IntelligenceLayerId, 'deal'>, string> = {
-  property: '"property":{"score":0,"read":"","strengths":[],"constraints":[{"title":"","why":"","severity":"high|medium|low"}],"potential":[],"conflicts":[{"subject":"","record_claim":"","grounded_visual":"","interpretation":"","recommended_verification":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}]}',
-  market: '"market":{"score":0,"read":"","liquidity_read":"","area_story":"","buyer_pool":"","best_signals":[],"risks":[],"exit_implications":[],"unknowns":[{"question":"","why_it_matters":""}]}',
+  property: '"property":{"score":0,"read":"","strengths":[],"constraints":[{"title":"","why":"","severity":"high|medium|low"}],"potential":[],"unusual":[],"externalities":[],"development_potential":"","configurations":[{"label":"","status":"physically_plausible|regulatorily_plausible|unresolved|not_supported","prerequisites":[]}],"conflicts":[{"subject":"","record_claim":"","grounded_visual":"","interpretation":"","recommended_verification":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}]}',
+  market: '"market":{"score":0,"read":"","overall_market_quality":{"grade":null,"read":""},"exit_product_fits":[{"product":"","grade":"A|B|C|D","expected_days":null,"confidence":"","read":""}],"liquidity_read":"","area_story":"","buyer_pool":"","best_signals":[],"risks":[],"exit_implications":[],"unknowns":[{"question":"","why_it_matters":""}],"next_actions":[{"action":"","why":""}],"web_evidence":[{"query":"","title":"","url":"https://...","source_type":"official_primary|primary|secondary|community","material_claim":"","evidence_snippet":"","confidence":""}]}',
   seller: '"seller":{"score":0,"read":"","motivation":"","price_expectation":"","timeline":"","decision_makers":"","objections":[],"negotiation_posture":"","best_approach":"","seller_reported_facts":[{"statement":"","attribution":""}],"follow_ups":[],"contradictions":[{"subject":"","earlier":"","later":"","interpretation":""}],"unknowns":[{"question":"","why_it_matters":""}],"next_question":""}',
 };
 
-const DEAL_SCHEMA = '"deal":{"score":0,"deal_read":{"headline":"","judgment":"","confidence":"Confirmed|Well supported|Likely|Unresolved"},'
+const DEAL_SCHEMA = '"deal":{"deal_read":{"headline":"","judgment":"","confidence":"Confirmed|Well supported|Likely|Unresolved"},'
   + '"property_story":[],"market_story":[],'
   + '"opportunities":[{"title":"","why":"","what_would_confirm":""}],'
   + '"constraints":[{"title":"","why":"","severity":"high|medium|low"}],'
@@ -234,7 +281,8 @@ const DEAL_SCHEMA = '"deal":{"score":0,"deal_read":{"headline":"","judgment":"",
   + '"conflicts":[{"subject":"","statement":"","resolution":""}],'
   + '"unknowns":[{"question":"","why_it_matters":""}],'
   + '"next_actions":[{"action":"","why":""}],'
-  + '"best_strategy":{"strategy":"","why":""},'
+  + '"best_current_executable_strategy":{"strategy":"","why":""},'
+  + '"highest_upside_hypothesis":{"strategy":"","why":"","prerequisites":[]},'
   + '"additional_upside":[{"title":"","why":"","worth_it":""}],'
   + '"discovery_call_objective":"","negotiation_posture":"","reads":{"property":"","market":"","seller":""}}';
 
@@ -376,9 +424,10 @@ export function intelligenceStackPrompt(
       : '',
     '',
     'Strategy rules for the deal layer:',
-    '- The FIRST screen is the simple cash quick flip: buy, list as-is, sell. The deterministic screen above is that answer.',
-    '- Recommend the SIMPLEST, FASTEST, REALISTIC profitable strategy. Complexity must be earned: added net must justify added time, capital, approvals and risk.',
-    '- Value-add strategies (splits, land-home, entitlement) are UPSIDE, never prerequisites. List them under additional_upside only when the juice is worth the squeeze.',
+    '- The deterministic quick-flip screen is one required strategy test, not the default recommendation.',
+    '- State one Best Current Executable Strategy supported now and one Highest-Upside Hypothesis whose unresolved prerequisites are explicit.',
+    '- For materially large acreage, test realistic product transformation. Recommend the SIMPLEST, FASTEST, REALISTIC profitable strategy; added net must justify time, capital, approvals and risk.',
+    '- Consider intact quick/patient resale, simple/minor/frontage split, major subdivision/entitlement, phased sell-down, land-home, improvement then resale, novation, double close, and supported creative terms; reject inapplicable paths explicitly.',
     '- Novation/double close may only be considered when the calculation block says the gate is open — never as a pre-call strategy.',
     '- Market value and liquidity are different: connect the subject to its actual acreage band and say which bands are liquid.',
     context.phase === 'pre_call'
@@ -386,9 +435,7 @@ export function intelligenceStackPrompt(
       : '- Seller communication exists: state the negotiation posture.',
     '',
     'Every "score" field is YOUR integer judgment from 0 to 100 — replace the placeholder, never echo 0.',
-    'The deal score reflects property quality, market and liquidity, quick-flip economics, supported value,',
-    'seller fit when known, strategy, risks and uncertainty together — never a mere average of the other scores,',
-    'and a score below 10 means genuinely worthless and must be justified in the judgment.',
+    'Do not create or return a generic Deal Score. Deal Brain gives the overall judgment in words and strategy.',
     'Think across the whole file rather than section by section. Say what the combinations mean.',
     'Rank only the strategies THIS property actually supports and mark the ones it does not as rejected.',
     'Carry every conflict in the file, with both values.',
@@ -496,6 +543,11 @@ export function marketDossierView(dossier: AcquisitionDossier): Record<string, u
     assembledAt: dossier.assembledAt,
     identity: dossier.identity,
     acreage: dossier.acreage,
+    physical: dossier.physical,
+    access: dossier.access,
+    subdivision: dossier.subdivision,
+    utilities: dossier.utilities,
+    history: dossier.history,
     valuation: dossier.valuation,
     comps: dossier.comps,
     market: dossier.market,
@@ -583,6 +635,16 @@ export function specialistLayerPrompt(
       'Observe, then model one coherent reality: surface contradictions with both values rather than averaging',
       'them, weight every finding honestly, and name the ONE bounded verification for anything material and',
       'unresolved — then stop.',
+      '',
+      'Act as a specialist multimodal land buyer, not a summarizer. Interpret the retained LandPortal facts, GIS,',
+      'parcel geometry, grounded aerial/3D/street observations, buildability, flood, wetlands, streams, soils,',
+      'topography, frontage, utilities, zoning, subdivision rules, documents, development history, neighboring',
+      'uses and surrounding development. State what is materially good, bad, unusual, opportunistic, constraining,',
+      'and externally important; explain plausible development/subdivision potential and the single next property',
+      'action. Never claim a visual observation unless it is carried as pixel-grounded evidence.',
+      'ACCESS DOCTRINE: when the file says the parcel fronts/abuts a serving road and is Not Landlocked, normal',
+      'acquisition-screening access is Established. Recorded deed/easement/title confirmation remains later',
+      'diligence and must not downgrade the current screening conclusion to Unresolved.',
     ]
     : layer === 'market'
       ? [
@@ -599,9 +661,28 @@ export function specialistLayerPrompt(
         'FMV. Market value and liquidity are different: connect the subject to its actual acreage band and say',
         'which bands are liquid. Time-sensitive claims (a moratorium, a pending project) hold only as long as',
         'their evidence is current — say how current the evidence is.',
+        '',
+        'Answer TWO separate questions: (1) overall neighborhood/immediate-area/ZIP/city/county market quality,',
+        'and (2) exit/product market fit for every plausible supported product. The operator wants resale within',
+        '150 days. Liquidity grades are A <=90 days, B 91-150, C 151-210, D >210, but the grade must also weigh',
+        'closed sales, active competition, sell-through, absorption, months of supply, buyer depth, positioning,',
+        'trajectory, product type, confidence and sample size; never grade mechanically from DOM alone.',
+        'STRICT SEPARATION: overallMarketQuality grades only the broader place—neighborhood, immediate area, ZIP,',
+        'city and county—from growth, housing, employment, infrastructure and general trajectory evidence. Do NOT',
+        'grade it from the subject acreage band or call it the quality of "this specific product." If the file lacks',
+        'enough broader-place evidence, return grade null and say that broader quality is not established. Put every',
+        'subject-product liquidity grade, including intact acreage, only in exitProductFits.',
+        'For materially large acreage, compare intact resale against realistic transformed products supported by',
+        'Property Intelligence and governing rules. Ask what sellable product the tract should become; never assume',
+        'subdivision or invent yield/economics. Use only material Market Pulse signals and explain the subject impact.',
+        'Ignore provider names, routes attempted, collector paths and search narration.',
       ]
       : [
         sellerDoctrineSection(dossier),
+        'Act as an experienced acquisitions negotiator and human-behavior specialist. Ground every inference in',
+        'recorded calls, transcripts, texts, emails, forms, notes, offers, response timing, contradictions or',
+        'follow-through. Assess motivation, expectations, flexibility, decision control, objections, trust, leverage,',
+        'communication style and the next conversation objective. Never manufacture psychology from public records.',
       ];
 
   return [
@@ -627,6 +708,168 @@ export function specialistLayerPrompt(
     'Use exactly this shape:',
     `{${LAYER_SCHEMAS[layer]}}`,
   ].filter(Boolean).join('\n');
+}
+
+/** Property Stage A: a genuine free expert review over the complete current
+ * Property file plus every grounded visual/spatial observation. No research
+ * and no rigid schema — the specialist thinks like a senior land expert, and
+ * the prose is preserved verbatim. Extraction happens separately in Stage B. */
+export function propertyExpertReviewPrompt(
+  dossier: AcquisitionDossier,
+  observations: VisualObservationDraft[],
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+): string {
+  const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
+  return [
+    `You are LandOS Property Intelligence — a senior land investor, land developer, site evaluator, and property acquisitions expert. Review ${subject}. Phase: ${DEAL_PHASE_LABEL[context.phase]}.`,
+    '',
+    specialistContextEnvelope(dossier, context, envelope),
+    '',
+    NO_RESEARCH_RULE,
+    '',
+    '=== COMPLETE CURRENT PROPERTY FILE (JSON) ===',
+    JSON.stringify(propertyDossierView(dossier)),
+    '=== END PROPERTY FILE ===',
+    '',
+    groundedObservationsSection(observations),
+    '',
+    assessorDoctrineSection(dossier),
+    '',
+    dossier.seller.sellerReportedFacts.length
+      ? 'The file\'s "sellerReportedPropertyStatements" are SELLER-REPORTED evidence with attribution — they may support or contradict a record claim, but they never become canonical property facts.'
+      : '',
+    '',
+    'All currently available Property evidence has now been assembled. Do not simply summarize fields. Understand the land. Tell the acquisitions team what this property actually is, how it lays, how it functions, what stands out, what helps it, what hurts it, what appears easier or harder than it first looks, what the visual and spatial evidence changes, what relationships matter, what could plausibly be created, what contradictions exist, what may be easy to miss, and what still needs to be proven.',
+    '',
+    'Connect parcel geometry, imagery and grounded spatial observations, terrain, slope, drainage, streams, flood, wetlands, soils, frontage, practical access, usable/buildable acreage and its CONTIGUITY and physical location, utilities, environmental conditions, surrounding uses and development, parcel history and splits, deeds, surveys, plats, easements, zoning and dimensional standards, subdivision rules, historic development and engineering work, and prior observations. Relationships matter more than fields: shape with frontage and practical entrance; terrain with usable acreage and its continuity; slope with drainage and road entry; soils with septic feasibility; streams/flood/wetlands with lot configuration; zoning and frontage standards with plausible configurations; utilities with development burden; neighboring uses with desirability and WHICH portion of the property each externality actually affects; historic split with what frontage, corridors, drainage areas, terrain, or engineered work was retained or lost; historic plans with whether they still fit the CURRENT parcel. Notice material things nobody asked about.',
+    '',
+    'OBSERVATION VS FACT — HARD RULE. Imagery and spatial views establish OBSERVATIONS, never legal or regulatory truth. An apparent driveway is not legal access. A road terminating near the boundary is not a right to connect. Wet ground is not a jurisdictional wetland. A visible pole, hydrant, or manhole is not confirmed service or capacity. A cleared corridor is not a recorded right-of-way. Keep FACT, DETERMINISTIC CALCULATION, OBSERVATION, INTERPRETATION, HYPOTHESIS/ASSUMPTION, and UNKNOWN strictly separate and label them as you reason. Never silently promote a visual observation into an authoritative fact. Where a material question cannot be settled from this file, NAME the one bounded authoritative verification that would settle it (recorded easement, survey, plat, zoning determination, utility will-serve, FEMA/NWI determination, assessor record) — never attempt it yourself.',
+    'ACCESS DOCTRINE: when the file says the parcel fronts/abuts a serving road and is Not Landlocked, normal acquisition-screening access is Established. Recorded deed/easement/title confirmation remains later diligence and must not downgrade the current screening conclusion to Unresolved.',
+    '',
+    'Identify the plausible property configurations the physical and regulatory evidence actually supports (intact tract, simple split, minor/major subdivision, estate lots, land-home, improvement, conservation, or property-specific paths), and for each name the controlling prerequisites and whether it is currently PHYSICALLY PLAUSIBLE, REGULATORILY PLAUSIBLE, UNRESOLVED, or NOT SUPPORTED. Do not decide which configuration wins.',
+    '',
+    'KEEP PROPERTY AUTHORITY IN LANE. You answer: what is this land, how does it actually function, what can it plausibly become, and what physical or regulatory facts control that. Do not issue the final buy/pass judgment, an acquisition recommendation, an offer or walk-away price, or the final investment strategy — Deal Brain owns that synthesis after Market, Seller, and deterministic economics.',
+    ...contextLines(context),
+    '',
+    'Think freely within the Property domain. Produce a complete natural-language expert review, not JSON and not a field-by-field recap. Do not manufacture facts. Establish each controlling caveat clearly once; carry it forward and repeat it only when its implication materially changes. Every paragraph should add evidence, interpretation, or a new connection. Use enough length to preserve useful reasoning (normally 1,200-3,500 words; never exceed 5,000).',
+  ].filter(Boolean).join('\n');
+}
+
+/** Property Stage B: operational extraction only. It cannot rewrite Stage A. */
+export function propertyStructuredExtractionPrompt(
+  dossier: AcquisitionDossier,
+  observations: VisualObservationDraft[],
+  expertReview: string,
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+): string {
+  return [
+    'You are LandOS Property Intelligence performing STRUCTURED EXTRACTION from your completed expert review. Do not research and do not add a new fact, observation, conclusion, or configuration. Preserve the meaning of the review; the schema is operational and does not replace it.',
+    '',
+    specialistContextEnvelope(dossier, context, envelope),
+    '',
+    '=== COMPLETE CURRENT PROPERTY FILE (JSON) ===',
+    JSON.stringify(propertyDossierView(dossier)),
+    '=== END PROPERTY FILE ===',
+    '',
+    groundedObservationsSection(observations),
+    '',
+    '=== COMPLETED FREE EXPERT PROPERTY REVIEW (VERBATIM) ===',
+    expertReview,
+    '=== END EXPERT REVIEW ===',
+    '',
+    'Extract Property Score as PROPERTY QUALITY only: usable land and its continuity, parcel shape, frontage and practical access, terrain and slope, utility position, environmental burden, development flexibility, externalities, physical marketability, and unresolved intrinsic Property risk. It is NOT the Market, Seller, or Deal score; never score market conditions, seller behavior, or the final investment judgment here.',
+    'Preserve the strongest stable operator conclusions from the review: the concise thesis in read, what helps in strengths, what binds in constraints with honest severity, upside in potential, easy-to-miss findings in unusual, surrounding-use burdens in externalities, the development story in development_potential, each plausible configuration with its status and controlling prerequisites in configurations, record-vs-observation contradictions in conflicts with the ONE bounded verification each, evidence gaps in unknowns, and the next material Property actions in next_actions. Do not add a new conclusion merely to fill a field, and do not invent a configuration the review did not support.',
+    'Keep observation-vs-fact discipline during extraction: a visual observation stays an observation; recommended verifications stay named, not performed.',
+    '=== CANONICAL LANDOS SCORES ===',
+    canonicalScoreLineFor('Property score', context.canonicalScores.property),
+    '=== END SCORES ===',
+    SCORE_RULE,
+    '',
+    'Reply with ONE JSON object and nothing else, containing exactly this top-level key: "property".',
+    'Use exactly this shape:',
+    `{${LAYER_SCHEMAS.property}}`,
+  ].join('\n');
+}
+
+/** Market Stage A: a genuine expert review over the complete current market
+ * file and the completed Property specialist product. Search is available only
+ * on this pass; LandOS remains the authority and stamps/persists provenance. */
+export function marketExpertReviewPrompt(
+  dossier: AcquisitionDossier,
+  propertyProduct: unknown,
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+): string {
+  const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
+  return [
+    `You are the persistent LandOS Market + Area Intelligence specialist. You are exceptionally skilled at reading and understanding local real-estate and land markets. Review ${subject}. Phase: ${DEAL_PHASE_LABEL[context.phase]}.`,
+    '',
+    specialistContextEnvelope(dossier, context, envelope),
+    '',
+    'The complete currently retained Market file and the completed current Property Intelligence product are below. They are authoritative for retained LandOS evidence. Read them first, form the material market questions and hypotheses, then you MAY use your web-search tool for missing or stale evidence that could materially change overall market quality, product fit, pricing, buyer depth, or exit strategy. Follow meaningful leads, challenge retained evidence when credible public evidence conflicts with it, and stop when additional search is unlikely to change the assessment. Search is question-driven, never query-count-driven; if support remains inadequate, say evidence insufficient.',
+    'Web findings are public-market evidence only. They never become canonical property, zoning, legal, access, utility, yield, or entitlement facts. Retain the source title, URL, source class, search query, and material claim for every web finding you rely on. Prefer official government sources; planning, development, utility, and transportation records; legitimate MLS/listing evidence; builder/developer primary sources; credible industry sources; credible local reporting; then secondary/community context. Distinguish official_primary, primary, secondary, and community provenance and do not manufacture facts. A builder announcement or marketing page establishes commitment, product, positioning, and stated timing—not closings, sales velocity, cancellations, incentives, absorption, or buyer depth.',
+    '',
+    'Keep sourced FACT, LandOS CALCULATION, INTERPRETATION, ASSUMPTION, and UNKNOWN separate. Ignore provider routes, collector machinery, backend diagnostics, and filesystem paths.',
+    '',
+    '=== COMPLETE CURRENT MARKET FILE (JSON) ===',
+    JSON.stringify(marketDossierView(dossier)),
+    '=== END MARKET FILE ===',
+    '',
+    '=== CURRENT PROPERTY INTELLIGENCE PRODUCT (JSON) ===',
+    JSON.stringify(retainedProductProjection(propertyProduct) ?? propertyProduct ?? null),
+    '=== END PROPERTY INTELLIGENCE ===',
+    '',
+    'All currently available market evidence has now been assembled. Step back and review the complete market file as a senior land and real-estate market expert. Read and understand the market rather than summarizing fields. Connect the sold evidence, actual competitive set, every Market Research acreage band, liquidity, Market Pulse, development patterns, growth, housing activity, infrastructure, neighboring development, and the plausible product configurations identified by Property Intelligence. Tell the acquisitions team what kind of market this is, where it appears to be heading, what buyers want, what products are moving, what products are sitting, what opportunities or risks are easy to miss, and what the evidence implies for each realistic exit product.',
+    '',
+    'KEEP MARKET AUTHORITY IN LANE. Give a strong market opinion and title the concluding decision-useful section MARKET IMPLICATIONS. Explain market positioning, liquidity, buyer depth, safe market assumptions, unsupported upside, and evidence that could change the read. Do not issue a final buy/pass judgment, offer or walk-away price, or conditional acquisition instruction. Deal Brain owns the final acquisition decision after Market, Property, Seller, and deterministic economics are synthesized.',
+    'Answer TWO different questions: Overall Market Quality for the immediate neighborhood, city, ZIP, county and broader local real-estate trajectory; and Subject / Exit Product Market Fit for the intact tract and every physically/regulatorily plausible transformed product. A strong overall market may coexist with a weak intact large-tract product.',
+    'Market Research acreage bands are observed transaction evidence, not the outer boundary of possible exits or a proxy for materially different transformed products. For materially large acreage, consider Property-supported intact acreage, intermediate acreage, 5-acre, 1-2-acre, sub-one-acre, finished-lot, builder-lot, entitled-land, phased sell-down, land-home, and builder/developer tract products where relevant. When surrounding development materially uses a different lot or finished product, make a reasonable direct investigation of that product market rather than substituting another acreage band. Do not invent feasibility or yield; Property Intelligence and governing rules bound plausible configurations. Quick Flip is not automatically preferred.',
+    'When residential transformation is material, do not stop at "builders are active." Decide which evidence matters and, where reasonably available, investigate actual closings or sales, absorption by product, available/pending/spec inventory, incentives or reductions, cancellations, phase releases, lots delivered or remaining, approved/proposed competing units and delivery timing, product type, lot and house size, price, builder concentration, finished-lot or entitled-land transactions, land acquisitions, takedown/residual clues, and infrastructure responsibility. Use the material subset, not a fixed checklist. State clearly when public evidence cannot establish performance.',
+    'The operator resale objective is 150 days. Use A <=90 days, B 91-150, C 151-210, D >210 for an existing product whose resale timing is supportable, but never grade mechanically from DOM. Weigh closed sales, active competition, sell-through, absorption, months of supply, buyer depth, price position, growth/trajectory, product type, confidence, and sample size. A hypothetical product that has not been created is not automatically D: keep entitlement/execution duration separate, and use Unresolved (null grade and expected days in extraction) when post-creation resale timing is not supportable.',
+    'Identify the strongest observed market direction, but do not declare final highest and best use while physical feasibility, entitlement feasibility, yield, costs, or economics remain unresolved.',
+    '',
+    'Think freely within your market domain. Produce a complete natural-language expert review, not JSON and not a field-by-field recap. Establish each controlling caveat clearly once; carry it forward and repeat it only when its implication materially changes. Every paragraph should add evidence, interpretation, or a new connection. Use enough length to preserve useful reasoning (normally 1,200-3,500 words; never exceed 5,000). End with a section titled exactly "SOURCE LEDGER". For each material web source used, include one bullet containing: QUERY | TITLE | URL | SOURCE TYPE (official_primary, primary, secondary, or community) | MATERIAL CLAIM | EVIDENCE SNIPPET | CONFIDENCE. If no new web source was material, write "SOURCE LEDGER\n- NONE". LandOS will stamp the retrieval time.',
+  ].filter(Boolean).join('\n');
+}
+
+/** Market Stage B: operational extraction only. It cannot rewrite Stage A. */
+export function marketStructuredExtractionPrompt(
+  dossier: AcquisitionDossier,
+  propertyProduct: unknown,
+  expertReview: string,
+  context: IntelligencePassContext,
+  envelope: SpecialistPromptEnvelope,
+): string {
+  return [
+    'You are the persistent LandOS Market + Area Intelligence specialist performing STRUCTURED EXTRACTION from your completed expert review. Do not browse or search in this pass. Do not add a new fact, conclusion, or source. Preserve the meaning of the review; the schema is operational and does not replace it.',
+    '',
+    specialistContextEnvelope(dossier, context, envelope),
+    '',
+    '=== COMPLETE CURRENT MARKET FILE (JSON) ===',
+    JSON.stringify(marketDossierView(dossier)),
+    '=== END MARKET FILE ===',
+    '',
+    '=== CURRENT PROPERTY INTELLIGENCE PRODUCT (JSON) ===',
+    JSON.stringify(retainedProductProjection(propertyProduct) ?? propertyProduct ?? null),
+    '=== END PROPERTY INTELLIGENCE ===',
+    '',
+    '=== COMPLETED FREE EXPERT MARKET REVIEW (VERBATIM) ===',
+    expertReview,
+    '=== END EXPERT REVIEW ===',
+    '',
+    'Extract Market Score as the overall market assessment: broader local market quality, real-estate trajectory, demand, development, Market Research, Market Pulse, competition, liquidity conditions, and confidence. It is NOT the score for the intact subject tract. Keep every specific product grade in exit_product_fits.',
+    'Preserve the strongest stable operator conclusions from the review: put the overall thesis in read, broader-place quality in overall_market_quality, development trajectory in area_story, buyer/product segmentation in buyer_pool, current-product liquidity in liquidity_read, transformed-product demand and supported timing in exit_product_fits, opportunities in best_signals and exit_implications, market and data-quality risks or contradictions in risks, evidence gaps in unknowns, and the next material market questions in next_actions. Do not add a new conclusion merely to fill a field.',
+    'Retain the A/B/C/D timing doctrine and separate Overall Market Quality from Subject / Exit Product Market Fit. Market Research acreage bands do not limit the product universe. For a hypothetical product not yet created, use grade null and expected_days null unless the review actually supports post-creation resale timing; do not use D as a substitute for entitlement duration. Do not privilege Quick Flip.',
+    'Keep Market authority in lane during extraction. Market fields may state strong market implications, required positioning, or that hypothetical yield deserves no present market credit. They must not issue the final buy/pass decision, offer or walk-away price, or conditional acquisition instruction; Deal Brain owns that synthesis.',
+    'For web_evidence, extract only sources that appear in the review SOURCE LEDGER and require an http(s) URL. Do not fabricate a citation. LandOS supplies retrieved_at after this call.',
+    SCORE_RULE,
+    '',
+    'Reply with ONE JSON object and nothing else, containing exactly this top-level key: "market".',
+    'Use exactly this shape:',
+    `{${LAYER_SCHEMAS.market}}`,
+  ].join('\n');
 }
 
 /** A bounded projection of a retained (not refreshed this pass) product for
@@ -714,19 +957,17 @@ export function specialistDealPrompt(
     groundedObservationsSection(observations),
     '',
     'Strategy rules for the deal layer:',
-    '- The FIRST screen is the simple cash quick flip: buy, list as-is, sell. The deterministic screen above is that answer.',
-    '- Recommend the SIMPLEST, FASTEST, REALISTIC profitable strategy. Complexity must be earned: added net must justify added time, capital, approvals and risk.',
-    '- Value-add strategies (splits, land-home, entitlement) are UPSIDE, never prerequisites. List them under additional_upside only when the juice is worth the squeeze.',
+    '- The deterministic quick-flip screen is one required strategy test, not the default recommendation.',
+    '- State one Best Current Executable Strategy supported now and one Highest-Upside Hypothesis whose unresolved prerequisites are explicit.',
+    '- For materially large acreage, test realistic product transformation. Recommend the SIMPLEST, FASTEST, REALISTIC profitable strategy; added net must justify time, capital, approvals and risk.',
+    '- Consider intact quick/patient resale, simple/minor/frontage split, major subdivision/entitlement, phased sell-down, land-home, improvement then resale, novation, double close, and supported creative terms; reject inapplicable paths explicitly.',
     '- Novation/double close may only be considered when the calculation block says the gate is open — never as a pre-call strategy.',
     '- Market value and liquidity are different: connect the subject to its actual acreage band and say which bands are liquid.',
     context.phase === 'pre_call'
       ? '- This is PRE-CALL: also state the discovery-call objective — exactly what to learn from the seller.'
       : '- Seller communication exists: state the negotiation posture.',
     '',
-    SCORE_RULE,
-    'The deal score reflects property quality, market and liquidity, quick-flip economics, supported value,',
-    'seller fit when known, strategy, risks and uncertainty together — never a mere average of the other scores,',
-    'and a score below 10 means genuinely worthless and must be justified in the judgment.',
+    'Do not create or return a generic Deal Score. Deal Brain gives the overall judgment in words and strategy.',
     'Think across the whole file rather than section by section. Say what the combinations mean.',
     'Rank only the strategies THIS property actually supports and mark the ones it does not as rejected.',
     'Carry every conflict in the file, with both values.',
@@ -897,6 +1138,14 @@ export interface ParsedPropertyLayer {
   strengths: string[];
   constraints: Array<{ title: string; why: string | null; severity: ConstraintSeverity }>;
   potential: string[];
+  unusual: string[];
+  externalities: string[];
+  developmentPotential: string | null;
+  configurations: Array<{
+    label: string;
+    status: 'physically_plausible' | 'regulatorily_plausible' | 'unresolved' | 'not_supported';
+    prerequisites: string[];
+  }>;
   conflicts: ParsedVisualConflict[];
   unknowns: Array<{ question: string; whyItMatters: string | null }>;
   nextActions: Array<{ action: string; why: string | null }>;
@@ -912,6 +1161,18 @@ export interface ParsedMarketLayer {
   risks: string[];
   exitImplications: string[];
   unknowns: Array<{ question: string; whyItMatters: string | null }>;
+  nextActions: Array<{ action: string; why: string | null }>;
+  webEvidence: Array<{
+    query: string | null;
+    title: string;
+    url: string;
+    sourceType: MarketWebEvidence['sourceType'];
+    materialClaim: string;
+    evidenceSnippet: string | null;
+    confidence: string | null;
+  }>;
+  overallMarketQuality: { grade: string | null; read: string | null };
+  exitProductFits: Array<{ product: string; grade: 'A' | 'B' | 'C' | 'D' | null; expectedDays: number | null; confidence: string | null; read: string | null }>;
 }
 
 export interface ParsedSellerLayer {
@@ -934,6 +1195,7 @@ export interface ParsedSellerLayer {
 export interface ParsedDealExtras {
   score: number | null;
   bestStrategy: { strategy: string; why: string | null } | null;
+  highestUpsideHypothesis: { strategy: string; why: string | null; prerequisites: string[] } | null;
   additionalUpside: Array<{ title: string; why: string | null; worthIt: string | null }>;
   discoveryCallObjective: string | null;
   negotiationPosture: string | null;
@@ -958,10 +1220,26 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
   const property: ParsedPropertyLayer | null = isRecord(propertySource)
     ? {
       score: asScore(pick(propertySource, 'score')),
-      read: asLine(pick(propertySource, 'read', 'propertyRead', 'summary'), 1_200),
+      read: asLine(pick(propertySource, 'read', 'propertyRead', 'summary'), 1_800),
       strengths: asLines(pick(propertySource, 'strengths'), 8),
       constraints: asConstraints(pick(propertySource, 'constraints')),
       potential: asLines(pick(propertySource, 'potential', 'propertyPotential', 'upside'), 6),
+      unusual: asLines(pick(propertySource, 'unusual', 'unusualFindings'), 6),
+      externalities: asLines(pick(propertySource, 'externalities', 'importantExternalities'), 6),
+      developmentPotential: asLine(pick(propertySource, 'developmentPotential', 'developmentSubdivisionPotential'), 1_000),
+      configurations: (Array.isArray(pick(propertySource, 'configurations', 'plausibleConfigurations')) ? pick(propertySource, 'configurations', 'plausibleConfigurations') as unknown[] : [])
+        .map((item) => {
+          if (!isRecord(item)) return null;
+          const label = asLine(pick(item, 'label', 'configuration', 'title'), 160);
+          if (!label) return null;
+          const rawStatus = (asLine(pick(item, 'status'), 40) ?? '').toLowerCase().replace(/[\s-]+/g, '_');
+          const status = rawStatus === 'physically_plausible' || rawStatus === 'regulatorily_plausible' || rawStatus === 'not_supported'
+            ? rawStatus
+            : 'unresolved';
+          return { label, status, prerequisites: asLines(pick(item, 'prerequisites', 'controllingPrerequisites'), 6) };
+        })
+        .filter((item): item is ParsedPropertyLayer['configurations'][number] => !!item)
+        .slice(0, 10),
       conflicts: (Array.isArray(pick(propertySource, 'conflicts')) ? pick(propertySource, 'conflicts') as unknown[] : [])
         .map((item) => {
           if (!isRecord(item)) return null;
@@ -989,7 +1267,7 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
   const market: ParsedMarketLayer | null = isRecord(marketSource)
     ? {
       score: asScore(pick(marketSource, 'score')),
-      read: asLine(pick(marketSource, 'read', 'marketRead', 'summary'), 1_200),
+      read: asLine(pick(marketSource, 'read', 'marketRead', 'summary'), 1_800),
       liquidityRead: asLine(pick(marketSource, 'liquidityRead', 'liquidity'), 800),
       areaStory: asLine(pick(marketSource, 'areaStory', 'growthStory', 'area'), 1_000),
       buyerPool: asLine(pick(marketSource, 'buyerPool', 'targetBuyer', 'likelyBuyerPool'), 600),
@@ -997,6 +1275,57 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
       risks: asLines(pick(marketSource, 'risks', 'marketRisks'), 6),
       exitImplications: asLines(pick(marketSource, 'exitImplications', 'exitMarketImplications'), 6),
       unknowns: asQuestions(pick(marketSource, 'unknowns', 'importantMarketUnknowns')),
+      nextActions: asActions(pick(marketSource, 'nextActions', 'nextMarketActions')),
+      webEvidence: (Array.isArray(pick(marketSource, 'webEvidence')) ? pick(marketSource, 'webEvidence') as unknown[] : [])
+        .map((item) => {
+          if (!isRecord(item)) return null;
+          const title = asLine(pick(item, 'title', 'sourceTitle'), 300);
+          const url = asLine(pick(item, 'url', 'sourceUrl'), 1_000);
+          const materialClaim = asLine(pick(item, 'materialClaim', 'claim'), 1_200);
+          if (!title || !url || !/^https?:\/\//i.test(url) || !materialClaim) return null;
+          const rawType = (asLine(pick(item, 'sourceType', 'sourceClass'), 40) ?? '').toLowerCase();
+          const sourceType: MarketWebEvidence['sourceType'] = ['official_primary', 'primary', 'secondary', 'community'].includes(rawType)
+            ? rawType as MarketWebEvidence['sourceType']
+            : 'secondary';
+          return {
+            query: asLine(pick(item, 'query'), 500),
+            title,
+            url,
+            sourceType,
+            materialClaim,
+            evidenceSnippet: asLine(pick(item, 'evidenceSnippet', 'snippet'), 1_200),
+            confidence: asLine(pick(item, 'confidence'), 80),
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => !!item)
+        .slice(0, 24),
+      overallMarketQuality: (() => {
+        const source = pick(marketSource, 'overallMarketQuality');
+        const record = isRecord(source) ? source : {};
+        return {
+          grade: asLine(pick(record, 'grade'), 40),
+          read: asLine(pick(record, 'read', 'summary'), 1_000),
+        };
+      })(),
+      exitProductFits: (Array.isArray(pick(marketSource, 'exitProductFits')) ? pick(marketSource, 'exitProductFits') as unknown[] : [])
+        .map((item) => {
+          if (!isRecord(item)) return null;
+          const product = asLine(pick(item, 'product', 'name'), 200);
+          if (!product) return null;
+          const rawGrade = (asLine(pick(item, 'grade'), 10) ?? '').toUpperCase();
+          const grade = ['A', 'B', 'C', 'D'].includes(rawGrade) ? rawGrade as 'A' | 'B' | 'C' | 'D' : null;
+          const expectedRaw = pick(item, 'expectedDays');
+          const expected = expectedRaw == null || expectedRaw === '' ? null : Number(expectedRaw);
+          return {
+            product,
+            grade,
+            expectedDays: expected != null && Number.isFinite(expected) && expected > 0 ? expected : null,
+            confidence: asLine(pick(item, 'confidence'), 80),
+            read: asLine(pick(item, 'read', 'why'), 800),
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => !!item)
+        .slice(0, 8),
     }
     : null;
 
@@ -1004,7 +1333,7 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
   const seller: ParsedSellerLayer | null = isRecord(sellerSource)
     ? {
       score: asScore(pick(sellerSource, 'score', 'workability')),
-      read: asLine(pick(sellerSource, 'read', 'sellerRead', 'summary'), 1_200),
+      read: asLine(pick(sellerSource, 'read', 'sellerRead', 'summary'), 1_800),
       motivation: asLine(pick(sellerSource, 'motivation'), 600),
       priceExpectation: asLine(pick(sellerSource, 'priceExpectation', 'askingPrice'), 400),
       timeline: asLine(pick(sellerSource, 'timeline'), 400),
@@ -1042,7 +1371,8 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
 
   const dealSource = pick(parsed, 'deal');
   const dealRecord = isRecord(dealSource) ? dealSource : null;
-  const bestStrategySource = dealRecord ? pick(dealRecord, 'bestStrategy') : undefined;
+  const bestStrategySource = dealRecord ? pick(dealRecord, 'bestCurrentExecutableStrategy', 'bestStrategy') : undefined;
+  const highestUpsideSource = dealRecord ? pick(dealRecord, 'highestUpsideHypothesis') : undefined;
   const dealExtras: ParsedDealExtras | null = dealRecord
     ? {
       score: asScore(pick(dealRecord, 'score', 'dealScore')),
@@ -1050,6 +1380,16 @@ export function parseIntelligenceLayers(raw: string): ParsedIntelligenceLayers |
         ? (() => {
           const strategy = asLine(pick(bestStrategySource, 'strategy', 'name', 'title'), 160);
           return strategy ? { strategy, why: asLine(pick(bestStrategySource, 'why', 'rationale'), 800) } : null;
+        })()
+        : null,
+      highestUpsideHypothesis: isRecord(highestUpsideSource)
+        ? (() => {
+          const strategy = asLine(pick(highestUpsideSource, 'strategy', 'name', 'title'), 160);
+          return strategy ? {
+            strategy,
+            why: asLine(pick(highestUpsideSource, 'why', 'rationale'), 800),
+            prerequisites: asLines(pick(highestUpsideSource, 'prerequisites', 'whatToConfirm'), 8),
+          } : null;
         })()
         : null,
       additionalUpside: (Array.isArray(pick(dealRecord, 'additionalUpside')) ? pick(dealRecord, 'additionalUpside') as unknown[] : [])

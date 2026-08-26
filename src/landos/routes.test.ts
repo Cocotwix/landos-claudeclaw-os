@@ -1014,6 +1014,18 @@ describe('LandOS routes — Acquisition Intelligence Platform (learning engine)'
 });
 
 describe('LandOS routes — Acquisitions department (CRM-independent, never sends)', () => {
+  it('serves the bounded Workspace V2 Overview projection without rebuilding deep workspace data', async () => {
+    const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Lean Acq deal', leadType: 'test' });
+    const id = ((await created.json()) as any).dealCard.id;
+    const view = (await (await get(`/api/landos/deal-cards/${id}/acquisition?view=workspace-v2-overview`)).json()) as any;
+    expect(view.acquisition).toBeDefined();
+    expect(view.stageLabel).toBeDefined();
+    expect(view.nextAction).toBeDefined();
+    expect(view.compsValuation).toBeUndefined();
+    expect(view.marketContext).toBeUndefined();
+    expect(view.canonicalState).toBeUndefined();
+  });
+
   it('seller profile + discovery + stage persist/reload; follow-up is a draft only', async () => {
     const created = await post('/api/landos/deal-cards', { entity: 'TY_LAND_BIZ', title: 'Acq deal', leadType: 'test' });
     const id = ((await created.json()) as any).dealCard.id;

@@ -19,8 +19,11 @@ import { getLandosDb } from './db.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { PropertyResearchStore, type CanonicalPropertyResearchRecord } from './property-research-store.js';
-import { loadEligibleCardVisualCapture } from './property-card.js';
+import { loadEligibleCardVisualCapture, loadPropertyInspection } from './property-card.js';
 import { listComps } from './comps.js';
+import { buildCompsValuationView } from './comps-valuation.js';
+import { buildRetainedLandUseIntelligenceView } from './land-use-view.js';
+import { getAcquisition } from './acquisitions.js';
 import { loadSellerStatedFacts, summarizeSellerFacts } from './seller-stated-facts.js';
 import {
   frontageFeet,
@@ -270,13 +273,15 @@ function zoningProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
   `).get(ctx.dealCardId) as {
     zoning_presence?: string; zoning_code?: string; legal_yield_status?: string; determined_at?: string;
   } | undefined;
+  const currentLandUse = buildRetainedLandUseIntelligenceView(ctx.dealCardId);
+  const currentZoning = currentLandUse?.currentZoning ?? null;
 
-  const zoningRan = !!reading.result || !!determination;
+  const zoningRan = !!reading.result || !!determination || currentZoning?.established === true;
   const zoningAt = reading.completedAt ?? determination?.determined_at ?? null;
-  const zoningEstablished = zoning?.established === true
+  const zoningEstablished = currentZoning?.established === true || zoning?.established === true
     || (!reading.result && !!determination?.zoning_code);
-  const districtCode = asString(zoning?.districtCode) ?? (determination?.zoning_code || null);
-  const zoningStatement = asString(zoning?.statement);
+  const districtCode = currentZoning?.districtCode ?? asString(zoning?.districtCode) ?? (determination?.zoning_code || null);
+  const zoningStatement = currentZoning?.statement ?? asString(zoning?.statement);
 
   const ruleCount = asNumber(rules?.count) ?? 0;
   const documentCount = asNumber(rules?.documentCount) ?? 0;
@@ -360,8 +365,11 @@ function developmentHistoryProbe(ctx: ReconcileContext): ResearchReadinessProbe 
 
 function visualEvidenceProbe(ctx: ReconcileContext): ResearchReadinessProbe {
   const assets = loadEligibleCardVisualCapture(ctx.propertyCardId);
-  const services = Object.keys(assets);
-  const parcelGrade = services.filter((service) => PARCEL_GRADE_VISUAL_SERVICES.some((kind) => service.includes(kind)));
+  const inspectionAssets = (loadPropertyInspection(ctx.propertyCardId)?.assets ?? [])
+    .filter((asset) => asset.validation?.status === 'accepted' && !!asset.storedPath);
+  const services = [...new Set([...Object.keys(assets), ...inspectionAssets.map((asset) => asset.kind || asset.key)])];
+  const parcelGrade = services.filter((service) => PARCEL_GRADE_VISUAL_SERVICES.some((kind) => service.includes(kind)))
+    .concat(inspectionAssets.map((asset) => asset.key));
   const latest = services
     .map((service) => assets[service]?.timestamp)
     .filter((stamp): stamp is string => !!stamp)
@@ -378,7 +386,7 @@ function visualEvidenceProbe(ctx: ReconcileContext): ResearchReadinessProbe {
     lastAttemptAt: latest,
     lastSuccessAt: parcelGrade.length > 0 ? latest : null,
     reason: parcelGrade.length > 0
-      ? `${services.length} parcel-associated visual(s) retained (${parcelGrade.join(', ')}).`
+      ? `${services.length} parcel-associated visual source(s) retained (${parcelGrade.slice(0, 6).join(', ')}${parcelGrade.length > 6 ? ', …' : ''}).`
       : services.length > 0
         ? `Only fallback imagery is retained (${services.join(', ')}); no parcel-grade capture is on file.`
         : 'No parcel-associated visuals have been captured.',
@@ -470,6 +478,7 @@ function roadFrontageProbe(ctx: ReconcileContext): ResearchReadinessProbe {
     technicalSuccess: attempted,
     usableEvidence: read.state === 'established',
     unresolved: attempted,
+    partial: read.state === 'conflicting' || read.state === 'approximate',
     lastAttemptAt: at,
     lastSuccessAt: read.state === 'established' ? at : null,
     reason: read.statement,
@@ -536,6 +545,7 @@ function siteServiceProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
     // A bounded official check that ran and established nothing is unresolved:
     // it never loops, and the remaining route is the utility authority.
     unresolved: screened,
+    partial: screened && read.state !== 'available' && read.state !== 'not_screened',
     lastAttemptAt: at,
     lastSuccessAt: read.state === 'available' ? at : null,
     reason: read.statement,
@@ -564,6 +574,7 @@ function siteServiceProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
       usableEvidence: read.category === 'not_needed' || read.category === 'favorable'
         || read.category === 'difficult' || read.category === 'poor',
       unresolved: attempted,
+      partial: attempted && (read.category === 'mixed' || read.category === 'moderate'),
       lastAttemptAt: at,
       lastSuccessAt: read.category === 'unknown' ? null : at,
       reason: read.statement,
@@ -597,7 +608,7 @@ function compsAndValuationProbes(ctx: ReconcileContext): ResearchReadinessProbe[
   const comps = asObject(reading.facts.comps);
 
   const rows = listComps({ dealCardId: ctx.dealCardId });
-  const acceptedSales = rows.filter((row) => row.status === 'verified_sale');
+  const acceptedSales = rows.filter((row) => row.valuation_selected === 1 || row.status === 'verified_sale');
   const collectedSales = rows.filter((row) => row.price_kind === 'sale' || row.price_kind === 'sold');
 
   // The comp providers a New Lead run drives. Any of them on the canonical
@@ -610,11 +621,12 @@ function compsAndValuationProbes(ctx: ReconcileContext): ResearchReadinessProbe[
     .sort()
     .pop() ?? null;
 
-  const acceptedCount = asNumber(comps?.acceptedCount) ?? acceptedSales.length;
+  const currentView = buildCompsValuationView(ctx.dealCardId);
+  const acceptedCount = currentView?.summary.acceptedCount ?? acceptedSales.length ?? asNumber(comps?.acceptedCount) ?? 0;
   const compsAttempted = !!reading.result || laneRan || rows.length > 0;
   const compsUsable = acceptedCount > 0;
 
-  const priceable = valuation?.priceable === true;
+  const priceable = currentView?.summary.status === 'supported' || currentView?.summary.fmv?.central != null || valuation?.priceable === true;
   const valuationUsable = reading.outcome === 'valuation_returned' || priceable;
 
   return [
@@ -700,20 +712,20 @@ function marketProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
 }
 
 function sellerProbe(ctx: ReconcileContext): ResearchReadinessProbe {
-  const deal = getDealCard(ctx.dealCardId);
-  const people = (deal as { people?: Array<{ role?: string; name?: string }> } | undefined)?.people ?? [];
-  const sellers = people.filter((person) => /seller|owner|contact/i.test(String(person.role ?? '')));
+  const acquisition = getAcquisition(ctx.dealCardId);
   const facts = summarizeSellerFacts(loadSellerStatedFacts(ctx.propertyCardId));
-  const usable = sellers.length > 0 || facts.count > 0;
+  const communicationCount = acquisition.commLog.length + acquisition.discovery.length;
+  const usable = communicationCount > 0 || facts.count > 0;
   return {
     itemId: 'seller_information',
     attempted: usable,
     technicalSuccess: usable,
     usableEvidence: usable,
+    applicable: usable,
     lastAttemptAt: null,
     lastSuccessAt: null,
     reason: usable
-      ? `${sellers.length} seller-side contact(s) linked${facts.count ? ` and ${facts.count} seller-stated fact(s) captured` : ''}.`
+      ? `${communicationCount} seller communication/discovery record(s)${facts.count ? ` and ${facts.count} seller-stated fact(s)` : ''} captured.`
       : 'No seller contact or seller-stated fact has been captured yet. This is expected before seller contact.',
   };
 }

@@ -130,12 +130,13 @@ export function specialistInvocationArgs(input: {
   profile: string;
   prompt: string;
   model: AnalystModelSelection;
+  toolsets?: string;
 }): string[] {
   return [
     '--profile', input.profile,
     '--provider', input.model.provider,
     '-m', input.model.model,
-    '-t', ANALYST_TOOLSETS,
+    '-t', input.toolsets ?? ANALYST_TOOLSETS,
     '--oneshot', input.prompt,
   ];
 }
@@ -223,8 +224,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
 
       // The independent specialists run in parallel — a serial agent parade
       // would triple the wall clock for nothing.
-      const parallelLayers = plan.layers.filter((layer): layer is Exclude<SpecialistModelLayer, 'deal'> => layer !== 'deal');
-      const settled = await Promise.allSettled(parallelLayers.map(async (layer) => {
+      const runStructuredLayer = async (layer: Exclude<SpecialistModelLayer, 'deal'>) => {
         const profile = SPECIALIST_PROFILES[layer];
         const t0 = now();
         const raw = await invoke(
@@ -234,20 +234,117 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         const value = layerRecord(extractJsonObject(raw), layer);
         if (!value) throw new Error(`${profile} returned no parsable ${layer} layer`);
         return { layer, value, runtime: runtimeFor(profile, model, now() - t0) };
-      }));
-      const failures = settled.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
-      if (failures.length) {
-        // One failed specialist fails the pass: the stack retains every last
-        // good persisted product and never fabricates a current read.
-        throw new Error(failures
-          .map((failure) => (failure.reason instanceof Error ? failure.reason.message : String(failure.reason)).split(/\r?\n/, 1)[0])
-          .join('; '));
-      }
-      for (const result of settled) {
-        if (result.status === 'fulfilled') {
-          merged[result.value.layer] = result.value.value;
-          layerRuntimes[result.value.layer] = result.value.runtime;
+      };
+
+      // Property Stage A/B mirrors the accepted Market pattern: a free expert
+      // review first (natural prose, preserved verbatim), then a separate
+      // structured extraction over that exact review. Property never gets the
+      // search toolset — its SOUL forbids research; it reasons over the
+      // assembled file and grounded observations and NAMES bounded
+      // verifications instead of attempting them.
+      const runTwoStageProperty = async () => {
+        const profile = SPECIALIST_PROFILES.property;
+        const t0 = now();
+        const review = await invoke(
+          specialistInvocationArgs({
+            profile,
+            prompt: plan.propertyReviewPrompt!(input.dossier, observations),
+            model,
+            toolsets: ANALYST_TOOLSETS,
+          }),
+          timeoutMs,
+        );
+        if (!review.trim() || review.trim().length < 200) {
+          throw new Error(`${profile} returned no substantive free expert review`);
         }
+        const raw = await invoke(
+          specialistInvocationArgs({
+            profile,
+            prompt: plan.propertyExtractionPrompt!(review, input.dossier, observations),
+            model,
+            toolsets: ANALYST_TOOLSETS,
+          }),
+          timeoutMs,
+        );
+        const value = layerRecord(extractJsonObject(raw), 'property');
+        if (!value) throw new Error(`${profile} returned no parsable property extraction`);
+        return {
+          layer: 'property' as const,
+          value: { ...value, expertReview: review },
+          review,
+          runtime: runtimeFor(profile, model, now() - t0),
+        };
+      };
+
+      // Property and Seller may begin together. Market is sequenced after the
+      // completed Property product because it evaluates Property's plausible
+      // product configurations instead of guessing them from acreage bands.
+      const propertyTask = plan.layers.includes('property')
+        ? (plan.propertyReviewPrompt && plan.propertyExtractionPrompt
+          ? runTwoStageProperty()
+          : runStructuredLayer('property'))
+        : null;
+      const sellerTask = plan.layers.includes('seller')
+        ? runStructuredLayer('seller').then(
+          (result) => ({ ok: true as const, result }),
+          (error: unknown) => ({ ok: false as const, error }),
+        )
+        : null;
+      let marketExpertReview: string | undefined;
+      let propertyExpertReview: string | undefined;
+
+      if (propertyTask) {
+        const result = await propertyTask;
+        merged.property = result.value;
+        layerRuntimes.property = result.runtime;
+        if ('review' in result) propertyExpertReview = result.review;
+      }
+
+      if (plan.layers.includes('market')) {
+        const profile = SPECIALIST_PROFILES.market;
+        const marketStartedAt = now();
+        if (plan.marketReviewPrompt && plan.marketExtractionPrompt) {
+          const review = await invoke(
+            specialistInvocationArgs({
+              profile,
+              prompt: plan.marketReviewPrompt(merged.property, input.dossier, observations),
+              model,
+              toolsets: 'search',
+            }),
+            timeoutMs,
+          );
+          if (!review.trim() || review.trim().length < 200) {
+            throw new Error(`${profile} returned no substantive free expert review`);
+          }
+          if (!/\nSOURCE LEDGER\s*\n/i.test(review)) {
+            throw new Error(`${profile} returned no SOURCE LEDGER for the free expert review`);
+          }
+          marketExpertReview = review;
+          const raw = await invoke(
+            specialistInvocationArgs({
+              profile,
+              prompt: plan.marketExtractionPrompt(merged.property, review, input.dossier, observations),
+              model,
+              toolsets: ANALYST_TOOLSETS,
+            }),
+            timeoutMs,
+          );
+          const value = layerRecord(extractJsonObject(raw), 'market');
+          if (!value) throw new Error(`${profile} returned no parsable market extraction`);
+          merged.market = { ...value, expertReview: review };
+          layerRuntimes.market = runtimeFor(profile, model, now() - marketStartedAt);
+        } else {
+          const result = await runStructuredLayer('market');
+          merged.market = result.value;
+          layerRuntimes.market = result.runtime;
+        }
+      }
+
+      if (sellerTask) {
+        const outcome = await sellerTask;
+        if (!outcome.ok) throw outcome.error;
+        merged.seller = outcome.result.value;
+        layerRuntimes.seller = outcome.result.runtime;
       }
 
       if (plan.layers.includes('deal')) {
@@ -279,6 +376,8 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         warnings,
         runtime: { ...primary, durationMs: Math.max(0, now() - startedAt) },
         layerRuntimes,
+        ...(marketExpertReview !== undefined ? { marketExpertReview } : {}),
+        ...(propertyExpertReview !== undefined ? { propertyExpertReview } : {}),
       };
     },
   };

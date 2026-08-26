@@ -404,6 +404,10 @@ export function OverviewSection({
     && (dataCenters.routesAttempted ?? []).some((route) => /brockovich/i.test(route) && !/not_run/i.test(route))
     && dataCenterMeasuredHits.length > 0;
   const dataCenterHits = dataCenters?.items ?? [];
+  const dataCenterOperatorNarrative = `${dataCenters?.verdict ?? ''} ${dataCenters?.summary ?? ''}`;
+  const materialDataCenterSignal = !!dataCenters
+    && /(?:housing|residential|buyer|demand|value|exit|employment|infrastructure)/i.test(dataCenterOperatorNarrative)
+    && !/(?:no direct|not establish|unknown whether|insufficient evidence).*(?:effect|impact|material)/i.test(dataCenterOperatorNarrative);
   const marketRecord = [market?.subjectBand, market?.zip, market?.county]
     .find((record) => record?.available && record.metrics) ?? null;
   const marketMetrics = marketRecord?.metrics ?? null;
@@ -608,8 +612,14 @@ export function OverviewSection({
     };
     const [label, detail] = question.split(/\s+[—-]\s+/, 2);
     return { label: label || 'Diligence item', status: detail || 'Pending', next: null };
-  }).filter((item) => item.label.trim()).slice(0, 5);
-  const actionCards = (nextActions.length ? nextActions : ['Review current evidence']).map((action) => {
+  }).filter((item) => item.label.trim())
+    .filter((item) => !(landUseIntelligence?.currentZoning?.established && /zoning|land use/i.test(item.label)))
+    .slice(0, 5);
+  const currentNextActions = nextActions.filter((action) => !(
+    officialNoCurrentBuilding
+    && /value (?:the )?improve(?:ment)?|value improve(?:ment)?|house value|whole.?property value/i.test(action)
+  ));
+  const actionCards = (currentNextActions.length ? currentNextActions : ['Review current evidence']).map((action) => {
     const [label, detail] = action.split(/\s+[—-]\s+/, 2);
     return { label, detail: detail || null };
   }).slice(0, 3);
@@ -768,6 +778,7 @@ export function OverviewSection({
           {developmentIntelligence && dealBrain.thread.length > 0 && <div class="awv2-pi-note"><b>Historical / superseded guidance:</b> existing Deal Brain replies predate the recorded-document and development reconciliation shown above. They remain retained as history and must not override current acreage, improvement, access, market, or strategy truth.</div>}
           <DealBrainAsk
             thread={dealBrain.thread}
+            historyOnly={!!specialistReads.deal}
             running={dealBrain.running}
             error={dealBrain.error}
             onAsk={dealBrain.onAsk}
@@ -950,13 +961,13 @@ export function OverviewSection({
               </div>
             </details>
           )}
-          {(recommendation?.whatWouldChangeIt ?? []).length > 0 && (
+          {!developmentIntelligence?.recommendation && (recommendation?.whatWouldChangeIt ?? []).length > 0 && (
             <div class="awv2-strategy-unlock">
               <h3>What would settle the strategy</h3>
               <ul>{(recommendation?.whatWouldChangeIt ?? []).map((item) => <li>{item}</li>)}</ul>
             </div>
           )}
-          {recommendation?.juiceWorthSqueeze?.why && (
+          {!developmentIntelligence?.recommendation && recommendation?.juiceWorthSqueeze?.why && (
             <p class="awv2-strategy-why">
               <b>Worth the effort? {recommendation.juiceWorthSqueeze.answer ?? 'undetermined'}.</b>{' '}
               {recommendation.juiceWorthSqueeze.why}
@@ -1003,7 +1014,11 @@ export function OverviewSection({
         {/* The 20-mile data-center screen. Either the nearby project(s) with
             status, distance and source, or an explicit "none found" — never a
             silent absence. */}
-        {dataCenters && (
+        {/* Raw topical collector output remains retained as internal evidence.
+            A normal operator Overview does not elevate it without a current
+            specialist explanation of its material effect on this property's
+            demand, value, or exit. */}
+        {materialDataCenterSignal && dataCenters && (
           <details class="awv2-market-detail">
             <summary>
               {/* Only a screen that actually measured the radius may claim a
@@ -1036,9 +1051,6 @@ export function OverviewSection({
                   </li>
                 ))}
               </ul>
-            )}
-            {!!dataCenters.routesAttempted?.length && (
-              <p class="awv2-market-dc-routes">Routes attempted: {dataCenters.routesAttempted.join(' · ')}</p>
             )}
           </details>
         )}

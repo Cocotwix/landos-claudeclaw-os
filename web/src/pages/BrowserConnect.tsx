@@ -6,6 +6,7 @@ interface BrowserPairing {
   pairingUrl: string;
   expiresAt: string;
   returnTo: string;
+  remoteOrigin?: string;
 }
 
 const DEFAULT_RETURN_TO = '/dept/acquisitions?deal=14';
@@ -24,6 +25,10 @@ export function BrowserConnect() {
   );
   const [code, setCode] = useState(() => window.location.hash.slice(1));
   const [pairing, setPairing] = useState<BrowserPairing | null>(null);
+  // A device that reaches LandOS on another address (a phone on the private
+  // tunnel) cannot mint its own link, so the operator names its address here
+  // and the one-time code is issued for that address alone.
+  const [remoteOrigin, setRemoteOrigin] = useState('');
   const [status, setStatus] = useState<'idle' | 'creating' | 'claiming' | 'paired' | 'error'>(
     code || visualReady ? 'claiming' : 'idle',
   );
@@ -101,7 +106,10 @@ export function BrowserConnect() {
     setStatus('creating');
     setError('');
     try {
-      const result = await apiPost<BrowserPairing>('/api/dashboard/browser-pairings', { returnTo });
+      const result = await apiPost<BrowserPairing>('/api/dashboard/browser-pairings', {
+        returnTo,
+        ...(remoteOrigin.trim() ? { remoteOrigin: remoteOrigin.trim() } : {}),
+      });
       setPairing(result);
       setStatus('idle');
     } catch {
@@ -156,6 +164,24 @@ export function BrowserConnect() {
                 than the server request URL.
               </p>
             </div>
+
+            <label class="mt-6 block text-sm font-medium" for="pair-remote-origin">
+              Device address <span class="font-normal text-[var(--color-text-muted)]">(optional)</span>
+            </label>
+            <input
+              id="pair-remote-origin"
+              class="mt-2 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-2 font-mono text-xs text-[var(--color-text)]"
+              placeholder="https://your-tunnel-host"
+              autocapitalize="none"
+              autocomplete="off"
+              spellcheck={false}
+              value={remoteOrigin}
+              onInput={(event) => setRemoteOrigin(event.currentTarget.value)}
+            />
+            <p class="mt-2 text-xs text-[var(--color-text-muted)]">
+              Leave empty for another browser on this machine. For a phone or tablet, paste the exact
+              address it reaches LandOS on; the link works only from there.
+            </p>
 
             <button
               type="button"

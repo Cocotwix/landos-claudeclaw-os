@@ -821,7 +821,8 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
   // for a subject of MORE than one acre. At an acre or less — or with the
   // acreage unknown — the parcel carries one value and the split is not shown.
   const subjectAcres = view.subject?.acres ?? null;
-  const showValuationSplit = subjectAcres != null && subjectAcres > 1;
+  const hasCurrentBuilding = subjectImprovement?.improved === true;
+  const showValuationSplit = hasCurrentBuilding && subjectAcres != null && subjectAcres > 1;
   const valuationSet = comps.filter((c) => c.inValuationSet);
   const mapCaptureUrl = view.propertyCardId != null
     ? tok(`/api/landos/inspection/image?cardId=${view.propertyCardId}&key=comps_map`)
@@ -1176,7 +1177,12 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
       {/* Land remains the primary basis. The separate House Value and Whole
           Property Value components are reported only above one acre; at an acre
           or less the parcel carries the one value shown in the decision strip. */}
-      {!showValuationSplit && (
+      {!hasCurrentBuilding && (
+        <p class="awv2-pi-note" data-testid="cv-no-current-building-split">
+          No current building is established, so no house-value overlay applies. The adopted cleaned FMV is the current whole-property indication.
+        </p>
+      )}
+      {hasCurrentBuilding && !showValuationSplit && (
         <p class="awv2-pi-note" data-testid="cv-no-valuation-split">
           {subjectAcres == null
             ? 'Subject acreage is not established, so this parcel carries one value: Land Value, House Value and Whole Property Value are not split out.'

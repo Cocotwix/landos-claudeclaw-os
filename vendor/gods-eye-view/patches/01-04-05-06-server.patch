@@ -1,0 +1,84 @@
+--- /c/Users/tbutt/AppData/Local/Temp/claude/C--Users-tbutt-claudeclaw-os/c050059c-8b26-4002-94ee-3e936b218858/scratchpad/gev-review/src/vite.config.js	2026-08-24 18:02:16.000000000 -0400
++++ vendor/gods-eye-view/upstream/vite.config.js	2026-08-25 12:04:48.873580800 -0400
+@@ -42,8 +42,13 @@
+ import { filterTrailing24h, parseFirmsCsv } from './src/data/firmsCsv.js';
+ import { fileURLToPath } from 'node:url';
+ import { createRequire } from 'node:module';
+-import { defineConfig, loadEnv } from 'vite';
+-import cesium from 'vite-plugin-cesium';
++// LandOS patch 01 (see ../patches/PATCHES.md): resolve the config factory
++// without Vite or vite-plugin-cesium. The shim's defineConfig is identity,
++// its loadEnv returns a closed empty env (no .env files, no process.env
++// capture), and its cesium() is a no-op plugin — the LandOS host build
++// handles Cesium assets itself. This file is consumed by the LandOS
++// upstream bridge only; it is never executed by Vite in this repository.
++import { defineConfig, loadEnv, cesium } from './gev-host-shim.mjs';
+ import { normalizeRadioCountryInput } from './src/data/radioCountry.js';
+ import {
+   normalizeRegionalArticles,
+@@ -3308,11 +3313,21 @@
+                 Accept: 'application/json',
+                 'User-Agent': 'gods-eye-view-gbfs-proxy/1.0',
+               },
++              // LandOS patch 05: refuse redirects. The allowlist validates the
++              // original URL only, so a followed redirect could reach hosts the
++              // allowlist never approved (upstream issue #30).
++              redirect: 'manual',
+               signal: controller.signal,
+             });
+           } finally {
+             clearTimeout(timeoutId);
+           }
++          if (upstream.status >= 300 && upstream.status < 400) {
++            // LandOS patch 05: allowlisted host attempted a redirect — refuse.
++            res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
++            res.end(JSON.stringify({ error: 'GBFS upstream redirect refused' }));
++            return;
++          }
+ 
+           // Limit response size to prevent memory exhaustion from malicious upstream
+           const GBFS_MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
+@@ -3323,7 +3338,8 @@
+             return;
+           }
+           const body = await upstream.text();
+-          if (body.length > GBFS_MAX_BODY_BYTES) {
++          // LandOS patch 05: compare bytes, not UTF-16 code units (upstream issue #32).
++          if (Buffer.byteLength(body, 'utf8') > GBFS_MAX_BODY_BYTES) {
+             res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+             res.end(JSON.stringify({ error: 'GBFS upstream response too large' }));
+             return;
+@@ -4458,7 +4474,12 @@
+ 
+   /** Fetch a Google Street View static image as a fallback frame. Requires GOOGLE_MAPS_API_KEY. */
+   const streetViewFallback = async ({ lat, lon, heading, fov, pitch }) => {
+-    const streetViewKey = process.env.GOOGLE_MAPS_API_KEY;
++    // LandOS patch 04: Street View fallback disabled. It is a Google-key spend
++    // path with client-influenced parameters (upstream issue #20 / finding F2)
++    // and would otherwise pick up any GOOGLE_MAPS_API_KEY present in the host
++    // process environment. Cameras without a working upstream frame fall back
++    // to the honest synthetic placeholder below instead.
++    const streetViewKey = null;
+     if (!streetViewKey || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+     try {
+       const sv = new URL('https://maps.googleapis.com/maps/api/streetview');
+@@ -7050,14 +7071,11 @@
+     gl: 'US',
+     ceid: 'US:en',
+   });
+-  try {
+-    const xml = await fetchRegionalText(`https://news.google.com/rss/search?${rssParams}`, {
+-      headers: { 'User-Agent': 'GodsEyeView/0.1' },
+-      timeoutMs: 12_000,
+-    });
+-    const articles = normalizeRssArticles(xml, 5);
+-    if (articles.length) return { status: 'ready', query, articles, source: 'Google News RSS' };
+-  } catch { /* fall through to the existing free index */ }
++  // LandOS patch 06: Google News RSS disabled — its terms restrict use to
++  // personal, noncommercial contexts and upstream's own DATA_SOURCES.md says
++  // commercial deployments must disable or replace it. The GDELT index below
++  // (which permits commercial use with citation) carries regional headlines.
++  void rssParams;
+   const params = new URLSearchParams({
+     query: `"${String(query).replace(/["\\]/g, ' ').trim()}"`,
+     mode: 'artlist',

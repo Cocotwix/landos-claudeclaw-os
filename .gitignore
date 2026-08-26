@@ -214,6 +214,16 @@ docs/external/
 # Local-only install/update walkthrough transcript — personal, not for repo
 landos-agents/ClaudeClaw_Mark_Install_and_Update_Workflow_Fork_Upstream_Git_Pull.txt
 
+# God's Eye View data-proxy disk cache (public feed data: CelesTrak TLEs,
+# terrain heights, adsbdb, launches). Written at runtime by the bridged
+# upstream middlewares; never committed.
+.gev-cache/
+
+# God's Eye View upstream ships TeleGeography cable data under a
+# NonCommercial license. Keep any local review copy out of the business repo;
+# the layer is also deliberately unregistered in the vendored runtime.
+vendor/gods-eye-view/upstream/src/data/local_data/telegeography_submarine_cables/
+
 # LandOS — deal data, training material, and media files
 # Root-anchored: a bare `data/` also matched `scripts/data/`, silently excluding
 # the four backup/restore/drill/QA-init scripts that landos:data:* and

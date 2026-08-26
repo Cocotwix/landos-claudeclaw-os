@@ -1,0 +1,14 @@
+--- /c/Users/tbutt/AppData/Local/Temp/claude/C--Users-tbutt-claudeclaw-os/c050059c-8b26-4002-94ee-3e936b218858/scratchpad/gev-review/src/src/data/layerState.js	2026-08-24 18:02:16.000000000 -0400
++++ vendor/gods-eye-view/upstream/src/data/layerState.js	2026-08-25 12:07:00.476479100 -0400
+@@ -289,7 +289,10 @@
+   Object.freeze({ id: 'radio', token: 'r', disposition: 'enabled+options', optionOwner: 'radio' }),
+   Object.freeze({ id: 'rocket-launches', token: 'x', disposition: 'enabled-only' }),
+   Object.freeze({ id: 'satellites', token: 's', disposition: 'enabled+options', optionOwner: 'satellites' }),
+-  Object.freeze({ id: 'telegeography-submarine-cables', token: 'u', disposition: 'enabled-only' }),
++  // LandOS patch 03: 'telegeography-submarine-cables' (token 'u') removed with
++  // the layer — the bundled dataset is CC BY-NC-SA (NonCommercial). The token
++  // stays reserved so old share links simply drop the layer instead of
++  // misbinding it.
+   Object.freeze({ id: 'traffic', token: 't', disposition: 'enabled-only' }),
+ ]);
+ 

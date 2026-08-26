@@ -53,6 +53,7 @@ export interface DevelopmentIntelligenceView {
     recordedLegalAccess: string;
     surveyedFrontage: string;
     physicalEntrance: string;
+    accessStatus: string;
   };
   acquisitionHistory: AcquisitionEventView[];
   documents: RecordedDocumentView[];
@@ -105,6 +106,14 @@ export function buildDevelopmentIntelligence(input: {
   recordedLegalAccess?: string | null;
   surveyedFrontage?: string | null;
   physicalEntrance?: string | null;
+  accessEstablished?: boolean;
+  currentZoning?: {
+    established?: boolean;
+    districtCode?: string | null;
+    statement?: string | null;
+    authorityName?: string | null;
+    confidence?: string | null;
+  } | null;
 }): DevelopmentIntelligenceView | null {
   if (!input.records.length) return null;
   const facts = input.records.map((row) => ({ row, facts: object(row.facts) ?? {} }));
@@ -172,7 +181,11 @@ export function buildDevelopmentIntelligence(input: {
       economics: text(entry.economics) ?? 'Not underwritten',
       decision: text(entry.decision) ?? 'Hold pending diligence',
     }));
-  const unknowns = [...new Set(facts.flatMap(({ facts: value }) => list<unknown>(value.unknowns)).map(text).filter((value): value is string => !!value))];
+  const unknowns = [...new Set(facts.flatMap(({ facts: value }) => list<unknown>(value.unknowns)).map(text).filter((value): value is string => !!value))]
+    .filter((value) => !(input.currentZoning?.established && /current (?:official )?zoning|current zoning|APN district|surviving PDD/i.test(value)))
+    .map((value) => input.accessEstablished && /^recorded legal access\b/i.test(value)
+      ? value.replace(/^Recorded legal access/i, 'Recorded-instrument/title access confirmation')
+      : value);
   const acres = number(holding?.acreage) ?? input.acres ?? null;
   const deep = (acres ?? 0) >= 25 || acquisitionHistory.length > 1 || developmentHistory.length > 0 || paths.length > 1;
 
@@ -201,10 +214,20 @@ export function buildDevelopmentIntelligence(input: {
       recordedLegalAccess: input.recordedLegalAccess ?? 'Not verified',
       surveyedFrontage: input.surveyedFrontage ?? 'Not verified',
       physicalEntrance: input.physicalEntrance ?? 'Not confirmed',
+      accessStatus: input.accessEstablished
+        ? 'Established for acquisition screening; recorded-instrument/title confirmation remains later diligence.'
+        : 'Unresolved at the acquisition-screening stage.',
     },
     acquisitionHistory,
     documents,
-    zoning: zoningFacts ? {
+    zoning: input.currentZoning?.established ? {
+      currentStatus: input.currentZoning.districtCode
+        ? `${input.currentZoning.districtCode} (current official parcel-specific zoning)`
+        : input.currentZoning.statement ?? 'Current zoning established',
+      lastConfirmed: [input.currentZoning.authorityName, input.currentZoning.confidence].filter(Boolean).join(' · ') || null,
+      transition: zoningFacts ? text(zoningFacts.transition) : null,
+      underwritingRule: 'Apply the current official district and retained governing rules. Historical or requested districts remain history only.',
+    } : zoningFacts ? {
       currentStatus: text(zoningFacts.currentStatus) ?? 'Unresolved',
       lastConfirmed: text(zoningFacts.lastConfirmed),
       transition: text(zoningFacts.transition),

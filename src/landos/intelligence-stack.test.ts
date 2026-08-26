@@ -10,9 +10,17 @@ import type { DealIntelligenceProduct, SellerIntelligenceProduct } from './intel
 // Intelligence that is honestly Unknown pre-contact without blocking the deal.
 
 const writes: Array<Record<string, unknown>> = [];
+const evidenceWrites: Array<Record<string, unknown>> = [];
 const current = new Map<string, unknown>();
+let dossierAfterEvidence: AcquisitionDossier | null = null;
 
 vi.mock('./derived-intelligence-store.js', () => ({
+  appendDerivedEvidence: (input: Record<string, unknown>) => {
+    evidenceWrites.push(input);
+    if (dossierAfterEvidence) dossier = dossierAfterEvidence;
+    const rows = input.rows as unknown[];
+    return { evidenceIds: rows.map((_row, index) => 900 + index), duplicates: 0, propertyIdentityVersionId: 1, skippedReason: null };
+  },
   writeDerivedSnapshot: (input: Record<string, unknown>) => {
     writes.push(input);
     current.set(`${input.dealCardId}:${input.snapshotType}`, input.payload);
@@ -50,34 +58,40 @@ function baseDossier(): AcquisitionDossier {
     assembledAt: '2026-08-19T00:00:00.000Z',
     identity: {
       state: null, confirmed: true, displayAddress: 'Map 042 Parcel 123, Fairview, TN', apn: '042-123.00-000',
-      county: 'Williamson', stateCode: 'TN', owner: 'Owner', acres: 75.91, acreageBasis: 'assessor',
+      county: 'Williamson', city: 'Fairview', stateCode: 'TN', seller: null, owner: 'Owner', acres: 75.91, acreageBasis: 'assessor',
       hasParcelGeometry: true, basis: 'official record',
     },
     acreage: null,
     physical: {
       acres: 75.91, buildablePct: '60%', buildableAcres: '45', slopeAveragePct: '8%', acresUnder10PctSlope: '40',
-      elevation: null, femaFloodZone: 'X', femaCoveragePct: null, wetlandsPct: null, waterPresent: null,
+      elevation: null, femaFloodZone: 'X', femaCoveragePct: null, wetlandsPct: null, wetlandsAcres: null, waterPresent: null,
       soils: null, improvement: null, parcelShapeNote: null,
     },
-    access: { frontageFt: 400, landLocked: 'No', roadName: 'Road', legalAccessStatement: null, evidenceReached: [], outstanding: [] },
+    access: { established: true, operatorStatement: 'Access established', frontageFt: 400, landLocked: 'No', roadName: 'Road', legalAccessStatement: 'Access established', recordedLegalAccessStatement: null, evidenceReached: [], outstanding: [] },
     landUse: {
       zoningEstablished: false, zoningStatement: null, districtCode: null, confidence: null, authority: null,
-      historicalZoningReferences: [], byRightUses: [], manufacturedHousing: [], limitations: [],
+      historicalZoningReferences: [], byRightUses: [], manufacturedHousing: [],
+      dimensionalStandards: {
+        minimumLotSize: null, density: null, lotWidth: null, frontageBuildout: null,
+        setbacks: null, heightOrCoverage: null, principalUses: [], specialConditions: [], sourceUrls: [],
+      },
+      limitations: [],
     },
     subdivision: {
       authority: null, likelyPath: null, likelyPathWhy: null, lotCountStatement: null, minimumLotArea: null,
       minimumLotWidth: null, minimumRoadFrontage: null, flagLots: null, sharedDriveways: null, privateRoads: null,
       newRoadTrigger: null, rules: [],
     },
-    history: { narrative: null, highlights: [], openQuestions: [], documents: [] },
+    history: { narrative: null, highlights: [], openQuestions: [], documents: [], developmentEvents: [], developmentPaths: [] },
     valuation: {
       status: 'not_established', basis: null, workingAcres: 75.91, acceptedCompCount: 0,
       medianPricePerAcre: null, fairMarketValue: null, lpEstimate: null, blockers: [],
     },
-    comps: { soldCount: 0, activeCompetitionCount: 0, askingReferenceCount: 3, note: null },
+    comps: { soldCount: 0, activeCompetitionCount: 0, askingReferenceCount: 3, note: null, acceptedSold: [], directional: [], activeCompetition: [], excluded: [] },
     market: {
       headline: null, acreageBand: '50-100 acres', medianDaysOnMarket: null, sellThroughRate: null,
       monthsOfSupply: null, medianPricePerAcre: null, fastestBand: '5-10 acres', interpretation: null,
+      overallMarketRead: null, developmentSignals: [], acreageBands: [], research: null, marketPulse: null,
     },
     utilities: { septicAuthority: null, perLotApproval: null, unresolved: [] },
     officialAssessorRecord: null,
@@ -153,6 +167,9 @@ function fakeAnalyst(reply: Record<string, unknown> = LAYERED_REPLY) {
         calls.push({ prompt });
         return {
           raw: JSON.stringify(reply),
+          marketExpertReview: 'A complete free expert market review that separates overall market quality from intact and transformed product fit. '.repeat(3)
+            + '\nSOURCE LEDGER\n- Fairview planning | https://fairview-tn.org/planning | official_primary | Nearby phase approval.',
+          propertyExpertReview: 'A complete free expert property review that understands the land: terrain, frontage, usable acreage continuity, configurations, and the controlling unknowns. '.repeat(3),
           observations: [],
           warnings: [],
           runtime: { engine: 'hermes', agentProfile: 'landos-acquisition-analyst', provider: 'openai-codex', model: 'gpt-5.6-sol', modelSource: 'default', durationMs: 5 },
@@ -184,9 +201,11 @@ function deps(overrides: Partial<Parameters<typeof runIntelligenceStack>[1]> = {
 
 beforeEach(() => {
   writes.length = 0;
+  evidenceWrites.length = 0;
   current.clear();
   guidance = [];
   dossier = baseDossier();
+  dossierAfterEvidence = null;
 });
 
 describe('pre-call intelligence run', () => {
@@ -207,11 +226,12 @@ describe('pre-call intelligence run', () => {
 
     const deal = result.products.deal as DealIntelligenceProduct;
     expect(deal.phase).toBe('pre_call');
-    expect(deal.scores.deal.score).toBe(74);
-    expect(deal.scores.deal.label).toBe('Promising');
-    // Canonical LandOS scores win over the analyst's own numbers.
+    expect(deal.scores.deal).toEqual({ score: null, label: null });
+    // Property remains canonical; Market Score is the specialist's broader
+    // market assessment, not the legacy intact-product operator score.
     expect(deal.scores.property).toMatchObject({ score: 82, source: 'canonical' });
-    expect(deal.scores.market).toMatchObject({ score: 76, source: 'canonical' });
+    expect(deal.scores.market).toMatchObject({ score: 50, source: 'analyst' });
+    expect(deal.reads.market).toBe('A workable market for smaller tracts.');
     expect(deal.scores.seller).toEqual({ score: null, state: 'pre_contact' });
     // Deterministic economics carried verbatim: no FMV means honestly pending.
     expect(deal.quickFlip.status).toBe('pending');
@@ -227,6 +247,116 @@ describe('pre-call intelligence run', () => {
     await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: fake.analyst }));
     writes.length = 0;
     const second = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: fake.analyst }));
+    expect(second.outcome).toBe('reused');
+    expect(fake.calls).toHaveLength(1);
+    expect(writes).toHaveLength(0);
+  });
+  it('persists the full Stage A expert review, structured Market product, and traceable web evidence together', async () => {
+    const reply = {
+      ...LAYERED_REPLY,
+      market: {
+        ...LAYERED_REPLY.market,
+        overall_market_quality: { grade: 'B', read: 'Healthy broader market.' },
+        exit_product_fits: [{ product: 'Intact 51-acre tract', grade: 'D', expected_days: 260, confidence: 'medium', read: 'Thin buyer pool.' }],
+        next_actions: [{ action: 'Verify neighboring phase inventory', why: 'Could alter lot absorption.' }],
+        web_evidence: [{ query: 'Fairview TN subdivision phase', title: 'Fairview Planning Commission', url: 'https://fairview-tn.org/planning', source_type: 'official_primary', material_claim: 'A nearby residential phase is approved.', evidence_snippet: 'Phase approval', confidence: 'high' }],
+      },
+    };
+    const fake = fakeAnalyst(reply);
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: fake.analyst }));
+    const market = result.products.market!;
+    expect(market.expertReview).toContain('complete free expert market review');
+    expect(market.overallMarketQuality.grade).toBe('B');
+    expect(market.exitProductFits[0]).toMatchObject({ product: 'Intact 51-acre tract', grade: 'D', expectedDays: 260 });
+    expect(market.nextActions[0]?.action).toBe('Verify neighboring phase inventory');
+    expect(market.webEvidence[0]).toMatchObject({ url: 'https://fairview-tn.org/planning', retrievedAt: '2026-08-19T12:00:00.000Z' });
+    expect(market.webEvidenceIds).toEqual([900]);
+    expect(evidenceWrites[0]).toMatchObject({ dealCardId: 89, collectorKey: 'market-intelligence-web' });
+    expect((evidenceWrites[0].rows as Array<Record<string, unknown>>)[0]).toMatchObject({
+      domain: 'market_intelligence_web', evidenceKind: 'web_market_claim', sourceUrl: 'https://fairview-tn.org/planning', sourceTier: 'official_primary',
+    });
+  });
+
+  it('persists the full Property Stage A expert review and the plausible configurations from Stage B', async () => {
+    const reply = {
+      ...LAYERED_REPLY,
+      property: {
+        ...LAYERED_REPLY.property,
+        configurations: [
+          { label: 'Intact 51-acre tract', status: 'physically_plausible', prerequisites: [] },
+          { label: 'Minor frontage split', status: 'regulatorily_plausible', prerequisites: ['Confirm minimum lot frontage standard'] },
+          { label: 'Major subdivision', status: 'unresolved', prerequisites: ['Sewer capacity', 'Road standards'] },
+        ],
+      },
+    };
+    const fake = fakeAnalyst(reply);
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: fake.analyst }));
+    const property = result.products.property!;
+    expect(property.expertReview).toContain('complete free expert property review');
+    expect(property.configurations).toHaveLength(3);
+    expect(property.configurations[1]).toMatchObject({ label: 'Minor frontage split', status: 'regulatorily_plausible' });
+    const propertyWrite = writes.find((write) => write.snapshotType === 'intelligence_property_v1')!;
+    expect((propertyWrite.completeness as Record<string, number>).expertReview).toBeGreaterThan(200);
+    expect((propertyWrite.completeness as Record<string, number>).configurations).toBe(3);
+  });
+
+  it('fails honestly when a Property refresh returns no free expert review before extraction', async () => {
+    const analyst = {
+      run: async (): Promise<AnalystRunOutput> => ({
+        raw: JSON.stringify(LAYERED_REPLY),
+        marketExpertReview: 'Market review. '.repeat(20) + '\nSOURCE LEDGER\n- NONE',
+        observations: [],
+        warnings: [],
+        runtime: { engine: 'hermes', agentProfile: 'landos-property', provider: 'openai-codex', model: 'gpt-5.6-sol', modelSource: 'default', durationMs: 5 },
+      }),
+    };
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst }));
+    expect(result.outcome).toBe('failed');
+    expect(result.reason).toContain('Property specialist returned no free expert review');
+  });
+
+  it('runs the bounded GEV spatial investigation before Property re-reasons, and rebuilds the evidence package when it lands observations', async () => {
+    const investigations: number[] = [];
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({
+      investigateSpatial: async (dealCardId) => {
+        investigations.push(dealCardId);
+        return { observationCount: 2, warnings: ['GEV note: keyless basemap in use.'] };
+      },
+    }));
+    expect(investigations).toEqual([89]);
+    expect(result.outcome).toBe('produced');
+    expect(result.warnings).toContain('GEV note: keyless basemap in use.');
+  });
+
+  it('degrades a failed GEV spatial investigation to a warning and still produces the Property read', async () => {
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({
+      investigateSpatial: async () => { throw new Error('no browser available'); },
+    }));
+    expect(result.outcome).toBe('produced');
+    expect(result.warnings.some((warning) => warning.includes('spatial investigation did not complete'))).toBe(true);
+    expect(result.products.property?.expertReview).toContain('complete free expert property review');
+  });
+
+  it('fingerprints the persisted post-search Market file so Stage A evidence cannot make the new read immediately stale', async () => {
+    dossierAfterEvidence = {
+      ...baseDossier(),
+      market: {
+        ...baseDossier().market,
+        developmentSignals: [{
+          name: 'Newly persisted official phase evidence',
+          status: 'confirmed',
+          likelyEffect: 'Adds competing residential pipeline.',
+          distanceMiles: null,
+        }],
+      },
+    };
+    const fake = fakeAnalyst();
+    const runDeps = deps({ analyst: fake.analyst });
+    const first = await runIntelligenceStack({ dealCardId: 89 }, runDeps);
+    expect(first.outcome).toBe('produced');
+
+    writes.length = 0;
+    const second = await runIntelligenceStack({ dealCardId: 89 }, runDeps);
     expect(second.outcome).toBe('reused');
     expect(fake.calls).toHaveLength(1);
     expect(writes).toHaveLength(0);
@@ -288,7 +418,21 @@ describe('dependency-aware refresh', () => {
     expect(deal.whatChanged.join(' ')).toMatch(/Operator guidance added/);
   });
 
-  it('a new official assessor answer stales the property layer, and a targeted layers:[property] re-read never reruns market or seller', async () => {
+  it('invalidates Market and Deal when a material retained Market Pulse input changes', async () => {
+    const first = fakeAnalyst();
+    await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: first.analyst }));
+    writes.length = 0;
+    dossier = {
+      ...baseDossier(),
+      market: { ...baseDossier().market, marketPulse: { generatedAt: '2026-08-25', neighboringDevelopment: 'New sub-one-acre phase under construction.' } },
+    };
+    const second = fakeAnalyst();
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: second.analyst }));
+    expect(result.refreshedLayers).toEqual(['market', 'deal']);
+    expect(result.reusedLayers).toEqual(['property', 'seller']);
+  });
+
+  it('a new official assessor answer refreshes Property, then dependent Market and Deal, without rerunning Seller', async () => {
     const first = fakeAnalyst();
     await runIntelligenceStack({ dealCardId: 89 }, deps({ analyst: first.analyst }));
     writes.length = 0;
@@ -307,14 +451,12 @@ describe('dependency-aware refresh', () => {
     const result = await runIntelligenceStack({ dealCardId: 89, layers: ['property'] }, deps({ analyst: second.analyst }));
 
     expect(result.outcome).toBe('produced');
-    // Only the requesting layer plus the dependent deal synthesis refresh, in
-    // ONE analyst pass; market and seller are reused untouched.
-    expect(result.refreshedLayers).toEqual(['property', 'deal']);
-    expect(result.reusedLayers).toEqual(['market', 'seller']);
+    expect(result.refreshedLayers).toEqual(['property', 'market', 'deal']);
+    expect(result.reusedLayers).toEqual(['seller']);
     expect(second.calls).toHaveLength(1);
     expect(second.calls[0].prompt).toContain('OFFICIAL ASSESSOR RECORD DOCTRINE');
     expect(second.calls[0].prompt).toContain('Land only; no current improvement.');
-    expect(writes.map((write) => write.snapshotType)).toEqual(['intelligence_property_v1', 'acquisition_intelligence_v1']);
+    expect(writes.map((write) => write.snapshotType)).toEqual(['intelligence_property_v1', 'intelligence_market_v1', 'acquisition_intelligence_v1']);
   });
 });
 
@@ -414,6 +556,8 @@ describe('specialist executor plan on the analyst seam', () => {
         plan = input.specialistPlan;
         return {
           raw: JSON.stringify(LAYERED_REPLY),
+          marketExpertReview: 'A complete free expert market review that separates overall market quality from intact and transformed product fit. '.repeat(3)
+            + '\nSOURCE LEDGER\n- NONE',
           observations: [],
           warnings: [],
           runtime: { engine: 'hermes', agentProfile: 'landos-acquisition-analyst', provider: 'openai-codex', model: 'gpt-5.6-sol', modelSource: 'default', durationMs: 5 },
@@ -444,6 +588,9 @@ describe('specialist executor plan on the analyst seam', () => {
     const analyst = {
       run: async (): Promise<AnalystRunOutput> => ({
         raw: JSON.stringify(LAYERED_REPLY),
+        marketExpertReview: 'A complete free expert market review that separates overall market quality from intact and transformed product fit. '.repeat(3)
+          + '\nSOURCE LEDGER\n- NONE',
+        propertyExpertReview: 'A complete free expert property review that understands the land rather than summarizing fields. '.repeat(3),
         observations: [],
         warnings: [],
         runtime: layerRuntime('landos-deal-brain'),

@@ -50,6 +50,8 @@ export interface AcquisitionIntelligenceView {
   conflicts?: Array<{ subject?: string; statement?: string; resolution?: string }>;
   unknowns?: Array<{ question?: string; whyItMatters?: string | null }>;
   nextActions?: Array<{ action?: string; why?: string | null }>;
+  bestCurrentStrategy?: { strategy?: string; why?: string | null } | null;
+  highestUpsideHypothesis?: { strategy?: string; why?: string | null; prerequisites?: string[] } | null;
   basis?: { visualsAvailable?: string[]; coveragePresent?: string[]; coverageAbsent?: string[] };
   warnings?: string[];
 }

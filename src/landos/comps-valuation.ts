@@ -68,6 +68,7 @@ import {
   type RetainedCompLocation, type RetainedGeocodeHit,
 } from './comp-location-reconciliation.js';
 import { collectMarketLeads, type CompMarketLead } from './comp-market-leads.js';
+import { listPublicRecordOutcomes } from './lead-card-intake.js';
 import { buildParcelFactSheet } from './landportal-facts.js';
 
 export type WorkspaceCompCategory =
@@ -580,6 +581,34 @@ export function readSubjectImprovement(
     valuationScopeLabel: 'Land-only indication — improvements not valued',
     wholePropertyPending: true,
     wholePropertyNote: `Whole-property value is PENDING. The subject is a materially improved parcel (${sqftText}), and the figure above is derived only from vacant-land sales, so it prices the land and excludes the structure. A whole-property value requires the improvements to be valued separately; that has not been done.`,
+  };
+}
+
+/**
+ * Current official parcel truth outranks an older provider improvement signal.
+ * The provider claim remains retained in its source record, but it cannot keep
+ * the current valuation in land-only/pending scope after the official current
+ * holding establishes that no building exists.
+ */
+export function reconcileSubjectImprovementWithCurrentTruth(
+  retained: SubjectImprovementRead,
+  currentStatus: string | null,
+  currentNote: string | null = null,
+): SubjectImprovementRead {
+  const normalizedStatus = currentStatus?.replace(/[_-]+/g, ' ') ?? '';
+  if (!normalizedStatus || !/no current building|no buildings? (?:on|in) (?:the )?(?:assessor|official|current).*record|vacant(?: land| parcel)?/i.test(normalizedStatus)) {
+    return retained;
+  }
+  return {
+    improved: false,
+    type: 'vacant_land',
+    buildingSqft: null,
+    evidence: currentNote || currentStatus,
+    captionNoun: 'vacant parcel',
+    valuationScope: 'whole_property',
+    valuationScopeLabel: 'Preliminary fair market value',
+    wholePropertyPending: false,
+    wholePropertyNote: null,
   };
 }
 
@@ -2485,6 +2514,14 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   };
 
   let subjectImprovement = readSubjectImprovement(inspection);
+  const currentHolding = listPublicRecordOutcomes(dealCardId)
+    .map((row) => row.facts as Record<string, unknown> | null)
+    .find((facts) => facts?.kind === 'current_holding') ?? null;
+  subjectImprovement = reconcileSubjectImprovementWithCurrentTruth(
+    subjectImprovement,
+    typeof currentHolding?.improvementStatus === 'string' ? currentHolding.improvementStatus : null,
+    typeof currentHolding?.improvementNote === 'string' ? currentHolding.improvementNote : null,
+  );
   const retainedInspection = inspection ? currentComparables(inspection) : [];
   const ctx: ClassifyContext = {
     subjectAcres,

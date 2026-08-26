@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { _initTestLandosDb, getLandosDb } from './db.js';
 import { ingestMarketSnapshots } from './market-matrix-store.js';
+import { ACREAGE_BANDS } from './market-matrix.js';
+import { fixedInitialFilters, getOrCreateMrSnapshot, recordMrMetrics } from './market-research-snapshots.js';
 import { propertyMarketContextFor } from './property-market-context.js';
 
 function seedCayuga() {
@@ -55,6 +57,35 @@ describe('propertyMarketContextFor (SOP 10B read-time join)', () => {
 
     expect(ctx.interpretation).toContain('220%');
     expect(ctx.interpretation).toContain('20');
+  });
+
+  it('carries every current county and ZIP acreage row, including sub-one-acre products, even while a snapshot is collecting', () => {
+    const bands = ACREAGE_BANDS.filter((band) => band !== '50+');
+    for (const [index, band] of bands.entries()) {
+      const snapshot = getOrCreateMrSnapshot({
+        quarter: '2026-Q3', filters: fixedInitialFilters(band), provider: 'LandOS Market Research (test)',
+        collectedAt: '2026-08-20T00:00:00.000Z',
+      });
+      recordMrMetrics(snapshot.id, [
+        {
+          geography: { level: 'county', state: 'NY', fips: '36011', name: 'Cayuga County' },
+          metrics: { salesCount: 100 + index, listingCount: 20 + index, daysOnMarket: 40 + index, sellThroughRate: 80 + index, absorptionRate: 10 + index, monthsOfSupply: 5 + index, medianPrice: 50_000 + index, medianPricePerAcre: 5_000 + index, population: 76_248, populationGrowth: 1.2 },
+          provider: 'LandOS Market Research (test)', sourceRef: `county-${band}`, observedAt: '2026-08-20T00:00:00.000Z',
+        },
+        {
+          geography: { level: 'zip', state: 'NY', fips: '36011', zip: '13156', name: 'ZIP 13156' },
+          metrics: { salesCount: 10 + index, listingCount: 3 + index, daysOnMarket: 30 + index, sellThroughRate: 70 + index, absorptionRate: 8 + index, monthsOfSupply: 6 + index, medianPrice: 45_000 + index, medianPricePerAcre: 4_500 + index, population: 2_156, populationGrowth: 9.83 },
+          provider: 'LandOS Market Research (test)', sourceRef: `zip-${band}`, observedAt: '2026-08-20T00:00:00.000Z',
+        },
+      ]);
+    }
+
+    const research = propertyMarketContextFor(subject).research;
+    expect(research.countyRows.map((row) => row.acreageBand)).toEqual(bands);
+    expect(research.zipRows.map((row) => row.acreageBand)).toEqual(bands);
+    expect(research.rows).toHaveLength(bands.length * 2);
+    expect(research.rows.find((row) => row.acreageBand === '0-1')?.snapshotStatus).toBe('collecting');
+    expect(research.rows.find((row) => row.acreageBand === '1-2')?.metrics.populationGrowth).toBe(1.2);
   });
 
   it('reports a missing ZIP honestly instead of substituting another geography', () => {

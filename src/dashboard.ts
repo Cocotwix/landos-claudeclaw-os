@@ -195,6 +195,7 @@ import {
   getTextMeetings,
 } from './db.js';
 import { registerLandosRoutes } from './landos/routes.js';
+import { registerGodsEyeRoutes } from './godseye/routes.js';
 import { getDealWarRoomContext } from './landos/war-room-deal-context.js';
 import { readVoiceSession, writeVoiceSession, clearVoiceSession, pickSpokenText } from './warroom-voice-session.js';
 import { WARROOM_SERVER_PROCESS_PATTERN } from './warroom-runtime-paths.js';
@@ -936,12 +937,16 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // Top-level static files copied from web/public/ at build time
   // (e.g. /brain.glb for the 3D Hive Mind view). These have stable
   // names so they sit at the root rather than under /assets/.
-  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm)}', (c) => {
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm)}', (c, next) => {
     const filename = c.req.param('filename');
     const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
     const root = path.join(PROJECT_ROOT, 'dist', 'web');
     if (!filePath.startsWith(root + path.sep)) return c.text('', 403);
-    if (!fs.existsSync(filePath)) return c.text('', 404);
+    // Fall through instead of terminating: God's Eye View serves its own
+    // aircraft/vehicle models at /models/*.glb from the vendored tree, and
+    // this earlier-registered dist/web route must not eat those requests
+    // (it did — every aircraft model 404'd once the flights layer was ON).
+    if (!fs.existsSync(filePath)) return next();
     const data = fs.readFileSync(filePath);
     const ext = path.extname(filePath).toLowerCase();
     const ctype = ext === '.glb' ? 'model/gltf-binary'
@@ -4653,6 +4658,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // LandOS OS Spine v1 module routes (src/landos/). Registered behind the
   // token middleware like every other /api route.
   registerLandosRoutes(app);
+
+  // God's Eye View department: config/usage safeguard endpoints, vendored
+  // Cesium + upstream static assets, and the audited upstream data proxies.
+  registerGodsEyeRoutes(app);
 
   // SPA catch-all — any unmatched GET to a non-/api/* path falls through
   // to here and serves the v2 SPA index.html. Wouter (the SPA's router)

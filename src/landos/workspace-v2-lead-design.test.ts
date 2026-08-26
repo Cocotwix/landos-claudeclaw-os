@@ -183,6 +183,7 @@ describe('ws2 Overview redesign', () => {
   it('uses House Value naming and never Improvement Value', () => {
     expect(OVERVIEW_SRC).toContain('HOUSE VALUE');
     expect(OVERVIEW_SRC).not.toMatch(/Improvement Value/i);
+    expect(CV_SRC).toContain('No current building is established, so no house-value overlay applies.');
   });
 
   it('separates slope and buildability percentages and presents retained no-flood evidence as zero affected', () => {

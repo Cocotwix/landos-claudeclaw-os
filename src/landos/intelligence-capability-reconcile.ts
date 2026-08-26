@@ -256,6 +256,23 @@ export interface IntelligenceReconciliationRecord {
   recommendedNextAction: string | null;
 }
 
+/**
+ * A reconciliation record describes the product produced by that bounded run;
+ * it is not an independent current-truth source. Once a newer Property
+ * Intelligence read exists, the record remains retained as history but must no
+ * longer project beside the newer read as its "Current read".
+ */
+export function projectCurrentIntelligenceReconciliation(
+  record: IntelligenceReconciliationRecord | null,
+  currentProduct: { generatedAt?: string | null } | null,
+): IntelligenceReconciliationRecord | null {
+  if (!record || !currentProduct?.generatedAt) return null;
+  const reconciledAt = Date.parse(record.completedAt);
+  const productAt = Date.parse(currentProduct.generatedAt);
+  if (!Number.isFinite(reconciledAt) || !Number.isFinite(productAt)) return null;
+  return reconciledAt >= productAt ? record : null;
+}
+
 // ── The bounded orchestrator ───────────────────────────────────────────────
 
 export interface ReconciliationDeps {

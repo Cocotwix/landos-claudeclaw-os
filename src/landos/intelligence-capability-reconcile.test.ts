@@ -10,9 +10,11 @@ import type { CapabilityResult } from './capability-contract.js';
 import {
   FRESH_EVIDENCE_DAYS,
   derivePropertyCapabilityRequests,
+  projectCurrentIntelligenceReconciliation,
   runIntelligenceReconciliation,
   validateIntelligenceCapabilityRequest,
   type IntelligenceCapabilityRequest,
+  type IntelligenceReconciliationRecord,
   type ReconciliationDeps,
 } from './intelligence-capability-reconcile.js';
 
@@ -62,6 +64,24 @@ const validationContext = (overrides: Partial<Parameters<typeof validateIntellig
   capabilityExists: (id: string) => id === 'assessor-tax',
   latestResult: () => null,
   ...overrides,
+});
+
+describe('current reconciliation projection', () => {
+  const record = {
+    completedAt: '2026-08-23T12:00:00.000Z',
+  } as IntelligenceReconciliationRecord;
+
+  it('retains a reconciliation beside the product produced by that run', () => {
+    expect(projectCurrentIntelligenceReconciliation(record, {
+      generatedAt: '2026-08-23T11:59:59.000Z',
+    })).toBe(record);
+  });
+
+  it('suppresses the retained record once a newer specialist read supersedes it', () => {
+    expect(projectCurrentIntelligenceReconciliation(record, {
+      generatedAt: '2026-08-24T12:00:00.000Z',
+    })).toBeNull();
+  });
 });
 
 describe('derivePropertyCapabilityRequests', () => {

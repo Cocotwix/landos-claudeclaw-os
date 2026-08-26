@@ -42,11 +42,11 @@ describe('road name derivation', () => {
 });
 
 describe('source-separated discovery access rule', () => {
-  it('retains mapped frontage plus no landlocked flag as a provider signal only', () => {
+  it('establishes acquisition-screening access from frontage plus a no-landlocked flag', () => {
     const read = readDiscoveryAccess([accessItem()], '1487 Onionville Rd, Sterling, NY 13156');
-    expect(read.established).toBe(false);
+    expect(read.established).toBe(true);
     expect(read.providerSignal).toBe('mapped_frontage_not_landlocked');
-    expect(read.display).toBeNull();
+    expect(read.display).toMatch(/Established at the acquisition-screening stage/);
     expect(read.frontageFt).toBeCloseTo(693.29);
   });
 
@@ -60,19 +60,18 @@ describe('source-separated discovery access rule', () => {
     expect(read.display).toBeNull();
   });
 
-  it('rewrites the access item without promoting provider evidence to legal access', () => {
+  it('projects screening access while preserving later title and survey diligence', () => {
     const [item] = normalizeDiscoveryAccessItems([accessItem()], '1487 Onionville Rd, Sterling, NY 13156');
-    expect(item.headline).toMatch(/^Provider signal: mapped frontage at Onionville Road; legal access unresolved — /);
-    expect(item.verdict).toBe('unknown');
+    expect(item.headline).toMatch(/^Access established at the acquisition-screening stage from mapped frontage at Onionville Road/);
+    expect(item.verdict).toBe('good');
     expect(item.missing).toEqual([
-      'Recorded legal-access instrument or title confirmation.',
-      'Exact surveyed frontage.',
-      'Confirmed physical entrance.',
+      'Exact surveyed frontage (survey-grade confirmation).',
+      'Any recorded easements affecting other portions of the parcel.',
     ]);
     const text = JSON.stringify(item);
-    expect(text).toMatch(/recorded legal-access instrument/i);
+    expect(text).toMatch(/recorded-instrument\/title confirmation/i);
     expect(text).toMatch(/surveyed frontage/i);
-    expect(text).toMatch(/physical entrance/i);
+    expect(text).not.toMatch(/access unresolved/i);
   });
 
   it('keeps the frontage and landlocked metrics parseable in the new headline', () => {

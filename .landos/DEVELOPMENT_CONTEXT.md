@@ -63,6 +63,9 @@ without answering the operator's question has not shipped.
     npm run landos:start|stop|restart runtime control
     npm run landos:health             health probe
     npm run landos:logs               runtime logs
+    npm run landos:browser:qa -- --route /dept/example
+                                      canonical live browser acceptance; reuses
+                                      owned CDP 9224 or launches managed Chrome
 
     npm run landos:control -- status  development state plus live Git
     npm run landos:control -- state generate
@@ -72,6 +75,12 @@ without answering the operator's question has not shipped.
 Runtime control is only those commands. Do not run `node dist/index.js` in the
 foreground, kill Node processes by name, or improvise a restart. The dashboard
 is at http://localhost:3141.
+
+Browser acceptance does not depend on a session-specific browser tool. Prefer a
+connected, healthy native browser controller when available; otherwise use
+`landos:browser:qa`. Its owned CDP and managed-launch fallback is the canonical
+route to real interaction, screenshots, console/network evidence, and
+ownership-safe cleanup. See `docs/landos/BROWSER_QA.md`.
 
 ## A correct operator-facing result
 

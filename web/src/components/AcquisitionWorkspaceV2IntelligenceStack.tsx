@@ -1,10 +1,10 @@
 // LandOS Intelligence Stack — the Overview's decision-area score strip and the
 // Deal Brain conversation.
 //
-// Four compact scores (PROPERTY / MARKET / SELLER / DEAL) with the current
+// Three canonical specialist scores (PROPERTY / MARKET / SELLER) with the current
 // quick-flip economic status beside them. The explanation always outranks the
 // number: each tile is shorthand for a full product that lives behind the Deal
-// Read and Page 2, never a replacement for it. SELLER honestly shows "Unknown"
+// Read and Page 2, never a replacement for it. SELLER honestly shows "Pending"
 // pre-contact.
 //
 // The Deal Brain input stores the operator's message as DEAL-SPECIFIC GUIDANCE
@@ -116,9 +116,8 @@ export function IntelligenceScoreStrip({ scores, quickFlip, cashVerdict, phaseLa
         <ScoreTile
           label="Seller"
           score={scores?.seller?.score}
-          sub={scores?.seller?.state === 'established' ? 'Workability' : 'Unknown · pre-contact'}
+          sub={scores?.seller?.state === 'established' ? 'Workability' : 'Pending · pre-contact'}
         />
-        <ScoreTile label="Deal" score={scores?.deal?.score} sub={scores?.deal?.label} />
       </div>
       <div class="awv2-intel-side">
         <QuickFlipBadge flip={quickFlip} cashVerdict={cashVerdict} />
@@ -135,8 +134,9 @@ export function IntelligenceScoreStrip({ scores, quickFlip, cashVerdict, phaseLa
 
 // ── Deal Brain conversation ────────────────────────────────────────────────
 
-export function DealBrainAsk({ thread, running, error, onAsk }: {
+export function DealBrainAsk({ thread, historyOnly = false, running, error, onAsk }: {
   thread: DealBrainThreadEntry[];
+  historyOnly?: boolean;
   running: boolean;
   error: string | null;
   onAsk: (message: string) => void;
@@ -152,7 +152,7 @@ export function DealBrainAsk({ thread, running, error, onAsk }: {
   return (
     <section class="awv2-dealbrain" data-domain="action" aria-label="Deal Brain" data-testid="deal-brain">
       <div class="awv2-dom-eyebrow" data-dom="action"><Brain size={13} /> Deal Brain</div>
-      {thread.length > 0 && (
+      {thread.length > 0 && !historyOnly && (
         <div class="awv2-dealbrain-thread">
           {thread.slice(-6).map((entry) => (
             <div class={`awv2-dealbrain-turn t-${entry.role === 'operator' ? 'operator' : 'brain'}`}>
@@ -161,6 +161,19 @@ export function DealBrainAsk({ thread, running, error, onAsk }: {
             </div>
           ))}
         </div>
+      )}
+      {thread.length > 0 && historyOnly && (
+        <details class="awv2-overview-methodology">
+          <summary>Historical / superseded Deal Brain guidance</summary>
+          <div class="awv2-dealbrain-thread">
+            {thread.slice(-6).map((entry) => (
+              <div class={`awv2-dealbrain-turn t-${entry.role === 'operator' ? 'operator' : 'brain'}`}>
+                <small>{entry.role === 'operator' ? 'You (guidance)' : 'Deal Brain'}</small>
+                <p>{entry.text}</p>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
       {running && <p class="awv2-dealbrain-note">The Deal Brain is reading the current deal file…</p>}
       {error && <p class="awv2-dealbrain-note bad">{error}</p>}

@@ -226,7 +226,7 @@ async function commandLineOf(pid: number): Promise<string | null> {
     if (process.platform === 'win32') {
       const { stdout } = await execFileAsync('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-Command',
-        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue).CommandLine`,
+        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue; if ($null -ne $p) { [Console]::Out.Write([string]$p.CommandLine) }`,
       ], { timeout: 10_000, windowsHide: true });
       const line = String(stdout).trim();
       return line || null;
@@ -271,11 +271,13 @@ export async function verifyAutomationOwnership(
     fetchImpl?: typeof fetch;
     pidForPort?: (port: number) => Promise<number | null>;
     commandLine?: (pid: number) => Promise<string | null>;
+    sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<AutomationOwnership> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const getPid = deps.pidForPort ?? pidListeningOn;
   const getCmd = deps.commandLine ?? commandLineOf;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   let browser = '';
   try {
@@ -316,7 +318,17 @@ export async function verifyAutomationOwnership(
     return { owned: true, answering: true, pid, browser, reason: null, offscreen: ownershipCache.offscreen };
   }
 
-  const commandLine = await getCmd(pid);
+  // CIM occasionally returns an empty value for a live process while Chrome
+  // is busy. Empty means "not read", not "no profile flag". Retry the exact
+  // PID briefly, still fail closed, and never infer ownership from CDP alone.
+  let commandLine: string | null = null;
+  for (let attempt = 0; attempt < 3 && !commandLine; attempt += 1) {
+    commandLine = await getCmd(pid);
+    if (!commandLine && attempt < 2) await sleep(75);
+  }
+  if (!commandLine) {
+    return { owned: false, answering: true, pid, browser, reason: `Could not read the command line of process ${pid} on port ${config.port} after 3 bounded attempts; refusing to attach.` };
+  }
   const userDataDir = userDataDirFromCommandLine(commandLine);
   if (!userDataDir) {
     return { owned: false, answering: true, pid, browser, reason: `Process ${pid} on port ${config.port} declares no --user-data-dir; it is not the LandOS automation browser.` };

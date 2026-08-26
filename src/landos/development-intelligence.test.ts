@@ -42,4 +42,25 @@ describe('buildDevelopmentIntelligence', () => {
     expect(view?.currentTruth.recordedLegalAccess).toBe('Not verified');
     expect(view?.documents[0].imageStatus).toBe('not_applicable');
   });
+
+  it('projects current official zoning and screening access over superseded retained conclusions', () => {
+    const view = buildDevelopmentIntelligence({
+      accessEstablished: true,
+      currentZoning: {
+        established: true,
+        districtCode: 'CD-3L',
+        statement: 'Current parcel-specific district established.',
+        authorityName: 'Official city zoning map',
+        confidence: 'confirmed',
+      },
+      records: [{
+        category: 'zoning', title: 'Historical zoning', authority: 'City', summary: 'Historical designation.', retrieval_status: 'retrieved_yes',
+        facts: { kind: 'zoning', currentStatus: 'Unresolved', unknowns: ['Current zoning for this APN.', 'Recorded legal access for the parcel.'] },
+      }],
+    });
+    expect(view?.zoning?.currentStatus).toMatch(/^CD-3L/);
+    expect(view?.currentTruth.accessStatus).toMatch(/^Established for acquisition screening/);
+    expect(view?.unknowns).not.toContain('Current zoning for this APN.');
+    expect(view?.unknowns[0]).toMatch(/^Recorded-instrument\/title access confirmation/);
+  });
 });

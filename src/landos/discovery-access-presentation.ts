@@ -1,9 +1,9 @@
 // Discovery-stage access presentation (projection layer).
 //
 // Provider road proximity, recorded legal access, surveyed frontage, and an
-// apparent physical entrance are four separate questions. Mapped frontage
-// plus a no-landlocked flag is retained as a provider signal only. Legal
-// access is established only from the verified recorded-instrument rung.
+// apparent physical entrance are four separate questions. At the ordinary
+// acquisition-screening stage, retained road frontage plus a no-landlocked
+// flag establishes ACCESS. Recorded/title proof remains later diligence.
 //
 // Genuine uncertainty is preserved: exact surveyed frontage, easements
 // affecting other portions of the parcel, corridor ownership and crossing
@@ -61,14 +61,14 @@ export function roadNameFromSitus(situs: string | null | undefined): string | nu
 }
 
 export interface DiscoveryAccessRead {
-  /** True only when a recorded-instrument evidence rung is verified. */
+  /** Acquisition-screening access; not a title-grade legal opinion. */
   established: boolean;
-  /** Provider/physical signal. Never promoted to a legal conclusion. */
+  /** Retained parcel-provider signal used by the screening doctrine. */
   providerSignal: 'mapped_frontage_not_landlocked' | 'landlocked_flag' | 'unresolved';
   road: string | null;
   frontageFt: number | null;
   landlocked: 'yes' | 'no' | null;
-  /** Legal-access display. Null until recorded evidence is admitted. */
+  /** Operator access display. Recorded/title verification stays separate. */
   display: string | null;
 }
 
@@ -90,12 +90,14 @@ export function readDiscoveryAccess(
       ? 'mapped_frontage_not_landlocked'
       : 'unresolved';
   return {
-    established: false,
+    established: providerSignal === 'mapped_frontage_not_landlocked',
     providerSignal,
     road,
     frontageFt,
     landlocked,
-    display: null,
+    display: providerSignal === 'mapped_frontage_not_landlocked'
+      ? 'Established at the acquisition-screening stage from retained road frontage and a not-landlocked parcel flag.'
+      : null,
   };
 }
 
@@ -113,8 +115,8 @@ export function establishedAccessFollowUps(): string[] {
 }
 
 /**
- * Preserve a provider road-proximity signal without promoting it to legal
- * access. The headline keeps
+ * Apply the LandOS acquisition-screening access doctrine while keeping
+ * recorded/title proof and exact frontage separate. The headline keeps
  * the original "<n> ft frontage shown; landlocked flag: <x>" fragment so the
  * existing metric parsers (hero chips, score) keep working. Non-qualifying
  * items are returned untouched.
@@ -125,7 +127,7 @@ export function normalizeDiscoveryAccessItems(
 ): SnapshotDueDiligenceItem[] {
   const read = readDiscoveryAccess(items, situsAddress);
   if (read.providerSignal !== 'mapped_frontage_not_landlocked') return items;
-  const road = read.road ?? 'the abutting road';
+  const road = read.road ?? 'the serving road';
   return items.map((item) => {
     if (item.key !== 'access') return item;
     const metrics = [
@@ -135,10 +137,10 @@ export function normalizeDiscoveryAccessItems(
     return {
       ...item,
       label: 'Access and road frontage',
-      verdict: 'unknown' as const,
-      headline: `Provider signal: mapped frontage at ${road}; legal access unresolved — ${metrics}`,
-      detail: 'Mapped frontage and a provider not-landlocked flag support road proximity only. Recorded legal access, surveyed frontage, and a confirmed physical entrance remain separate evidence questions.',
-      missing: ['Recorded legal-access instrument or title confirmation.', 'Exact surveyed frontage.', 'Confirmed physical entrance.'],
+      verdict: 'good' as const,
+      headline: `Access established at the acquisition-screening stage from mapped frontage at ${road} and a not-landlocked parcel flag — ${metrics}`,
+      detail: 'This is the normal Acquisitions access conclusion. Recorded-instrument/title confirmation, exact surveyed frontage, and any easements affecting other parcel portions remain separate later-diligence questions.',
+      missing: establishedAccessFollowUps(),
     };
   });
 }

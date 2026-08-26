@@ -67,6 +67,11 @@ export interface ResearchReadinessManifestView {
     deal: ResearchReadinessGroupView;
   };
   backfillCandidates: string[];
+  operatorCompleteness?: {
+    returned: number; denominator: number; partial: number; unresolved: number;
+    blocked: number; notRequired: number; headline: string;
+    items: Array<{ id: string; label: string; outcome: 'returned' | 'partial' | 'unresolved' | 'blocked' | 'not_required'; reason: string }>;
+  };
 }
 
 interface Props {
@@ -110,14 +115,24 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
   }
 
   const { counts, groups } = manifest;
+  const operator = manifest.operatorCompleteness ?? {
+    returned: counts.ready,
+    denominator: counts.total - counts.expectedUnknown,
+    partial: counts.stale,
+    unresolved: counts.unresolved,
+    blocked: counts.needsMachineAttention,
+    notRequired: counts.expectedUnknown,
+    headline: `${counts.ready} / ${counts.total - counts.expectedUnknown} Returned`,
+    items: [],
+  };
   const candidates = manifest.backfillCandidates;
   const busy = !!running;
   const tallies = [
-    counts.needsMachineAttention > 0
-      ? { key: 'red', label: `${counts.needsMachineAttention} missing` } : null,
-    counts.unresolved > 0 ? { key: 'yellow', label: `${counts.unresolved} unresolved` } : null,
-    counts.stale > 0 ? { key: 'blue', label: `${counts.stale} stale` } : null,
-    counts.expectedUnknown > 0 ? { key: 'gray', label: `${counts.expectedUnknown} expected unknown` } : null,
+    { key: 'green', label: `${operator.returned} returned` },
+    { key: 'blue', label: `${operator.partial} partial` },
+    { key: 'yellow', label: `${operator.unresolved} unresolved` },
+    { key: 'red', label: `${operator.blocked} blocked` },
+    { key: 'gray', label: `${operator.notRequired} not required` },
   ].filter((tally): tally is { key: string; label: string } => tally != null);
 
   return (
@@ -132,7 +147,7 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
             returned", the two read as contradictory completion claims of the
             same thing — which they are not, and never were.
           */}
-          <h2>{counts.ready} / {counts.total} RESEARCH INPUTS READY</h2>
+          <h2>{operator.headline}</h2>
         </div>
         <div class="awv2-rr-tallies">
           {tallies.map((tally) => (
@@ -174,8 +189,8 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
           View research readiness
         </button>
         <span class="awv2-rr-note">
-          Diligence inputs, a different measure from the research lane count on the run panel above.
-          Reading this card runs no research. Backfill runs only the missing items a registered capability owns.
+          One operator projection over all required property research. Not Required is excluded from the denominator.
+          Reading this card runs no research. Backfill runs only blocked items a registered capability owns.
         </span>
       </div>
       {error && <p class="awv2-rr-error">{error}</p>}

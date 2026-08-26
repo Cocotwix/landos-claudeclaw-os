@@ -13,6 +13,7 @@ import type { PropertySubdivisionRead } from './subdivision-property-read.js';
 import {
   ZONING_SUBDIVISION_CAPABILITY,
   ZONING_SUBDIVISION_CAPABILITY_ID,
+  projectZoningSubdivisionWithCurrentTruth,
   type LandUseResearchOutcome,
   type ZoningSubdivisionFacts,
   type ZoningSubdivisionRuntime,
@@ -757,5 +758,43 @@ describe('Zoning & Subdivision Capability', () => {
     // Manufactured homes never appear in the generic allow/restrict lists.
     expect(projected.zoningAllowances.some((row) => row.label.includes('Manufactured'))).toBe(false);
     expect(projected.zoningRestrictions.some((row) => row.label.includes('Manufactured'))).toBe(false);
+  });
+});
+
+describe('current zoning compatibility projection', () => {
+  it('lets a newer canonical district replace stale not-run zoning gaps without mutating retained evidence', () => {
+    const retained = {
+      facts: {
+        zoning: {
+          established: false,
+          districtCode: null,
+          limitations: ['Current zoning district is not established.'],
+          historicalReferences: [],
+        },
+        subdivisionByRight: {
+          missingInputs: ['Confirm the current zoning district.', 'Confirm septic feasibility.'],
+        },
+      },
+      warnings: ['Current zoning is unresolved.', 'Frontage is not survey-grade.'],
+      missingInformation: ['Obtain parcel-specific zoning GIS evidence.', 'Confirm public sewer capacity.'],
+    } as unknown as CapabilityResult;
+    const current = {
+      established: true,
+      districtCode: 'CD-3L',
+      districtName: null,
+      confidence: 'confirmed',
+      authorityName: 'City of Fairview',
+      historicalReferences: [],
+      requestedZoning: [],
+      limitations: [],
+    } as unknown as CurrentZoningDetermination;
+
+    const projected = projectZoningSubdivisionWithCurrentTruth(retained, current)!;
+    const projectedFacts = projected.facts as unknown as ZoningSubdivisionFacts;
+    expect(projectedFacts.zoning).toMatchObject({ established: true, districtCode: 'CD-3L' });
+    expect(projectedFacts.subdivisionByRight.missingInputs).toEqual(['Confirm septic feasibility.']);
+    expect(projected.warnings).toEqual(['Frontage is not survey-grade.']);
+    expect(projected.missingInformation).toEqual(['Confirm public sewer capacity.']);
+    expect((retained.facts as Record<string, any>).zoning.districtCode).toBeNull();
   });
 });

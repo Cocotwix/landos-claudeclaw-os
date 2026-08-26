@@ -1697,6 +1697,149 @@ describe('local browser pairing', () => {
     expect(replay.status).toBe(401);
   });
 
+  // A phone reaching LandOS over the private tunnel can never mint its own
+  // link: minting still demands loopback plus the master token. The operator's
+  // already-authenticated local browser names the device address instead, and
+  // that one code becomes claimable from that address and nowhere else.
+  const PHONE = 'https://phone-3141.use.devtunnels.ms';
+
+  async function mintForPhone(remoteOrigin: string = PHONE) {
+    const created = await app.request('http://localhost/api/dashboard/browser-pairings?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ returnTo: '/dept/acquisitions?deal=14', remoteOrigin }),
+    });
+    return created;
+  }
+
+  it('pairs a tunnel-reached device with a link bound to that exact origin', async () => {
+    const created = await mintForPhone();
+    expect(created.status).toBe(201);
+    const createdBody = await jsonOf(created);
+    expect(createdBody.pairingUrl).toMatch(/^https:\/\/phone-3141\.use\.devtunnels\.ms\/connect\?/);
+    expect(createdBody.remoteOrigin).toBe(PHONE);
+    expect(JSON.stringify(createdBody)).not.toContain(TOKEN);
+
+    const code = new URL(createdBody.pairingUrl).hash.slice(1);
+
+    // Some other host holding the same code is still told nothing exists.
+    const wrongHost = await app.request('https://attacker.example.test/api/dashboard/browser-pairings/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    expect(wrongHost.status).toBe(404);
+
+    const claimed = await app.request(`${PHONE}/api/dashboard/browser-pairings/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: PHONE },
+      body: JSON.stringify({ code }),
+    });
+    expect(claimed.status).toBe(201);
+    expect(claimed.headers.get('set-cookie')).toMatch(/HttpOnly; SameSite=Strict; Path=\//);
+    expect(JSON.stringify(await jsonOf(claimed))).not.toContain(TOKEN);
+
+    // The device is now a first-class session on its own address, and the
+    // code is spent.
+    const cookie = (claimed.headers.get('set-cookie') || '').split(';')[0];
+    const phoneHealth = await app.request(`${PHONE}/api/health`, { headers: { cookie } });
+    expect(phoneHealth.status).toBe(200);
+
+    // Spent. The paired device is told the link expired; anyone else holding
+    // the same code is told nothing exists at all.
+    const replay = await app.request(`${PHONE}/api/dashboard/browser-pairings/claim`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json', origin: PHONE },
+      body: JSON.stringify({ code }),
+    });
+    expect(replay.status).toBe(401);
+    expect(replay.headers.get('set-cookie')).toBeNull();
+
+    const strangerReplay = await app.request(`${PHONE}/api/dashboard/browser-pairings/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: PHONE },
+      body: JSON.stringify({ code }),
+    });
+    expect(strangerReplay.status).toBe(404);
+    expect(strangerReplay.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('keeps an unbound pairing loopback-only', async () => {
+    const created = await app.request('http://localhost/api/dashboard/browser-pairings?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ returnTo: '/dept/acquisitions' }),
+    });
+    const code = new URL((await jsonOf(created)).pairingUrl).hash.slice(1);
+
+    const remoteClaim = await app.request(`${PHONE}/api/dashboard/browser-pairings/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: PHONE },
+      body: JSON.stringify({ code }),
+    });
+    expect(remoteClaim.status).toBe(404);
+
+    // Refused off loopback, never spent: the local browser can still use it.
+    const local = await app.request('/api/dashboard/browser-pairings/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    expect(local.status).toBe(201);
+  });
+
+  it('refuses to bind a pairing to a loopback or malformed device address', async () => {
+    for (const value of ['http://localhost:3141', '127.0.0.1', 'file:///etc/passwd', 'not a host', '']) {
+      const created = await mintForPhone(value);
+      expect(created.status).toBe(201);
+      const body = await jsonOf(created);
+      expect(body.remoteOrigin).toBe('');
+      expect(body.pairingUrl).toMatch(/^http:\/\/localhost\/connect\?/);
+    }
+  });
+
+  it('still rejects a cross-origin claim aimed at a bound device address', async () => {
+    const created = await mintForPhone();
+    const code = new URL((await jsonOf(created)).pairingUrl).hash.slice(1);
+
+    const forged = await app.request(`${PHONE}/api/dashboard/browser-pairings/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://evil.example.test' },
+      body: JSON.stringify({ code }),
+    });
+    expect(forged.status).toBe(403);
+  });
+
+  it('lets a paired tunnel device make same-origin mutations, but not cross-origin ones', async () => {
+    const created = await mintForPhone();
+    const code = new URL((await jsonOf(created)).pairingUrl).hash.slice(1);
+    const claimed = await app.request(`${PHONE}/api/dashboard/browser-pairings/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: PHONE },
+      body: JSON.stringify({ code }),
+    });
+    const cookie = (claimed.headers.get('set-cookie') || '').split(';')[0];
+
+    const settingsBody = JSON.stringify({
+      key: 'standup_config',
+      value: JSON.stringify({ agents: [{ id: 'main', enabled: true }], maxSpeakers: 5 }),
+    });
+
+    const sameOrigin = await app.request(`${PHONE}/api/dashboard/settings`, {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json', origin: PHONE },
+      body: settingsBody,
+    });
+    expect(sameOrigin.status).toBe(200);
+
+    const crossOrigin = await app.request(`${PHONE}/api/dashboard/settings`, {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json', origin: 'https://evil.example.test' },
+      body: settingsBody,
+    });
+    expect(crossOrigin.status).toBe(403);
+  });
+
   it('does not mint a pairing link from a secondary local-browser session', async () => {
     const created = await app.request('/api/dashboard/browser-pairings?token=' + TOKEN, {
       method: 'POST',

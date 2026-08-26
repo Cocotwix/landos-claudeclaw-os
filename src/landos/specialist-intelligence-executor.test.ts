@@ -13,6 +13,10 @@ import type { SettingsReader, SpecialistExecutionPlan } from './acquisition-anal
 import { buildAcquisitionDossier, type AcquisitionDossier, type PropertyFileSource } from './acquisition-intelligence-dossier.js';
 import {
   parseIntelligenceLayers,
+  marketExpertReviewPrompt,
+  marketStructuredExtractionPrompt,
+  propertyExpertReviewPrompt,
+  propertyStructuredExtractionPrompt,
   specialistDealPrompt,
   specialistLayerPrompt,
   type IntelligencePassContext,
@@ -111,6 +115,9 @@ function recordingInvoke(options: { failProfile?: string; delayMs?: number } = {
     await new Promise((resolve) => setTimeout(resolve, options.delayMs ?? 5));
     inFlight -= 1;
     if (profile === options.failProfile) return 'I could not produce a structured answer today.';
+    if (profile === SPECIALIST_PROFILES.market && args[args.indexOf('-t') + 1] === 'search') {
+      return 'This is a substantive free expert market review that connects the complete market evidence to intact and transformed product demand without being constrained by the output schema. '.repeat(3) + '\n\nSOURCE LEDGER\n- NONE';
+    }
     return LAYER_REPLIES[profile] ?? '{}';
   };
   return { calls, invoke, maxInFlight: () => maxInFlight };
@@ -149,6 +156,81 @@ describe('specialist routing and ordering', () => {
     expect(run.layerRuntimes?.property?.transport).toBe('hermes-cli-oneshot');
   });
 
+  it('completes Property before Market free review, then extracts structure before handing the full review to Deal Brain', async () => {
+    const dossier = dossierFor(FAIRVIEW);
+    const context = passContext(dossier, ['property', 'market', 'deal']);
+    const envelope = { dealCardId: 89, generatedAt: '2026-08-21T00:00:00.000Z', contextFingerprint: 'fp-test' };
+    const plan: SpecialistExecutionPlan = {
+      ...planFor(dossier, ['property', 'market', 'deal']),
+      marketReviewPrompt: (property, currentDossier) => marketExpertReviewPrompt(currentDossier, property, context, envelope),
+      marketExtractionPrompt: (property, review, currentDossier) => marketStructuredExtractionPrompt(currentDossier, property, review, context, envelope),
+    };
+    const recorder = recordingInvoke();
+    const executor = createSpecialistIntelligenceExecutor({ invoke: recorder.invoke, settings: settings() });
+    const run = await executor.run({ dossier, specialistPlan: plan });
+
+    expect(recorder.calls.map((call) => `${call.profile}:${call.args[call.args.indexOf('-t') + 1]}`)).toEqual([
+      'landos-property:clarify',
+      'landos-market:search',
+      'landos-market:clarify',
+      'landos-deal-brain:clarify',
+    ]);
+    expect(promptOf(recorder.calls[1].args)).toContain('Property read.');
+    expect(promptOf(recorder.calls[1].args)).toContain('Think freely within your market domain');
+    expect(promptOf(recorder.calls[2].args)).toContain(run.marketExpertReview);
+    expect(promptOf(recorder.calls[3].args)).toContain('"expertReview":"This is a substantive free expert market review');
+    expect(promptOf(recorder.calls[3].args)).toContain('SOURCE LEDGER');
+    expect(run.marketExpertReview).toContain('SOURCE LEDGER');
+    expect(parseIntelligenceLayers(run.raw)?.market?.read).toBe('Market read.');
+  });
+
+  it('runs Property Stage A free review before Stage B extraction on clarify, preserves the prose verbatim, and hands it to Market and the chair', async () => {
+    const dossier = dossierFor(FAIRVIEW);
+    const context = passContext(dossier, ['property', 'market', 'deal']);
+    const envelope = { dealCardId: 89, generatedAt: '2026-08-21T00:00:00.000Z', contextFingerprint: 'fp-test' };
+    const plan: SpecialistExecutionPlan = {
+      ...planFor(dossier, ['property', 'market', 'deal']),
+      propertyReviewPrompt: (currentDossier, observations) => propertyExpertReviewPrompt(currentDossier, observations, context, envelope),
+      propertyExtractionPrompt: (review, currentDossier, observations) => propertyStructuredExtractionPrompt(currentDossier, observations, review, context, envelope),
+      marketReviewPrompt: (property, currentDossier) => marketExpertReviewPrompt(currentDossier, property, context, envelope),
+      marketExtractionPrompt: (property, review, currentDossier) => marketStructuredExtractionPrompt(currentDossier, property, review, context, envelope),
+    };
+    const PROPERTY_REVIEW = 'This is a substantive free expert property review that understands how the land lays, where the usable ground sits, how frontage and terrain interact, and which configurations the physical and regulatory evidence actually supports. '.repeat(2);
+    const calls: Array<{ profile: string; toolset: string; prompt: string }> = [];
+    const invoke = async (args: string[]): Promise<string> => {
+      const profile = profileOf(args);
+      const prompt = promptOf(args);
+      calls.push({ profile, toolset: args[args.indexOf('-t') + 1], prompt });
+      if (profile === SPECIALIST_PROFILES.property) {
+        return prompt.includes('STRUCTURED EXTRACTION') ? LAYER_REPLIES[profile] : PROPERTY_REVIEW;
+      }
+      if (profile === SPECIALIST_PROFILES.market && args[args.indexOf('-t') + 1] === 'search') {
+        return 'A substantive free expert market review. '.repeat(10) + '\n\nSOURCE LEDGER\n- NONE';
+      }
+      return LAYER_REPLIES[profile] ?? '{}';
+    };
+    const executor = createSpecialistIntelligenceExecutor({ invoke, settings: settings() });
+    const run = await executor.run({ dossier, specialistPlan: plan });
+
+    const propertyCalls = calls.filter((call) => call.profile === SPECIALIST_PROFILES.property);
+    expect(propertyCalls).toHaveLength(2);
+    // Stage A is genuinely free-form (no schema demanded); Stage B extracts
+    // over the exact verbatim review. Both stay on clarify — no search.
+    expect(propertyCalls[0].toolset).toBe('clarify');
+    expect(propertyCalls[0].prompt).toContain('Think freely within the Property domain');
+    expect(propertyCalls[0].prompt).not.toContain('"property":{"score"');
+    expect(propertyCalls[1].toolset).toBe('clarify');
+    expect(propertyCalls[1].prompt).toContain(PROPERTY_REVIEW.trim());
+    expect(run.propertyExpertReview).toBe(PROPERTY_REVIEW);
+    // The fresh Property product (including the prose) reaches Market Stage A
+    // and the Deal Brain chair.
+    const marketStageA = calls.find((call) => call.profile === SPECIALIST_PROFILES.market && call.toolset === 'search')!;
+    expect(marketStageA.prompt).toContain('substantive free expert property review');
+    const chair = calls.find((call) => call.profile === SPECIALIST_PROFILES.deal)!;
+    expect(chair.prompt).toContain('substantive free expert property review');
+    expect(parseIntelligenceLayers(run.raw)?.property?.read).toBe('Property read.');
+  });
+
   it('never invokes the seller profile when the plan excludes seller (deterministic pre-contact)', async () => {
     const dossier = dossierFor(FAIRVIEW);
     const recorder = recordingInvoke();
@@ -181,6 +263,23 @@ describe('least-privilege transport', () => {
       expect(call.args).not.toContain('--skills');
       expect(call.args).not.toContain('chat');
     }
+  });
+
+  it('grants adaptive web search only to Market Stage A and keeps Stage B and every other specialist on clarify', async () => {
+    const dossier = dossierFor(FAIRVIEW);
+    const context = passContext(dossier, ['property', 'market', 'deal']);
+    const envelope = { dealCardId: 89, generatedAt: '2026-08-21T00:00:00.000Z', contextFingerprint: 'fp-test' };
+    const plan: SpecialistExecutionPlan = {
+      ...planFor(dossier, ['property', 'market', 'deal']),
+      marketReviewPrompt: (property, currentDossier) => marketExpertReviewPrompt(currentDossier, property, context, envelope),
+      marketExtractionPrompt: (property, review, currentDossier) => marketStructuredExtractionPrompt(currentDossier, property, review, context, envelope),
+    };
+    const recorder = recordingInvoke();
+    await createSpecialistIntelligenceExecutor({ invoke: recorder.invoke, settings: settings() }).run({ dossier, specialistPlan: plan });
+    const marketCalls = recorder.calls.filter((call) => call.profile === SPECIALIST_PROFILES.market);
+    expect(marketCalls.map((call) => call.args[call.args.indexOf('-t') + 1])).toEqual(['search', 'clarify']);
+    expect(recorder.calls.filter((call) => call.profile !== SPECIALIST_PROFILES.market)
+      .every((call) => call.args[call.args.indexOf('-t') + 1] === 'clarify')).toBe(true);
   });
 
   it('builds the same argv shape standalone', () => {
@@ -225,7 +324,11 @@ describe('current deal context outranks profile memory', () => {
 
     expect(market).toContain('"valuation"');
     expect(market).toContain('"comps"');
-    expect(market).not.toContain('"physical"');
+    expect(market).toContain('"physical"');
+    expect(market).toContain('"landUse"');
+    expect(market).toContain('"subdivision"');
+    expect(market).toContain('overallMarketQuality grades only the broader place');
+    expect(market).toContain('subject-product liquidity grade');
 
     expect(seller).toContain('"seller"');
     expect(seller).not.toContain('"physical"');

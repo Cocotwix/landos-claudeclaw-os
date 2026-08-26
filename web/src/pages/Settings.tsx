@@ -4,7 +4,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Toggle } from '@/components/Toggle';
 import { useFetch } from '@/lib/useFetch';
-import { apiPost } from '@/lib/api';
+import { apiPost, apiPut } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import {
   theme, themeMeta, setTheme, type ThemeName,
@@ -157,9 +157,18 @@ export function Settings() {
             </Card>
           </Section>
 
+          <Section
+            title="God's Eye View"
+            subtitle="Google Photorealistic 3D Tiles configuration and the local monthly session safeguard. Voice is disabled in this installation."
+          >
+            <GodsEyeViewSettings />
+          </Section>
+
           <Section title="Acknowledgements">
             <Card>
               <ReadOnlyRow label="3D brain model" value="Detailed Human Brain Model, NIH 3D 3DPX-021161, CC-BY" />
+              <Divider />
+              <ReadOnlyRow label="God's Eye View" value="Vendored from bilawalsidhu/gods-eye-view (MIT, © Bilawal Sidhu) at pinned commit 880a672 — see vendor/gods-eye-view/UPSTREAM.md" />
             </Card>
           </Section>
 
@@ -455,5 +464,212 @@ function ReadOnlyRow({ label, value }: { label: string; value: string }) {
       <span class="text-[13px] text-[var(--color-text-muted)]">{label}</span>
       <span class="font-mono text-[12.5px] text-[var(--color-text)] tabular-nums">{value}</span>
     </div>
+  );
+}
+
+// ── God's Eye View settings ───────────────────────────────────────────
+
+interface GevConfigView {
+  googleMapsBrowserKeyMasked: string;
+  googleKeyConfigured: boolean;
+  cesiumIonTokenMasked: string;
+  ionTokenConfigured: boolean;
+  monthlySessionLimit: number;
+  defaultMonthlySessionLimit: number;
+  usage: { month: string; sessions: number };
+  counterDisclaimer: string;
+}
+
+interface GevProviderStateView {
+  id: string;
+  label: string;
+  capability: string;
+  costModel: string;
+  credential: string | null;
+  status: 'active' | 'credential-required' | 'google-setup' | 'paid-disabled' | 'removed';
+  note?: string;
+}
+
+const GEV_STATUS_LABELS: Record<GevProviderStateView['status'], { text: string; cls: string }> = {
+  'active': { text: 'ACTIVE', cls: 'text-emerald-500' },
+  'credential-required': { text: 'FREE — CREDENTIAL REQUIRED', cls: 'text-amber-500' },
+  'google-setup': { text: 'GOOGLE — SETUP REQUIRED', cls: 'text-sky-500' },
+  'paid-disabled': { text: 'PAID — DISABLED', cls: 'text-[var(--color-text-faint)]' },
+  'removed': { text: 'REMOVED', cls: 'text-[var(--color-text-faint)]' },
+};
+
+function GevProviderMatrix() {
+  const providers = useFetch<{ providers: GevProviderStateView[] }>('/api/gev/providers');
+  if (providers.error || !providers.data) return null;
+  return (
+    <div class="pt-2">
+      <div class="text-[12px] font-medium text-[var(--color-text-muted)] pb-1">Data & visual sources</div>
+      <div class="space-y-0.5">
+        {providers.data.providers.map((p) => (
+          <div key={p.id} class="flex items-baseline justify-between gap-3 py-0.5" title={p.note || p.capability}>
+            <span class="text-[12px] text-[var(--color-text)] truncate">{p.label}</span>
+            <span class={`text-[10.5px] font-mono whitespace-nowrap ${GEV_STATUS_LABELS[p.status]?.cls ?? ''}`}>
+              {GEV_STATUS_LABELS[p.status]?.text ?? p.status}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GodsEyeViewSettings() {
+  const cfg = useFetch<GevConfigView>('/api/gev/config');
+  const [key, setKey] = useState<string | null>(null);
+  const [ionToken, setIonToken] = useState<string | null>(null);
+  const [limit, setLimit] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  if (cfg.error) return <Card><div class="text-[12px] text-red-400">{cfg.error}</div></Card>;
+  if (!cfg.data) return <Card><div class="text-[12px] text-[var(--color-text-faint)]">Loading…</div></Card>;
+
+  const data = cfg.data;
+  // `key === null` means the operator has not touched the field this visit —
+  // the stored key is then neither displayed (masked placeholder only) nor
+  // re-sent on save. The full key never reaches this page.
+  const keyValue = key ?? '';
+  const limitValue = limit ?? String(data.monthlySessionLimit);
+  const pct = data.monthlySessionLimit > 0
+    ? Math.min(100, Math.round((data.usage.sessions / data.monthlySessionLimit) * 100))
+    : 0;
+  const limitNum = Number(limitValue);
+  const overFree = Number.isFinite(limitNum) && limitNum >= 1000;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiPut('/api/gev/config', {
+        // Keys included only when the operator actually edited the field.
+        ...(key !== null ? { googleMapsBrowserKey: keyValue.trim() } : {}),
+        ...(ionToken !== null ? { cesiumIonToken: ionToken.trim() } : {}),
+        monthlySessionLimit: Number(limitValue),
+      });
+      pushToast({ tone: 'success', title: "God's Eye View settings saved", durationMs: 4000 });
+      setKey(null); setIonToken(null); setLimit(null);
+      cfg.refresh();
+    } catch (e) {
+      pushToast({ tone: 'error', title: 'Save failed', description: e instanceof Error ? e.message : String(e), durationMs: 8000 });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <Row
+        label="Google Maps browser key"
+        hint="Browser-visible by design (like a Mapbox public token). In Google Cloud, restrict it to the Map Tiles API and to your localhost origins before pasting it here. Never reuse a server-side credential."
+      >
+        <div class="flex items-center gap-2 w-full max-w-[420px]">
+          <input
+            type="text"
+            value={keyValue}
+            onInput={(e) => setKey((e.target as HTMLInputElement).value)}
+            placeholder={data.googleKeyConfigured
+              ? `Configured: ${data.googleMapsBrowserKeyMasked} — paste to replace`
+              : 'Not configured — 3D Tiles stay off'}
+            class="flex-1 px-2.5 py-1.5 rounded-md bg-[var(--color-elevated)] border border-[var(--color-border)] text-[12.5px] font-mono text-[var(--color-text)]"
+            autocomplete="off"
+            spellcheck={false}
+          />
+          {data.googleKeyConfigured && key === null && (
+            <button
+              type="button"
+              onClick={() => setKey('')}
+              class="px-2 py-1.5 rounded-md text-[11.5px] text-[var(--color-text-muted)] hover:text-red-400 border border-[var(--color-border)]"
+              title="Clear the stored key on Save"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      </Row>
+      <Divider />
+      <Row
+        label="Cesium ion token"
+        hint="Free ion account token (browser-visible, like the Google browser key). Unlocks the Bing Aerial, Bing Aerial + Labels, and Cesium World Terrain stacks. Leave empty to keep those stacks in their honest SETUP state."
+      >
+        <div class="flex items-center gap-2 w-full max-w-[420px]">
+          <input
+            type="text"
+            value={ionToken ?? ''}
+            onInput={(e) => setIonToken((e.target as HTMLInputElement).value)}
+            placeholder={data.ionTokenConfigured
+              ? `Configured: ${data.cesiumIonTokenMasked} — paste to replace`
+              : 'Not configured — Bing Aerial / World Terrain stay off'}
+            class="flex-1 px-2.5 py-1.5 rounded-md bg-[var(--color-elevated)] border border-[var(--color-border)] text-[12.5px] font-mono text-[var(--color-text)]"
+            autocomplete="off"
+            spellcheck={false}
+          />
+          {data.ionTokenConfigured && ionToken === null && (
+            <button
+              type="button"
+              onClick={() => setIonToken('')}
+              class="px-2 py-1.5 rounded-md text-[11.5px] text-[var(--color-text-muted)] hover:text-red-400 border border-[var(--color-border)]"
+              title="Clear the stored token on Save"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      </Row>
+      <Divider />
+      <Row
+        label="Monthly session limit"
+        hint={`Local safeguard on billable 3D Tiles root sessions. Default ${data.defaultMonthlySessionLimit} (below Google's 1,000 free allowance). Warnings at 75% and 90%; at the limit no new Google session is started.`}
+      >
+        <div class="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            max={5000}
+            value={limitValue}
+            onInput={(e) => setLimit((e.target as HTMLInputElement).value)}
+            class="w-24 px-2.5 py-1.5 rounded-md bg-[var(--color-elevated)] border border-[var(--color-border)] text-[12.5px] font-mono text-[var(--color-text)]"
+          />
+          {overFree && (
+            <span class="text-[11px] text-amber-500">
+              ≥1,000 can exceed Google's free allowance and incur charges.
+            </span>
+          )}
+        </div>
+      </Row>
+      <Divider />
+      <Row label="Sessions this month" hint={data.counterDisclaimer}>
+        <div class="flex items-center gap-3">
+          <span class="text-[13px] font-mono text-[var(--color-text)]">
+            {data.usage.sessions} / {data.monthlySessionLimit}
+          </span>
+          <div class="w-40 h-1.5 rounded-full bg-[var(--color-elevated)] overflow-hidden">
+            <div
+              class={`h-full rounded-full ${pct >= 90 ? 'bg-red-500' : pct >= 75 ? 'bg-amber-500' : 'bg-[var(--color-accent)]'}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <span class="text-[11px] text-[var(--color-text-faint)]">{data.usage.month} (UTC)</span>
+        </div>
+      </Row>
+      <Divider />
+      <Row label="Voice" hint="Provider-agnostic voice adapters exist upstream, but no voice provider is configured or callable in this installation.">
+        <span class="text-[12px] text-[var(--color-text-muted)]">Disabled</span>
+      </Row>
+      <Divider />
+      <GevProviderMatrix />
+      <div class="pt-3">
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => void save()}
+          class="px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-white text-[12.5px] font-medium disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </Card>
   );
 }

@@ -114,6 +114,21 @@ without compliant `browser_visual_acceptance` evidence. There is no supported
 completion path around this gate: LandOS work either satisfies it in the
 governed Control attempt or sprint ledger, or is not reported complete.
 
+**Browser-control fallback, every agent, permanent.** Use a healthy native
+browser-control attachment when the session actually has one. If it does not,
+run the repository-native acceptance entrypoint instead:
+`npm run landos:browser:qa -- --route /the/local/route` (or its named
+`--scenario`). That command first reuses the owned Chrome DevTools endpoint on
+port 9224 and, when the endpoint is unavailable, safely launches the managed
+LandOS Chrome with the installed browser and existing dependencies. It verifies
+health before navigation, records browser diagnostics and screenshots under
+`.runtime/landos/qa/`, and closes only the page it created. A missing
+session-level browser tool is never a blocker by itself. Acceptance may be
+reported externally blocked only after the repository command has attempted
+both the owned CDP connection and managed-launch fallback and has returned
+`BLOCKED` with actionable evidence. Never close the operator's personal Chrome
+or use its profile for this fallback.
+
 **Tier 1, no owner-visible change** (internal refactor, tests, comments, docs):
 focused tests plus typecheck, then browser visual acceptance on the nearest
 operator surface that consumes the change.

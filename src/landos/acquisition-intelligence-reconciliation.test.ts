@@ -49,6 +49,22 @@ describe('frontage', () => {
 });
 
 describe('acreage', () => {
+  it('uses the retained official acreage/extent reconciliation over historical provider acreage', () => {
+    const conflicts = reconcileMaterialFacts({
+      acreageExtent: {
+        decision: { canonicalAcres: 51.11, canonicalSource: 'Current assessor parcel' },
+      },
+      propertyIntelligence: {
+        snapshot: { identity: { acres: 51.11, acreageBasis: 'canonical acreage reconciliation' } },
+        landPortalFacts: { acres: 75.91 },
+      },
+    });
+    const acreage = bySubject(conflicts, 'acreage');
+    expect(acreage?.resolution).toBe('resolved');
+    expect(acreage?.reason).toMatch(/current parcel/i);
+    expect(acreage?.reason).toContain('51.11');
+  });
+
   it('resolves to the official GIS record when one exists, and says which rule did it', () => {
     const conflicts = reconcileMaterialFacts({
       propertyIntelligence: {
@@ -78,17 +94,15 @@ describe('acreage', () => {
 });
 
 describe('access', () => {
-  it('separates a "not landlocked" parcel flag from established legal access', () => {
+  it('does not make later recorded-instrument diligence compete with established screening access', () => {
     const conflicts = reconcileMaterialFacts({
       propertyIntelligence: {
         landPortalFacts: { access: { landLocked: 'No' } },
-        access: { legalAccess: 'Yes, via the fronting road', evidence: { verifiedLegalAccess: false, reportedLegalAccess: false } },
+        access: { established: true, legalAccess: 'Established at acquisition screening', evidence: { verifiedLegalAccess: false, reportedLegalAccess: false } },
       },
     });
     const access = bySubject(conflicts, 'access');
-    expect(access).toBeTruthy();
-    expect(access!.resolution).toBe('unresolved');
-    expect(access!.reason).toMatch(/recorded instrument/i);
+    expect(access).toBeUndefined();
   });
 
   it('reports no access conflict once legal access is verified', () => {
@@ -138,6 +152,18 @@ describe('zoning', () => {
 });
 
 describe('jurisdiction, improvements, valuation and identity', () => {
+  it('does not manufacture split administration from two labels for the same municipality', () => {
+    const conflicts = reconcileMaterialFacts({
+      propertyIntelligence: {
+        landUseIntelligence: {
+          currentZoning: { authorityName: 'City of Fairview official zoning map (Fairview Character Districts - Public)' },
+          subdivision: { authorityName: 'Fairview' },
+        },
+      },
+    });
+    expect(bySubject(conflicts, 'jurisdiction')).toBeUndefined();
+  });
+
   it('surfaces split zoning/subdivision administration as normal but consequential', () => {
     const conflicts = reconcileMaterialFacts({
       propertyIntelligence: {

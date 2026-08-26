@@ -1039,7 +1039,7 @@ function marketScore(
   market: OperatorMarketAnalysis,
   canonicalCounts?: CanonicalCompCounts | null,
 ): OperatorScore {
-  let score = 42;
+  let score = 50;
   const positives: string[] = [];
   const deductions: string[] = [];
   const changes: string[] = [];
@@ -1050,9 +1050,11 @@ function marketScore(
   const countySold = countyBands.reduce((sum, band) => sum + band.soldCount, 0);
   const countyActive = countyBands.reduce((sum, band) => sum + band.activeCount, 0);
 
-  score += Math.min(25, sold * 5);
-  score += Math.min(12, active * 3);
-  score += Math.min(12, countyBands.length * 2 + Math.min(4, countySold / 10));
+  // Evidence depth supports confidence, not demand. The former score rewarded
+  // every retained row and could call a slow, oversupplied market "Excellent"
+  // merely because LandOS had collected a lot of records.
+  score += Math.min(9, sold * 3);
+  score += countyBands.length >= 3 ? 6 : countyBands.length > 0 ? 3 : 0;
   // The noun must match what Comps & Valuation calls the same records, or the
   // two surfaces contradict each other about the same evidence.
   const soldNoun = canonicalCounts?.soldAllSourceStated ? 'source-stated sale(s)' : 'closed sale(s)';
@@ -1070,15 +1072,36 @@ function marketScore(
     deductions.push(`Only ${active} useful active competitor(s) are retained.`);
     changes.push('Four useful current active listings, including listing age and engagement where available.');
   }
-  if (market.strength === 'Strong') { score += 10; positives.push(market.conclusion); }
-  if (market.strength === 'Weak') { score -= 12; deductions.push(market.conclusion); }
+  if (market.strength === 'Strong') { score += 8; positives.push(market.conclusion); }
+  if (market.strength === 'Moderate') score += 3;
+  if (market.strength === 'Weak') { score -= 10; deductions.push(market.conclusion); }
   if (market.strength === 'Uncertain') { score -= 8; deductions.push('Market direction is not yet well supported.'); }
-  if (market.dataCenters.status === 'found') {
-    score += 4;
-    positives.push(market.dataCenters.summary);
+  const subjectBand = market.bulkVersusSplit.bulkBand;
+  const dom = subjectBand?.medianDaysOnMarket ?? null;
+  const sellThroughRaw = subjectBand?.sellThroughRate ?? null;
+  const sellThrough = sellThroughRaw != null && sellThroughRaw <= 1 ? sellThroughRaw * 100 : sellThroughRaw;
+  const supply = subjectBand?.monthsOfSupply ?? null;
+  if (dom != null) {
+    if (dom <= 90) { score += 12; positives.push(`Subject-product median DOM is ${Math.round(dom)} days (A timing).`); }
+    else if (dom <= 150) { score += 6; positives.push(`Subject-product median DOM is ${Math.round(dom)} days (B timing).`); }
+    else if (dom <= 210) { score -= 4; deductions.push(`Subject-product median DOM is ${Math.round(dom)} days (C timing), beyond the 150-day LandOS target.`); }
+    else { score -= 15; deductions.push(`Subject-product median DOM is ${Math.round(dom)} days (D timing), materially beyond the 150-day LandOS target.`); }
+  }
+  if (sellThrough != null) {
+    if (sellThrough >= 65) { score += 8; positives.push(`${Math.round(sellThrough)}% subject-band sell-through supports buyer depth.`); }
+    else if (sellThrough >= 40) score += 2;
+    else { score -= 8; deductions.push(`${Math.round(sellThrough)}% subject-band sell-through indicates weak conversion.`); }
+  }
+  if (supply != null) {
+    if (supply <= 6) score += 6;
+    else if (supply <= 12) score += 2;
+    else if (supply > 18) { score -= 8; deductions.push(`${supply.toFixed(1)} months of subject-band supply is heavy.`); }
+  }
+  // A topical signal does not earn score merely because it was found. It may
+  // support the read only where retained evidence states a material effect.
+  if (market.dataCenters.status === 'found' && /material|demand|employment|infrastructure|value|buyer/i.test(market.dataCenters.verdict ?? '')) {
+    positives.push(`Material infrastructure context: ${market.dataCenters.verdict}`);
     keys.push('market:data_center_watch');
-  } else if (market.dataCenters.status === 'not_run' || market.dataCenters.status === 'unavailable') {
-    changes.push('A completed data-center and infrastructure search within 20 miles.');
   }
   if (canonicalCounts) {
     changes.push('Counts shown here are the canonical Comps & Valuation registry counts, so the two sections always agree.');
@@ -1089,7 +1112,7 @@ function marketScore(
   return {
     score: final,
     rating: rating(final),
-    explanation: `${rating(final)} resale environment based on the selected acreage-band comps, active competition, retained internal market research, and live growth signals.`,
+    explanation: `${rating(final)} combined market read: broader area trajectory is weighed with actual subject-product liquidity and the LandOS 150-day resale target.`,
     strongestPositiveFactors: unique(positives).slice(0, 5),
     mainDeductions: unique(deductions).slice(0, 5),
     materiallyChangeWith: unique(changes).slice(0, 7),
