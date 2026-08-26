@@ -813,10 +813,35 @@ export function AcquisitionWorkspaceV2() {
     <div class="awv2" data-testid="acquisition-workspace-root">
       {/* ── CRM header ── */}
       <header class="awv2-header">
-        <div class="awv2-eyebrow">
-          <span>Acquisitions</span><span class="sep">/</span>
-          <span class="brass">Workspace V2</span><span class="sep">/</span>
-          <span>Deal {dealId}</span>
+        <div class="awv2-eyebrow awv2-eyebrow-row">
+          <div class="awv2-crumb">
+            <span>Acquisitions</span><span class="sep">/</span>
+            <span class="brass">Workspace V2</span><span class="sep">/</span>
+            <span>Deal {dealId}</span>
+          </div>
+          {/* ── Deal pages: the seven pages of THIS deal, horizontal in the
+              header beside the deal crumb. Same routing, same selected-page
+              state, same record identity on every link — only the placement
+              changed, so the body reclaims the full page width. ── */}
+          <nav class="awv2-deal-tabs" aria-label="Deal pages" data-testid="deal-sidebar">
+            {DEAL_PAGES.map((entry) => {
+              const Icon = PAGE_ICONS[entry.slug];
+              return (
+                <a
+                  href={pageHref(window.location.pathname, window.location.search, entry.slug)}
+                  class={page === entry.slug ? 'active' : ''}
+                  aria-current={page === entry.slug ? 'page' : undefined}
+                  data-domain={PAGE_DOMAINS[entry.slug]}
+                  data-testid={`deal-nav-${entry.slug}`}
+                  title={entry.hint}
+                  onClick={(e) => switchPage(e as unknown as MouseEvent, entry.slug)}
+                >
+                  <Icon size={14} aria-hidden="true" />
+                  <b>{entry.label}</b>
+                </a>
+              );
+            })}
+          </nav>
         </div>
 
         <h1 class="awv2-address">
@@ -891,29 +916,6 @@ export function AcquisitionWorkspaceV2() {
       </header>
 
       <div class="awv2-body awv2-body-composed awv2-deal-layout">
-        {/* ── Deal-contextual sidebar: the seven pages of THIS deal. This is
-            not the LandOS department sidebar — it exists only while a deal
-            record is open, and every link preserves the record identity. ── */}
-        <nav class="awv2-deal-sidebar" aria-label="Deal pages" data-testid="deal-sidebar">
-          <span class="awv2-deal-sidebar-title">Deal workspace</span>
-          {DEAL_PAGES.map((entry) => {
-            const Icon = PAGE_ICONS[entry.slug];
-            return (
-              <a
-                href={pageHref(window.location.pathname, window.location.search, entry.slug)}
-                class={page === entry.slug ? 'active' : ''}
-                aria-current={page === entry.slug ? 'page' : undefined}
-                data-domain={PAGE_DOMAINS[entry.slug]}
-                data-testid={`deal-nav-${entry.slug}`}
-                onClick={(e) => switchPage(e as unknown as MouseEvent, entry.slug)}
-              >
-                <Icon size={16} aria-hidden="true" />
-                <span><b>{entry.label}</b><small>{entry.hint}</small></span>
-              </a>
-            );
-          })}
-        </nav>
-
         <div class="awv2-col">
         {/* Strategy & Underwriting opens with the deterministic Napkin
             Underwriting screen: Acquisition Napkin on the canonical supported

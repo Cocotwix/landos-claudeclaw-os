@@ -296,6 +296,18 @@ const structureLabel = (type: string | null | undefined, improved: boolean): str
 };
 
 /**
+ * The map overlay's property type, in the three words an operator actually
+ * uses. Derived from the same reconciled structure read as the page heading;
+ * it establishes nothing new.
+ */
+const railPropertyType = (structure: string): string => {
+  if (/manufactured|mobile/i.test(structure)) return 'Land + Manufactured';
+  if (/house|resid|dwelling|home/i.test(structure)) return 'Land + Home';
+  if (/vacant/i.test(structure)) return 'Vacant Land';
+  return structure;
+};
+
+/**
  * Strategy semantics, deterministic and evidence-bound.
  *
  * A structured strategy candidate's own fit decides whether it is supported.
@@ -704,6 +716,8 @@ export function OverviewSection({
     || acreageRecon?.status === 'resolved_current_vs_historical_extent';
   const headingAcres = (acreageReconResolved ? acreageRecon?.canonicalAcres : null) ?? identity.acres ?? null;
   const subjectHeading = `${subjectStructure}${headingAcres != null ? ` • ${headingAcres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : ''}`;
+  // The map overlay leads with the property type and acreage only.
+  const railHeading = `${railPropertyType(subjectStructure)}${headingAcres != null ? ` · ${headingAcres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : ''}`;
 
   const questionCards = (status?.openQuestions ?? []).map((question) => {
     if (typeof question !== 'string') return {
@@ -861,19 +875,6 @@ export function OverviewSection({
         <div class="cell strategy"><small>Top strategy</small><b>{stripStrategy || 'Pending'}</b><i>{stripStrategyBasis ?? 'Not yet selected'}</i></div>
       </section>}
 
-      {/* ── 1m2. Strategy clarity: the base case, the leading value-add
-             product and any still-supported higher-upside hypothesis are three
-             different reads and are named as three different things. Each is a
-             persisted structured candidate; none is invented here. ── */}
-      {show('overview') && (baseCaseLabel || valueAddLabel || higherUpsideLabel) && (
-        <section class="awv2-strategy-clarity" data-domain="valuation" aria-label="Strategy semantics" data-testid="overview-strategy-clarity">
-          {baseCaseLabel && <div class="cell"><small>Base case</small><b>{baseCaseLabel}</b><i>Minimal transformation</i></div>}
-          <div class="cell lead"><small>Leading value-add strategy</small><b>{valueAddLabel || 'None currently supported'}</b><i>{valueAddLabel ? 'Supported, not proven' : 'Base case leads'}</i></div>
-          <div class="cell"><small>Higher-upside hypothesis</small><b>{higherUpsideLabel || 'None currently supported'}</b><i>{higherUpsideLabel ? 'Supported hypothesis' : 'Not carried forward'}</i></div>
-          {largeAcreageScreen && <p class="screen">{largeAcreageScreen}</p>}
-        </section>
-      )}
-
       {/* ── 1n. Full-width landscape property hero: the retained parcel
              visuals as the visual centerpiece, with the retained-geometry
              aerial map mode outlining the subject in neon green, and the
@@ -892,6 +893,37 @@ export function OverviewSection({
             ))}
           </div>
         )}
+        {/* The LandOS subject-boundary treatment. It isolates the red line the
+            retained LandPortal capture already contains and repaints THAT
+            SAME line as a green-white core inside a neon-green glow. No
+            geometry is read, derived, redrawn or researched here: this is a
+            color treatment of pixels that are already on the image. */}
+        <svg class="awv2-hero-filterdefs" aria-hidden="true" focusable="false"><defs>
+          <filter id="landos-subject-neon" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
+            {/* Redness = how far red runs ahead of green and blue. */}
+            <feColorMatrix type="matrix" in="SourceGraphic" result="redness" values="
+              0 0 0 0 0
+              0 0 0 0 0
+              0 0 0 0 0
+              1.5 -0.75 -0.75 0 0" />
+            {/* Threshold it so only the drawn boundary survives, not warm terrain. */}
+            <feComponentTransfer in="redness" result="line">
+              <feFuncA type="linear" slope="7" intercept="-2.1" />
+            </feComponentTransfer>
+            <feFlood flood-color="#39ff88" result="neon" />
+            <feComposite in="neon" in2="line" operator="in" result="neonline" />
+            <feGaussianBlur in="neonline" stdDeviation="3.2" result="glow" />
+            <feFlood flood-color="#eafff1" result="corecolor" />
+            <feComposite in="corecolor" in2="line" operator="in" result="core" />
+            <feMerge>
+              <feMergeNode in="SourceGraphic" />
+              <feMergeNode in="glow" />
+              <feMergeNode in="glow" />
+              <feMergeNode in="neonline" />
+              <feMergeNode in="core" />
+            </feMerge>
+          </filter>
+        </defs></svg>
         <div class="awv2-hero-stage">
           {activeHeroMode === 'map' && parcelRing
             ? <ParcelMapHero polygon={parcelRing} address={address} />
@@ -902,8 +934,7 @@ export function OverviewSection({
                 : <div class="empty">Parcel imagery has not been retained yet.</div>}
           <div class="awv2-hero-rail" aria-label="Property operating facts">
             <div class="identity">
-              <h2>{address || 'Subject property'}</h2>
-              <p>{subjectHeading}{identity.apn ? ` · APN ${identity.apn}` : ''}{zip ? ` · ${zip}` : ''}</p>
+              <h2>{railHeading}</h2>
             </div>
             {heroRail.map((item) => (
               <div class="fact">

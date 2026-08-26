@@ -228,3 +228,20 @@
    pages keep their multi-column map. */
 .awv2-overview[data-page-filter="overview"] { grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; }
 .awv2-overview[data-page-filter="overview"] > * { grid-column: 1 / -1 !important; grid-row: auto !important; }
+
+/* ── Map overlay: narrower, and led by the property type ───────────────────
+   The overlay ends just past its own facts instead of covering the parcel.
+   Headings stay bold and bright — the panel got narrower, not smaller. */
+.awv2-hero-rail { width: min(272px, 30%); padding: 14px 16px; }
+.awv2-hero-rail .identity { padding-bottom: 9px; }
+.awv2-hero-rail .identity h2 { font-size: 16.5px; font-weight: 700; letter-spacing: .01em; }
+.awv2-hero-rail .fact small { font-size: 11.5px; font-weight: 800; }
+.awv2-hero-rail .fact b { font-size: 15px; }
+
+/* ── LandOS subject-boundary treatment on retained LandPortal captures ─────
+   The retained image already carries the subject outline the provider drew.
+   This recolors THAT EXACT LINE to the LandOS treatment — a bright
+   green-white core with a neon-green outer glow — and never redraws, moves,
+   or re-derives the boundary. Presentation only. */
+.awv2-hero-stage > img { filter: url(#landos-subject-neon); }
+.awv2-hero-filterdefs { position: absolute; width: 0; height: 0; pointer-events: none; }

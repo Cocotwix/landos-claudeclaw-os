@@ -28,9 +28,10 @@ describe('Deal Overview — final operator pass', () => {
     expect(OVERVIEW).toContain('baseCaseCandidate');
     expect(OVERVIEW).toContain('valueAddCandidate');
     expect(OVERVIEW).toContain('higherUpsideCandidate');
-    expect(OVERVIEW).toContain('Base case');
-    expect(OVERVIEW).toContain('Leading value-add strategy');
-    expect(OVERVIEW).toContain('Higher-upside hypothesis');
+    expect(OVERVIEW).toContain('Leading value-add');
+    // The three-cell clarity block no longer renders: the leading read is
+    // named once, in the economics strip's Top Strategy cell.
+    expect(OVERVIEW).not.toContain('overview-strategy-clarity');
     // Only a candidate the strategy lane itself marked supported may lead; a
     // rejected major-subdivision thesis never becomes a shown hypothesis.
     expect(OVERVIEW).toContain('SUPPORTED_STRATEGY_FIT');
@@ -45,7 +46,7 @@ describe('Deal Overview — final operator pass', () => {
   });
 
   it('never puts a 50% acquisition value on the Overview', () => {
-    const strip = OVERVIEW.slice(OVERVIEW.indexOf('awv2-econ-strip'), OVERVIEW.indexOf('awv2-strategy-clarity'));
+    const strip = OVERVIEW.slice(OVERVIEW.indexOf('awv2-econ-strip'), OVERVIEW.indexOf('awv2-overview-hero'));
     expect(strip).toContain('econLevels.pct40');
     expect(strip).toContain('econLevels.pct60');
     expect(strip).not.toContain('pct50');
