@@ -343,7 +343,20 @@ export interface AcquisitionDossier {
       at: string | null;
       type: string;
       direction: string | null;
-      summary: string;
+      /** Deterministic speaker/source label — SELLER STATEMENT, OPERATOR
+       *  STATEMENT, OPERATOR NOTE, or CALL TRANSCRIPT — so the record never
+       *  flattens into unlabeled prose. */
+      attribution: string;
+      /** Email subject line, where the communication is an email. */
+      subject: string | null;
+      /** Verbatim primary content (call transcript, message text, email body,
+       *  or full note) when persisted. Line structure and speaker labels are
+       *  preserved; summaries never replace it. Null when only a summary was
+       *  ever recorded. */
+      body: string | null;
+      /** CRM summary — retained alongside the body unless it is merely a
+       *  truncated duplicate of the body's opening. */
+      summary: string | null;
       outcome: string | null;
       sentiment: string | null;
       followUpDate: string | null;
@@ -1085,6 +1098,44 @@ const MAX_SELLER_COMMS_HEAD = 4;
 const MAX_SELLER_FACTS = 16;
 const MAX_SELLER_DISCOVERY = 6;
 
+// Primary-content budgets. A communication body is a coherent unit: it is
+// carried verbatim, and when a bound is unavoidable it keeps both ends of the
+// unit with an explicit marker — never an arbitrary 500-char chop.
+const MAX_PRIMARY_BODY = 16_000;      // ceiling for one communication's verbatim content
+const PRIMARY_BODY_HEAD = 10_000;     // over the ceiling, keep this much of the opening…
+const MAX_TOTAL_PRIMARY = 120_000;    // total verbatim budget across the whole record
+const PRIMARY_EARLIEST_KEPT = 2;      // earliest bodies always compete first for the budget
+
+/** Verbatim text: preserves line structure and speaker labels (unlike `text`,
+ *  which collapses whitespace). Hard guard only — real bounding is explicit. */
+function verbatim(value: unknown, guard: number): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/\r\n?/g, '\n').trim();
+  if (!normalized) return null;
+  return normalized.length > guard ? normalized.slice(0, guard) : normalized;
+}
+
+/** Bound one oversized body while keeping it a coherent unit: opening and
+ *  ending retained, the omission stated inline and in the truncation record. */
+function boundedPrimaryBody(body: string, what: string, truncation: string[]): string {
+  if (body.length <= MAX_PRIMARY_BODY) return body;
+  const tail = MAX_PRIMARY_BODY - PRIMARY_BODY_HEAD;
+  truncation.push(`${what}: verbatim content of ${body.length} chars bounded to its first ${PRIMARY_BODY_HEAD} and last ${tail} chars.`);
+  return `${body.slice(0, PRIMARY_BODY_HEAD)}\n[... ${body.length - MAX_PRIMARY_BODY} characters omitted from the middle of this communication ...]\n${body.slice(body.length - tail)}`;
+}
+
+/** Deterministic speaker/source label so the model can always tell seller
+ *  speech, operator speech, operator notes, and transcripts apart. */
+function commAttribution(type: string, direction: string | null, hasBody: boolean): string {
+  if (type === 'note') return 'OPERATOR NOTE (operator-authored; not seller speech)';
+  if (type === 'transcript' || (type === 'call' && hasBody)) {
+    return 'CALL TRANSCRIPT (verbatim; speaker attribution inside the body where present)';
+  }
+  if (direction === 'inbound') return `SELLER STATEMENT (inbound ${type})`;
+  if (direction === 'outbound') return `OPERATOR STATEMENT (outbound ${type})`;
+  return `RECORDED ${type.toUpperCase()} (direction not recorded)`;
+}
+
 /** Keep chronological order under a cap: the earliest `head` entries plus the
  *  most recent remainder, so both ends of the record survive bounding. */
 function boundedChronology<T>(items: T[], limit: number, head: number, what: string, truncation: string[]): T[] {
@@ -1131,17 +1182,32 @@ function buildSellerEvidence(source: PropertyFileSource, truncation: string[]): 
   // Chronology: the CRM stores the log newest-first; the dossier carries it
   // oldest → newest so evolution over time reads forward.
   const commEntries = asArray(at(acquisition, 'commLog'))
-    .map((entry) => ({
-      at: text(at(entry, 'at') ?? at(entry, 'createdAt'), 40),
-      type: text(at(entry, 'type'), 20) ?? text(at(entry, 'channel'), 20) ?? 'note',
-      direction: text(at(entry, 'direction'), 20),
-      summary: text(at(entry, 'summary'), 500) ?? '',
-      outcome: text(at(entry, 'outcome'), 300),
-      sentiment: text(at(entry, 'sentiment'), 20),
-      followUpDate: text(at(entry, 'followUpDate'), 40),
-      keyFacts: strings(at(entry, 'keyFacts'), MAX_LIST, 'Communication key facts', truncation),
-    }))
-    .filter((entry) => entry.summary)
+    .map((entry) => {
+      // Primary content: the formal `body` field, else the legacy `notes`
+      // field the operator UI has always filled with the full content.
+      const rawPrimary = verbatim(at(entry, 'body'), MAX_PRIMARY_BODY * 4) ?? verbatim(at(entry, 'notes'), MAX_PRIMARY_BODY * 4);
+      const type = text(at(entry, 'type'), 20) ?? text(at(entry, 'channel'), 20) ?? 'note';
+      const direction = text(at(entry, 'direction'), 20);
+      const summary = text(at(entry, 'summary'), 500);
+      // A CRM summary that is just the truncated opening of the body carries
+      // no extra information — it is not repeated beside the verbatim body.
+      const summaryIsDuplicate = rawPrimary != null && summary != null
+        && rawPrimary.replace(/\s+/g, ' ').startsWith(summary.replace(/…$/, '').replace(/\s+/g, ' '));
+      return {
+        at: text(at(entry, 'at') ?? at(entry, 'createdAt'), 40),
+        type,
+        direction,
+        attribution: commAttribution(type, direction, rawPrimary != null),
+        subject: text(at(entry, 'subject'), 300),
+        body: rawPrimary,
+        summary: summaryIsDuplicate ? null : summary,
+        outcome: text(at(entry, 'outcome'), 300),
+        sentiment: text(at(entry, 'sentiment'), 20),
+        followUpDate: text(at(entry, 'followUpDate'), 40),
+        keyFacts: strings(at(entry, 'keyFacts'), MAX_LIST, 'Communication key facts', truncation),
+      };
+    })
+    .filter((entry) => entry.summary || entry.body)
     .sort((a, b) => (a.at ?? '').localeCompare(b.at ?? ''));
   const communications = boundedChronology(
     commEntries.map(({ keyFacts: _keyFacts, ...entry }) => entry),
@@ -1150,6 +1216,32 @@ function buildSellerEvidence(source: PropertyFileSource, truncation: string[]): 
     'Seller communications',
     truncation,
   );
+
+  // Total verbatim budget: the earliest bodies and the most recent bodies are
+  // funded first; a body the budget cannot carry falls back to its summary
+  // with the omission recorded in truncation — never silently.
+  {
+    const fundingOrder: number[] = [];
+    for (let i = 0; i < Math.min(PRIMARY_EARLIEST_KEPT, communications.length); i += 1) fundingOrder.push(i);
+    for (let i = communications.length - 1; i >= PRIMARY_EARLIEST_KEPT; i -= 1) fundingOrder.push(i);
+    let budget = MAX_TOTAL_PRIMARY;
+    const funded = new Set<number>();
+    for (const index of fundingOrder) {
+      const entry = communications[index];
+      if (entry.body == null) continue;
+      const bounded = boundedPrimaryBody(entry.body, `Seller communication ${entry.at ?? 'undated'}`, truncation);
+      if (bounded.length > budget) continue;
+      entry.body = bounded;
+      budget -= bounded.length;
+      funded.add(index);
+    }
+    communications.forEach((entry, index) => {
+      if (entry.body == null || funded.has(index)) return;
+      truncation.push(`Seller communication ${entry.at ?? 'undated'}: verbatim content (${entry.body.length} chars) not carried under the total primary-content budget; its summary stands in.`);
+      if (entry.summary == null) entry.summary = text(entry.body, 500);
+      entry.body = null;
+    });
+  }
 
   const discoveryEntries = asArray(at(acquisition, 'discovery'))
     .map((entry) => ({

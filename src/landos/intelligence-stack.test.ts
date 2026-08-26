@@ -653,7 +653,7 @@ describe('seller evidence reaches the seller layer', () => {
         present: true,
         name: 'Sam Seller',
         stage: 'needs_follow_up',
-        communications: [{ at: '2026-08-15T17:00:00.000Z', type: 'call', direction: 'outbound', summary: 'Discovery call', outcome: null, sentiment: null, followUpDate: null }],
+        communications: [{ at: '2026-08-15T17:00:00.000Z', type: 'call', direction: 'outbound', attribution: 'OPERATOR STATEMENT (outbound call)', subject: null, body: null, summary: 'Discovery call', outcome: null, sentiment: null, followUpDate: null }],
         sellerReportedFacts: [{ statement: 'The property is raw land', source: 'seller profile', at: null }],
         evidenceCounts: { communications: 1, discoveryExtractions: 0, reportedFacts: 1 },
       },
@@ -697,7 +697,7 @@ describe('seller evidence reaches the seller layer', () => {
         ...emptySeller(),
         present: true,
         name: 'Sam Seller',
-        communications: [{ at: '2026-08-15T17:00:00.000Z', type: 'call', direction: 'outbound', summary: 'Discovery call', outcome: null, sentiment: null, followUpDate: null }],
+        communications: [{ at: '2026-08-15T17:00:00.000Z', type: 'call', direction: 'outbound', attribution: 'OPERATOR STATEMENT (outbound call)', subject: null, body: null, summary: 'Discovery call', outcome: null, sentiment: null, followUpDate: null }],
         evidenceCounts: { communications: 1, discoveryExtractions: 0, reportedFacts: 0 },
       },
     };

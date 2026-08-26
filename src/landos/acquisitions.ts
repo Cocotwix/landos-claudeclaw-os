@@ -53,6 +53,13 @@ export interface CommLogEntry {
   type?: 'call' | 'text' | 'email' | 'note' | 'transcript';
   at: string; channel: CommChannel; direction: 'inbound' | 'outbound';
   summary: string; notes?: string;
+  /** Full primary communication content, verbatim: the call transcript, the
+   * individual message text, the email body, or the complete operator note.
+   * This is the durable primary record — a generated or truncated summary
+   * never overwrites it, and both are retained where both exist. */
+  body?: string;
+  /** Email subject line, where the communication is an email. */
+  subject?: string;
   outcome?: string;
   followUpDate?: string;
   sentiment?: 'positive' | 'neutral' | 'negative' | 'unknown';

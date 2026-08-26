@@ -1011,8 +1011,11 @@ function CommunicationDialog({
         at: new Date().toISOString(),
         channel,
         direction,
+        type: type === 'call_transcript' || type === 'uploaded_transcript' ? 'transcript'
+          : type === 'text' ? 'text' : type === 'email' ? 'email' : 'note',
         summary: content.slice(0, 500),
         notes: content,
+        body: content,
         outcome: outcome.trim() || undefined,
         followUpDate: followUpDate || undefined,
         sentiment: 'unknown',
