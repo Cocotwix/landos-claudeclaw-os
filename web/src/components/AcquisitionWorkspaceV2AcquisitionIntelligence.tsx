@@ -37,6 +37,8 @@ export interface AcquisitionIntelligenceView {
   /** Persisted CURRENT DEAL READ — the Deal Brain's concise executive brief
    *  produced with the deal product. Absent on pre-upgrade snapshots. */
   currentDealRead?: string | null;
+  /** Semantic outlook change state for the Current Deal Read. */
+  outlook?: import('./AcquisitionWorkspaceV2SpecialistReads').OutlookView | null;
   propertyStory?: string[];
   marketStory?: string[];
   opportunities?: Array<{ title?: string; why?: string | null; whatWouldConfirm?: string | null }>;

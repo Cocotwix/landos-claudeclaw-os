@@ -33,6 +33,8 @@ import {
 import type { CashDealVerdict, NovationGateResult, QuickFlipScreenResult } from './quick-flip-screen.js';
 import { compiledJurisdictionKnowledgeSection, type PropertyCompiledKnowledge } from './property-compiled-knowledge.js';
 
+import type { IntelligenceOutlook } from './intelligence-outlook.js';
+
 export const INTELLIGENCE_STACK_VERSION = '2.2.0';
 
 // ── Shared vocabulary ──────────────────────────────────────────────────────
@@ -112,6 +114,11 @@ export interface PropertyIntelligenceProduct extends ProductBase {
    * expert review. Never a truncation of expertReview and never a field
    * recap. Optional because pre-upgrade snapshots do not carry it. */
   currentExpertRead?: string | null;
+  /** Semantic OUTLOOK CHANGE STATE for the current read above: INITIAL on the
+   * first read, UNCHANGED when the specialist said the same thing differently,
+   * UPDATED only when its judgment materially moved. Age never sets it.
+   * Optional because pre-upgrade snapshots do not carry it. */
+  outlook?: IntelligenceOutlook | null;
   strengths: string[];
   constraints: Array<{ title: string; why: string | null; severity: ConstraintSeverity }>;
   potential: string[];
@@ -151,6 +158,11 @@ export interface MarketIntelligenceProduct extends ProductBase {
    * full expert review, never a metric recap or a truncation. Optional
    * because pre-upgrade snapshots do not carry it. */
   currentExpertRead?: string | null;
+  /** Semantic OUTLOOK CHANGE STATE for the current read above: INITIAL on the
+   * first read, UNCHANGED when the specialist said the same thing differently,
+   * UPDATED only when its judgment materially moved. Age never sets it.
+   * Optional because pre-upgrade snapshots do not carry it. */
+  outlook?: IntelligenceOutlook | null;
   /** Value and liquidity are different — this is the liquidity answer. */
   liquidityRead: string | null;
   areaStory: string | null;
@@ -225,6 +237,11 @@ export interface SellerIntelligenceProduct extends ProductBase {
    *  RIGHT NOW, through the latest meaningful interaction. Pre-contact this is
    *  honestly "Pending". Never a permanent psychological profile. */
   read: string;
+  /** Semantic OUTLOOK CHANGE STATE for the seller read above, mapped from the
+   * Seller layer's own existing trajectory/material-change record so the
+   * Overview speaks one visual language across all four layers. Pre-contact is
+   * INITIAL, never a fabricated update. Optional on pre-upgrade snapshots. */
+  outlook?: IntelligenceOutlook | null;
   /** SELLER TRAJECTORY: what changed vs the prior read, what stayed stable,
    *  and why the changes matter. "No material change" is valid. */
   sellerTrajectory: string | null;
@@ -279,6 +296,11 @@ export interface DealIntelligenceProduct extends AcquisitionIntelligenceResult {
    * paragraphs, never a repeat of the specialist reads. Optional because
    * pre-upgrade snapshots do not carry it. */
   currentDealRead?: string | null;
+  /** Semantic OUTLOOK CHANGE STATE for the current read above: INITIAL on the
+   * first read, UNCHANGED when the specialist said the same thing differently,
+   * UPDATED only when its judgment materially moved. Age never sets it.
+   * Optional because pre-upgrade snapshots do not carry it. */
+  outlook?: IntelligenceOutlook | null;
   scores: {
     property: { score: number | null; quality: IntelligenceQuality | null; source: ScoreSource };
     market: { score: number | null; quality: IntelligenceQuality | null; source: ScoreSource };

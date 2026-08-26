@@ -27,6 +27,7 @@ import type {
   AcquisitionIntelligenceRuntimeStatus,
 } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
 import { digestDealRead } from '../lib/acquisition-intelligence-digest';
+import { UpdatedOutlookBadge, outlookIsUpdated } from './AcquisitionWorkspaceV2SpecialistReads';
 import '../styles/workspace-v2-acquisition-intelligence.css';
 import '../styles/workspace-v2-deal-read.css';
 
@@ -58,7 +59,7 @@ export function DealReadCard({
   const digest = digestDealRead(read);
 
   return (
-    <section class="awv2-ai awv2-dealread" data-domain="action" aria-label="LandOS Deal Read" id="acquisition-intelligence">
+    <section class="awv2-ai awv2-dealread" data-domain="action" aria-label="LandOS Deal Read" id="acquisition-intelligence" data-outlook={outlookIsUpdated(read?.outlook) ? 'UPDATED' : undefined}>
       <header class="awv2-ai-head">
         <div>
           <div class="awv2-dom-eyebrow" data-dom="action"><Brain size={13} /> LandOS Deal Read</div>
@@ -108,6 +109,7 @@ export function DealReadCard({
           {/* The persisted Current Deal Read is the Deal Brain's own brief and
               supersedes the deterministic digest judgment when present.
               Rendering never generates it. */}
+          <UpdatedOutlookBadge outlook={read?.outlook} testid="deal-outlook" />
           {read?.currentDealRead
             ? (
               <div class="awv2-ai-judgment" data-testid="deal-current-read">

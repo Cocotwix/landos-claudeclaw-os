@@ -75,8 +75,58 @@ import {
 import type { ResearchReadinessManifest } from './research-readiness.js';
 import { activeOperatorGuidance } from './deal-brain-guidance.js';
 import { readPropertyCompiledKnowledge } from './property-compiled-knowledge.js';
+import {
+  outlookComparisonPrompt,
+  parseOutlookVerdict,
+  resolveOutlook,
+  type IntelligenceOutlook,
+} from './intelligence-outlook.js';
 
 export const INTELLIGENCE_STACK_ACTOR = 'intelligence-stack';
+
+/**
+ * Seller outlook, mapped from the Seller layer's OWN existing change record.
+ *
+ * No new model call and no new Seller architecture: a first established read is
+ * INITIAL, a read the specialist itself reports material changes for is
+ * UPDATED, and a re-reasoned read with no material change is UNCHANGED. Age is
+ * not an input; a pre-contact deal never reaches here at all.
+ */
+export function sellerOutlookFrom(
+  prior: { outlook?: IntelligenceOutlook | null; version?: number } | null | undefined,
+  layer: {
+    sellerTrajectory?: string | null;
+    materialChanges?: Array<{ dimension?: string; direction?: string | null }>;
+  },
+  now: () => Date = () => new Date(),
+): IntelligenceOutlook {
+  const priorVersion = prior?.outlook?.readVersion ?? prior?.version ?? 0;
+  if (!priorVersion) {
+    return { status: 'INITIAL', readVersion: 1, previousReadVersion: null, changedAt: null, changeSummary: null, changeDrivers: [] };
+  }
+  const changes = (layer.materialChanges ?? []).filter((change) => {
+    const direction = (change.direction ?? '').toLowerCase();
+    return !!change.dimension && direction !== 'stable' && direction !== 'unclear';
+  });
+  if (!changes.length) {
+    return {
+      status: 'UNCHANGED',
+      readVersion: priorVersion + 1,
+      previousReadVersion: priorVersion,
+      changedAt: prior?.outlook?.changedAt ?? null,
+      changeSummary: null,
+      changeDrivers: [],
+    };
+  }
+  return {
+    status: 'UPDATED',
+    readVersion: priorVersion + 1,
+    previousReadVersion: priorVersion,
+    changedAt: now().toISOString(),
+    changeSummary: layer.sellerTrajectory ?? null,
+    changeDrivers: changes.map((change) => change.dimension as string).slice(0, 6),
+  };
+}
 
 // ── Fingerprints: exactly the inputs each layer reasons over ──────────────
 
@@ -241,6 +291,12 @@ export interface IntelligenceStackDeps {
    *  vision lane; a positive observationCount tells the stack to rebuild the
    *  evidence package so prompt, fingerprint, and product stay consistent. */
   investigateSpatial?: (dealCardId: number, dossier: AcquisitionDossier) => Promise<{ observationCount: number; warnings: string[] }>;
+  /** Ask a layer's own specialist whether its OUTLOOK materially moved between
+   *  its prior and new current read. Runs ONLY when an evidence-driven refresh
+   *  already produced a genuinely new read — never on a read, never on a timer,
+   *  never because a product is old. When absent the outlook stays UNCHANGED:
+   *  LandOS never asserts a changed opinion it did not verify. */
+  compareOutlook?: (layer: IntelligenceLayerId, prompt: string) => Promise<string>;
   now?: () => Date;
 }
 
@@ -842,6 +898,38 @@ export async function runIntelligenceStack(
     ].filter(Boolean).join(' ') || 'Unresolved.',
   }));
 
+  // The semantic OUTLOOK state for a layer whose read was just re-produced.
+  //
+  // Age is not an input here and never will be: this runs only because an
+  // evidence-driven refresh already decided the layer's material inputs moved.
+  // A first read is INITIAL; identical prose is UNCHANGED without a call; and
+  // a genuinely rewritten read is UPDATED only when the layer's own specialist
+  // says its judgment moved. Without a comparator, or on any comparator
+  // failure, the answer stays UNCHANGED — LandOS never claims an opinion
+  // changed on evidence it does not have.
+  const outlookFor = async (
+    layer: IntelligenceLayerId,
+    layerLabel: string,
+    prior: { outlook?: IntelligenceOutlook | null } | null | undefined,
+    priorRead: string | null | undefined,
+    nextRead: string | null | undefined,
+  ): Promise<IntelligenceOutlook | null> => {
+    if (!nextRead?.trim()) return prior?.outlook ?? null;
+    const priorProse = (priorRead ?? '').trim();
+    let verdict = null;
+    if (priorProse && deps.compareOutlook && priorProse.replace(/\s+/g, ' ') !== nextRead.trim().replace(/\s+/g, ' ')) {
+      try {
+        verdict = parseOutlookVerdict(await deps.compareOutlook(
+          layer,
+          outlookComparisonPrompt({ layerLabel, priorRead: priorProse, nextRead }),
+        ));
+      } catch {
+        verdict = null;
+      }
+    }
+    return resolveOutlook({ prior: prior?.outlook ?? null, priorRead: priorProse || null, nextRead, verdict, now });
+  };
+
   let propertyProduct = retained.property;
   if (refreshProperty) {
     if (!layers?.property) return failed('The analyst response carried no property layer.');
@@ -859,6 +947,7 @@ export async function runIntelligenceStack(
       scoreSource: canonicalScores.property != null ? 'canonical' : layers.property.score != null ? 'analyst' : 'none',
       read: normalizeStrategyTerms(layers.property.read ?? 'The analyst returned no property read.'),
       currentExpertRead: layers.property.currentExpertRead,
+      outlook: await outlookFor('property', 'Property Intelligence', retained.property, retained.property?.currentExpertRead, layers.property.currentExpertRead),
       strengths: layers.property.strengths,
       constraints: layers.property.constraints,
       potential: layers.property.potential,
@@ -962,6 +1051,7 @@ export async function runIntelligenceStack(
       scoreSource: layers.market.score != null ? 'analyst' : 'none',
       read: layers.market.read ?? 'The analyst returned no market read.',
       currentExpertRead: layers.market.currentExpertRead,
+      outlook: await outlookFor('market', 'Market Intelligence', retained.market, retained.market?.currentExpertRead, layers.market.currentExpertRead),
       liquidityRead: layers.market.liquidityRead,
       areaStory: layers.market.areaStory,
       buyerPool: layers.market.buyerPool,
@@ -1017,6 +1107,11 @@ export async function runIntelligenceStack(
       version: (retained.seller?.version ?? 0) + 1,
       phase,
       read: layers.seller.read ?? 'The analyst returned no current seller read.',
+      // Seller already owns a semantic change record — its trajectory and its
+      // material changes. Mapping that onto the common outlook state gives the
+      // Overview one visual language across all four layers without a second
+      // model call and without rebuilding Seller Intelligence.
+      outlook: sellerOutlookFrom(retained.seller, layers.seller, now),
       sellerTrajectory: layers.seller.sellerTrajectory,
       materialChanges: layers.seller.materialChanges,
       motivation: layers.seller.motivation,
@@ -1115,6 +1210,7 @@ export async function runIntelligenceStack(
       intelligenceVersion: INTELLIGENCE_STACK_VERSION,
       phase,
       currentDealRead: layers.dealExtras.currentDealRead,
+      outlook: await outlookFor('deal', 'Deal Brain', retained.deal, retained.deal?.currentDealRead, layers.dealExtras.currentDealRead),
       scores: {
         property: {
           score: propertyProduct?.score ?? canonicalScores.property,

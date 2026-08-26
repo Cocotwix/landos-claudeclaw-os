@@ -136,3 +136,58 @@
 .awv2-reconcile-chip.s-weak { border: 1px solid rgba(248, 113, 113, 0.5); background: rgba(248, 113, 113, 0.12); color: #f87171; }
 
 .awv2-specialist-error { margin: 0; font-size: 12px; color: #fca5a5; }
+
+
+/* ── UPDATED OUTLOOK ───────────────────────────────────────────────────────
+   A specialist that actually changed its mind must be visible BEFORE the
+   operator reads a word of prose. Only outlookStatus=UPDATED earns this;
+   INITIAL and UNCHANGED keep the normal card treatment, so the signal stays
+   rare enough to mean something. Never color alone: the badge carries the
+   word, the border carries the weight, and a single short entrance settles —
+   nothing here animates continuously. */
+.awv2-panel.awv2-specialist[data-outlook="UPDATED"],
+.awv2-ai.awv2-dealread[data-outlook="UPDATED"] {
+  border-color: rgba(167, 139, 250, 0.75);
+  box-shadow:
+    0 0 0 1px rgba(167, 139, 250, 0.45),
+    0 0 22px rgba(167, 139, 250, 0.28),
+    0 0 46px rgba(167, 139, 250, 0.12);
+  animation: awv2-outlook-settle 900ms ease-out 1;
+}
+
+@keyframes awv2-outlook-settle {
+  0% { box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.7), 0 0 34px rgba(167, 139, 250, 0.5), 0 0 64px rgba(167, 139, 250, 0.22); }
+  100% { box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.45), 0 0 22px rgba(167, 139, 250, 0.28), 0 0 46px rgba(167, 139, 250, 0.12); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .awv2-specialist[data-outlook="UPDATED"],
+  .awv2-dealread[data-outlook="UPDATED"] { animation: none; }
+}
+
+.awv2-outlook-flag { display: grid; gap: 3px; margin: 0 0 2px; }
+
+.awv2-outlook-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(167, 139, 250, 0.6);
+  background: rgba(167, 139, 250, 0.14);
+  color: #c4b5fd;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.awv2-outlook-what { margin: 0; font-size: 12px; line-height: 1.45; opacity: 0.9; }
+.awv2-outlook-what > b {
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #c4b5fd;
+  margin-right: 5px;
+}
