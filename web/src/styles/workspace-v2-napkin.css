@@ -52,3 +52,6 @@
 .awv2-nk-list i { font-style: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--awv2-muted, #8a8f98); }
 .awv2-nk-list ul { margin: 4px 0 0; padding-left: 18px; }
 .awv2-nk-prov { margin: 8px 0 0; font-size: 11.5px; color: var(--awv2-muted, #8a8f98); }
+
+.awv2-nk-technote { margin: 0; font-size: 12px; line-height: 1.5; color: var(--awv2-muted, #8a8f98); border-left: 2px solid #b8860b; padding-left: 8px; }
+.awv2-nk-technote b { color: inherit; }

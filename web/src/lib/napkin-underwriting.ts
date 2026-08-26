@@ -65,10 +65,19 @@ export interface AcquisitionNapkin {
   bandSource: 'persisted_acquisition_levels' | 'derived_from_supported_fmv';
   /** Seller ask, when known. null = unknown, never zero. */
   sellerAsk: number | null;
-  /** Existing quick-flip technical MAO — the current acquisition basis.
-   *  Reused, never recomputed here. null = not established. */
-  currentBasis: number | null;
-  currentBasisSource: string | null;
+  /** CANONICAL current supported acquisition ceiling: the quick-flip screen's
+   *  doctrine-governed cash MAO (lower of the 60%-of-FMV cap and the
+   *  net-preserving ceiling) — the same structured value the intelligence
+   *  stack and Deal Brain consume. Reused, never recomputed here. */
+  currentCeiling: number | null;
+  currentCeilingSource: string | null;
+  /** DISTINCT concept: the comps-valuation cost-stack technical maximum
+   *  (negotiation hard ceiling). It is the profit-preserving maximum BEFORE
+   *  the quick-flip 60% doctrine cap and carries unconfirmed assumptions.
+   *  Surfaced only when it differs from the canonical ceiling, and never
+   *  presented as the current supported acquisition ceiling. */
+  technicalCeiling: number | null;
+  technicalCeilingNote: string | null;
   /** FMV − seller ask, only when both are known. */
   askSpreadToFmv: number | null;
   /** Seller ask as % of FMV, only when both are known. */
@@ -77,11 +86,19 @@ export interface AcquisitionNapkin {
 
 const round500 = (v: number): number => Math.round(v / 500) * 500;
 
+/** The canonical quick-flip screen economics, as the intelligence stack
+ *  persists them. cashMao is the doctrine-governed ceiling. */
+export interface QuickFlipScreenEconomicsInput {
+  cashMao?: number | null;
+  bindingConstraint?: string;
+}
+
 export function buildAcquisitionNapkin(
   summary: Pick<CvSummary, 'fmv' | 'acquisitionLevels' | 'status' | 'statusLabel' | 'basisLabel'> | null | undefined,
   quickFlip: Pick<CvQuickFlip, 'technicalMaxOffer' | 'technicalMaxPctOfFmv'> | null | undefined,
   sellerAsk: number | null | undefined,
   negotiation?: Pick<CvNegotiation, 'hardCeiling' | 'ceilingBasis'> | null,
+  screenEconomics?: QuickFlipScreenEconomicsInput | null,
 ): AcquisitionNapkin | null {
   const fmv = summary?.fmv?.central;
   if (summary == null || fmv == null || !(fmv > 0)) return null;
@@ -92,15 +109,22 @@ export function buildAcquisitionNapkin(
     pct60: round500(fmv * 0.6),
   };
   const ask = sellerAsk != null && sellerAsk > 0 ? sellerAsk : null;
-  // Reuse the EXISTING acquisition ceiling doctrine: the reconciled
-  // negotiation hard ceiling outranks the raw quick-flip technical number
-  // (the negotiation record already clips a technical MAO that escaped the
-  // band). Never a second MAO engine — a preference between existing ones.
-  const technical = quickFlip?.technicalMaxOffer != null && quickFlip.technicalMaxOffer > 0
-    ? quickFlip.technicalMaxOffer : null;
-  const ceiling = negotiation?.hardCeiling != null && negotiation.hardCeiling > 0
-    ? negotiation.hardCeiling : null;
-  const mao = ceiling ?? technical;
+  // Canonical current supported acquisition ceiling: the quick-flip screen's
+  // doctrine-governed cash MAO (min of the 60%-of-FMV cap and the
+  // net-preserving ceiling). This is the one structured value the
+  // intelligence stack and Deal Brain already consume — never recomputed.
+  const cashMao = screenEconomics?.cashMao != null && screenEconomics.cashMao > 0
+    ? screenEconomics.cashMao : null;
+  const bindingLabel = screenEconomics?.bindingConstraint === 'minimum_net'
+    ? 'minimum-net constraint binds'
+    : screenEconomics?.bindingConstraint === 'sixty_pct_of_fmv'
+      ? '60%-of-FMV doctrine cap binds' : null;
+  // Distinct concept: the comps-valuation cost-stack technical maximum
+  // (negotiation hard ceiling) — pre-doctrine, assumptions unconfirmed.
+  const technical = negotiation?.hardCeiling != null && negotiation.hardCeiling > 0
+    ? negotiation.hardCeiling
+    : quickFlip?.technicalMaxOffer != null && quickFlip.technicalMaxOffer > 0
+      ? quickFlip.technicalMaxOffer : null;
   return {
     supportedFmv: fmv,
     fmvBasisLabel: summary.basisLabel,
@@ -109,11 +133,14 @@ export function buildAcquisitionNapkin(
     band,
     bandSource: persisted ? 'persisted_acquisition_levels' : 'derived_from_supported_fmv',
     sellerAsk: ask,
-    currentBasis: mao,
-    currentBasisSource: mao == null ? null
-      : ceiling != null
-        ? `Reconciled negotiation hard ceiling (${Math.round((ceiling / fmv) * 100)}% of FMV)${technical != null && technical !== ceiling ? ` — technical quick-flip MAO ${`$${Math.round(technical).toLocaleString('en-US')}`} reconciled to it` : ''}`
-        : `Quick-flip technical MAO${quickFlip?.technicalMaxPctOfFmv != null ? ` (${Math.round(quickFlip.technicalMaxPctOfFmv)}% of FMV)` : ''}`,
+    currentCeiling: cashMao,
+    currentCeilingSource: cashMao != null
+      ? `Quick-flip cash MAO (${Math.round((cashMao / fmv) * 100)}% of FMV)${bindingLabel ? ` — ${bindingLabel}` : ''}`
+      : null,
+    technicalCeiling: technical != null && technical !== cashMao ? technical : null,
+    technicalCeilingNote: technical != null && technical !== cashMao
+      ? `Technical cost-stack maximum (${Math.round((technical / fmv) * 100)}% of FMV) before the quick-flip doctrine cap — a distinct pre-doctrine reference with unconfirmed cost assumptions, not the current supported ceiling.`
+      : null,
     askSpreadToFmv: ask != null ? fmv - ask : null,
     askPctOfFmv: ask != null ? (ask / fmv) * 100 : null,
   };
@@ -276,6 +303,7 @@ export interface StrategyNapkinInputs {
   summary: Pick<CvSummary, 'fmv' | 'acquisitionLevels' | 'status' | 'statusLabel' | 'basisLabel'> | null | undefined;
   quickFlip: Pick<CvQuickFlip, 'technicalMaxOffer' | 'technicalMaxPctOfFmv' | 'totalNonAcquisitionCosts' | 'expectedMarketingDays'> | null | undefined;
   negotiation?: Pick<CvNegotiation, 'hardCeiling' | 'ceilingBasis'> | null;
+  screenEconomics?: QuickFlipScreenEconomicsInput | null;
   strategies: OverviewStrategyView[] | null | undefined;
 }
 
@@ -285,13 +313,13 @@ export interface StrategyNapkinInputs {
  *  No generic strategy menu is ever populated. */
 export function buildStrategyNapkins(inputs: StrategyNapkinInputs): NapkinStrategyScenario[] {
   const scenarios: NapkinStrategyScenario[] = [];
-  const napkin = buildAcquisitionNapkin(inputs.summary, inputs.quickFlip, null, inputs.negotiation ?? null);
+  const napkin = buildAcquisitionNapkin(inputs.summary, inputs.quickFlip, null, inputs.negotiation ?? null, inputs.screenEconomics ?? null);
 
   // 1. As-is / intact resale — exists whenever the canonical valuation does.
   if (napkin) {
-    const basisValue = napkin.currentBasis ?? napkin.band.pct50;
-    const purchaseBasis: NapkinValue = napkin.currentBasis != null
-      ? { value: basisValue, kind: 'market_supported', source: napkin.currentBasisSource ?? 'Quick-flip technical MAO' }
+    const basisValue = napkin.currentCeiling ?? napkin.band.pct50;
+    const purchaseBasis: NapkinValue = napkin.currentCeiling != null
+      ? { value: basisValue, kind: 'market_supported', source: napkin.currentCeilingSource ?? 'Current supported acquisition ceiling (quick-flip cash MAO)' }
       : { value: basisValue, kind: 'assumption', source: 'Mid-band reference (50% of supported FMV) — screening assumption, not an offer' };
     const allowance: NapkinValue | null = inputs.quickFlip?.totalNonAcquisitionCosts != null
       ? { value: inputs.quickFlip.totalNonAcquisitionCosts, kind: 'market_supported', source: 'Existing quick-flip non-acquisition cost stack' }
@@ -323,8 +351,8 @@ export function buildStrategyNapkins(inputs: StrategyNapkinInputs): NapkinStrate
       ...econ,
       confidence: econ.economics === 'complete' ? (napkin.fmvSupported ? 'moderate' : 'lower') : 'incomplete',
       keyAssumptions: [
-        napkin.currentBasis != null
-          ? 'Acquisition at the existing quick-flip technical MAO.'
+        napkin.currentCeiling != null
+          ? 'Acquisition at the current supported acquisition ceiling (quick-flip cash MAO).'
           : 'Acquisition near the middle of the 40–60% screening band (assumption, not an offer).',
         'Resale at the canonical supported FMV.',
       ],

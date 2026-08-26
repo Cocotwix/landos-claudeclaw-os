@@ -850,6 +850,7 @@ export function AcquisitionWorkspaceV2() {
         {page === 'strategy' && (
           <NapkinUnderwriting
             compsValuation={compsValuation}
+            quickFlipScreen={intelQuickFlip}
             askingPrice={askingPrice}
             strategies={snap.strategies ?? null}
             openCompsValuation={openCompsValuation}

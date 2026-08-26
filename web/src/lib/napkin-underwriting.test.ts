@@ -14,13 +14,17 @@ const SUPPORTED_SUMMARY = {
 
 describe('acquisition napkin', () => {
   it('consumes the canonical supported FMV and its persisted 40/50/60 levels', () => {
-    const n = buildAcquisitionNapkin(SUPPORTED_SUMMARY, { technicalMaxOffer: 1_400_000, technicalMaxPctOfFmv: 45.4 }, 1_650_000)!;
+    const n = buildAcquisitionNapkin(
+      SUPPORTED_SUMMARY, { technicalMaxOffer: 1_400_000, technicalMaxPctOfFmv: 45.4 }, 1_650_000,
+      null, { cashMao: 1_400_000, bindingConstraint: 'minimum_net' },
+    )!;
     expect(n.supportedFmv).toBe(3_084_000);
     expect(n.fmvBasisLabel).toBe('Accepted comparable sales');
     expect(n.band).toEqual(SUPPORTED_SUMMARY.acquisitionLevels);
     expect(n.bandSource).toBe('persisted_acquisition_levels');
     expect(n.sellerAsk).toBe(1_650_000);
-    expect(n.currentBasis).toBe(1_400_000);
+    expect(n.currentCeiling).toBe(1_400_000);
+    expect(n.currentCeilingSource).toMatch(/Quick-flip cash MAO.*minimum-net constraint binds/);
     expect(n.askSpreadToFmv).toBe(3_084_000 - 1_650_000);
     expect(Math.round(n.askPctOfFmv!)).toBe(54);
   });
@@ -31,22 +35,37 @@ describe('acquisition napkin', () => {
     expect(n.bandSource).toBe('derived_from_supported_fmv');
   });
 
-  it('preserves unknowns: no ask and no MAO stay null, never zero', () => {
+  it('preserves unknowns: no ask and no canonical ceiling stay null, never zero', () => {
     const n = buildAcquisitionNapkin(SUPPORTED_SUMMARY, null, null)!;
     expect(n.sellerAsk).toBeNull();
-    expect(n.currentBasis).toBeNull();
+    expect(n.currentCeiling).toBeNull();
     expect(n.askSpreadToFmv).toBeNull();
   });
 
-  it('prefers the reconciled negotiation hard ceiling over a raw technical MAO that escaped the band', () => {
+  it('Deal-89 shape: cash MAO is the canonical ceiling; the cost-stack technical maximum stays a distinct labeled concept', () => {
     const n = buildAcquisitionNapkin(
       SUPPORTED_SUMMARY,
       { technicalMaxOffer: 1_989_000, technicalMaxPctOfFmv: 64 },
       null,
-      { hardCeiling: 1_850_500, ceilingBasis: 'technical_above_band' },
+      { hardCeiling: 1_989_000, ceilingBasis: 'technical_above_band' },
+      { cashMao: 1_850_500, bindingConstraint: 'sixty_pct_of_fmv' },
     )!;
-    expect(n.currentBasis).toBe(1_850_500);
-    expect(n.currentBasisSource).toMatch(/Reconciled negotiation hard ceiling \(60% of FMV\)/);
+    expect(n.currentCeiling).toBe(1_850_500);
+    expect(n.currentCeilingSource).toMatch(/Quick-flip cash MAO \(60% of FMV\) — 60%-of-FMV doctrine cap binds/);
+    expect(n.technicalCeiling).toBe(1_989_000);
+    expect(n.technicalCeilingNote).toMatch(/pre-doctrine.*not the current supported ceiling/);
+  });
+
+  it('does not surface a separate technical ceiling when it equals the canonical one', () => {
+    const n = buildAcquisitionNapkin(
+      SUPPORTED_SUMMARY,
+      { technicalMaxOffer: 1_850_500, technicalMaxPctOfFmv: 60 },
+      null,
+      { hardCeiling: 1_850_500, ceilingBasis: 'technical_inside_band' },
+      { cashMao: 1_850_500, bindingConstraint: 'sixty_pct_of_fmv' },
+    )!;
+    expect(n.currentCeiling).toBe(1_850_500);
+    expect(n.technicalCeiling).toBeNull();
   });
 
   it('returns null with no canonical FMV instead of inventing one', () => {
@@ -111,8 +130,11 @@ describe('strategy napkins', () => {
     totalNonAcquisitionCosts: 520_000, expectedMarketingDays: 120,
   };
 
-  it('builds an as-is resale napkin from canonical FMV + existing quick-flip stack', () => {
-    const [s] = buildStrategyNapkins({ summary: SUPPORTED_SUMMARY, quickFlip, strategies: [] });
+  it('builds an as-is resale napkin from canonical FMV + the canonical cash-MAO ceiling', () => {
+    const [s] = buildStrategyNapkins({
+      summary: SUPPORTED_SUMMARY, quickFlip, strategies: [],
+      screenEconomics: { cashMao: 1_400_000, bindingConstraint: 'minimum_net' },
+    });
     expect(s.id).toBe('as-is-resale');
     expect(s.economics).toBe('complete');
     expect(s.purchaseBasis).toMatchObject({ value: 1_400_000, kind: 'market_supported' });

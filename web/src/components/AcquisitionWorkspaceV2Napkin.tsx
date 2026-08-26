@@ -38,8 +38,12 @@ function KindTag({ kind }: { kind: NapkinValue['kind'] }) {
   return <em class={`awv2-nk-kind k-${kind}`}>{NAPKIN_KIND_LABEL[kind]}</em>;
 }
 
-export function NapkinUnderwriting({ compsValuation, askingPrice, strategies, openCompsValuation }: {
+export function NapkinUnderwriting({ compsValuation, quickFlipScreen, askingPrice, strategies, openCompsValuation }: {
   compsValuation: CompsValuationViewData | null;
+  /** The persisted quick-flip screen (intelligence stack product). Its
+   *  economics.cashMao is the CANONICAL current supported acquisition
+   *  ceiling — the same structured value Deal Brain consumes. */
+  quickFlipScreen: { economics?: { cashMao?: number | null; bindingConstraint?: string } | null } | null;
   askingPrice: number | null;
   strategies: OverviewStrategyView[] | null | undefined;
   openCompsValuation: () => void;
@@ -47,8 +51,9 @@ export function NapkinUnderwriting({ compsValuation, askingPrice, strategies, op
   const summary = compsValuation?.summary ?? null;
   const quickFlip = compsValuation?.quickFlip ?? null;
   const negotiation = compsValuation?.negotiation ?? null;
-  const napkin = buildAcquisitionNapkin(summary, quickFlip, askingPrice, negotiation);
-  const scenarios = buildStrategyNapkins({ summary, quickFlip, negotiation, strategies });
+  const screenEconomics = quickFlipScreen?.economics ?? null;
+  const napkin = buildAcquisitionNapkin(summary, quickFlip, askingPrice, negotiation, screenEconomics);
+  const scenarios = buildStrategyNapkins({ summary, quickFlip, negotiation, screenEconomics, strategies });
 
   return (
     <section class="awv2-panel awv2-napkin" data-domain="strategy" aria-label="Napkin underwriting" data-testid="napkin-underwriting">
@@ -84,10 +89,15 @@ export function NapkinUnderwriting({ compsValuation, askingPrice, strategies, op
             <div><i>Seller ask</i><b data-testid="napkin-seller-ask">{napkin.sellerAsk != null ? usd(napkin.sellerAsk) : 'UNKNOWN'}</b>
               {napkin.askPctOfFmv != null && <span>{Math.round(napkin.askPctOfFmv)}% of FMV · spread to FMV {usdCompact(napkin.askSpreadToFmv!)}</span>}
             </div>
-            <div><i>Current acquisition basis (MAO)</i><b data-testid="napkin-current-basis">{napkin.currentBasis != null ? usd(napkin.currentBasis) : 'Not established'}</b>
-              {napkin.currentBasisSource && <span>{napkin.currentBasisSource}</span>}
+            <div><i>Current supported acquisition ceiling (cash MAO)</i><b data-testid="napkin-current-basis">{napkin.currentCeiling != null ? usd(napkin.currentCeiling) : 'Not established'}</b>
+              {napkin.currentCeilingSource && <span>{napkin.currentCeilingSource}</span>}
             </div>
           </div>
+          {napkin.technicalCeiling != null && (
+            <p class="awv2-nk-technote" data-testid="napkin-technical-ceiling">
+              <b>Technical negotiation ceiling: {usd(napkin.technicalCeiling)}</b> — {napkin.technicalCeilingNote}
+            </p>
+          )}
           <p class="awv2-nk-bandnote" data-testid="napkin-band-note">
             The 40–60% band is the normal early acquisition screen — FMV is not profit, so the discount carries required
             profit, transaction and selling costs, holding time, capital exposure, diligence uncertainty and execution risk.
