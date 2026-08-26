@@ -1,0 +1,54 @@
+/* LandOS Napkin Underwriting — Strategy & Underwriting top surface. */
+
+.awv2-napkin { display: flex; flex-direction: column; gap: 12px; }
+.awv2-nk-disclaimer { margin: 0; font-size: 12px; color: var(--awv2-muted, #8a8f98); font-style: italic; }
+.awv2-nk-empty { margin: 0; font-size: 13px; color: var(--awv2-muted, #8a8f98); }
+
+.awv2-nk-acq { display: flex; flex-direction: column; gap: 12px; }
+.awv2-nk-fmv { display: flex; flex-direction: column; gap: 2px; }
+.awv2-nk-fmv i { font-style: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--awv2-muted, #8a8f98); }
+.awv2-nk-fmv b { font-size: 26px; font-weight: 700; }
+.awv2-nk-fmv span { font-size: 12px; color: var(--awv2-muted, #8a8f98); }
+.awv2-nk-link { align-self: flex-start; background: none; border: none; padding: 0; font-size: 12px; color: var(--awv2-accent, #4f7cff); cursor: pointer; }
+
+.awv2-nk-band { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.awv2-nk-band > div { border: 1px solid var(--awv2-border, rgba(128,128,128,0.25)); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.awv2-nk-band i { font-style: normal; font-size: 11px; color: var(--awv2-muted, #8a8f98); }
+.awv2-nk-band b { font-size: 16px; }
+
+.awv2-nk-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.awv2-nk-facts > div { display: flex; flex-direction: column; gap: 2px; }
+.awv2-nk-facts i { font-style: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--awv2-muted, #8a8f98); }
+.awv2-nk-facts b { font-size: 15px; }
+.awv2-nk-facts span { font-size: 12px; color: var(--awv2-muted, #8a8f98); }
+
+.awv2-nk-bandnote { margin: 0; font-size: 12px; line-height: 1.5; color: var(--awv2-muted, #8a8f98); }
+
+.awv2-nk-strathead { margin-top: 6px; }
+.awv2-nk-tablewrap { overflow-x: auto; }
+.awv2-nk-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.awv2-nk-table th, .awv2-nk-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--awv2-border, rgba(128,128,128,0.2)); vertical-align: top; }
+.awv2-nk-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--awv2-muted, #8a8f98); }
+.awv2-nk-sketch { display: block; font-size: 10px; font-style: normal; letter-spacing: 0.05em; color: #b8860b; }
+.awv2-nk-conf { text-transform: capitalize; }
+.awv2-nk-conf.c-incomplete { color: #b8860b; }
+
+.awv2-nk-detail { border: 1px solid var(--awv2-border, rgba(128,128,128,0.2)); border-radius: 8px; padding: 8px 12px; }
+.awv2-nk-detail summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.awv2-nk-concept { margin: 8px 0 0; font-size: 13px; }
+.awv2-nk-lines { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 0; }
+.awv2-nk-lines > div { display: grid; grid-template-columns: 170px 1fr; gap: 8px; font-size: 12.5px; }
+.awv2-nk-lines dt { color: var(--awv2-muted, #8a8f98); }
+.awv2-nk-lines dd { margin: 0; }
+.awv2-nk-lines small { display: block; color: var(--awv2-muted, #8a8f98); }
+
+.awv2-nk-kind { font-style: normal; font-size: 10px; letter-spacing: 0.05em; padding: 1px 5px; border-radius: 4px; border: 1px solid currentColor; }
+.awv2-nk-kind.k-supported_fact { color: #2e8b57; }
+.awv2-nk-kind.k-market_supported { color: #4f7cff; }
+.awv2-nk-kind.k-assumption { color: #b8860b; }
+.awv2-nk-kind.k-unknown { color: #c0504d; }
+
+.awv2-nk-list { margin-top: 8px; font-size: 12.5px; }
+.awv2-nk-list i { font-style: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--awv2-muted, #8a8f98); }
+.awv2-nk-list ul { margin: 4px 0 0; padding-left: 18px; }
+.awv2-nk-prov { margin: 8px 0 0; font-size: 11.5px; color: var(--awv2-muted, #8a8f98); }

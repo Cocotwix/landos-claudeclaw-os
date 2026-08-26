@@ -36,6 +36,7 @@ import {
   CompsValuationSection, type CompsValuationViewData,
 } from '../components/AcquisitionWorkspaceV2CompsValuation';
 import { PropertyIntelligenceRunStatus } from '../components/AcquisitionWorkspaceV2RunStatus';
+import { NapkinUnderwriting } from '../components/AcquisitionWorkspaceV2Napkin';
 import {
   OverviewSection, type OverviewSnapshotView,
 } from '../components/AcquisitionWorkspaceV2Overview';
@@ -843,6 +844,17 @@ export function AcquisitionWorkspaceV2() {
         <div class="awv2-runstatus-slot">
           <PropertyIntelligenceRunStatus dealId={dealId} onRunSettled={() => setReloadNonce((n) => n + 1)} />
         </div>
+        {/* Strategy & Underwriting opens with the deterministic Napkin
+            Underwriting screen: Acquisition Napkin on the canonical supported
+            FMV, then Strategy Napkins. Rendering runs no model or research. */}
+        {page === 'strategy' && (
+          <NapkinUnderwriting
+            compsValuation={compsValuation}
+            askingPrice={askingPrice}
+            strategies={snap.strategies ?? null}
+            openCompsValuation={openCompsValuation}
+          />
+        )}
         {(page === 'overview' || page === 'property' || page === 'market' || page === 'strategy') && (
           <OverviewSection
             pageFilter={page}
