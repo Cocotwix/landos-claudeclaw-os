@@ -31,6 +31,7 @@ import {
   type ConstraintSeverity,
 } from './acquisition-intelligence-contract.js';
 import type { CashDealVerdict, NovationGateResult, QuickFlipScreenResult } from './quick-flip-screen.js';
+import { compiledJurisdictionKnowledgeSection, type PropertyCompiledKnowledge } from './property-compiled-knowledge.js';
 
 export const INTELLIGENCE_STACK_VERSION = '2.2.0';
 
@@ -781,6 +782,7 @@ export function propertyExpertReviewPrompt(
   observations: VisualObservationDraft[],
   context: IntelligencePassContext,
   envelope: SpecialistPromptEnvelope,
+  compiledKnowledge: PropertyCompiledKnowledge | null = null,
 ): string {
   const subject = dossier.identity.displayAddress ?? dossier.identity.apn ?? 'the subject parcel';
   return [
@@ -795,6 +797,8 @@ export function propertyExpertReviewPrompt(
     '=== END PROPERTY FILE ===',
     '',
     groundedObservationsSection(observations),
+    '',
+    compiledKnowledge ? compiledJurisdictionKnowledgeSection(compiledKnowledge) : '',
     '',
     assessorDoctrineSection(dossier),
     '',
@@ -825,6 +829,7 @@ export function propertyStructuredExtractionPrompt(
   expertReview: string,
   context: IntelligencePassContext,
   envelope: SpecialistPromptEnvelope,
+  compiledKnowledge: PropertyCompiledKnowledge | null = null,
 ): string {
   return [
     'You are LandOS Property Intelligence performing STRUCTURED EXTRACTION from your completed expert review. Do not research and do not add a new fact, observation, conclusion, or configuration. Preserve the meaning of the review; the schema is operational and does not replace it.',
@@ -836,6 +841,8 @@ export function propertyStructuredExtractionPrompt(
     '=== END PROPERTY FILE ===',
     '',
     groundedObservationsSection(observations),
+    '',
+    compiledKnowledge ? compiledJurisdictionKnowledgeSection(compiledKnowledge) : '',
     '',
     '=== COMPLETED FREE EXPERT PROPERTY REVIEW (VERBATIM) ===',
     expertReview,

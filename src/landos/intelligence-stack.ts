@@ -74,6 +74,7 @@ import {
 } from './intelligence-stack-contract.js';
 import type { ResearchReadinessManifest } from './research-readiness.js';
 import { activeOperatorGuidance } from './deal-brain-guidance.js';
+import { readPropertyCompiledKnowledge } from './property-compiled-knowledge.js';
 
 export const INTELLIGENCE_STACK_ACTOR = 'intelligence-stack';
 
@@ -685,6 +686,12 @@ export async function runIntelligenceStack(
       },
     };
     const envelope = { dealCardId: input.dealCardId, generatedAt, contextFingerprint: dossierFp };
+    // Cross-department reuse: already-verified compiled jurisdiction knowledge
+    // is read once, deterministically, and handed to Property as reusable
+    // evidence. No compile, no research decision, no write happens here.
+    const compiledKnowledge = modelLayers.includes('property')
+      ? readPropertyCompiledKnowledge(input.dealCardId)
+      : null;
     try {
       run = await deps.analyst.run({
         dossier,
@@ -700,9 +707,9 @@ export async function runIntelligenceStack(
           layerPrompt: (layer, currentDossier, observations) =>
             specialistLayerPrompt(layer, currentDossier, observations, passContext, envelope),
           propertyReviewPrompt: (currentDossier, observations) =>
-            propertyExpertReviewPrompt(currentDossier, observations, passContext, envelope),
+            propertyExpertReviewPrompt(currentDossier, observations, passContext, envelope, compiledKnowledge),
           propertyExtractionPrompt: (expertReview, currentDossier, observations) =>
-            propertyStructuredExtractionPrompt(currentDossier, observations, expertReview, passContext, envelope),
+            propertyStructuredExtractionPrompt(currentDossier, observations, expertReview, passContext, envelope, compiledKnowledge),
           marketReviewPrompt: (freshProperty, currentDossier) =>
             marketExpertReviewPrompt(
               currentDossier,
