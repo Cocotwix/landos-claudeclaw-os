@@ -191,3 +191,19 @@
   color: #c4b5fd;
   margin-right: 5px;
 }
+
+/* ── Command-center revamp: wide landscape specialist cards ─────────────
+   The three specialist reads are full-width landscape cards, never three
+   skinny towers: identity/status hold a left column, the current-read prose
+   travels left-to-right across the remaining width. */
+.awv2-specialist-reads { grid-template-columns: 1fr; }
+@media (min-width: 1000px) {
+  .awv2-specialist { display: grid; grid-template-columns: 235px minmax(0, 1fr); grid-auto-flow: dense; column-gap: 26px; align-items: start; }
+  .awv2-specialist > * { grid-column: 2; min-width: 0; }
+  .awv2-specialist > .awv2-specialist-head { grid-column: 1; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .awv2-specialist > .awv2-specialist-foot { grid-column: 1; margin-top: 0; }
+}
+/* The prose is the primary content: comfortable body size and line height. */
+.awv2-specialist-read { font-size: 14px; line-height: 1.62; color: var(--awv2-bone, #e7ede4); }
+.awv2-specialist-currentread { display: grid; gap: 10px; }
+.awv2-specialist-head .awv2-dom-eyebrow { font-size: 12px; font-weight: 700; letter-spacing: .12em; }

@@ -529,8 +529,11 @@
   align-items: stretch;
 }
 .awv2-overview > * { min-width: 0; }
-.awv2-overview-decisionband { grid-column: 8 / -1; grid-row: 1; padding: 20px; }
-.awv2-overview-hero { grid-column: 1 / 8; grid-row: 1; min-height: 460px; }
+.awv2-overview-decisionband { grid-column: 1 / -1; grid-row: 1; padding: 18px 20px; }
+/* The economics strip and the landscape hero each own a full-width row: the
+   deal numbers first, then the property as the visual centerpiece. */
+.awv2-econ-strip { grid-column: 1 / -1; grid-row: 2; }
+.awv2-overview-hero { grid-column: 1 / -1; grid-row: 3; }
 /* Research readiness is a full-width band on its own row, between the decision
    and the judgment that rests on it. It is deliberately NOT a half-row panel:
    the strip is a horizontal run of chips, and the expanded checklist needs the
@@ -539,23 +542,23 @@
 /* The four intelligence scores + quick-flip status sit directly under the
    decision band: they are the decision area's shorthand, so they come before
    the readiness checklist that explains what they stand on. */
-.awv2-intel-strip { grid-column: 1 / -1; grid-row: 2; }
+.awv2-intel-strip { grid-column: 1 / -1; grid-row: 4; }
 /* The three specialist reads sit directly under the score strip they explain:
    what Property thinks, what Market + Area thinks, what Seller thinks. One
    full-width band of three sibling cards. */
-.awv2-specialist-reads { grid-column: 1 / -1; grid-row: 3; }
-.awv2-rr { grid-column: 1 / -1; grid-row: 4; }
+.awv2-specialist-reads { grid-column: 1 / -1; grid-row: 5; }
+.awv2-rr { grid-column: 1 / -1; grid-row: 6; }
 /* The acquisitions judgment spans the full width on its own row, directly
    under the decision band and the subject hero. Every panel below it reports
    one lane's findings; this one says what they mean together, so it reads
    across all twelve columns rather than competing with a sibling for half a
    row. The rows below simply shift down — the page keeps its panels and their
    order unchanged. */
-.awv2-ai { grid-column: 1 / -1; grid-row: 5; }
+.awv2-ai { grid-column: 1 / -1; grid-row: 7; }
 /* The Deal Brain conversation follows the Deal Read it talks about. */
-.awv2-dealbrain { grid-column: 1 / -1; grid-row: 6; }
-.awv2-overview-valuation { grid-column: 1 / 8; grid-row: 7; }
-.awv2-overview-decision { grid-column: 8 / -1; grid-row: 7; }
+.awv2-dealbrain { grid-column: 1 / -1; grid-row: 8; }
+.awv2-overview-valuation { grid-column: 1 / -1; }
+.awv2-overview-decision { grid-column: 1 / -1; grid-row: 9; }
 .awv2-overview-market { grid-column: 1 / 6; grid-row: 8; }
 .awv2-overview-listing { grid-column: 6 / 10; grid-row: 8; }
 .awv2-overview-access[data-domain="property"] { grid-column: 10 / -1; grid-row: 8; }

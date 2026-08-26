@@ -393,6 +393,24 @@ export function AcquisitionWorkspaceV2() {
   // that run just rewrote instead of showing the operator a stale page next to
   // a "research complete" indicator.
   const [reloadNonce, setReloadNonce] = useState(0);
+  // The retained subject parcel ring for the hero's aerial map mode. A read of
+  // already-persisted geometry via the existing comp-map projection; fetching
+  // it runs no research, no enrichment, and no model.
+  const [subjectPolygon, setSubjectPolygon] = useState<Array<{ lat: number; lng: number }> | null>(null);
+
+  useEffect(() => {
+    if (dealId == null) return undefined;
+    let dead = false;
+    (async () => {
+      const resp = await apiGet<{ compMap?: { subject?: { polygon?: Array<{ lat: number; lng: number }> | null } } }>(
+        `/api/landos/deal-cards/${dealId}/comp-map`,
+      ).catch(() => null);
+      if (dead) return;
+      const ring = resp?.compMap?.subject?.polygon ?? null;
+      setSubjectPolygon(ring && ring.length >= 3 ? ring : null);
+    })();
+    return () => { dead = true; };
+  }, [dealId]);
 
   useEffect(() => {
     if (dealId == null) return;
@@ -711,6 +729,23 @@ export function AcquisitionWorkspaceV2() {
     ?? (snap.evidence || []).find((e) => e.id === 'inspection-wider_context')?.viewUrl
     ?? (snap.evidence || []).find((e) => e.id === 'inspection-close_parcel_aerial')?.viewUrl;
   const visualCount = (snap.evidence || []).filter((e) => e.viewUrl).length;
+  // Every retained parcel/site inspection visual, widest context first, for
+  // the hero switcher. Retained evidence only — no visual is ever fabricated.
+  const HERO_VISUAL_ORDER = [
+    'inspection-landportal_overview', 'inspection-parcel_context', 'inspection-clean_parcel_aerial',
+    'inspection-wider_context', 'inspection-close_parcel_aerial',
+  ];
+  const heroVisuals = (snap.evidence || [])
+    .filter((e) => e.viewUrl && e.id.startsWith('inspection-'))
+    .slice()
+    .sort((a, b) => {
+      const ai = HERO_VISUAL_ORDER.indexOf(a.id); const bi = HERO_VISUAL_ORDER.indexOf(b.id);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    })
+    .map((e) => ({ id: e.id, label: e.label || e.id.replace(/^inspection-/, '').replace(/_/g, ' '), viewUrl: tok(e.viewUrl) }))
+    // One tab per distinct retained view: a run that captured several visuals
+    // under the same label (e.g. repeated soil overlays) keeps its first.
+    .filter((visual, index, all) => all.findIndex((other) => other.label.toLowerCase() === visual.label.toLowerCase()) === index);
 
   const stageLabel = acq?.stageLabel || 'New lead';
   const nextActionLabel = acq?.nextAction?.label
@@ -907,6 +942,9 @@ export function AcquisitionWorkspaceV2() {
             address={address}
             zip={zip}
             heroSrc={heroUrl ? tok(heroUrl) : null}
+            heroVisuals={heroVisuals}
+            subjectPolygon={subjectPolygon}
+            topStrategy={persistedDealStrategies?.bestCurrentStrategy?.strategy ?? aiRead?.bestCurrentStrategy?.strategy ?? null}
             visualCount={visualCount}
             seller={seller}
             askingPrice={askingPrice}

@@ -187,3 +187,8 @@
   color: #c4b5fd;
   margin-right: 5px;
 }
+
+/* ── Command-center revamp: Deal Brain is the executive synthesis and reads
+   as the most important card on the Overview. ── */
+.awv2-dealread { border-color: color-mix(in srgb, var(--awv2-moss, #6fbf8a) 55%, var(--awv2-line, rgba(148,163,184,.25))); box-shadow: 0 0 22px rgba(111, 191, 138, .07); }
+.awv2-dealread .awv2-dom-eyebrow { font-size: 12.5px; font-weight: 700; }

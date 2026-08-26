@@ -106,3 +106,63 @@
   .awv2-overview-closeout .next { padding: 20px 0 0; border-left: 0; border-top: 1px solid var(--awv2-line); }
   .awv2-overview-listing .listing-links, .awv2-overview-listing .heading { align-items: flex-start; flex-direction: column; }
 }
+
+/* ── Command-center revamp: top economics strip ───────────────────────── */
+.awv2-econ-strip { display: grid; grid-template-columns: 1.25fr 1fr 1fr 1.1fr 1.4fr; gap: 1px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--awv2-brass) 45%, var(--awv2-line)); border-radius: 12px; background: var(--awv2-line); }
+.awv2-econ-strip .cell { display: grid; align-content: start; gap: 3px; min-width: 0; padding: 14px 18px; background: var(--awv2-panel); }
+.awv2-econ-strip .cell small { color: var(--awv2-bone-faint); font: 700 10px var(--awv2-mono); letter-spacing: .13em; text-transform: uppercase; }
+.awv2-econ-strip .cell b { overflow-wrap: anywhere; color: var(--awv2-bone); font: 700 22px var(--awv2-mono); line-height: 1.15; }
+.awv2-econ-strip .cell i { color: var(--awv2-bone-faint); font-size: 11px; font-style: normal; }
+.awv2-econ-strip .fmv b { color: var(--awv2-brass-bright); }
+.awv2-econ-strip .ask b { color: var(--awv2-amber); }
+.awv2-econ-strip .strategy b { font: 600 15px/1.3 inherit; font-family: inherit; color: var(--awv2-moss); }
+
+/* ── Command-center revamp: full-width landscape property hero ────────── */
+.awv2-overview-hero.hero2 { display: block; border-color: color-mix(in srgb, var(--awv2-moss) 30%, var(--awv2-line)); }
+.awv2-hero-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--awv2-line); background: rgba(10, 14, 11, .55); }
+.awv2-hero-tabs button { padding: 6px 13px; border: 1px solid var(--awv2-line-strong); border-radius: 7px; background: transparent; color: var(--awv2-bone-dim); font: 600 11px var(--awv2-mono); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
+.awv2-hero-tabs button:hover { color: var(--awv2-bone); border-color: var(--awv2-bone-faint); }
+.awv2-hero-tabs button.on { border-color: #35e57d; background: rgba(53, 229, 125, .12); color: #7dffb2; box-shadow: 0 0 10px rgba(53, 229, 125, .25); }
+.awv2-hero-stage { position: relative; height: clamp(340px, 42vw, 460px); overflow: hidden; background: #0c100d; }
+.awv2-hero-stage > img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.awv2-hero-stage .empty { display: grid; place-items: center; height: 100%; color: var(--awv2-bone-faint); }
+.awv2-hero-stage .count { position: absolute; right: 12px; bottom: 12px; padding: 5px 8px; border: 1px solid var(--awv2-line-strong); border-radius: 5px; background: rgba(12,15,13,.86); color: var(--awv2-bone-dim); font: 10px var(--awv2-mono); letter-spacing: .08em; text-transform: uppercase; }
+
+/* The retained-geometry aerial map mode and its neon subject boundary. */
+.awv2-hero-map { position: absolute; inset: 0; overflow: hidden; }
+.awv2-hero-parcel { position: absolute; inset: 0; pointer-events: none; }
+.awv2-hero-parcel path { fill: rgba(57, 255, 136, .06); }
+.awv2-hero-parcel .glow { fill: none; stroke: #39ff88; stroke-width: 9; opacity: .28; filter: blur(4px); }
+.awv2-hero-parcel .edge { fill: rgba(57, 255, 136, .07); stroke: #39ff88; stroke-width: 3; stroke-linejoin: round; filter: drop-shadow(0 0 7px rgba(57, 255, 136, .85)); }
+.awv2-hero-parcel .core { fill: none; stroke: #eafff1; stroke-width: 1; opacity: .85; stroke-linejoin: round; }
+.awv2-hero-attrib { position: absolute; right: 8px; top: 8px; padding: 2px 7px; border-radius: 4px; background: rgba(8, 11, 9, .65); color: rgba(233, 240, 231, .55); font-size: 9px; }
+
+/* The property fact rail: readable over imagery, headings that read as
+   headings. Translucent dark backing so the aerial never destroys contrast. */
+.awv2-hero-rail { position: absolute; left: 0; top: 0; bottom: 0; display: flex; flex-direction: column; gap: 11px; width: min(320px, 38%); padding: 16px 18px; overflow-y: auto; background: linear-gradient(90deg, rgba(7, 10, 8, .88) 0%, rgba(7, 10, 8, .78) 78%, rgba(7, 10, 8, 0) 100%); backdrop-filter: blur(3px); }
+.awv2-hero-rail .identity { padding-bottom: 10px; border-bottom: 1px solid rgba(148, 163, 184, .28); }
+.awv2-hero-rail .identity h2 { margin: 0; color: #f2f6ef; font-size: 19px; line-height: 1.25; text-shadow: 0 1px 6px rgba(0,0,0,.7); }
+.awv2-hero-rail .identity p { margin: 5px 0 0; color: #cdd8ca; font-size: 12.5px; font-weight: 600; letter-spacing: .02em; }
+.awv2-hero-rail .fact { display: flex; gap: 9px; align-items: flex-start; min-width: 0; }
+.awv2-hero-rail .fact > svg { flex: none; margin-top: 2px; color: #8fe6ac; }
+.awv2-hero-rail .fact span { display: grid; gap: 1px; min-width: 0; }
+.awv2-hero-rail .fact small { color: #b7c9b4; font: 700 11px var(--awv2-mono); letter-spacing: .11em; text-transform: uppercase; }
+.awv2-hero-rail .fact b { overflow-wrap: anywhere; color: #f4f8f1; font-size: 13.5px; line-height: 1.35; }
+.awv2-hero-rail .fact i { color: #9fae9d; font-size: 11px; font-style: normal; }
+.awv2-hero-foot { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; padding: 11px 18px; border-top: 1px solid var(--awv2-line); background: rgba(10, 14, 11, .5); color: var(--awv2-bone-dim); font-size: 12px; }
+.awv2-hero-foot span { display: inline-flex; align-items: center; gap: 6px; }
+.awv2-hero-foot .good { color: var(--awv2-moss); }
+.awv2-hero-foot .warn { color: var(--awv2-amber); }
+.awv2-hero-foot a { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--awv2-brass-bright); text-decoration: none; }
+.awv2-overview-hero.hero2 .awv2-overview-terrain-hold { margin: 0; padding: 9px 18px 13px; }
+
+@media (max-width: 1100px) {
+  .awv2-econ-strip { grid-template-columns: repeat(2, 1fr); }
+  .awv2-econ-strip .strategy { grid-column: 1 / -1; }
+  .awv2-hero-stage { height: auto; min-height: 300px; }
+  .awv2-hero-rail { position: static; width: auto; background: rgba(7, 10, 8, .92); }
+  .awv2-hero-stage > img, .awv2-hero-map { position: relative; height: 300px; }
+}
+/* The strategy cell shows the short label; a verbose persisted strategy line
+   clamps rather than growing the strip. */
+.awv2-econ-strip .strategy b { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; }

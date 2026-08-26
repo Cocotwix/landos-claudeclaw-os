@@ -140,7 +140,7 @@ describe('Acquisition Workspace V2 Overview is an executive dashboard', () => {
 
   it('keeps owner and seller identities separate and collapses canonical acreage display', () => {
     expect(V2).toMatch(/Owner of record <b>\{owner \|\| 'Unknown'\}/);
-    expect(OVERVIEW).toMatch(/<small>Seller \/ lead<\/small><b>\{seller\?\.name \|\| 'Not collected'\}/);
+    expect(OVERVIEW).toMatch(/Seller: \{seller\?\.name \|\| 'Not collected'\}/);
     expect(V2.match(/\{acres\} AC/g)).toHaveLength(1);
     expect(OVERVIEW).not.toMatch(/acres\.toFixed|60\.00|60\.0/);
   });

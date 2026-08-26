@@ -3,6 +3,11 @@ import {
   FileCheck2, UserRound, MapPin, Ruler, Waves, Mountain,
   Droplets, CheckCircle2, CircleDot,
 } from 'lucide-preact';
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
+import {
+  AERIAL_MAX_ZOOM, basemapAttribution, basemapTileUrl, fitView, pointToScreen, tilesForView,
+  type LatLng,
+} from '../lib/slippy';
 
 import type {
   AccessPresentationView,
@@ -175,11 +180,21 @@ type ResearchStatusDetail = ResearchStatusView & {
   openQuestions?: Array<string | { label?: string; reason?: string; nextAction?: string }>;
 };
 
+/** One retained property visual the hero switcher can present. */
+export interface OverviewHeroVisual { id: string; label: string; viewUrl: string }
+
 interface OverviewSectionProps {
   snap: OverviewSnapshotView;
   address: string;
   zip: string;
   heroSrc: string | null;
+  /** Every retained parcel/site visual, widest-context first. Presentation of
+   *  already-retained evidence only; switching modes fetches nothing new. */
+  heroVisuals?: OverviewHeroVisual[] | null;
+  /** The retained subject parcel ring (comp-map projection). Never guessed. */
+  subjectPolygon?: LatLng[] | null;
+  /** The persisted best current executable strategy label. */
+  topStrategy?: string | null;
   visualCount: number;
   seller: { name?: string; phone?: string; email?: string } | null;
   askingPrice: number | null;
@@ -336,11 +351,62 @@ function StrategyCard({ item }: { item: OverviewStrategyView }) {
   );
 }
 
+/**
+ * The MAP hero mode: the retained subject parcel ring drawn over free aerial
+ * tiles (the same slippy layer Comps & Valuation already uses). Geometry is
+ * the retained ring only — never traced, never invented — and rendering it
+ * fetches no research and calls no model.
+ */
+function ParcelMapHero({ polygon, address }: { polygon: LatLng[]; address: string }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = boxRef.current;
+      if (el) setSize({ w: el.clientWidth, h: el.clientHeight });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+  const ready = size.w > 0 && size.h > 0;
+  const fitted = ready ? fitView(polygon, size.w, size.h, 90) : null;
+  const view = fitted ? { center: fitted.center, zoom: Math.min(fitted.zoom, AERIAL_MAX_ZOOM) } : null;
+  const points = view
+    ? polygon.map((p) => pointToScreen(p, view.center, view.zoom, size.w, size.h))
+    : [];
+  const path = points.length >= 3
+    ? `M ${points.map((p) => `${p.left.toFixed(1)} ${p.top.toFixed(1)}`).join(' L ')} Z`
+    : null;
+  return (
+    <div ref={boxRef} class="awv2-hero-map" data-testid="hero-parcel-map" aria-label={`Aerial map with subject parcel boundary for ${address}`}>
+      {view && tilesForView(view.center, view.zoom, size.w, size.h).map((t) => (
+        <img
+          key={`hero-${t.z}/${t.x}/${t.y}`} src={basemapTileUrl(t, 'aerial')} alt=""
+          style={{ position: 'absolute', left: t.left, top: t.top, width: 256, height: 256, pointerEvents: 'none', userSelect: 'none' }}
+          loading="lazy"
+        />
+      ))}
+      {path && (
+        <svg class="awv2-hero-parcel" width={size.w} height={size.h} viewBox={`0 0 ${size.w} ${size.h}`} role="presentation">
+          <path d={path} class="glow" />
+          <path d={path} class="edge" />
+          <path d={path} class="core" />
+        </svg>
+      )}
+      {view && <span class="awv2-hero-attrib">{basemapAttribution('aerial', view.zoom)} · retained parcel geometry</span>}
+    </div>
+  );
+}
+
 export function OverviewSection({
   snap,
   address,
   zip,
   heroSrc,
+  heroVisuals,
+  subjectPolygon,
+  topStrategy,
   visualCount,
   seller,
   askingPrice,
@@ -649,34 +715,43 @@ export function OverviewSection({
   ];
   const blockerCount = riskItems.filter((item) => item.tone === 'blocker').length;
 
-  // Key metrics for the decision band: the numbers the operator prices from,
-  // ahead of any narrative.
-  const decisionMetrics: Array<{ label: string; value: string; sub?: string; tone?: string }> = [
-    {
-      label: showHouseBreakdown || currentImproved ? 'Land value' : 'Property value',
-      value: cvSummary?.fmv ? usd(cvSummary.fmv.central) : 'Pending',
-      sub: cvSummary ? `${cvSummary.acceptedCount} accepted sale${cvSummary.acceptedCount === 1 ? '' : 's'} · ${cvSummary.statusLabel}` : undefined,
-      tone: 'valuation',
-    },
-    ...(showHouseBreakdown ? [{
-      label: 'Whole property',
-      value: wholePropertyValue != null ? usd(wholePropertyValue) : 'Pending',
-      sub: wholePropertyValue == null ? 'needs the house value' : undefined,
-      tone: 'valuation',
-    }] : []),
-    {
-      label: 'Property score',
-      value: operator?.scores?.property?.score != null ? String(operator.scores.property.score) : 'Pending',
-      sub: operator?.scores?.property?.rating,
-      tone: 'property',
-    },
-    {
-      label: 'Access',
-      value: accessEstablished ? 'Established' : 'Unresolved',
-      sub: accessEstablished ? (accessView?.road ?? undefined) : 'evidence pending',
-      tone: accessEstablished ? 'good' : 'risk',
-    },
-    ...(soilsSeptic ? [{ label: 'Septic outlook', value: soilsSeptic.categoryLabel, tone: 'risk' }] : []),
+  // ── Top deal economics strip ───────────────────────────────────────────
+  // One concise presentation of the numbers the operator prices from: the
+  // supported FMV, the 40% and 60% acquisition-screen endpoints (never a 50%
+  // midpoint here), the seller's actual ask, and the top strategy label. All
+  // values are the canonical persisted ones; nothing is derived locally.
+  const supportedFmv = singleResidentialValue && wholePropertyValue != null
+    ? wholePropertyValue
+    : cvSummary?.fmv?.central ?? null;
+  const econLevels = cvSummary?.acquisitionLevels ?? null;
+  const stripStrategy = topStrategy
+    || developmentIntelligence?.recommendation?.strategy
+    || recommendation?.preferredStrategy
+    || null;
+
+  // ── Hero visual switcher ───────────────────────────────────────────────
+  // Only visuals LandOS actually retains are offered; the MAP mode appears
+  // only when the retained subject parcel ring exists. Switching modes swaps
+  // already-retained sources — zero research, model, or intelligence calls.
+  const visuals = (heroVisuals ?? []).filter((visual) => !!visual.viewUrl);
+  const parcelRing = (subjectPolygon ?? []).length >= 3 ? (subjectPolygon as LatLng[]) : null;
+  const heroModes: Array<{ id: string; label: string }> = [
+    ...(parcelRing ? [{ id: 'map', label: 'Aerial map' }] : []),
+    ...visuals.map((visual) => ({ id: visual.id, label: visual.label })),
+  ];
+  const [heroMode, setHeroMode] = useState<string | null>(null);
+  const activeHeroMode = heroMode && heroModes.some((mode) => mode.id === heroMode)
+    ? heroMode
+    : heroModes[0]?.id ?? null;
+  const activeVisual = visuals.find((visual) => visual.id === activeHeroMode) ?? null;
+  const heroRail: Array<{ icon: typeof MapPin; label: string; value: string; note: string | null }> = [
+    { icon: MapPin, label: 'Road access', value: accessView?.road || (accessEstablished ? 'Established' : 'Unresolved'), note: accessView?.frontageFt != null ? `${accessView.frontageFt.toLocaleString('en-US', { maximumFractionDigits: 2 })} ft frontage` : accessEstablished ? 'Frontage established' : 'Evidence pending' },
+    { icon: CircleDot, label: 'Water feature', value: waterFeature || 'Not retained', note: 'LandPortal' },
+    { icon: Ruler, label: 'Buildability', value: pctText(buildabilityPct, terrainQuarantine?.buildabilityPct ? `${terrainQuarantine.buildabilityPct} (held)` : null), note: buildableAcresRaw ? `${buildableAcresRaw} buildable` : acreageText(affectedAcres(buildabilityPct, buildabilityRaw)) ? `${acreageText(affectedAcres(buildabilityPct, buildabilityRaw))} buildable` : null },
+    { icon: Mountain, label: 'Average slope', value: pctText(slopePct, terrainQuarantine?.slopeAvgPct ? `${terrainQuarantine.slopeAvgPct} (held)` : null), note: terrainQuarantine && slopePct == null ? 'Held for verification' : 'LandPortal' },
+    { icon: Droplets, label: 'FEMA flood', value: pctText(femaPct, femaRaw), note: acreageText(affectedAcres(femaPct, femaRaw)) ? `${acreageText(affectedAcres(femaPct, femaRaw))} · LandPortal` : 'LandPortal' },
+    { icon: Waves, label: 'Wetlands', value: pctText(wetlandsPct, wetlandsRaw), note: acreageText(affectedAcres(wetlandsPct, wetlandsRaw)) ? `${acreageText(affectedAcres(wetlandsPct, wetlandsRaw))} · LandPortal` : 'LandPortal' },
+    ...(soilsSeptic ? [{ icon: FileCheck2, label: 'Soils / septic', value: soilsSeptic.categoryLabel, note: 'Field testing required' }] : []),
   ];
 
   // Only the Overview command center is the page's <main>; on the Property,
@@ -684,7 +759,7 @@ export function OverviewSection({
   const Root = (pageFilter === 'overview' ? 'main' : 'div') as 'main';
   return (
     <Root class="awv2-main awv2-overview" data-testid="acquisition-overview" data-page-filter={pageFilter}>
-      {show('overview') && developmentIntelligence && <OwnerAcquisitionCard dossier={developmentIntelligence} />}
+      {show('property') && developmentIntelligence && <OwnerAcquisitionCard dossier={developmentIntelligence} />}
       {/* ── 1. Decision band: the operator decision and its key metrics lead
              the page; every narrative and evidence surface follows. ── */}
       {show('overview') && <section class="awv2-overview-decisionband" data-domain="action" aria-label="Operator decision">
@@ -692,20 +767,76 @@ export function OverviewSection({
           <div><div class="awv2-dom-eyebrow" data-dom="action">Decision</div><h2>{decisionHeadline}</h2></div>
           <span class="awv2-decision-state"><Target size={14} /> Acquisition read</span>
         </div>
-        <div class="metrics">
-          {decisionMetrics.map((metric) => (
-            <div class={`metric tone-${metric.tone ?? 'neutral'}`}>
-              <small>{metric.label}</small>
-              <b>{metric.value}</b>
-              {metric.sub && <span>{metric.sub}</span>}
-            </div>
-          ))}
-        </div>
         <div class="awv2-decision-action">
           <ArrowUpRight size={22} aria-hidden="true" />
           <div><small>Next best action</small><b>{acquisitionNextAction?.label || nextActions[0] || 'Review the current evidence'}</b></div>
         </div>
         {decisionSummary !== decisionHeadline && <details class="awv2-decision-rationale"><summary>Decision rationale</summary><p>{decisionSummary}</p></details>}
+      </section>}
+
+      {/* ── 1m. Top deal economics strip: FMV, the 40% and 60% acquisition-
+             screen endpoints (never 50%), the seller's actual ask, and the
+             top strategy label — the whole deal in one glance, straight from
+             the canonical persisted values. ── */}
+      {show('overview') && <section class="awv2-econ-strip" data-domain="valuation" aria-label="Deal economics" data-testid="overview-econ-strip">
+        <div class="cell fmv"><small>{currentImproved ? 'Supported FMV · Land' : 'Supported FMV'}</small><b>{supportedFmv != null ? usd(supportedFmv) : 'Pending'}</b><i>{cvSummary ? `${cvSummary.acceptedCount} accepted sale${cvSummary.acceptedCount === 1 ? '' : 's'}` : 'Awaiting accepted comps'}</i></div>
+        <div class="cell"><small>40%</small><b>{econLevels ? usd(econLevels.pct40) : 'Pending'}</b><i>Opening reference</i></div>
+        <div class="cell"><small>60%</small><b>{econLevels ? usd(econLevels.pct60) : 'Pending'}</b><i>Ceiling reference</i></div>
+        <div class="cell ask"><small>Seller ask</small><b>{askingPrice != null ? usd(askingPrice) : 'Not yet known'}</b><i>{askingPrice != null ? 'Seller-stated' : 'No ask collected'}</i></div>
+        <div class="cell strategy"><small>Top strategy</small><b>{stripStrategy || 'Pending'}</b><i>{stripStrategy ? 'Best current executable' : 'Not yet selected'}</i></div>
+      </section>}
+
+      {/* ── 1n. Full-width landscape property hero: the retained parcel
+             visuals as the visual centerpiece, with the retained-geometry
+             aerial map mode outlining the subject in neon green, and the
+             property fact rail readable over the imagery. ── */}
+      {show('overview') && <section class="awv2-overview-hero hero2" data-domain="property" aria-label="Subject property">
+        {heroModes.length > 0 && (
+          <div class="awv2-hero-tabs" role="tablist" aria-label="Property visual modes">
+            {heroModes.map((mode) => (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode.id === activeHeroMode}
+                class={mode.id === activeHeroMode ? 'on' : ''}
+                onClick={() => setHeroMode(mode.id)}
+              >{mode.label}</button>
+            ))}
+          </div>
+        )}
+        <div class="awv2-hero-stage">
+          {activeHeroMode === 'map' && parcelRing
+            ? <ParcelMapHero polygon={parcelRing} address={address} />
+            : activeVisual
+              ? <img src={activeVisual.viewUrl} alt={`${activeVisual.label} — ${address}`} />
+              : heroSrc
+                ? <img src={heroSrc} alt={`LandPortal parcel and site context for ${address}`} />
+                : <div class="empty">Parcel imagery has not been retained yet.</div>}
+          <div class="awv2-hero-rail" aria-label="Property operating facts">
+            <div class="identity">
+              <h2>{address || 'Subject property'}</h2>
+              <p>{subjectHeading}{identity.apn ? ` · APN ${identity.apn}` : ''}{zip ? ` · ${zip}` : ''}</p>
+            </div>
+            {heroRail.map((item) => (
+              <div class="fact">
+                <item.icon size={15} aria-hidden="true" />
+                <span><small>{item.label}</small><b>{item.value}</b>{item.note && <i>{item.note}</i>}</span>
+              </div>
+            ))}
+          </div>
+          {visualCount > 0 && <span class="count">{visualCount} parcel / site visual{visualCount === 1 ? '' : 's'} retained</span>}
+        </div>
+        <div class="awv2-hero-foot">
+          <span class={accessEstablished ? 'good' : 'warn'}>{accessEstablished ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}{accessEstablished ? `Access · ${accessView?.road || 'established'}` : 'Access unresolved'}</span>
+          <span><UserRound size={13} /> Seller: {seller?.name || 'Not collected'}{seller?.phone || seller?.email ? ` · ${seller?.phone || seller?.email}` : ''}</span>
+          {currentImproved && improvement?.buildingSqft != null && <span>{subjectStructure} · {Math.round(improvement.buildingSqft).toLocaleString('en-US')} sqft</span>}
+          {snap.subjectParcelUrl && <a href={snap.subjectParcelUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={13} /> Open parcel evidence</a>}
+        </div>
+        {/* A held-back terrain figure is stated as such. Blanking it made a
+            reviewed conflict indistinguishable from an unread source. */}
+        {terrainQuarantine && slopePct == null && (
+          <p class="awv2-overview-terrain-hold">{terrainQuarantine.reason} Held out of scoring, valuation and strategy until an independent terrain read reconciles it.</p>
+        )}
       </section>}
 
       {/* ── 1a. The four intelligence scores and the quick-flip status, right
@@ -801,54 +932,11 @@ export function OverviewSection({
         </>
       )}
 
-      {show('overview') && <section class="awv2-overview-hero" data-domain="property" aria-label="Subject property">
-        <div class="awv2-overview-aerial">
-          {heroSrc
-            ? <img src={heroSrc} alt={`LandPortal parcel and site context for ${address}`} />
-            : <div class="empty">Parcel imagery has not been retained yet.</div>}
-          {visualCount > 0 && <span class="count">{visualCount} parcel / site visual{visualCount === 1 ? '' : 's'} retained</span>}
-        </div>
-        <div class="awv2-overview-facts">
-          <div class="awv2-dom-eyebrow" data-dom="property">Property</div>
-          <h2>{subjectHeading}</h2>
-          <div class="awv2-property-chips">
-            <span class={accessEstablished ? 'good' : 'warn'}>{accessEstablished ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}{accessEstablished ? `Access · ${accessView?.road || 'established'}` : 'Access unresolved'}</span>
-            <span><FileCheck2 size={13} /> {visualCount} visual{visualCount === 1 ? '' : 's'}</span>
-          </div>
-          <div class="awv2-property-fact-grid" aria-label="Property operating facts">
-            <div class="wide"><MapPin size={15} /><span><small>Road access</small><b>{accessView?.road || 'Not retained'}</b><i>{accessView?.frontageFt != null ? `${accessView.frontageFt.toLocaleString('en-US', { maximumFractionDigits: 2 })} ft frontage` : accessEstablished ? 'Frontage established' : 'Pending'}</i></span></div>
-            <div><Droplets size={15} /><span><small>FEMA · LandPortal</small><b>{pctText(femaPct, femaRaw)}</b><i>{acreageText(affectedAcres(femaPct, femaRaw)) || 'Affected acres not retained'}</i></span></div>
-            <div><Waves size={15} /><span><small>Wetlands · LandPortal</small><b>{pctText(wetlandsPct, wetlandsRaw)}</b><i>{acreageText(affectedAcres(wetlandsPct, wetlandsRaw)) || 'Affected acres not retained'}</i></span></div>
-            <div><CircleDot size={15} /><span><small>Water feature</small><b>{waterFeature || 'Not retained'}</b><i>LandPortal</i></span></div>
-            <div><Mountain size={15} /><span><small>Average slope</small><b>{pctText(slopePct, terrainQuarantine?.slopeAvgPct ? `${terrainQuarantine.slopeAvgPct} (held)` : null)}</b><i>{terrainQuarantine && slopePct == null ? 'Provider figure held for verification' : 'LandPortal'}</i></span></div>
-            <div class="wide"><Ruler size={15} /><span><small>Buildability</small><b>{pctText(buildabilityPct, terrainQuarantine?.buildabilityPct ? `${terrainQuarantine.buildabilityPct} (held)` : null)}</b><i>{
-              buildableAcresRaw ? `${buildableAcresRaw} buildable`
-                : acreageText(affectedAcres(buildabilityPct, buildabilityRaw)) ? `${acreageText(affectedAcres(buildabilityPct, buildabilityRaw))} buildable`
-                  : terrainQuarantine?.buildableAcres ? `${terrainQuarantine.buildableAcres} reported, held for verification`
-                    : 'Buildable acres not retained'
-            }</i></span></div>
-          </div>
-          {/* A held-back terrain figure is stated as such. Blanking it made a
-              reviewed conflict indistinguishable from an unread source. */}
-          {terrainQuarantine && slopePct == null && (
-            <p class="awv2-overview-terrain-hold">{terrainQuarantine.reason} Held out of scoring, valuation and strategy until an independent terrain read reconciles it.</p>
-          )}
-          <div class="awv2-seller-card">
-            <UserRound size={22} aria-hidden="true" />
-            <div><small>Seller / lead</small><b>{seller?.name || 'Not collected'}</b><span>{seller?.phone || seller?.email || 'Contact details pending'}</span></div>
-          </div>
-          <dl>
-            {identity.apn && <><dt>APN</dt><dd>{identity.apn}</dd></>}
-            {zip && <><dt>ZIP</dt><dd>{zip}</dd></>}
-            {currentImproved && improvement?.buildingSqft != null && <><dt>{subjectStructure}</dt><dd>{Math.round(improvement.buildingSqft).toLocaleString('en-US')} sqft</dd></>}
-          </dl>
-          {snap.subjectParcelUrl && <a href={snap.subjectParcelUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} /> Open parcel evidence</a>}
-        </div>
-      </section>}
-
       {/* ── 2. Valuation: the decision-relevant figures, House Value naming.
-             Deep methodology and the audit ledger live in Comps & Valuation. ── */}
-      {show('overview') && <section class="awv2-overview-valuation" data-domain="valuation" aria-label="Current valuation">
+             Owned by the Property & Market page now — the Overview presents
+             FMV once, in the economics strip; deep methodology and the audit
+             ledger live in Comps & Valuation. ── */}
+      {show('property') && <section class="awv2-overview-valuation" data-domain="valuation" aria-label="Current valuation">
         <div class="section-heading"><div><span class="awv2-dom-eyebrow" data-dom="valuation">Valuation</span><h2>{showHouseBreakdown ? 'Land + house + whole property' : currentImproved ? 'Land value established separately; whole-property value pending' : 'Current property valuation'}</h2></div><button type="button" onClick={openCompsValuation}>{openCompsValuationLabel}</button></div>
         {cvSummary ? (
           <>
