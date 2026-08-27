@@ -847,6 +847,12 @@ export function OverviewSection({
     ? heroMode
     : heroModes[0]?.id ?? null;
   const activeVisual = visuals.find((visual) => visual.id === activeHeroMode) ?? null;
+  // One retained source drives both hero layers: the sharp foreground and the
+  // blurred fill behind it are the same already-retained capture.
+  const heroImageSrc = activeVisual?.viewUrl ?? heroSrc ?? null;
+  const heroImageAlt = activeVisual
+    ? `${activeVisual.label} — ${address}`
+    : `LandPortal parcel and site context for ${address}`;
   const heroRail: Array<{ icon: typeof MapPin; label: string; value: string; note: string | null }> = [
     { icon: MapPin, label: 'Road access', value: accessView?.road || (accessEstablished ? 'Established' : 'Unresolved'), note: accessView?.frontageFt != null ? `${accessView.frontageFt.toLocaleString('en-US', { maximumFractionDigits: 2 })} ft frontage` : accessEstablished ? 'Frontage established' : 'Evidence pending' },
     { icon: CircleDot, label: 'Water feature', value: waterFeature || 'Not retained', note: 'LandPortal' },
@@ -940,13 +946,20 @@ export function OverviewSection({
           </filter>
         </defs></svg>
         <div class="awv2-hero-stage">
+          {/* The retained capture is landscape-but-narrower than this hero, so
+              fitting it whole used to leave black gutters either side. The SAME
+              retained image fills the stage behind it, enlarged, blurred and
+              darkened so it reads as a backdrop rather than a second picture;
+              the sharp copy stays centered, whole, aspect-correct and uncropped
+              over it. No new imagery is fetched and nothing is stretched. */}
           {activeHeroMode === 'map' && parcelRing
             ? <ParcelMapHero polygon={parcelRing} address={address} />
-            : activeVisual
-              ? <img src={activeVisual.viewUrl} alt={`${activeVisual.label} — ${address}`} />
-              : heroSrc
-                ? <img src={heroSrc} alt={`LandPortal parcel and site context for ${address}`} />
-                : <div class="empty">Parcel imagery has not been retained yet.</div>}
+            : heroImageSrc
+              ? <>
+                  <img class="bg" src={heroImageSrc} alt="" aria-hidden="true" />
+                  <img class="fg" src={heroImageSrc} alt={heroImageAlt} />
+                </>
+              : <div class="empty">Parcel imagery has not been retained yet.</div>}
           <div class="awv2-hero-rail" aria-label="Property operating facts">
             <div class="identity">
               <h2>{railHeading}</h2>

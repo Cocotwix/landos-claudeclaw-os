@@ -36,13 +36,21 @@ describe('Page 1 — the Deal Read replaces the analyst report', () => {
     expect(OVERVIEW_SRC).not.toMatch(/<AcquisitionIntelligenceSection/);
   });
 
-  it('shows the five Deal Read blocks and nothing longer', () => {
+  // The Overview Deal Brain is the executive verdict, not a second report:
+  // one dominant conclusion, three decision tiles, and the verbatim Current
+  // Deal Read kept available behind its own disclosure.
+  it('leads with the verdict and three decision tiles, not report columns', () => {
     expect(DEAL_READ_SRC).toContain('LandOS Deal Read');
-    expect(DEAL_READ_SRC).toContain("Why it&apos;s interesting");
-    expect(DEAL_READ_SRC).toContain('Biggest questions');
-    expect(DEAL_READ_SRC).toContain('Best strategies');
+    expect(DEAL_READ_SRC).toContain('awv2-dealread-verdict');
+    expect(DEAL_READ_SRC).toContain('Current opportunity');
+    expect(DEAL_READ_SRC).toContain('Biggest risk / unknown');
     expect(DEAL_READ_SRC).toContain('Next move');
     expect(DEAL_READ_SRC).toContain('View full property intelligence');
+    // The full persisted read stays reachable, collapsed under the verdict.
+    expect(DEAL_READ_SRC).toContain('Current Deal Read');
+    // Strategy, risk and next action are stated once each on Overview.
+    expect(DEAL_READ_SRC).not.toContain('awv2-dealread-columns');
+    expect(DEAL_READ_SRC).not.toContain('digest.strategies.map');
   });
 
   it('never prints the full analyst lists on the Overview surface', () => {

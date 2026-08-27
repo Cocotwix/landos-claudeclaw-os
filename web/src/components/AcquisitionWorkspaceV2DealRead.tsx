@@ -19,7 +19,7 @@
 //   • Rendering NEVER runs the model. The refresh control is the only thing
 //     that produces a new read, and it says so.
 
-import { Brain, RefreshCw, AlertTriangle, Clock, Lightbulb, HelpCircle, Route, ArrowUpRight } from 'lucide-preact';
+import { Brain, RefreshCw, AlertTriangle, Clock, Lightbulb, HelpCircle, ArrowUpRight } from 'lucide-preact';
 
 import type {
   AcquisitionIntelligenceView,
@@ -27,7 +27,7 @@ import type {
   AcquisitionIntelligenceRuntimeStatus,
 } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
 import { digestDealRead } from '../lib/acquisition-intelligence-digest';
-import { UpdatedOutlookBadge, outlookIsUpdated } from './AcquisitionWorkspaceV2SpecialistReads';
+import { UpdatedOutlookBadge, leadThesis, outlookIsUpdated } from './AcquisitionWorkspaceV2SpecialistReads';
 import '../styles/workspace-v2-acquisition-intelligence.css';
 import '../styles/workspace-v2-deal-read.css';
 
@@ -110,70 +110,52 @@ export function DealReadCard({
               supersedes the deterministic digest judgment when present.
               Rendering never generates it. */}
           <UpdatedOutlookBadge outlook={read?.outlook} testid="deal-outlook" />
-          {read?.currentDealRead
-            ? (
-              <div class="awv2-ai-judgment" data-testid="deal-current-read">
-                {read.currentDealRead.split(/\n{2,}/).map((paragraph) => <p>{paragraph}</p>)}
-              </div>
-            )
-            : digest.judgment && <p class="awv2-ai-judgment">{digest.judgment}</p>}
-          {read?.bestCurrentStrategy?.strategy && (
-            <p class="awv2-specialist-line" data-testid="best-current-executable-strategy"><b>Best Current Executable Strategy</b> {read.bestCurrentStrategy.strategy}{read.bestCurrentStrategy.why ? ` — ${read.bestCurrentStrategy.why}` : ''}</p>
-          )}
-          {read?.highestUpsideHypothesis?.strategy && (
-            <p class="awv2-specialist-line" data-testid="highest-upside-hypothesis"><b>Highest-Upside Hypothesis</b> {read.highestUpsideHypothesis.strategy}{read.highestUpsideHypothesis.why ? ` — ${read.highestUpsideHypothesis.why}` : ''}</p>
+          {/* The verdict, not the memo. The Deal Brain's own lead paragraph
+              carries the conclusion; three persisted items say what the
+              opportunity, the risk and the next move are. The whole Current
+              Deal Read stays verbatim below, collapsed. Nothing is generated
+              here and no strategy, risk or action is restated twice. */}
+          {(leadThesis(read?.currentDealRead) ?? digest.judgment) && (
+            <p class="awv2-dealread-verdict" data-testid="deal-verdict">
+              {leadThesis(read?.currentDealRead) ?? digest.judgment}
+            </p>
           )}
 
-          <div class="awv2-dealread-columns">
-            {digest.interesting.length > 0 && (
-              <div class="awv2-dealread-col" data-kind="interesting">
-                <h3><Lightbulb size={14} /> Why it&apos;s interesting</h3>
-                <ul>
-                  {digest.interesting.map((item) => (
-                    <li><b>{item.title}</b>{item.why && <span>{item.why}</span>}</li>
-                  ))}
-                </ul>
+          <div class="awv2-dealread-verdictgrid" data-testid="deal-verdict-grid">
+            {(read?.bestCurrentStrategy?.strategy || digest.strategies[0]) && (
+              <div class="awv2-dealread-tile t-good" data-kind="opportunity" data-testid="best-current-executable-strategy">
+                <b><Lightbulb size={13} /> Current opportunity</b>
+                <strong>{read?.bestCurrentStrategy?.strategy ?? digest.strategies[0]?.strategy}</strong>
+                <span>{read?.bestCurrentStrategy?.why ?? digest.strategies[0]?.whyItFits ?? ''}</span>
               </div>
             )}
-            {digest.questions.length > 0 && (
-              <div class="awv2-dealread-col" data-kind="questions">
-                <h3><HelpCircle size={14} /> Biggest questions</h3>
-                <ul>
-                  {digest.questions.map((item) => (
-                    <li><b>{item.title}</b>{item.why && <span>{item.why}</span>}</li>
-                  ))}
-                </ul>
+            {digest.questions[0] && (
+              <div class="awv2-dealread-tile t-open" data-kind="risk">
+                <b><HelpCircle size={13} /> Biggest risk / unknown</b>
+                <strong>{digest.questions[0].title}</strong>
+                <span>{digest.questions[0].why ?? ''}</span>
+              </div>
+            )}
+            {digest.nextMove && (
+              <div class="awv2-dealread-tile t-next" data-kind="next">
+                <b><ArrowUpRight size={13} /> Next move</b>
+                <strong>{digest.nextMove.action}</strong>
+                <span>{digest.nextMove.why ?? ''}</span>
               </div>
             )}
           </div>
 
-          {digest.strategies.length > 0 && (
-            <div class="awv2-dealread-strategies" aria-label="Best strategies">
-              <h3><Route size={14} /> Best strategies</h3>
-              <ol>
-                {digest.strategies.map((item, index) => (
-                  <li class={`fit-${item.fit}`}>
-                    <span class="rank">{index + 1}</span>
-                    <div>
-                      <b>{item.strategy}</b>
-                      {item.whyItFits && <p>{item.whyItFits}</p>}
-                    </div>
-                    <em>{item.fitLabel}</em>
-                  </li>
-                ))}
-              </ol>
-            </div>
+          {read?.highestUpsideHypothesis?.strategy && (
+            <p class="awv2-specialist-line" data-testid="highest-upside-hypothesis"><b>Highest-upside hypothesis</b> {read.highestUpsideHypothesis.strategy}{read.highestUpsideHypothesis.why ? ` — ${read.highestUpsideHypothesis.why}` : ''}</p>
           )}
 
-          {digest.nextMove && (
-            <div class="awv2-dealread-next">
-              <ArrowUpRight size={20} aria-hidden="true" />
-              <div>
-                <small>Next move</small>
-                <b>{digest.nextMove.action}</b>
-                {digest.nextMove.why && <span>{digest.nextMove.why}</span>}
+          {read?.currentDealRead && (
+            <details class="awv2-specialist-details awv2-fullread">
+              <summary>Current Deal Read</summary>
+              <div class="awv2-ai-judgment" data-testid="deal-current-read">
+                {read.currentDealRead.split(/\n{2,}/).map((paragraph) => <p>{paragraph}</p>)}
               </div>
-            </div>
+            </details>
           )}
 
           <button type="button" class="awv2-dealread-open" onClick={onOpenFullIntelligence}>

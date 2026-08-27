@@ -56,8 +56,14 @@ describe('Deal Workspace header tabs', () => {
     const OVERVIEW_CSS2 = readFileSync('web/src/styles/workspace-v2-overview.css', 'utf8');
     // Contain, centered: the whole capture is visible and its aspect ratio is
     // preserved; a mismatched capture letterboxes rather than losing content.
-    expect(OVERVIEW_CSS2).toContain('.awv2-hero-stage > img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; }');
-    expect(OVERVIEW_CSS2).not.toMatch(/\.awv2-hero-stage > img \{[^}]*object-fit: cover/);
+    expect(OVERVIEW_CSS2).toContain('.awv2-hero-stage > img.fg { object-fit: contain; }');
+    expect(OVERVIEW_CSS2).not.toMatch(/\.awv2-hero-stage > img\.fg \{[^}]*object-fit: cover/);
+    // The black side gutters are filled by the SAME retained capture, blurred
+    // and darkened behind the sharp one. It is decorative only, so it carries
+    // no alt text and never becomes the evidence the operator reads.
+    expect(OVERVIEW_CSS2).toMatch(/\.awv2-hero-stage > img\.bg \{[^}]*object-fit: cover;[^}]*filter: blur\(/);
+    expect(OVERVIEW).toContain('<img class="bg" src={heroImageSrc} alt="" aria-hidden="true" />');
+    expect(OVERVIEW).toContain('<img class="fg" src={heroImageSrc} alt={heroImageAlt} />');
   });
 
   it('neons only the subject outline, not amber neighbours or the map pin', () => {

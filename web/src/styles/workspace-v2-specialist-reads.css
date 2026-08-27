@@ -222,3 +222,126 @@
 .awv2-overview .awv2-specialist-line { font-size: 13px; line-height: 1.6; }
 .awv2-overview [data-testid="specialist-read-seller"] { padding: 14px 20px; }
 .awv2-overview [data-testid="specialist-read-seller"] .awv2-specialist-read { font-size: 13.5px; line-height: 1.55; }
+
+/* ── Visual conclusion layer ───────────────────────────────────────────────
+   The Overview specialist cards stopped being reports: the header carries the
+   identity and score inline, the full page width carries the content, the
+   specialist's own conclusion is read first, and the persisted findings behind
+   it are scannable tiles. The verbatim Current Expert Read is kept, collapsed,
+   underneath. Nothing here generates or restates intelligence. */
+.awv2-overview .awv2-specialist { display: block; }
+@media (min-width: 1000px) {
+  .awv2-overview .awv2-specialist { display: flex; flex-direction: column; }
+  .awv2-overview .awv2-specialist > * { grid-column: auto; }
+}
+.awv2-overview .awv2-specialist-head {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px 14px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--awv2-line, rgba(148, 163, 184, 0.2));
+}
+.awv2-overview .awv2-specialist-head .awv2-specialist-score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 10px;
+}
+.awv2-overview .awv2-specialist-head .awv2-specialist-score b { font-size: 19px; }
+.awv2-overview .awv2-specialist-foot { margin-top: 8px; }
+
+.awv2-specialist-grade {
+  padding: 2px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  font: 700 11px var(--awv2-mono, ui-monospace);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.awv2-specialist-openfull.head {
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  background: transparent;
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.awv2-specialist-openfull.head:hover { opacity: 1; }
+
+/* The conclusion, before any report. */
+.awv2-specialist-thesis,
+.awv2-dealread-verdict {
+  margin: 2px 0 0;
+  padding-left: 14px;
+  border-left: 3px solid color-mix(in srgb, currentcolor 45%, transparent);
+  font-size: 17px;
+  font-weight: 550;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+  color: var(--awv2-bone, #eef4ec);
+}
+@media (max-width: 900px) { .awv2-specialist-thesis, .awv2-dealread-verdict { font-size: 15.5px; } }
+
+.awv2-takeaways,
+.awv2-dealread-verdictgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 2px;
+}
+.awv2-takeaway,
+.awv2-dealread-tile {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 11px 13px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.028);
+}
+.awv2-takeaway > b,
+.awv2-dealread-tile > b {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+.awv2-takeaway ul { margin: 0; padding: 0 0 0 15px; display: grid; gap: 5px; }
+.awv2-takeaway li { font-size: 13.5px; line-height: 1.45; color: var(--awv2-bone, #e7ede4); }
+.awv2-takeaway.t-good, .awv2-dealread-tile.t-good { border-left-color: #34d399; }
+.awv2-takeaway.t-good > b, .awv2-dealread-tile.t-good > b { color: #6ee7b7; }
+.awv2-takeaway.t-bad { border-left-color: #f87171; }
+.awv2-takeaway.t-bad > b { color: #fca5a5; }
+.awv2-takeaway.t-open, .awv2-dealread-tile.t-open { border-left-color: #d9a13d; }
+.awv2-takeaway.t-open > b, .awv2-dealread-tile.t-open > b { color: #e0b45f; }
+.awv2-dealread-tile.t-next { border-left-color: #93c5fd; }
+.awv2-dealread-tile.t-next > b { color: #bfdbfe; }
+.awv2-dealread-tile strong { font-size: 14.5px; font-weight: 650; line-height: 1.35; color: var(--awv2-bone, #eef4ec); }
+.awv2-dealread-tile span { font-size: 12.5px; line-height: 1.45; opacity: 0.82; }
+
+/* The verbatim expert prose is preserved, but it is no longer the only way in. */
+.awv2-specialist-details.awv2-fullread > summary {
+  padding: 6px 11px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  width: fit-content;
+}
+.awv2-specialist-details.awv2-fullread[open] > summary { margin-bottom: 9px; }
+.awv2-overview .awv2-specialist-details.awv2-fullread .awv2-specialist-currentread { padding-left: 14px; }

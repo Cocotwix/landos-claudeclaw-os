@@ -436,18 +436,61 @@ function AcreageExtentPanel({ acreage }: { acreage: AcreageExtentControls }) {
  *  READ, rendered verbatim — never generated, excerpted, or truncated at
  *  render time. A pre-upgrade snapshot without one falls back to the existing
  *  concise structured read and says when the real read will exist. */
-function CurrentExpertRead({ current, fallback, testid, pending }: {
+/** The lead paragraph of a persisted read, used as the visual thesis. Pure
+ *  string handling over already-persisted prose: nothing is generated, nothing
+ *  is rewritten, and the full text stays available verbatim below it. */
+export function leadThesis(...candidates: Array<string | null | undefined>): string | null {
+  for (const candidate of candidates) {
+    const lead = (candidate ?? '').split(/\n{2,}/).map((part) => part.trim()).find(Boolean);
+    if (lead) return lead;
+  }
+  return null;
+}
+
+/** A takeaway column: a few short existing findings under one plain label. */
+export interface TakeawayGroup { kind: 'good' | 'bad' | 'open'; label: string; items: string[] }
+
+/** The visual conclusion band — what is working, what is concerning, what
+ *  could change the deal — built only from structured intelligence LandOS has
+ *  already persisted. Never invents a fact and never calls a model. */
+export function TakeawayBoard({ groups, testid }: { groups: TakeawayGroup[]; testid: string }) {
+  const live = groups.filter((group) => group.items.length > 0);
+  if (live.length === 0) return null;
+  return (
+    <div class="awv2-takeaways" data-testid={testid}>
+      {live.map((group) => (
+        <div class={`awv2-takeaway t-${group.kind}`}>
+          <b>{group.label}</b>
+          <ul>{group.items.map((item) => <li>{item}</li>)}</ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CurrentExpertRead({ current, fallback, testid, pending, summary }: {
   current?: string | null;
   fallback?: string | null;
   testid: string;
   pending: string;
+  /** When given, the read is kept verbatim but collapsed behind this label. */
+  summary?: string;
 }) {
   if (current) {
-    return (
+    const body = (
       <div class="awv2-specialist-currentread" data-testid={testid}>
         {current.split(/\n{2,}/).map((paragraph) => <p class="awv2-specialist-read">{paragraph}</p>)}
       </div>
     );
+    if (summary) {
+      return (
+        <details class="awv2-specialist-details awv2-fullread">
+          <summary>{summary}</summary>
+          {body}
+        </details>
+      );
+    }
+    return body;
   }
   return (
     <>
@@ -471,6 +514,7 @@ export function PropertyReadCard({ product, stale, reconcile, acreage, full = fa
       <header class="awv2-specialist-head">
         <div class="awv2-dom-eyebrow" data-dom="property"><Landmark size={13} /> Property Intelligence</div>
         {product && <ScoreChip score={product.score} quality={product.quality} />}
+        {!full && onOpenFull && <button type="button" class="awv2-specialist-openfull head" onClick={onOpenFull}>Property page →</button>}
       </header>
       {!product ? (
         <p class="awv2-specialist-empty">No Property Intelligence read has been produced yet. Run the intelligence read from the Deal Read card.</p>
@@ -480,10 +524,43 @@ export function PropertyReadCard({ product, stale, reconcile, acreage, full = fa
             ? (
               <>
               <UpdatedOutlookBadge outlook={product.outlook} testid="specialist-property-outlook" />
+              {/* Conclusion first: the specialist's own lead paragraph, then the
+                  few persisted findings behind it. The whole Current Expert
+                  Read stays verbatim underneath. */}
+              {leadThesis(product.currentExpertRead, product.read) && (
+                <p class="awv2-specialist-thesis" data-testid="specialist-property-thesis">
+                  {leadThesis(product.currentExpertRead, product.read)}
+                </p>
+              )}
+              <TakeawayBoard
+                testid="specialist-property-takeaways"
+                groups={[
+                  { kind: 'good', label: 'What is working', items: lines(product.strengths, 3) },
+                  {
+                    kind: 'bad',
+                    label: 'What is concerning',
+                    items: (product.constraints ?? [])
+                      .filter((item) => item.title)
+                      .slice(0, 3)
+                      .map((item) => `${item.title}${item.severity === 'high' ? ' (high)' : ''}`),
+                  },
+                  {
+                    kind: 'open',
+                    label: 'What could change the deal',
+                    items: [
+                      ...(product.unknowns ?? []).filter((item) => item.question).map((item) => item.question as string),
+                      ...(product.conflicts ?? [])
+                        .filter((item) => item.subject || item.statement)
+                        .map((item) => [item.subject, item.statement].filter(Boolean).join(': ')),
+                    ].slice(0, 3),
+                  },
+                ]}
+              />
               <CurrentExpertRead
                 current={product.currentExpertRead}
                 fallback={product.read}
                 testid="specialist-property-current-read"
+                summary="Current Expert Read"
                 pending="The Current Expert Read is produced with the next Property Intelligence refresh — nothing is generated by viewing this page."
               />
               </>
@@ -626,6 +703,8 @@ export function MarketReadCard({ product, stale, full = false, onOpenFull }: {
       <header class="awv2-specialist-head">
         <div class="awv2-dom-eyebrow" data-dom="market"><TrendingUp size={13} /> Market + Area Intelligence</div>
         {product && <ScoreChip score={product.score} quality={product.quality} />}
+        {product?.overallMarketQuality?.grade && <span class="awv2-specialist-grade">Grade {product.overallMarketQuality.grade}</span>}
+        {!full && onOpenFull && <button type="button" class="awv2-specialist-openfull head" onClick={onOpenFull}>Market page →</button>}
       </header>
       {!product ? (
         <p class="awv2-specialist-empty">No Market Intelligence read has been produced yet. Run the intelligence read from the Deal Read card.</p>
@@ -635,10 +714,31 @@ export function MarketReadCard({ product, stale, full = false, onOpenFull }: {
             ? (
               <>
               <UpdatedOutlookBadge outlook={product.outlook} testid="specialist-market-outlook" />
+              {leadThesis(product.currentExpertRead, product.read, product.overallMarketQuality?.read, product.liquidityRead) && (
+                <p class="awv2-specialist-thesis" data-testid="specialist-market-thesis">
+                  {leadThesis(product.currentExpertRead, product.read, product.overallMarketQuality?.read, product.liquidityRead)}
+                </p>
+              )}
+              <TakeawayBoard
+                testid="specialist-market-takeaways"
+                groups={[
+                  { kind: 'good', label: 'Where the market works', items: lines(product.bestSignals, 3) },
+                  { kind: 'bad', label: 'Where it is weak', items: lines(product.risks, 3) },
+                  {
+                    kind: 'open',
+                    label: 'Decision-changing unknown',
+                    items: (product.unknowns ?? [])
+                      .filter((item) => item.question)
+                      .slice(0, 3)
+                      .map((item) => item.question as string),
+                  },
+                ]}
+              />
               <CurrentExpertRead
                 current={product.currentExpertRead}
                 fallback={product.read}
                 testid="specialist-market-current-read"
+                summary="Current Expert Read"
                 pending="The Current Expert Read is produced with the next Market Intelligence refresh — nothing is generated by viewing this page."
               />
               </>
