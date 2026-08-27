@@ -3,7 +3,7 @@ import {
   FileCheck2, UserRound, MapPin, Ruler, Waves, Mountain,
   Droplets, CheckCircle2, CircleDot,
 } from 'lucide-preact';
-import { useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import {
   AERIAL_MAX_ZOOM, basemapAttribution, basemapTileUrl, fitView, pointToScreen, tilesForView,
   type LatLng,
@@ -853,6 +853,42 @@ export function OverviewSection({
   const heroImageAlt = activeVisual
     ? `${activeVisual.label} — ${address}`
     : `LandPortal parcel and site context for ${address}`;
+
+  // ── Hero visual viewer ─────────────────────────────────────────────────
+  // The retained capture behaves like a simple map viewer: drag to pan, wheel
+  // to zoom, explicit +/− controls, and Fit to return the COMPLETE saved image
+  // to view. Scale is uniform, so nothing is ever distorted, and every state
+  // is local view transform only — no imagery is fetched and nothing is
+  // recaptured. Switching visual tabs re-fits the new visual.
+  const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragFrom = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
+  const fitVisual = () => setView({ scale: 1, x: 0, y: 0 });
+  // Fit is the opening state of every visual, including after a tab switch.
+  useEffect(() => { fitVisual(); }, [heroImageSrc]);
+  const clampScale = (value: number): number => Math.min(8, Math.max(1, value));
+  const zoomBy = (factor: number) => setView((current) => {
+    const scale = clampScale(current.scale * factor);
+    if (scale === 1) return { scale: 1, x: 0, y: 0 };
+    const ratio = scale / current.scale;
+    return { scale, x: current.x * ratio, y: current.y * ratio };
+  });
+  const onViewerWheel = (event: WheelEvent) => {
+    event.preventDefault();
+    zoomBy(event.deltaY < 0 ? 1.12 : 1 / 1.12);
+  };
+  const onViewerPointerDown = (event: PointerEvent) => {
+    if (view.scale <= 1) return;
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+    dragFrom.current = { px: event.clientX, py: event.clientY, x: view.x, y: view.y };
+    setDragging(true);
+  };
+  const onViewerPointerMove = (event: PointerEvent) => {
+    const from = dragFrom.current;
+    if (!from) return;
+    setView((current) => ({ ...current, x: from.x + (event.clientX - from.px), y: from.y + (event.clientY - from.py) }));
+  };
+  const onViewerPointerUp = () => { dragFrom.current = null; setDragging(false); };
   const heroRail: Array<{ icon: typeof MapPin; label: string; value: string; note: string | null }> = [
     { icon: MapPin, label: 'Road access', value: accessView?.road || (accessEstablished ? 'Established' : 'Unresolved'), note: accessView?.frontageFt != null ? `${accessView.frontageFt.toLocaleString('en-US', { maximumFractionDigits: 2 })} ft frontage` : accessEstablished ? 'Frontage established' : 'Evidence pending' },
     { icon: CircleDot, label: 'Water feature', value: waterFeature || 'Not retained', note: 'LandPortal' },
@@ -945,7 +981,7 @@ export function OverviewSection({
             </feMerge>
           </filter>
         </defs></svg>
-        <div class="awv2-hero-stage">
+        <div class="awv2-hero-stage" data-testid="hero-stage">
           {/* The retained capture is landscape-but-narrower than this hero, so
               fitting it whole used to leave black gutters either side. The SAME
               retained image fills the stage behind it, enlarged, blurred and
@@ -957,7 +993,30 @@ export function OverviewSection({
             : heroImageSrc
               ? <>
                   <img class="bg" src={heroImageSrc} alt="" aria-hidden="true" />
-                  <img class="fg" src={heroImageSrc} alt={heroImageAlt} />
+                  <div
+                    class="awv2-hero-viewport"
+                    data-testid="hero-viewport"
+                    onPointerDown={onViewerPointerDown}
+                    onPointerMove={onViewerPointerMove}
+                    onPointerUp={onViewerPointerUp}
+                    onPointerCancel={onViewerPointerUp}
+                    onWheel={onViewerWheel}
+                    style={{ cursor: dragging ? 'grabbing' : 'grab' }}
+                  >
+                    <img
+                      class="fg"
+                      src={heroImageSrc}
+                      alt={heroImageAlt}
+                      draggable={false}
+                      style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
+                    />
+                  </div>
+                  <div class="awv2-hero-zoom" data-testid="hero-zoom-controls">
+                    <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.25)}>+</button>
+                    <button type="button" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.25)}>−</button>
+                    <button type="button" class="fit" data-testid="hero-fit" onClick={fitVisual}>Fit parcel</button>
+                    <span class="level" data-testid="hero-zoom-level">{Math.round(view.scale * 100)}%</span>
+                  </div>
                 </>
               : <div class="empty">Parcel imagery has not been retained yet.</div>}
           <div class="awv2-hero-rail" aria-label="Property operating facts">

@@ -190,6 +190,53 @@ export interface SavedParcelVisualInspection extends ParcelVisualQualityVerdict 
   sha256: string | null;
 }
 
+/**
+ * The capture viewport used for every retained property visual.
+ *
+ * LandPortal renders its parcel fact panel down the left edge and the map into
+ * whatever remains, so a 1600x1000 browser viewport isolated a roughly square
+ * map canvas. That square is the "tight" capture the Deal Overview hero then
+ * had to letterbox, blur-fill or crop. Opening the browser wider makes the map
+ * canvas itself landscape, so the SAME capture is Overview-ready the first
+ * time: the whole subject parcel with padding, in a wide frame.
+ */
+export const OVERVIEW_HERO_VIEWPORT = { width: 2200, height: 1040 } as const;
+
+/**
+ * Minimum width:height the retained Overview hero capture must reach. The
+ * hero renders in a wide landscape band; anything squarer than this is the old
+ * tight format and forces the presentation compromises above.
+ */
+export const OVERVIEW_HERO_MIN_ASPECT = 1.7;
+
+/**
+ * Trim an isolated map clip down to the wide Overview hero frame.
+ *
+ * The camera has already fitted the subject and stepped out (see
+ * contextZoomOutSteps), so the subject occupies roughly a quarter of the frame
+ * about its center with neighbouring parcels and the fronting road around it.
+ * Reducing height about that same center therefore keeps the complete subject
+ * boundary and its padding in frame while producing the landscape aspect the
+ * hero wants. Full clip width is always kept, nothing is scaled, and a clip
+ * that is already wide enough is returned unchanged — so this can never crop a
+ * capture that did not need it.
+ */
+export function overviewHeroClip(clip: MapViewportClip, viewport: { width: number; height: number }): MapViewportClip {
+  if (!(clip.width > 0 && clip.height > 0)) return clip;
+  if (clip.width / clip.height >= OVERVIEW_HERO_MIN_ASPECT) return clip;
+  const targetHeight = Math.max(1, Math.floor(clip.width / OVERVIEW_HERO_MIN_ASPECT));
+  if (targetHeight >= clip.height) return clip;
+  const centered = Math.floor(clip.y + (clip.height - targetHeight) / 2);
+  const y = Math.max(0, Math.min(centered, Math.max(0, viewport.height - targetHeight)));
+  return { x: clip.x, y, width: clip.width, height: targetHeight };
+}
+
+/** Is this retained capture usable as the wide Overview hero as saved? */
+export function isOverviewHeroFramed(size: { width: number; height: number } | null | undefined): boolean {
+  if (!size || !(size.width > 0) || !(size.height > 0)) return false;
+  return size.width / size.height >= OVERVIEW_HERO_MIN_ASPECT;
+}
+
 export interface MapViewportClip {
   x: number;
   y: number;

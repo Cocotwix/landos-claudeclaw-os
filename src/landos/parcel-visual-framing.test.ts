@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import fs, { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -13,6 +13,10 @@ import {
   isDistinctOverlayCapture,
   OVERLAY_CAPTURE_PLAN,
   parseAcresFromFields,
+  overviewHeroClip,
+  isOverviewHeroFramed,
+  OVERVIEW_HERO_VIEWPORT,
+  OVERVIEW_HERO_MIN_ASPECT,
 } from './parcel-visual-framing.js';
 
 // Phase 5 Item 21 screenshot correction: parcel-scale framing + overlay
@@ -245,5 +249,53 @@ describe('inspectSavedParcelVisual', () => {
       kind: 'parcel_context',
       expectedClip: { x: 0, y: 0, width: 900, height: 700 },
     }).accepted).toBe(false);
+  });
+});
+
+// ── Overview-ready capture framing ────────────────────────────────────────
+// The Deal Overview hero is a wide landscape band. A capture saved in the old
+// roughly-square format can only be presented there by letterboxing, blurred
+// filler, cropping or stretching, so the capture workflow itself must retain
+// the Overview version wide and whole-parcel the first time.
+describe('Overview hero capture framing', () => {
+  it('opens the capture browser wide enough for a landscape map canvas', () => {
+    expect(OVERVIEW_HERO_VIEWPORT.width / OVERVIEW_HERO_VIEWPORT.height)
+      .toBeGreaterThanOrEqual(OVERVIEW_HERO_MIN_ASPECT);
+    // Wider than the former 1600x1000 capture viewport, which left LandPortal's
+    // map canvas roughly square once the parcel panel took the left edge.
+    expect(OVERVIEW_HERO_VIEWPORT.width).toBeGreaterThan(1600);
+  });
+
+  it('retains a tight square map clip as a wide whole-parcel hero frame', () => {
+    // The old tight format: LandPortal's map canvas beside the parcel panel.
+    const clip = overviewHeroClip({ x: 420, y: 60, width: 1060, height: 900 }, { width: 2200, height: 1040 });
+    expect(clip.width).toBe(1060);
+    expect(clip.width / clip.height).toBeGreaterThanOrEqual(OVERVIEW_HERO_MIN_ASPECT);
+    expect(isOverviewHeroFramed(clip)).toBe(true);
+    // Trimmed about the same center the camera fitted the parcel to, and never
+    // scaled: full clip width is kept, so the parcel is not distorted.
+    expect(clip.x).toBe(420);
+    expect(clip.y).toBeGreaterThan(60);
+    expect(clip.y + clip.height).toBeLessThanOrEqual(1040);
+  });
+
+  it('never crops a capture that is already Overview-ready', () => {
+    const wide = { x: 0, y: 0, width: 1900, height: 800 };
+    expect(overviewHeroClip(wide, { width: 2200, height: 1040 })).toEqual(wide);
+  });
+
+  it('rejects the old tight format as an Overview hero frame', () => {
+    expect(isOverviewHeroFramed({ width: 1060, height: 900 })).toBe(false);
+    expect(isOverviewHeroFramed(null)).toBe(false);
+  });
+
+  it('is the framing the live LandPortal capture workflow actually saves', () => {
+    const session = readFileSync('src/landos/browser-session.ts', 'utf8');
+    expect(session).toContain('OVERVIEW_HERO_VIEWPORT.width');
+    expect(session).toContain('const heroClip = overviewHeroClip(frame.clip, frame.viewport)');
+    expect(session).toContain('await page.screenshot({ path: file, clip: heroClip })');
+    expect(session).toContain('expectedClip: heroClip');
+    // The former tight capture viewport is gone from the workflow.
+    expect(session).not.toContain('setViewport?.({ width: 1600, height: 1000 })');
   });
 });

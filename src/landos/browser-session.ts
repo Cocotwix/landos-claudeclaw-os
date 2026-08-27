@@ -24,7 +24,7 @@ import { logger } from '../logger.js';
 import { automationBrowserConfig, launchAutomationBrowser, verifyAutomationOwnership } from './automation-browser.js';
 import type { BrowserDriver, BrowserPageRead, BrowserScreenshot } from './browser-intelligence.js';
 import { landosArtifactPath } from './storage-profile.js';
-import { assessMapViewportFrame, contextZoomOutSteps, surroundingAreaZoomOutSteps, parseAcresFromFields, inspectSavedParcelVisual, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN, BOUNDARY_CONTEXT_PLAN, type MapViewportClip, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
+import { assessMapViewportFrame, overviewHeroClip, OVERVIEW_HERO_VIEWPORT, contextZoomOutSteps, surroundingAreaZoomOutSteps, parseAcresFromFields, inspectSavedParcelVisual, isDistinctOverlayCapture, fileSha256, OVERLAY_CAPTURE_PLAN, BOUNDARY_CONTEXT_PLAN, type MapViewportClip, type ParcelVisualCaptureKind } from './parcel-visual-framing.js';
 import { LP_MAP_SEARCH, type LandPortalMapSearchPlan, type LandPortalMapSearchRow } from './landportal-map-search.js';
 import { evaluateThreeDCaptureEligibility, landPortalIdentityFromUrl } from './landportal-operating-rules.js';
 import {
@@ -2317,7 +2317,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       };
 
       try {
-        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: 1600, height: 1000 }); } catch { /* best-effort */ }
+        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: OVERVIEW_HERO_VIEWPORT.width, height: OVERVIEW_HERO_VIEWPORT.height }); } catch { /* best-effort */ }
         // Activate the capture tab ONLY inside the LandOS-spawned BACKGROUND
         // window: it sits offscreen at -32000, so activating a tab there can
         // never appear over the operator's work. A pre-existing visible Chrome
@@ -2702,15 +2702,21 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
               logger.warn({ event: 'landportal_visual_rejected', attempt, reason: verdict.reason }, 'landportal_visual_rejected');
               continue;
             }
+            // Retain the Overview-ready frame the first time: the wide capture
+            // viewport already makes the isolated map canvas landscape, and this
+            // keeps the saved crop wide about the same center the camera fitted
+            // the parcel to. Nothing is scaled and an already-wide clip passes
+            // through untouched, so no capture is cropped that did not need it.
+            const heroClip = overviewHeroClip(frame.clip, frame.viewport);
             let saved: ReturnType<typeof inspectSavedParcelVisual>;
             let after: { clip: MapViewportClip | null; viewport: { width: number; height: number }; obstructions: string[]; dismissed: number; hiddenChrome: number };
             try {
-              await page.screenshot({ path: file, clip: frame.clip });
+              await page.screenshot({ path: file, clip: heroClip });
               // Inspect the saved PNG itself (dimensions, bytes and hash), then
               // inspect the live page once more. If a late offer appeared during
               // the screenshot, dismissed > 0 proves that saved frame may contain
               // it, so delete and recapture rather than persisting contamination.
-              saved = inspectSavedParcelVisual({ filePath: file, kind, expectedClip: frame.clip });
+              saved = inspectSavedParcelVisual({ filePath: file, kind, expectedClip: heroClip });
               after = await page.evaluate(PREPARE_MAP_CAPTURE as unknown as () => { clip: MapViewportClip | null; viewport: { width: number; height: number }; obstructions: string[]; dismissed: number; hiddenChrome: number });
             } finally {
               await page.evaluate(RESTORE_MAP_CAPTURE_CHROME as unknown as () => void);
@@ -3553,7 +3559,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         return out.slice(0, 12);
       };
       try {
-        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: 1600, height: 1000 }); } catch { /* best-effort */ }
+        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: OVERVIEW_HERO_VIEWPORT.width, height: OVERVIEW_HERO_VIEWPORT.height }); } catch { /* best-effort */ }
         try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs }); } catch { /* readiness gates decide */ }
         let pageState = { authenticated: false, panelReady: false, apn: null as string | null };
         await pollUntil(async () => {
@@ -3708,7 +3714,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         return { noProps: /No properties found/i.test(text), count: match ? Number(match[1]) : null };
       };
       try {
-        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: 1600, height: 1000 }); } catch { /* best-effort */ }
+        try { await (page as unknown as { setViewport?: (v: { width: number; height: number }) => Promise<void> }).setViewport?.({ width: OVERVIEW_HERO_VIEWPORT.width, height: OVERVIEW_HERO_VIEWPORT.height }); } catch { /* best-effort */ }
         if (state.launchedBackground) {
           try { await (page as unknown as { bringToFront?: () => Promise<void> }).bringToFront?.(); } catch { /* best-effort */ }
         }

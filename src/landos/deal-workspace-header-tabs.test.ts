@@ -56,14 +56,32 @@ describe('Deal Workspace header tabs', () => {
     const OVERVIEW_CSS2 = readFileSync('web/src/styles/workspace-v2-overview.css', 'utf8');
     // Contain, centered: the whole capture is visible and its aspect ratio is
     // preserved; a mismatched capture letterboxes rather than losing content.
-    expect(OVERVIEW_CSS2).toContain('.awv2-hero-stage > img.fg { object-fit: contain; }');
+    expect(OVERVIEW_CSS2).toContain('.awv2-hero-stage > img.fg, .awv2-hero-viewport > img.fg { object-fit: contain; }');
     expect(OVERVIEW_CSS2).not.toMatch(/\.awv2-hero-stage > img\.fg \{[^}]*object-fit: cover/);
     // The black side gutters are filled by the SAME retained capture, blurred
     // and darkened behind the sharp one. It is decorative only, so it carries
     // no alt text and never becomes the evidence the operator reads.
     expect(OVERVIEW_CSS2).toMatch(/\.awv2-hero-stage > img\.bg \{[^}]*object-fit: cover;[^}]*filter: blur\(/);
     expect(OVERVIEW).toContain('<img class="bg" src={heroImageSrc} alt="" aria-hidden="true" />');
-    expect(OVERVIEW).toContain('<img class="fg" src={heroImageSrc} alt={heroImageAlt} />');
+    expect(OVERVIEW).toContain('class="fg"');
+    expect(OVERVIEW).toContain('src={heroImageSrc}');
+    expect(OVERVIEW).toContain('alt={heroImageAlt}');
+  });
+
+  // The hero is a viewer, not a static image: drag to pan, wheel and +/- to
+  // zoom, and Fit returns the COMPLETE saved capture. Scale is uniform, so a
+  // visual is never distorted, and every control is a local view transform —
+  // nothing is fetched, recaptured or researched.
+  it('makes the retained hero visual pannable, zoomable and re-fittable', () => {
+    expect(OVERVIEW).toContain('onPointerDown={onViewerPointerDown}');
+    expect(OVERVIEW).toContain('onWheel={onViewerWheel}');
+    expect(OVERVIEW).toContain('data-testid="hero-fit"');
+    expect(OVERVIEW).toContain('onClick={fitVisual}');
+    expect(OVERVIEW).toContain('const fitVisual = () => setView({ scale: 1, x: 0, y: 0 })');
+    // One uniform scale on both axes.
+    expect(OVERVIEW).toContain('scale(${view.scale})');
+    // Opening a visual, including after a tab switch, starts fitted.
+    expect(OVERVIEW).toContain('useEffect(() => { fitVisual(); }, [heroImageSrc]);');
   });
 
   it('neons only the subject outline, not amber neighbours or the map pin', () => {
