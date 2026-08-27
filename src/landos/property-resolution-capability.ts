@@ -62,6 +62,10 @@ function rawSubject(rawInput: string, entity: LandosEntity): ResolverSubject {
     acres: null,
     fips: fields.fips?.trim() || null,
     lpPropertyId: fields.propertyId?.trim() || null,
+    // The operator's own LandPortal link survives intake as a subject HINT so
+    // the LandPortal lanes enter the record directly. Dropping it here was why
+    // a supplied parcel link still forced a rediscovery search.
+    lpUrl: fields.lpUrl?.trim() || null,
     lat: coordinateMatch ? Number(coordinateMatch[1]) : null,
     lng: coordinateMatch ? Number(coordinateMatch[2]) : null,
     verified: false,

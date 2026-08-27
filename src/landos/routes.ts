@@ -103,7 +103,7 @@ import {
   getCardActivity,
   upsertPropertyCard,
 } from './property-card.js';
-import { isVerifiedLandPortalSubjectUrl, landPortalIdentityFromUrl, sameLandPortalParcel } from './landportal-operating-rules.js';
+import { isVerifiedLandPortalSubjectUrl, landPortalIdentityFromUrl, operatorLandPortalEntryUrl, sameLandPortalParcel } from './landportal-operating-rules.js';
 import { isAcceptedLandPortalVisualForProperty } from './landportal-evidence-validation.js';
 import { captureAndPersistAcceptedIdentityVisuals, captureAndPersistCardVisuals } from './visual-capture-workflow.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
@@ -202,6 +202,7 @@ import {
   projectCurrentDealBrainGuidance,
   retireDealBrainReplies,
 } from './deal-brain-guidance.js';
+import { runSmartIntakeSupervisor } from './smart-intake-supervisor.js';
 import { readDerivedSnapshot, writeDerivedSnapshot } from './derived-intelligence-store.js';
 import {
   INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE,
@@ -1860,12 +1861,23 @@ export function registerLandosRoutes(app: Hono): void {
     if (conversationalRaw !== null && !conversationalRaw.trim()) {
       return c.json({ error: 'Paste or dictate the lead information first.' }, 400);
     }
+    // The operator's own LandPortal link is a first-class intake identifier. It
+    // is accepted from an explicit form field under either spelling, and it is
+    // written into the legacy raw shape too so the SAME parser that reads a
+    // pasted link also sees a link typed into the form. Dropping it here was the
+    // reason a supplied parcel link never reached Property Resolution.
+    const suppliedLandPortalUrl =
+      str(body.landPortalUrl)?.trim() || str(body.lpUrl)?.trim() || null;
     const legacyRaw = JSON.stringify({
       sellerName: str(body.sellerName)?.trim() ?? '', phone: str(body.phone)?.trim() ?? '',
       email: str(body.email)?.trim() ?? '', leadSource: str(body.leadSource)?.trim() || 'manual',
       address: str(body.address)?.trim() ?? '', apn: str(body.apn)?.trim() ?? '',
       acreage: str(body.acreage)?.trim() ?? '', city: str(body.city)?.trim() ?? '',
       county: str(body.county)?.trim() ?? '', state: str(body.state)?.trim() ?? '',
+      // Present ONLY when the operator actually supplied a link, so a lead
+      // without one keeps its exact previous raw shape and every hash derived
+      // from it stays stable.
+      ...(suppliedLandPortalUrl ? { landPortalUrl: suppliedLandPortalUrl } : {}),
       sellerClues: str(body.sellerClues)?.trim() ?? '',
     });
     const rawInput = conversationalRaw ?? legacyRaw;
@@ -1882,6 +1894,14 @@ export function registerLandosRoutes(app: Hono): void {
     const county = parsed?.county ?? (str(body.county)?.trim() || null);
     const state = parsed?.state ?? (str(body.state)?.trim() || null);
     const zip = parsed?.zip ?? (str(body.zip)?.trim() || null);
+    // Whichever intake shape was used, the link the operator actually supplied
+    // is the one stored: an explicit field wins, otherwise the link the parser
+    // found inside the paste. It is stored as a SUBJECT HINT — never as verified
+    // identity — so the LandPortal lanes can open the record instead of
+    // rediscovering it, while the parcel itself is still confirmed by what the
+    // opened record shows.
+    const operatorLandPortalUrl =
+      suppliedLandPortalUrl || buildSmartIntake(rawInput).fields.lpUrl?.trim() || null;
     // A lead with no property reference still needs its OWN property card, so
     // the placeholder carries a unique suffix. It is an internal storage handle;
     // `isPlaceholderPropertyLabel` keeps it off every owner-facing surface.
@@ -1894,6 +1914,7 @@ export function registerLandosRoutes(app: Hono): void {
       state: state ?? undefined,
       zip: zip ?? undefined,
       apn: apn ?? undefined,
+      lpUrl: operatorLandPortalUrl ?? undefined,
       // The seller/lead name is NEVER written here. `owner` is the owner OF
       // RECORD, established only by an official source; seeding it from an
       // operator paste would silently satisfy the seller-authority name match
@@ -8198,9 +8219,16 @@ export function registerLandosRoutes(app: Hono): void {
       // searched for again: the workflow opens that record directly (it still
       // verifies it, and still falls back to searching without one).
       const retainedInspection = loadPropertyInspection(cardId);
+      // Order matters: a parcel URL LandOS already retained and verified beats
+      // the operator's link. Only when nothing is retained does the operator's
+      // own supplied link become the entry point — it still gets opened,
+      // verified, and falls back to searching if it is not the subject parcel.
+      const operatorEntryUrl = operatorLandPortalEntryUrl(getPropertyCardRow(cardId)?.lp_url);
       const retainedParcel = retainedInspection?.parcelUrl
         ? { url: retainedInspection.parcelUrl, source: retainedInspection.parcelUrlRecord?.source ?? 'retained:property_inspection.parcelUrl' }
-        : null;
+        : operatorEntryUrl
+          ? { url: operatorEntryUrl, source: 'operator:intake_landportal_url' }
+          : null;
       if (retainedParcel?.url) {
         logger.info({
           event: 'landportal_capture_direct_entry',
@@ -11085,6 +11113,46 @@ export function registerLandosRoutes(app: Hono): void {
       const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
       logger.error({ event: 'acreage_dependent_refresh_failed', dealCardId: id, msg: detail }, 'acreage_dependent_refresh_failed');
       return c.json({ error: `Acreage-dependent resolution failed: ${detail}` }, 500);
+    }
+  });
+
+  // ── Smart Intake supervisor ─────────────────────────────────────────────
+  //
+  // Free-form clarification on a deal whose run is already in progress or stuck.
+  // The operator's words are stored as guidance, the REAL structured run state
+  // is read back, and the model explains what happened and names which existing
+  // steps should run. This never creates a lead and never restarts the pipeline:
+  // `plan.steps` is a closed set of already-registered capabilities, and running
+  // them stays an explicit operator action so nothing expensive fires from typing.
+  app.post('/api/landos/deal-cards/:id/smart-intake', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const message = str(body.message)?.trim() ?? '';
+    if (!message) return c.json({ error: 'message required' }, 400);
+    try {
+      const result = await runSmartIntakeSupervisor({
+        dealCardId: id,
+        propertyCardId: subjectCardId(deal) ?? null,
+        operatorText: message,
+      });
+      return c.json({
+        plan: result.plan,
+        // The evidence the explanation was built from, so the operator can see
+        // the model was reading real state and not improvising.
+        state: {
+          resolution: result.evidence.resolution,
+          landPortal: result.evidence.landPortal,
+          identityConfidence: result.evidence.smartIntake.confidence,
+        },
+        thread: listDealBrainGuidance(id),
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      logger.warn({ err, dealCardId: id }, 'smart_intake_supervisor_route_failed');
+      return c.json({ error: `Smart Intake could not process that: ${detail}` }, 500);
     }
   });
 

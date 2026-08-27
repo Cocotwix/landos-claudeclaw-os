@@ -196,6 +196,7 @@ const SUBJECT: ResolverSubject = {
   acres: 75.91,
   fips: '47187',
   lpPropertyId: '154591092',
+  lpUrl: null,
   lat: 35.976,
   lng: -87.118,
   verified: true,

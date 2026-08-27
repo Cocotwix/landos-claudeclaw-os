@@ -212,6 +212,11 @@ export interface ResolverSubject {
   acres: number | null;
   fips: string | null;
   lpPropertyId: string | null;
+  /** Operator-supplied or retained LandPortal subject link, carried so the
+   *  LandPortal lanes can ENTER the record directly instead of rediscovering it
+   *  by address/owner search. It is a subject HINT, never verified identity: a
+   *  parcel is still confirmed by what the opened record actually shows. */
+  lpUrl: string | null;
   lat: number | null;
   lng: number | null;
   verified: boolean;
@@ -323,6 +328,7 @@ export function readResolverSubject(dealCardId: number): ResolverSubject | null 
     acres: positive(card.acres),
     fips: text(card.fips),
     lpPropertyId: text(card.lp_property_id),
+    lpUrl: text(card.lp_url),
     lat: card.lat == null ? null : Number(card.lat),
     lng: card.lng == null ? null : Number(card.lng),
     verified: String(card.verification_status ?? '') === 'verified_property',

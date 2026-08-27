@@ -27,6 +27,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { RefreshCw } from 'lucide-preact';
 import { apiGet, apiPost } from '@/lib/api';
 import { resolutionLabel, runStatusLabel } from '@/lib/run-status-state';
+import { SmartIntakeConversation } from '@/components/SmartIntakeConversation';
 
 const POLL_INTERVAL_MS = 2500;
 
@@ -325,6 +326,11 @@ export function PropertyIntelligenceRunStatus(props: {
 
       {/* The lane list stays mounted-on-demand: it is the detail view, and the
           one-line head above is what an operator glancing at the page reads. */}
+      {/* The operator's way back in. It is mounted here, under the resolution
+          line, because this is where a run announces it could not identify the
+          subject — the moment the operator actually has something to say. */}
+      <SmartIntakeConversation dealId={dealId} />
+
       {expanded && lanes.length > 0 && (
         <ul class="awv2-runstatus-lanes">
           {lanes.map((lane) => {

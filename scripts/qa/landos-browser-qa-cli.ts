@@ -6,6 +6,7 @@ import process from 'node:process';
 import { readEnvFile } from '../../src/env.js';
 import { runBrowserQa, type BrowserQaScenario } from '../../src/landos/browser-qa.js';
 import { godsEyeViewBrowserQaScenario } from '../../src/landos/gods-eye-view-browser-qa.js';
+import { deal90SmartIntakeQaScenario } from '../../src/landos/deal90-smart-intake-qa.js';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', '..');
 
@@ -43,11 +44,13 @@ async function main(): Promise<number> {
   const route = flag('route');
   const scenario = scenarioName === 'gods-eye-view'
     ? godsEyeViewBrowserQaScenario
-    : route && route.startsWith('/')
-      ? genericRouteScenario(route)
-      : null;
+    : scenarioName === 'deal90-smart-intake'
+      ? deal90SmartIntakeQaScenario
+      : route && route.startsWith('/')
+        ? genericRouteScenario(route)
+        : null;
   if (!scenario) {
-    console.error('Usage: npm run landos:browser:qa -- --scenario gods-eye-view | --route /local/path');
+    console.error('Usage: npm run landos:browser:qa -- --scenario gods-eye-view | deal90-smart-intake | --route /local/path');
     return 1;
   }
 

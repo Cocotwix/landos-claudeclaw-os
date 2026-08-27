@@ -80,6 +80,44 @@ export function isVerifiedLandPortalSubjectUrl(value: unknown): value is string 
   return validateLandPortalSubjectUrl(value).valid;
 }
 
+/**
+ * An operator-supplied LandPortal link that is safe to OPEN as the starting
+ * surface, which is a strictly weaker claim than `validateLandPortalSubjectUrl`.
+ *
+ * A canonical `?property=<token>` link carries decodable parcel identity and is
+ * the only shape that may stand in for identity. A saved-map `?map=<uuid>` link
+ * does NOT: it names a map view the operator was looking at, not a parcel. It is
+ * still the shortest correct ENTRY POINT, because opening it lands on the
+ * operator's own selection instead of rediscovering the parcel by address or
+ * owner search.
+ *
+ * So this returns a URL to open, never an identity. Whatever parcel the opened
+ * record turns out to be is still confirmed by the existing verification step,
+ * and a mismatch still falls back to the existing search path.
+ */
+export function operatorLandPortalEntryUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const raw = value.trim();
+  // A canonical parcel link is the strongest entry point; reuse its own guard.
+  const canonical = validateLandPortalSubjectUrl(raw);
+  if (canonical.valid) return canonical.canonicalUrl;
+  let parsed: URL;
+  try { parsed = new URL(raw); } catch { return null; }
+  if (parsed.protocol !== 'https:') return null;
+  if (!LP_HOSTS.has(parsed.hostname.toLowerCase())) return null;
+  if (REJECTED_PATHS.test(parsed.pathname)) return null;
+  // Saved-map links are the shape the operator actually copies out of LandPortal.
+  const map = parsed.searchParams.get('map')?.trim();
+  if (map && /^[0-9a-f-]{8,}$/i.test(map)) return raw;
+  return null;
+}
+
+/** True when the link can be opened directly but carries NO parcel identity, so
+ *  the opened record must establish which parcel it actually is. */
+export function isOperatorEntryOnlyLandPortalUrl(value: unknown): boolean {
+  return operatorLandPortalEntryUrl(value) !== null && !isVerifiedLandPortalSubjectUrl(value);
+}
+
 export function landPortalIdentityFromUrl(value: unknown): LandPortalParcelIdentity | null {
   return validateLandPortalSubjectUrl(value).identity;
 }

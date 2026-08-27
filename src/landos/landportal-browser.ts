@@ -46,7 +46,7 @@ import {
   validateLandPortalVisualEvidence,
   type LandPortalVisualView,
 } from './landportal-evidence-validation.js';
-import { validateLandPortalSubjectUrl } from './landportal-operating-rules.js';
+import { operatorLandPortalEntryUrl, validateLandPortalSubjectUrl } from './landportal-operating-rules.js';
 // The SHARED LandPortal capability. Every consequential action in this workflow —
 // submitting a search, selecting a result, extracting facts, capturing a
 // screenshot — passes through its visual checkpoints. No LandPortal result is
@@ -898,7 +898,12 @@ async function runLandPortalAgentic(
     // search path does, and hand it to the same capture. The search path is still
     // there for a subject that has no retained URL, or whose retained URL no
     // longer opens a parcel record that verifies as the subject.
-    const retainedParcelUrl = validateLandPortalSubjectUrl(key.landPortalParcelUrl).canonicalUrl;
+    // A canonical parcel link and an operator's saved-map link are both valid
+    // ENTRY POINTS; neither is an identity claim. The parcel checkpoint below is
+    // what decides whether the opened record is actually the subject, so a
+    // weaker-but-openable link costs nothing: it either verifies or falls back to
+    // the ordinary search exactly as a stale canonical URL already does.
+    const retainedParcelUrl = operatorLandPortalEntryUrl(key.landPortalParcelUrl);
     let obs: PageObservation;
     if (retainedParcelUrl) {
       await driver.open(retainedParcelUrl, t());
