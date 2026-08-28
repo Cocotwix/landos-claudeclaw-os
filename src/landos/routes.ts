@@ -184,6 +184,12 @@ import type { CapabilityEntity } from './capability-contract.js';
 import { researchReadinessItem } from './research-readiness.js';
 import { isReconcileError, reconcileResearchReadiness } from './research-readiness-reconcile.js';
 import { runResearchReadinessBackfill } from './research-readiness-backfill.js';
+import {
+  planResearchCoverage,
+  runResearchCoverageCycle,
+  specialistEvidenceRequirements,
+  type ResearchCoverageCycleResult,
+} from './research-coverage-cycle.js';
 import { readIntelligenceStackState, runIntelligenceStack } from './intelligence-stack.js';
 import {
   DEAL_INTELLIGENCE_PRODUCT_TYPE,
@@ -12008,12 +12014,80 @@ export function registerLandosRoutes(app: Hono): void {
   // refreshing a Deal Card calls it and nothing else: no capability is invoked,
   // no model is called, no browser opens. Research happens only through the
   // explicit backfill POST below.
+  // ── The research coverage cycle ───────────────────────────────────────────
+  // Re-run Research is a control system, not a launcher: it inspects what the
+  // Deal already has, attempts only the machine-owned gaps, confirms what
+  // actually landed, and then lets the specialist layers reevaluate. The pieces
+  // are all pre-existing — the readiness manifest, the bounded backfill, and
+  // the intelligence stack — and this is the loop between them.
+  const researchCoverageCycles = new Map<number, ResearchCoverageCycleResult>();
+
+  const runDealCoverageCycle = async (id: number, entity: CapabilityEntity) => {
+    const result = await runResearchCoverageCycle({ dealCardId: id, entity }, {
+      reconcile: (dealCardId) => {
+        const manifest = reconcileResearchReadiness(dealCardId);
+        return isReconcileError(manifest) ? { error: manifest.error } : manifest;
+      },
+      backfill: async (dealCardId, subjectEntity, itemIds) => {
+        const report = await runResearchReadinessBackfill(
+          dealCardId,
+          subjectEntity,
+          { itemIds, includeStale: true },
+          { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
+        );
+        return 'error' in report ? null : report.after;
+      },
+      // The existing specialist cascade. Property, Market, Seller and Deal
+      // Brain each recompute only when the evidence they consume actually
+      // moved, and each is expected to produce a useful current read from
+      // incomplete-but-sufficient evidence rather than staying silent.
+      cascade: async (dealCardId) => {
+        const deal = getDealCard(dealCardId);
+        const stackResult = await runIntelligenceStack({ dealCardId }, {
+          ...intelligenceStackReadDeps,
+          analyst: createIntelligenceExecutor(),
+          investigateSpatial: (cardId, dossier) => investigatePropertyWithGev(cardId, dossier),
+          runBackfill: async (itemIds: string[]) => {
+            if (!deal) return null;
+            const report = await runResearchReadinessBackfill(
+              dealCardId,
+              deal.entity as CapabilityEntity,
+              { itemIds },
+              { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
+            );
+            return 'error' in report ? null : report.after;
+          },
+        });
+        return {
+          outcome: stackResult.outcome,
+          reason: stackResult.reason,
+          refreshedLayers: stackResult.refreshedLayers,
+          reusedLayers: stackResult.reusedLayers,
+          warnings: stackResult.warnings,
+        };
+      },
+      log: (event, detail) => logger.info(detail, event),
+    });
+    if (!('error' in result)) researchCoverageCycles.set(id, result);
+    return result;
+  };
+
   app.get('/api/landos/deal-cards/:id/research-readiness', (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const manifest = reconcileResearchReadiness(id);
     if (isReconcileError(manifest)) return c.json({ error: manifest.error }, manifest.status);
-    return c.json({ manifest });
+    // The same reconciled manifest, projected into the coverage vocabulary an
+    // operator (and later MiniMax) reads: what is REUSED versus RETURNED, what
+    // is PARTIAL because the lane executed without establishing its output, and
+    // which specialist asked for each thing that is still missing. SELECT-only.
+    const coverage = planResearchCoverage(manifest);
+    return c.json({
+      manifest,
+      coverage,
+      evidenceRequirements: specialistEvidenceRequirements(coverage, manifest),
+      lastCycle: researchCoverageCycles.get(id) ?? null,
+    });
   });
 
   // Targeted backfill. Bounded by the manifest: only red machine-resolvable
@@ -12102,6 +12176,24 @@ export function registerLandosRoutes(app: Hono): void {
     // reap may have minted a replacement since.
     await adoptAutomationControlPage();
 
+    // The planned delta, BEFORE anything runs: which requirements this cycle
+    // reuses, which it will attempt, and which nothing registered can close.
+    // Logged so the run's own record shows what it intended, and returned so
+    // the operator surface can show it without a second reconcile.
+    const preManifest = reconcileResearchReadiness(id);
+    const coveragePlan = isReconcileError(preManifest) ? null : planResearchCoverage(preManifest);
+    if (coveragePlan) {
+      logger.info({
+        dealCardId: id,
+        runId: fullRunId,
+        headline: coveragePlan.headline,
+        reuse: coveragePlan.reuseItemIds,
+        run: coveragePlan.runItemIds,
+        blocked: coveragePlan.entries.filter((entry) => entry.action === 'blocked').map((entry) => entry.id),
+        notApplicable: coveragePlan.entries.filter((entry) => entry.action === 'not_applicable').map((entry) => entry.id),
+      }, 'research_coverage_planned_delta');
+    }
+
     // ONE operator action → ONE parent mission on the native mission graph.
     const { launch, completion } = launchDealIntelligenceMission({
       dealCardId: id,
@@ -12138,6 +12230,30 @@ export function registerLandosRoutes(app: Hono): void {
           ok: capture.ok,
           reason: capture.reason,
         }, 'deal_intelligence_google_visual_capture');
+      })
+      // ── Close the loop ────────────────────────────────────────────────────
+      // The mission is retrieval, not coverage. This is the part that was
+      // missing: reconcile what the mission actually established, attempt the
+      // machine-owned requirements it left open, and notify the specialist
+      // layers so Property, Market, Seller and Deal Brain produce a CURRENT
+      // read instead of waiting for the operator to click each one. Bounded to
+      // one pass; a requirement nothing registered owns stays honestly open.
+      .then(async () => {
+        const current = getDealCard(id);
+        if (!current) return;
+        const cycle = await runDealCoverageCycle(id, current.entity as CapabilityEntity);
+        if ('error' in cycle) {
+          logger.warn({ dealCardId: id, runId: launch.runId, msg: cycle.error }, 'research_coverage_cycle_skipped');
+          return;
+        }
+        logger.info({
+          dealCardId: id,
+          runId: launch.runId,
+          headline: cycle.after?.headline ?? cycle.plan.headline,
+          attempted: cycle.attemptedItemIds,
+          refreshedLayers: cycle.cascade?.refreshed ?? [],
+          openRequirements: cycle.requirements.length,
+        }, 'research_coverage_cycle_complete');
       })
       .catch((err) => logger.warn({ err, dealCardId: id, runId: launch.runId }, 'deal_intelligence_mission_failed'))
       // ── THE REAL LAST CLEANUP BOUNDARY ────────────────────────────────────
@@ -12179,7 +12295,13 @@ export function registerLandosRoutes(app: Hono): void {
         }
       });
     if (wait) await completion;
-    return c.json({ launch, identityReconciliation: null, propertyIntelligence: propertyIntelligenceView(id) });
+    return c.json({
+      launch,
+      identityReconciliation: null,
+      propertyIntelligence: propertyIntelligenceView(id),
+      coveragePlan,
+      coverageCycle: wait ? researchCoverageCycles.get(id) ?? null : null,
+    });
     } catch (error) {
       releaseFullRunLock();
       throw error;
