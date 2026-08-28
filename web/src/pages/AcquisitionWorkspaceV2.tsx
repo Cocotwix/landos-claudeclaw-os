@@ -79,6 +79,23 @@ import '../styles/workspace-v2-lead-design.css';
 
 // ── Minimal read-model types (fields this view consumes) ───────────────
 
+/** The server's derived read of the evidence this Deal already retained. */
+interface EvidenceInterpretationView {
+  groups: Array<{ kind: string; label: string; artifactIds: number[]; pageCount: number }>;
+  claims: Array<{
+    field: string; label: string; value: string; relation: string; parcelRelationship: string;
+    reason: string; provenance: { artifactId: number; fileName: string; pageLabel: string };
+  }>;
+  unreadable: Array<{ artifactId: number; fileName: string; reason: string }>;
+  acreage: {
+    entries: Array<{ acres: number; basis: string; label: string; source: string }>;
+    workingAcres: number | null; workingBasis: string | null; reason: string; bothLegitimate: boolean;
+  } | null;
+  narrative: string;
+  satisfiedFields: string[];
+  relatedParcelReferences: Array<{ artifactId: number; statedApn: string; relationship: string; pageLabel: string }>;
+}
+
 interface DdItem {
   key: string; label: string; verdict: string; headline: string; detail?: string;
   missing?: string[];
@@ -344,6 +361,11 @@ export function AcquisitionWorkspaceV2() {
   const [dealUploads, setDealUploads] = useState<Array<{
     id?: number; title?: string; fileName?: string; mimeType?: string; docType?: string; uploadedAt?: string;
   }>>([]);
+  // What those retained uploads actually SAY. Derived server-side from the
+  // extractions already on the artifacts, so this fetch runs no research, calls
+  // no model, and re-reads no file — which is why a hard refresh reproduces the
+  // same grouping, claims and provenance rather than losing them.
+  const [evidenceRead, setEvidenceRead] = useState<EvidenceInterpretationView | null>(null);
   // Property-tax payment status, answered by the collecting office rather than
   // the assessor. Without it the panel could only ever say "not screened".
   const [taxStatus, setTaxStatus] = useState<TaxStatusView | null>(null);
@@ -453,7 +475,7 @@ export function AcquisitionWorkspaceV2() {
         // first paint instead of keeping the entire workspace behind their
         // expensive staleness/read-model rebuilds.
         setLoading(false);
-        const [rr, ai, up] = await Promise.all([
+        const [rr, ai, up, ev] = await Promise.all([
           apiGet<{ manifest?: ResearchReadinessManifestView }>(
             `/api/landos/deal-cards/${dealId}/research-readiness`,
           ).catch(() => null),
@@ -461,9 +483,13 @@ export function AcquisitionWorkspaceV2() {
           apiGet<{ uploads?: Array<Record<string, unknown>> }>(
             `/api/landos/deal-cards/${dealId}/documents/uploads`,
           ).catch(() => null),
+          apiGet<{ interpretation?: EvidenceInterpretationView }>(
+            `/api/landos/deal-cards/${dealId}/evidence/interpretation`,
+          ).catch(() => null),
         ]);
         if (dead) return;
         setDealUploads((up?.uploads ?? []) as typeof dealUploads);
+        setEvidenceRead(ev?.interpretation ?? null);
         setReadiness(rr?.manifest ?? null);
         setAiRead(ai?.products?.deal ?? null);
         setPersistedDealStrategies(ai?.persistedDealStrategies ?? null);
@@ -1225,6 +1251,61 @@ export function AcquisitionWorkspaceV2() {
                 of seller documents are not buried under map captures. */}
             <section class="awv2-panel" data-domain="evidence">
               <div class="awv2-panel-title">Operator &amp; seller uploads</div>
+              {/* The logical read of those same files. Grouping comes from what
+                  each page SAYS, not its filename — all six originals here are
+                  named image.png — and every original stays individually
+                  listed and openable below. A concise operator read only: the
+                  document type, its pages, what it established, and which
+                  parcel it concerns. Never a report. */}
+              {evidenceRead?.groups?.length ? (
+                <div data-testid="documents-evidence-groups">
+                  {evidenceRead.groups.map((group) => {
+                    const groupClaims = (evidenceRead.claims ?? [])
+                      .filter((claim) => group.artifactIds.includes(claim.provenance.artifactId));
+                    const subjectScoped = groupClaims.some((claim) => claim.parcelRelationship === 'subject');
+                    const other = evidenceRead.relatedParcelReferences
+                      ?.find((ref) => group.artifactIds.includes(ref.artifactId));
+                    return (
+                      <div class="awv2-evidence-group" data-testid={`evidence-group-${group.kind}`}>
+                        <div class="awv2-evidence-group-head">
+                          <strong>{group.label}</strong>
+                          <span class="awv2-pi-note">
+                            {group.kind === 'unreadable'
+                              ? 'Retained, not interpreted'
+                              : subjectScoped
+                                ? 'Subject parcel'
+                                : other
+                                  ? `References parcel ${other.statedApn} — relationship to the subject unresolved`
+                                  : 'Parcel relationship unresolved'}
+                          </span>
+                        </div>
+                        {groupClaims.length ? (
+                          <ul class="awv2-evidence-claims">
+                            {groupClaims.slice(0, 6).map((claim) => (
+                              <li data-testid={`evidence-claim-${claim.field}`}>
+                                <span class={`awv2-claim-rel awv2-claim-${claim.relation}`}>{claim.relation}</span>
+                                {' '}{claim.label}: <strong>{claim.value}</strong>
+                                {' '}<span class="awv2-pi-note">{claim.provenance.pageLabel}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p class="awv2-pi-note">
+                            Nothing was claimed from {group.pageCount === 1 ? 'this page' : 'these pages'}.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {evidenceRead.acreage?.bothLegitimate && (
+                    <p class="awv2-pi-note" data-testid="evidence-acreage-basis">
+                      {evidenceRead.acreage.entries
+                        .map((entry) => `${entry.label}: ${entry.acres} AC`).join(' · ')}
+                      {' — '}{evidenceRead.acreage.reason}
+                    </p>
+                  )}
+                </div>
+              ) : null}
               {dealUploads.length ? (
                 <ul class="awv2-documents-list" data-testid="documents-uploads-list">
                   {dealUploads.map((item) => (

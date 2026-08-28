@@ -464,6 +464,8 @@ import { recordDeedPage } from './recorded-deed-pages.js';
 import { validateRecordedLienReview, type RecordedLienStatus } from './recorded-lien-review.js';
 import { buildDdBusinessStatus } from './dd-business-status.js';
 import { saveDocumentUpload, listDocumentUploads, updateDocumentUpload, removeDocumentUpload, servableUploadPath, UPLOAD_CATEGORIES } from './document-uploads.js';
+import { interpretRetainedDealEvidence } from './deal-evidence-claims-store.js';
+import type { DealEvidenceInterpretation } from './deal-evidence-claims.js';
 import {
   RESOURCE_CATEGORIES,
   analyzeLeadCardIntake,
@@ -3731,6 +3733,21 @@ export function registerLandosRoutes(app: Hono): void {
         Number(submission.id),
         intakeArtifacts.map((artifact) => artifact.extraction.candidates as Record<string, string>),
       );
+      // ── Understand the evidence BEFORE reacting to it ──────────────────
+      //
+      // The coverage cycle used to fire on the fact that a file arrived. It now
+      // fires on what the file SAID. Interpretation reads the extractions this
+      // upload just retained, turns them into page-provenanced claims, and
+      // reconciles them against the Deal's working conclusion — no retrieval, no
+      // model call, no second evidence store — so the cycle that follows already
+      // knows which requirements the documents closed and which they contested.
+      const interpretation = (() => {
+        try { return interpretRetainedDealEvidence(id); } catch (error) {
+          logger.warn({ dealCardId: id, err: (error as Error).message }, 'deal_evidence_interpretation_failed');
+          return null;
+        }
+      })();
+
       // ── New evidence is itself a trigger into the closed research loop ──
       //
       // Retaining the attachment was never the whole job. Evidence arriving on
@@ -3752,7 +3769,7 @@ export function registerLandosRoutes(app: Hono): void {
       // from retained state the moment it settles, and a cycle that fails
       // leaves the retained evidence untouched.
       if (process.env.NODE_ENV !== 'test') {
-        void runDealCoverageCycle(id, deal.entity as CapabilityEntity, 'automatic')
+        void runDealCoverageCycle(id, deal.entity as CapabilityEntity, 'automatic', interpretation)
           .catch((error) => logger.warn(
             { dealCardId: id, err: (error as Error).message },
             'deal_evidence_coverage_cycle_failed',
@@ -3766,6 +3783,9 @@ export function registerLandosRoutes(app: Hono): void {
         // The Deal reacts to this evidence on its own; the conversation says so
         // rather than leaving the operator with "(6 attachments)" and silence.
         evidenceTriggeredResearch: true,
+        // What the documents actually said, so Smart Intake answers from the
+        // real pages instead of a canned acknowledgement.
+        evidenceInterpretation: interpretation,
         submissions: listLeadCardIntake(id),
         contacts: listResourceContacts(id),
       }, 201);
@@ -5514,6 +5534,20 @@ export function registerLandosRoutes(app: Hono): void {
       return c.json({ upload: row, uploads: listDocumentUploads(id) });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  // Derived, idempotent, and free: the interpretation of everything this Deal
+  // has already retained. Documents & Uploads reads it to show the deed/survey
+  // grouping and every claim's exact page, and a hard refresh re-derives the
+  // same answer from the same immutable artifacts.
+  app.get('/api/landos/deal-cards/:id/evidence/interpretation', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    try {
+      return c.json({ interpretation: interpretRetainedDealEvidence(id) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
     }
   });
 
@@ -12083,17 +12117,51 @@ export function registerLandosRoutes(app: Hono): void {
     id: number,
     entity: CapabilityEntity,
     trigger: 'automatic' | 'operator_rerun' = 'automatic',
+    // What the Deal's own documents just established, when the cycle was
+    // triggered by evidence. The cycle uses it to decide what NOT to retrieve:
+    // a requirement a subject survey already answers is not a gap, and running
+    // it anyway is exactly the wasted work an evidence trigger should prevent.
+    evidence?: DealEvidenceInterpretation | null,
   ) => {
+    // Requirement keys the interpreted subject evidence genuinely closed. Only
+    // subject-parcel claims reach `satisfiedFields`, and a field with an open
+    // contradiction is deliberately excluded upstream, so a contested fact
+    // still counts as a gap. Frontage is intentionally absent from the mapping:
+    // a survey showing road frontage is physical evidence and never by itself
+    // establishes a recorded legal right of access.
+    const EVIDENCE_SATISFIES: Record<string, string[]> = {
+      acreage: ['acreage', 'parcel_acreage'],
+      legalDescription: ['legal_description'],
+      surveyBoundary: ['parcel_boundary'],
+      floodZone: ['flood_zone'],
+      owner: ['owner_of_record'],
+    };
+    const evidenceSatisfied = new Set(
+      (evidence?.satisfiedFields ?? []).flatMap((field) => EVIDENCE_SATISFIES[field] ?? []),
+    );
     const result = await runResearchCoverageCycle({ dealCardId: id, entity, trigger }, {
       reconcile: (dealCardId) => {
         const manifest = reconcileResearchReadiness(dealCardId);
         return isReconcileError(manifest) ? { error: manifest.error } : manifest;
       },
       backfill: async (dealCardId, subjectEntity, itemIds, options) => {
+        // The delta, narrowed by what the operator's own documents already
+        // answered. Everything still missing goes to the same shared retrieval
+        // orchestrator untouched — this only removes work the evidence made
+        // unnecessary, it never adds a lane or a second engine.
+        const remaining = evidenceSatisfied.size
+          ? itemIds.filter((itemId) => !evidenceSatisfied.has(String(itemId)))
+          : itemIds;
+        if (evidenceSatisfied.size && remaining.length !== itemIds.length) {
+          logger.info(
+            { dealCardId, skipped: itemIds.length - remaining.length, satisfiedByEvidence: [...evidenceSatisfied] },
+            'coverage_delta_narrowed_by_operator_evidence',
+          );
+        }
         const report = await runResearchReadinessBackfill(
           dealCardId,
           subjectEntity,
-          { itemIds, includeStale: true, includeUnresolved: options?.includeUnresolved === true },
+          { itemIds: remaining, includeStale: true, includeUnresolved: options?.includeUnresolved === true },
           { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
         );
         return 'error' in report ? null : report.after;
