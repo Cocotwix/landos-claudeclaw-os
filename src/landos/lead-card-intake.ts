@@ -35,7 +35,10 @@ export interface IntakeImageArtifactInput {
   documentUploadId: number;
   originalFileName: string;
   fileUrl: string;
-  mimeType: SmartIntakeImageMimeType;
+  // Any operator-supplied media type, not only the three image types. An
+  // artifact row is how evidence exists at all; narrowing it to what LandOS
+  // happens to be able to read is what lost PDFs, surveys, and recordings.
+  mimeType: SmartIntakeImageMimeType | string;
   byteSize: number;
   sha256: string;
   sourceMethod: SmartIntakeImageSourceMethod;

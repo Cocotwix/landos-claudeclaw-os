@@ -477,12 +477,17 @@ import {
 } from './lead-card-intake.js';
 import { buildDevelopmentIntelligence } from './development-intelligence.js';
 import {
-  extractSmartIntakeImage,
   smartIntakeImageSha256,
   unavailableSmartIntakeImageExtraction,
   validateSmartIntakeImage,
   type SmartIntakeImageSourceMethod,
 } from './smart-intake-image.js';
+import {
+  SMART_INTAKE_ARTIFACT_MAX_BYTES,
+  classifyIntakeArtifact,
+  describeIntakeArtifact,
+  extractIntakeArtifact,
+} from './smart-intake-artifact.js';
 import { retrieveRagChunks, buildAgentRagContext, ingestRagDocument, ragIndexStats, htmlToText, RAG_DOC_TYPES, type RagAgentKind, type RagDocType } from './rag-knowledge.js';
 import { ingestCanonicalDealKnowledge, ingestCardEvidence, ingestRepoPlaybooks } from './rag-ingest.js';
 import type { CompRegistry } from './comp-registry.js';
@@ -3642,8 +3647,8 @@ export function registerLandosRoutes(app: Hono): void {
       ? value.filter((item): item is File => item instanceof File)
       : value instanceof File ? [value] : [];
     const files = [...asFiles(body.files), ...asFiles(body.file)];
-    if (files.length === 0) return c.json({ error: 'Choose one or more images to upload.' }, 400);
-    if (files.length > 10) return c.json({ error: 'Smart Intake accepts up to 10 images in one submission.' }, 400);
+    if (files.length === 0) return c.json({ error: 'Choose one or more files to attach.' }, 400);
+    if (files.length > 10) return c.json({ error: 'Smart Intake accepts up to 10 files in one submission.' }, 400);
     const idempotencyKey = String(Array.isArray(body.submissionKey) ? body.submissionKey[0] ?? '' : body.submissionKey ?? '');
     const existing = findLeadCardIntakeBySubmissionKey(id, idempotencyKey);
     if (existing) return c.json({ submission: existing, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id), duplicatePrevented: true });
@@ -3652,87 +3657,60 @@ export function registerLandosRoutes(app: Hono): void {
       try { return JSON.parse(sourceMethodsRaw) as unknown; } catch { return []; }
     })();
     const sourceMethods = Array.isArray(parsedSourceMethods) ? parsedSourceMethods : [];
+    // ONE path for every supplied file. What a file IS decides how hard LandOS
+    // tries to read it; it never decides whether the file is allowed to become
+    // evidence. The old branch admitted only PNG/JPEG/WEBP to the artifact
+    // table and dropped everything else into a prose sentence with no artifact
+    // row, so a supplied survey or recording existed nowhere a reader looked.
     const prepared = await Promise.all(files.map(async (file, index) => {
       const bytes = Buffer.from(await file.arrayBuffer());
       const ext = path.extname(file.name).toLowerCase();
-      const inferredMime = file.type || (ext === '.png' ? 'image/png' : ['.jpg', '.jpeg'].includes(ext) ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : '');
-      const isImage = /^image\//i.test(inferredMime);
+      const classification = classifyIntakeArtifact(file.name, file.type || '');
       const sourceMethod = ['clipboard', 'upload', 'drop'].includes(String(sourceMethods[index]))
         ? String(sourceMethods[index]) as SmartIntakeImageSourceMethod
         : 'upload';
-      return { file, bytes, ext, inferredMime, isImage, sourceMethod };
+      return { file, bytes, ext, classification, sourceMethod };
     }));
-    const allImages = prepared.every((item) => item.isImage);
-    if (!allImages && prepared.length > 1) return c.json({ error: 'Multiple-file Smart Intake submissions support PNG, JPG/JPEG, and WEBP images only.' }, 400);
-    const first = prepared[0];
-    const textReadable = ['.txt', '.md', '.srt', '.vtt', '.csv', '.json'].includes(first.ext) || /^text\//i.test(first.inferredMime);
-    const transcript = String(Array.isArray(body.submissionType) ? body.submissionType[0] ?? '' : body.submissionType ?? '') === 'transcript' || ['.srt', '.vtt'].includes(first.ext);
-    if (!allImages && transcript && !textReadable) return c.json({ error: 'Transcript uploads support TXT, MD, SRT, and VTT files.' }, 400);
+    const empty = prepared.find((item) => item.bytes.length === 0);
+    if (empty) return c.json({ error: `${empty.file.name} is empty.` }, 400);
+    const tooLarge = prepared.find((item) => item.bytes.length > SMART_INTAKE_ARTIFACT_MAX_BYTES);
+    if (tooLarge) return c.json({ error: `${tooLarge.file.name} is larger than the 25 MB Smart Intake limit.` }, 400);
+    const transcript = String(Array.isArray(body.submissionType) ? body.submissionType[0] ?? '' : body.submissionType ?? '') === 'transcript'
+      || ['.srt', '.vtt'].includes(prepared[0].ext);
     try {
-      if (!allImages) {
-        if (first.bytes.length > 10 * 1024 * 1024) return c.json({ error: 'File is larger than the 10 MB intake limit.' }, 400);
-        const uploaded = saveDocumentUpload({
-          dealCardId: id,
-          category: 'other',
-          title: String(Array.isArray(body.title) ? body.title[0] ?? '' : body.title ?? '') || first.file.name,
-          docType: transcript ? 'transcript' : 'smart_intake_original',
-          fileName: first.file.name,
-          mimeType: first.inferredMime || 'application/octet-stream',
-          bytes: first.bytes,
-          note: 'Original smart-intake submission retained on the Deal Card.',
-        });
-        const uploadUrl = `/api/landos/deal-cards/${id}/documents/upload-file/${encodeURIComponent(uploaded.fileName)}`;
-        const operatorNote = String(Array.isArray(body.note) ? body.note[0] ?? '' : body.note ?? '');
-        // A format LandOS cannot read yet is RETAINED and the limitation is
-        // stated, rather than the file being refused or its absence going
-        // unexplained. The operator supplied it for a reason; saying "kept, not
-        // read, here is why" is a true answer they can act on.
-        const text = textReadable
-          ? first.bytes.toString('utf8')
-          : `Attached ${first.file.name} (${first.inferredMime || 'unknown type'}, ${first.bytes.length.toLocaleString('en-US')} bytes). It is retained on this deal, but its contents were not read: LandOS has no reader for this format yet. Say what is in it and that becomes part of the deal.${operatorNote ? ` Operator note: ${operatorNote}` : ''}`;
-        const submission = await persistLeadCardIntake({
-          dealCardId: id,
-          text,
-          submissionType: transcript ? 'transcript' : 'general',
-          source: str(Array.isArray(body.source) ? body.source[0] : body.source) ?? 'operator upload',
-          fileName: first.file.name,
-          fileUrl: uploadUrl,
-          mimeType: first.inferredMime || 'application/octet-stream',
-          idempotencyKey,
-          modelAnalyzer: process.env.NODE_ENV === 'test' ? undefined : configuredIntakeAnalyzer,
-        });
-        return c.json({ submission, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id) }, 201);
-      }
-      const validated = prepared.map((item) => ({
-        ...item,
-        mimeType: validateSmartIntakeImage(item.bytes, item.inferredMime, item.file.name),
-      }));
-      const extracted = await Promise.all(validated.map(async (item) => {
-        try {
-          return process.env.NODE_ENV === 'test'
-            ? unavailableSmartIntakeImageExtraction('Vision extraction is disabled in route tests.', 'test')
-            : await extractSmartIntakeImage(item.bytes, item.mimeType);
-        } catch (error) {
-          return unavailableSmartIntakeImageExtraction((error as Error).message, process.env.SMART_INTAKE_VISION_MODEL || 'gemini-3-flash-preview');
+      // Images keep the signature/extension check they always had: a file whose
+      // bytes contradict its declared image type is a real problem worth
+      // reporting, not evidence worth filing.
+      for (const item of prepared) {
+        if (/^image\//i.test(item.classification.mimeType)
+            && item.classification.interpreter === 'vision') {
+          validateSmartIntakeImage(item.bytes, item.classification.mimeType, item.file.name);
         }
-      }));
-      const imageArtifacts = validated.map((item, index) => {
+      }
+      const extracted = await Promise.all(prepared.map(async (item) => (
+        process.env.NODE_ENV === 'test' && item.classification.interpreter !== 'text'
+          ? unavailableSmartIntakeImageExtraction('Model extraction is disabled in route tests.', 'test')
+          : extractIntakeArtifact(item.bytes, item.classification)
+      )));
+      const intakeArtifacts = prepared.map((item, index) => {
         const uploaded = saveDocumentUpload({
           dealCardId: id,
           category: 'other',
           title: item.file.name,
-          docType: 'smart_intake_image_original',
+          docType: /^image\//i.test(item.classification.mimeType)
+            ? 'smart_intake_image_original'
+            : transcript ? 'transcript' : 'smart_intake_original',
           fileName: item.file.name,
-          mimeType: item.mimeType,
+          mimeType: item.classification.mimeType,
           bytes: item.bytes,
-          note: `Immutable Smart Intake image evidence (${item.sourceMethod}).`,
+          note: `Immutable Smart Intake evidence — ${item.classification.kind} (${item.sourceMethod}).`,
         });
         const uploadUrl = `/api/landos/deal-cards/${id}/documents/upload-file/${encodeURIComponent(uploaded.fileName)}`;
         return {
           documentUploadId: uploaded.id,
           originalFileName: item.file.name,
           fileUrl: uploadUrl,
-          mimeType: item.mimeType,
+          mimeType: item.classification.mimeType,
           byteSize: item.bytes.length,
           sha256: smartIntakeImageSha256(item.bytes),
           sourceMethod: item.sourceMethod,
@@ -3740,24 +3718,48 @@ export function registerLandosRoutes(app: Hono): void {
         };
       });
       const operatorNote = String(Array.isArray(body.note) ? body.note[0] ?? '' : body.note ?? '');
+      // Interpreted artifacts already contribute their transcribed text through
+      // the artifact rows. Only the ones LandOS could NOT read need a sentence
+      // in the retained submission, because otherwise nothing in the text a
+      // reader sees would say the file arrived and was not understood.
+      const unreadNotes = prepared.flatMap((item, index) => (
+        extracted[index].status === 'unavailable'
+          ? [describeIntakeArtifact(item.file.name, item.classification, extracted[index])]
+          : []
+      ));
+      const text = [operatorNote, ...unreadNotes].filter(Boolean).join('\n\n');
       const submission = await persistLeadCardIntake({
         dealCardId: id,
-        text: operatorNote,
-        submissionType: String(Array.isArray(body.submissionType) ? body.submissionType[0] ?? '' : body.submissionType ?? '') === 'transcript' ? 'transcript' : 'general',
+        text,
+        submissionType: transcript ? 'transcript' : 'general',
         source: str(Array.isArray(body.source) ? body.source[0] : body.source) ?? 'Deal Card smart intake',
-        fileName: imageArtifacts[0].originalFileName,
-        fileUrl: imageArtifacts[0].fileUrl,
-        mimeType: imageArtifacts[0].mimeType,
+        fileName: intakeArtifacts[0].originalFileName,
+        fileUrl: intakeArtifacts[0].fileUrl,
+        mimeType: intakeArtifacts[0].mimeType,
         idempotencyKey,
-        imageArtifacts,
+        imageArtifacts: intakeArtifacts,
         modelAnalyzer: process.env.NODE_ENV === 'test' ? undefined : configuredIntakeAnalyzer,
       });
       const handoff = await beginIntakeCandidateResolution(
         id,
         Number(submission.id),
-        imageArtifacts.map((artifact) => artifact.extraction.candidates as Record<string, string>),
+        intakeArtifacts.map((artifact) => artifact.extraction.candidates as Record<string, string>),
       );
-      return c.json({ submission: { ...submission, resolutionHandoff: handoff }, submissions: listLeadCardIntake(id), contacts: listResourceContacts(id) }, 201);
+      return c.json({
+        submission: { ...submission, resolutionHandoff: handoff },
+        // What LandOS decided each file was and whether it could read it, so
+        // the conversation can say so instead of the operator guessing.
+        artifactRouting: prepared.map((item, index) => ({
+          fileName: item.file.name,
+          kind: item.classification.kind,
+          mimeType: item.classification.mimeType,
+          interpreter: item.classification.interpreter,
+          extractionStatus: extracted[index].status,
+          summary: describeIntakeArtifact(item.file.name, item.classification, extracted[index]),
+        })),
+        submissions: listLeadCardIntake(id),
+        contacts: listResourceContacts(id),
+      }, 201);
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
     }
