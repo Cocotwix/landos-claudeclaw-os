@@ -1,6 +1,7 @@
 import { useRef, useState } from 'preact/hooks';
 import { Mic, Paperclip, Square, X } from 'lucide-preact';
 import { apiPost, apiPostForm } from '@/lib/api';
+import { foldSpeechResults, joinDictation } from '@/lib/dictation';
 
 type EntityFilter = 'all' | 'LAND_ALLY' | 'TY_LAND_BIZ';
 
@@ -38,6 +39,13 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
   const recognitionRef = useRef<any>(null);
+  // Dictation state is kept in refs, not state: the recognizer fires several
+  // times per spoken word, and every one of those events has to see the value
+  // the previous event wrote, not a render-old copy.
+  const dictationBaseRef = useRef('');       // composer text before the mic opened
+  const dictationCommittedRef = useRef('');  // finalized speech, appended once each
+  const dictationCountRef = useRef(0);       // results already folded in, high-water mark
+  const dictationDraftRef = useRef('');      // the replaceable live interim
 
   const attach = (files: File[]) => {
     if (!files.length) return;
@@ -115,18 +123,44 @@ export function Acquire({ entity, onOpenDealCard }: { entity: EntityFilter; onOp
     }
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
-    recognition.interimResults = false;
+    // Interim results ON, so the operator watches the sentence appear instead
+    // of waiting in silence. They are a DRAFT: replaced on every event, and
+    // never the thing that gets committed. See `foldSpeechResults`.
+    recognition.interimResults = true;
     recognition.lang = 'en-US';
+
+    // What the composer already held when the microphone opened. Preserved
+    // verbatim, so dictation adds to typing rather than replacing it, and a
+    // second dictation session appends after the first one's committed text.
+    dictationBaseRef.current = rawInput;
+    dictationCommittedRef.current = '';
+    dictationCountRef.current = 0;
+    dictationDraftRef.current = '';
+
     recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results)
-        .slice(event.resultIndex)
-        .map((result: any) => result[0]?.transcript ?? '')
-        .join(' ')
-        .trim();
-      if (transcript) setRawInput((current) => `${current}${current && !/\s$/.test(current) ? ' ' : ''}${transcript}`);
+      const folded = foldSpeechResults(event, dictationCountRef.current);
+      dictationCountRef.current = folded.consumed;
+      dictationCommittedRef.current = joinDictation(dictationCommittedRef.current, folded.finalized);
+      dictationDraftRef.current = folded.draft;
+      setRawInput(joinDictation(
+        dictationBaseRef.current,
+        joinDictation(dictationCommittedRef.current, folded.draft),
+      ));
     };
-    recognition.onerror = () => { setListening(false); setError('Voice dictation stopped. You can continue by typing or try the microphone again.'); };
-    recognition.onend = () => setListening(false);
+    const settle = () => {
+      // Whatever is still only a draft becomes real. It cannot duplicate a
+      // final: a finalized result advances `consumed` past itself for good and
+      // clears the draft, so a draft surviving to here was never committed.
+      dictationCommittedRef.current = joinDictation(dictationCommittedRef.current, dictationDraftRef.current);
+      dictationDraftRef.current = '';
+      setRawInput(joinDictation(dictationBaseRef.current, dictationCommittedRef.current));
+    };
+    recognition.onerror = () => {
+      settle();
+      setListening(false);
+      setError('Voice dictation stopped. You can continue by typing or try the microphone again.');
+    };
+    recognition.onend = () => { settle(); setListening(false); };
     recognitionRef.current = recognition;
     recognition.start();
     setError(''); setListening(true);
