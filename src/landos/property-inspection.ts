@@ -36,6 +36,11 @@ export interface PropertyInspectionDeps {
 
 export interface PropertyInspectionInput {
   cardId?: number;
+  /** The Deal Card this inspection belongs to, when the caller already knows it.
+   *  Carried only so a retained parcel-URL record can name its own deal instead
+   *  of recording null; nothing here looks it up, and identity never depends on
+   *  it. */
+  dealCardId?: number | null;
   searchKey: BrowserSearchKey;
   mode?: BrowserSearchMode;
   existingEvidence?: BrowserEvidence[];
@@ -459,7 +464,11 @@ function baseRoutes(): PropertyInspectionRoute[] {
   ];
 }
 
-function packageFromLandPortal(ev: BrowserEvidence, cardId?: number): PendingPropertyInspectionRecord | null {
+function packageFromLandPortal(
+  ev: BrowserEvidence,
+  cardId?: number,
+  dealCardId?: number | null,
+): PendingPropertyInspectionRecord | null {
   if (!ev.inspection) return null;
   // ── THE VERIFIED ENTRY RECORD ────────────────────────────────────────────
   //
@@ -486,7 +495,7 @@ function packageFromLandPortal(ev: BrowserEvidence, cardId?: number): PendingPro
       source: 'operator:landportal_entry_url_verified_on_screen',
       capturedAt: new Date().toISOString(),
       propertyCardId: cardId ?? 0,
-      dealCardId: null,
+      dealCardId: dealCardId ?? null,
       verifiedSubject: true,
       apn: openedApn,
       fips: null,
@@ -619,7 +628,7 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   const landPortalBudgetMs = (): number => Math.max(1, remainingMs() - officialRecordsReserveMs);
 
   if (landPortalEvidence?.inspection) {
-    const lp = packageFromLandPortal(landPortalEvidence, input.cardId);
+    const lp = packageFromLandPortal(landPortalEvidence, input.cardId, input.dealCardId);
     if (lp) inspection = lp;
     upsertRoute(routes, 'LandPortal', { status: 'used', confidence: 'high', note: landPortalEvidence.note || 'LandPortal inspection reused from browser evidence.', url: inspection.parcelUrl });
   } else if (deps.landPortalBrowser?.configured()) {
@@ -628,7 +637,7 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
       { timeoutMs: landPortalBudgetMs(), onSubjectFacts: input.onLandPortalSubjectFacts },
     );
     if (landPortalEvidence.inspection) {
-      const lp = packageFromLandPortal(landPortalEvidence, input.cardId);
+      const lp = packageFromLandPortal(landPortalEvidence, input.cardId, input.dealCardId);
       if (lp) inspection = lp;
       upsertRoute(routes, 'LandPortal', { status: landPortalEvidence.status === 'retrieved' ? 'used' : 'partial', confidence: 'high', note: landPortalEvidence.note || 'LandPortal inspection captured.', url: inspection.parcelUrl });
     } else {

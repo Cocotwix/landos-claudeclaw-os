@@ -8313,6 +8313,7 @@ export function registerLandosRoutes(app: Hono): void {
       });
       const result = await withBrowserMissionGate(() => runPropertyInspection({
         cardId,
+        dealCardId,
         onLandPortalSubjectFacts,
         searchKey: {
           address: searchKey.address ?? undefined,

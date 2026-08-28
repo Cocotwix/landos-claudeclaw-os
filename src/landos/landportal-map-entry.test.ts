@@ -17,6 +17,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { makeLandPortalBrowser } from './landportal-browser.js';
+import { runPropertyInspection } from './property-inspection.js';
 import type { BrowserDriver } from './browser-intelligence.js';
 import { _initTestLandosDb } from './db.js';
 
@@ -174,6 +175,30 @@ describe('operator saved-map link enters the record directly', () => {
     expect(handoffs[0].fields['Parcel ID']).toBe('00083-A-03400');
     // The identifier the OPENED RECORD stated, carried with the announcement.
     expect(handoffs[0].verifiedParcelApn).toBe('00083-A-03400');
+  });
+
+  it('names its own Deal Card on the retained parcel-URL record', async () => {
+    // The record is the durable statement "this URL was opened and its parcel
+    // confirmed for THIS subject". Recording a null deal made that statement
+    // half-anonymous. The id is the caller's own context, not a lookup.
+    const { driver } = landPortalFake();
+    const result = await runPropertyInspection(
+      {
+        cardId: 4242,
+        dealCardId: 90,
+        searchKey: { ...CONTAMINATED_KEY, landPortalParcelUrl: MAP_URL, operatorSuppliedSubject: OPERATOR_SUBJECT },
+        timeoutMs: 4000,
+      },
+      { landPortalBrowser: makeLandPortalBrowser({ driver }) },
+    );
+    const record = result.inspection.parcelUrlRecord;
+    expect(record?.verifiedSubject).toBe(true);
+    expect(record?.apn).toBe('00083-A-03400');
+    expect(record?.propertyCardId).toBe(4242);
+    expect(record?.dealCardId).toBe(90);
+    // Still a route, never an identity key.
+    expect(record?.fips).toBeNull();
+    expect(record?.propertyId).toBeNull();
   });
 
   it('never announces a parcel the checkpoint refused', async () => {
