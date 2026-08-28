@@ -105,6 +105,34 @@ function loadProviderAcreage(dealCardId: number): { acres: number | null; label:
 }
 
 /**
+ * The Deal's provider/mapped road frontage, when a parcel record carries one.
+ *
+ * Kept on its own read path for the same reason the GIS acreage is: a figure a
+ * provider computed from a polygon is a different measurement from a boundary
+ * a surveyor ran, and the two must arrive already labeled so neither can be
+ * substituted for the other. Absent is reported as absent; nothing is assumed.
+ */
+function loadProviderFrontage(dealCardId: number): { feet: number | null; label: string | null } {
+  try {
+    const row = getLandosDb().prepare(`
+      SELECT normalized_value_json, raw_value_json, fact_key, source_name
+        FROM landos_property_evidence_item
+       WHERE deal_card_id = ?
+         AND evidence_kind = 'normalized_fact'
+         AND fact_key LIKE '%rontage%'
+       ORDER BY id DESC LIMIT 1
+    `).get(dealCardId) as Record<string, unknown> | undefined;
+    if (!row) return { feet: null, label: null };
+    const raw = String(row.normalized_value_json ?? row.raw_value_json ?? '').replace(/"/g, '');
+    const feet = Number.parseFloat(raw);
+    if (!Number.isFinite(feet)) return { feet: null, label: null };
+    return { feet, label: String(row.source_name ?? 'provider parcel record') };
+  } catch {
+    return { feet: null, label: null };
+  }
+}
+
+/**
  * Interpret everything this Deal has retained.
  *
  * Safe to call on every evidence event: it is derived state over immutable
@@ -114,10 +142,13 @@ export function interpretRetainedDealEvidence(dealCardId: number): DealEvidenceI
   const artifacts = loadRetainedEvidenceArtifacts(dealCardId);
   const state = loadDealWorkingState(dealCardId);
   const provider = loadProviderAcreage(dealCardId);
+  const frontage = loadProviderFrontage(dealCardId);
   return interpretDealEvidence({
     artifacts,
     state,
     providerAcres: provider.acres,
     providerAcreageLabel: provider.label,
+    providerFrontageFeet: frontage.feet,
+    providerFrontageLabel: frontage.label,
   });
 }

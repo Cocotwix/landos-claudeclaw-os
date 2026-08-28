@@ -91,6 +91,11 @@ interface EvidenceInterpretationView {
     entries: Array<{ acres: number; basis: string; label: string; source: string }>;
     workingAcres: number | null; workingBasis: string | null; reason: string; bothLegitimate: boolean;
   } | null;
+  boundary: {
+    surveyedRoadFacingFeet: number | null; roadFeature: string | null;
+    providerFrontageFeet: number | null; providerFrontageLabel: string | null;
+    longestSideDepthFeet: number | null; reason: string;
+  } | null;
   narrative: string;
   satisfiedFields: string[];
   relatedParcelReferences: Array<{ artifactId: number; statedApn: string; relationship: string; pageLabel: string }>;
@@ -1302,6 +1307,27 @@ export function AcquisitionWorkspaceV2() {
                       {evidenceRead.acreage.entries
                         .map((entry) => `${entry.label}: ${entry.acres} AC`).join(' · ')}
                       {' — '}{evidenceRead.acreage.reason}
+                    </p>
+                  )}
+                  {/* Boundary geometry, stated where the operator can see which
+                      edge each dimension belongs to. The long side/depth line is
+                      the one that gets misread as frontage, so it is named as a
+                      side/depth line rather than left to a bare number. */}
+                  {evidenceRead.boundary?.reason && (
+                    <p class="awv2-pi-note" data-testid="evidence-boundary-frame">
+                      {[
+                        evidenceRead.boundary.longestSideDepthFeet != null
+                          ? `Longest side/depth boundary: ${evidenceRead.boundary.longestSideDepthFeet} ft`
+                          : null,
+                        evidenceRead.boundary.surveyedRoadFacingFeet != null
+                          ? `Surveyed road-facing boundary: ${evidenceRead.boundary.surveyedRoadFacingFeet} ft`
+                            + (evidenceRead.boundary.roadFeature ? ` along ${evidenceRead.boundary.roadFeature}` : '')
+                          : null,
+                        evidenceRead.boundary.providerFrontageFeet != null
+                          ? `${evidenceRead.boundary.providerFrontageLabel ?? 'Provider'} road frontage: ${evidenceRead.boundary.providerFrontageFeet} ft`
+                          : null,
+                      ].filter(Boolean).join(' · ')}
+                      {' — '}{evidenceRead.boundary.reason}
                     </p>
                   )}
                 </div>

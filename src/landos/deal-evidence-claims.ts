@@ -168,6 +168,9 @@ export interface DealEvidenceInterpretation {
   /** Pages LandOS could not read, kept and reported as such. */
   unreadable: Array<{ artifactId: number; fileName: string; reason: string }>;
   acreage: AcreageProvenanceReconciliation | null;
+  /** Boundary geometry with each dimension bound to the segment it describes,
+   *  kept distinct from provider-reported frontage. */
+  boundary: BoundaryFrontageReconciliation | null;
   /** One-line operator summary per group, for the Smart Intake reply. */
   narrative: string;
   /**
@@ -316,9 +319,210 @@ const CLAIM_PATTERNS: ClaimPattern[] = [
   { field: 'legalDescription', label: 'Platted lot', pattern: /\b(Lot\s+[0-9]+(?:\s+of\s+[A-Z][A-Z\s]+)?)\b/ },
   { field: 'grantor', label: 'Grantor', pattern: /BETWEEN\s*\n?([A-Z][A-Z\s.,]+?),?\s*(?:his|her|their)\s+wife|BETWEEN\s*\n?([A-Z][A-Z\s.,]{4,}?)\n/i },
   { field: 'grantee', label: 'Grantee', pattern: /parties of the first part,?\s*and\s*\n?([A-Z][A-Z\s.,]+?),?\s*(?:his|her|their)\s+wife/i },
-  { field: 'surveyBoundary', label: 'Surveyed boundary call', pattern: /(North\s+[0-9]+\s+degrees[^;.\n]*?[0-9.]+\s*feet\s+to\s+the\s+centerline\s+of\s+[^;.\n]+)/i, kinds: ['survey', 'deed'] },
-  { field: 'roadFrontage', label: 'Frontage / distance to centerline', pattern: /([0-9]+\.[0-9]+\s*feet\s+to\s+the\s+centerline\s+of\s+[A-Za-z0-9.\s]+)/i },
+  // Boundary geometry is deliberately NOT read by a loose regex over the page.
+  // A distance is only meaningful once it is attached to the segment it
+  // describes, so metes-and-bounds courses are parsed as segments below and a
+  // dimension is never promoted to frontage on the strength of a number match.
 ];
+
+// ── Boundary geometry: a dimension means nothing until it has a segment ────
+//
+// The defect this replaces was spatial, not textual. `459.67 feet to the
+// centerline of NW 137th Lane` was read as road frontage because the road's
+// name was next to the number. It is the opposite: a course that RUNS TO a
+// centerline travels toward the road and is a side/depth line. The boundary
+// that faces the road is the run that goes ALONG that centerline.
+//
+// A survey states this unambiguously in its own call language, so the geometry
+// is read from the drawing's description rather than guessed from adjacency.
+// Nothing is fetched and no model is called.
+
+/** What a boundary segment is, relative to the parcel's frame. */
+export type BoundarySegmentRole =
+  | 'road_facing'
+  | 'water_facing'
+  | 'side_depth'
+  | 'closing'
+  /** A tie line from the section corner to the Point of Beginning. It locates
+   *  the parcel and bounds nothing, so it is never a parcel dimension. */
+  | 'tie_line'
+  | 'unassociated';
+
+export interface BoundarySegment {
+  /** Exactly the distance the page states, in feet. */
+  distanceFeet: number;
+  /** The bearing the course carries, verbatim, when it states one. */
+  bearing: string | null;
+  role: BoundarySegmentRole;
+  /** The feature the course runs along or terminates at, verbatim. */
+  feature: string | null;
+  /** The call the segment was read out of, for provenance. */
+  callText: string;
+}
+
+const ROAD_FEATURE = /\b(?:lane|ln|street|st|road|rd|avenue|ave|drive|dr|terrace|ter|place|pl|highway|hwy|court|ct|trail|way|boulevard|blvd)\b/i;
+const WATER_FEATURE = /\b(?:river|creek|branch|run|canal|lake|stream|slough|pond|bayou|ditch)\b/i;
+
+function featureRole(feature: string | null): 'road' | 'water' | null {
+  if (!feature) return null;
+  if (WATER_FEATURE.test(feature)) return 'water';
+  if (ROAD_FEATURE.test(feature)) return 'road';
+  return null;
+}
+
+/**
+ * Read a legal description into boundary segments with their roles.
+ *
+ * Courses are split on `thence` and on the numbered courses a survey uses for a
+ * run along a centerline. Each course carries its own spatial relationship:
+ *
+ *  • `... N 76°45'51" W, 459.67 feet TO THE CENTERLINE OF NW 137th Lane`
+ *    runs toward the road and terminates there — a side/depth boundary.
+ *  • `... ALONG SAID CENTERLINE ... 69.20 feet` runs along the road — this is
+ *    the road-facing boundary, and there may be several such courses.
+ *  • `... 437.70 feet TO THE POINT OF BEGINNING` closes the figure.
+ *
+ * `along said centerline` inherits the feature named by the course that reached
+ * it, which is how the survey itself reads: the antecedent is stated once.
+ */
+export function readBoundarySegments(text: string): BoundarySegment[] {
+  const body = text.replace(/\s+/g, ' ');
+  // Only read inside a metes-and-bounds description; a page without one has no
+  // segments to attach dimensions to and must not produce guesses.
+  if (!/point of beginning|point of commencement|thence/i.test(body)) return [];
+  // Split on every course boundary a description actually uses. `From Point of
+  // Beginning` starts a course without saying `thence`, and missing it merged
+  // the last tie line with the first boundary line — which silently bound the
+  // tie's distance to the boundary and dropped the boundary's own.
+  const parts = body
+    .split(/(?=\bthence\b)|(?=\b[0-9]\)\s)|(?=\bfrom\s+point\s+of\s+beginning\b)/i)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const segments: BoundarySegment[] = [];
+  let alongFeature: string | null = null;
+  // Everything before the Point of Beginning is the tie from the section corner
+  // that locates the parcel. Those courses bound nothing, and counting them as
+  // boundary is how a 932.98 ft tie line becomes the parcel's longest "side".
+  let atBoundary = !/point of beginning/i.test(body);
+  for (const part of parts) {
+    const distanceMatch = /([0-9]+(?:\.[0-9]+)?)\s*feet/i.exec(part);
+    if (!distanceMatch) continue;
+    const distanceFeet = Number.parseFloat(distanceMatch[1]);
+    if (!Number.isFinite(distanceFeet)) continue;
+    const bearing = /((?:North|South)\s+[0-9]+\s+degrees(?:,)?\s*[0-9]+\s+minutes(?:,)?\s*(?:and\s*)?[0-9]+\s+seconds\s+(?:East|West))/i.exec(part)?.[1]?.trim() ?? null;
+    const toFeature = /to\s+the\s+centerline\s+of\s+([A-Za-z0-9.'\- ]+?)(?:\s*[;,.]|\s+thence|$)/i.exec(part)?.[1]?.trim() ?? null;
+    const along = /along\s+(?:said\s+centerline|the\s+centerline\s+of\s+([A-Za-z0-9.'\- ]+?))(?:\s*[;,.]|\s+following|$)/i.exec(part);
+    const closes = /to\s+the\s+point\s+of\s+beginning/i.test(part);
+
+    // The course that ENDS at the Point of Beginning is the last tie line; the
+    // boundary starts with the course after it.
+    const wasBoundary = atBoundary;
+    if (/for\s+the\s+point\s+of\s+beginning|from\s+point\s+of\s+beginning/i.test(part)) atBoundary = true;
+
+    let role: BoundarySegmentRole;
+    let feature: string | null = null;
+    if (!wasBoundary && !/from\s+point\s+of\s+beginning/i.test(part)) {
+      role = 'tie_line';
+      segments.push({ distanceFeet, bearing, role, feature: null, callText: part.slice(0, 240).trim() });
+      continue;
+    }
+    if (along) {
+      // Runs ALONG the feature: this is the boundary that faces it.
+      feature = (along[1]?.trim() ?? alongFeature) ?? null;
+      alongFeature = feature ?? alongFeature;
+      const kind = featureRole(feature);
+      role = kind === 'water' ? 'water_facing' : kind === 'road' ? 'road_facing' : 'unassociated';
+    } else if (toFeature) {
+      // Runs TO the feature: a depth line reaching it, never frontage on it.
+      feature = toFeature;
+      alongFeature = toFeature;
+      role = 'side_depth';
+    } else if (closes) {
+      role = 'closing';
+      // A closing course still bounds the parcel; it is a side/depth line that
+      // happens to return to the start.
+    } else if (/leaving\s+said\s+centerline/i.test(part)) {
+      role = 'side_depth';
+      alongFeature = null;
+    } else if (alongFeature && /^\s*[0-9]\)/.test(part)) {
+      // A numbered course inside a stated run along a centerline.
+      feature = alongFeature;
+      const kind = featureRole(feature);
+      role = kind === 'water' ? 'water_facing' : kind === 'road' ? 'road_facing' : 'unassociated';
+    } else {
+      role = 'side_depth';
+    }
+    segments.push({ distanceFeet, bearing, role, feature, callText: part.slice(0, 240).trim() });
+  }
+  return segments;
+}
+
+/**
+ * What the survey establishes about the parcel's frame, kept separate from what
+ * a provider reports.
+ */
+export interface BoundaryFrontageReconciliation {
+  segments: BoundarySegment[];
+  /** Total run along the road centerline the survey describes, when it does. */
+  surveyedRoadFacingFeet: number | null;
+  /** The road the surveyed road-facing run is along, verbatim. */
+  roadFeature: string | null;
+  /** Provider/mapped frontage, retained as its own distinct measurement. */
+  providerFrontageFeet: number | null;
+  providerFrontageLabel: string | null;
+  /** The longest side/depth line, the figure most often misread as frontage. */
+  longestSideDepthFeet: number | null;
+  reason: string;
+}
+
+export function reconcileBoundaryFrontage(input: {
+  segments: BoundarySegment[];
+  providerFrontageFeet: number | null;
+  providerFrontageLabel: string | null;
+}): BoundaryFrontageReconciliation | null {
+  const { segments } = input;
+  if (!segments.length && input.providerFrontageFeet == null) return null;
+  const roadFacing = segments.filter((s) => s.role === 'road_facing');
+  const sideDepth = segments.filter((s) => s.role === 'side_depth' || s.role === 'closing');
+  const surveyedRoadFacingFeet = roadFacing.length
+    ? Math.round(roadFacing.reduce((sum, s) => sum + s.distanceFeet, 0) * 100) / 100
+    : null;
+  const roadFeature = roadFacing.find((s) => s.feature)?.feature ?? null;
+  const longestSideDepthFeet = sideDepth.length
+    ? Math.max(...sideDepth.map((s) => s.distanceFeet))
+    : null;
+
+  const notes: string[] = [];
+  if (longestSideDepthFeet != null) {
+    const line = sideDepth.find((s) => s.distanceFeet === longestSideDepthFeet);
+    notes.push(
+      `${longestSideDepthFeet} ft is the longest side/depth boundary`
+      + (line?.feature ? `, the course running to the centerline of ${line.feature}` : '')
+      + '. A course that runs TO a centerline crosses the parcel toward the road; it is not frontage along it.',
+    );
+  }
+  if (surveyedRoadFacingFeet != null) {
+    notes.push(
+      `The survey's road-facing boundary is the ${roadFacing.length} course${roadFacing.length === 1 ? '' : 's'} run along the`
+      + `${roadFeature ? ` ${roadFeature}` : ''} centerline, totalling ${surveyedRoadFacingFeet} ft as measured along that line.`,
+    );
+  }
+  if (input.providerFrontageFeet != null) {
+    notes.push(
+      `${input.providerFrontageFeet} ft is ${input.providerFrontageLabel ?? 'the provider'}'s mapped road frontage, a separate measurement `
+      + 'computed from the parcel polygon. Both are kept and labeled; neither replaces the other, and neither establishes a recorded legal right of access.',
+    );
+  }
+  return {
+    segments,
+    surveyedRoadFacingFeet,
+    roadFeature,
+    providerFrontageFeet: input.providerFrontageFeet,
+    providerFrontageLabel: input.providerFrontageLabel,
+    longestSideDepthFeet,
+    reason: notes.join(' '),
+  };
+}
 
 function excerptFor(text: string, matchIndex: number): string {
   const start = text.lastIndexOf('\n', matchIndex) + 1;
@@ -361,6 +565,34 @@ export function claimsFromArtifact(
       weight: artifact.extractionStatus === 'complete' ? 'well_supported' : 'likely',
     });
   }
+  // Boundary dimensions, each bound to the segment it actually describes. The
+  // role is what makes the number mean anything, so it is carried in the label
+  // the operator reads rather than left to inference.
+  if (provenance.documentKind === 'survey' || provenance.documentKind === 'deed') {
+    for (const segment of readBoundarySegments(text)) {
+      if (segment.role === 'unassociated' || segment.role === 'tie_line') continue;
+      const value = `${segment.distanceFeet} ft`;
+      const label = segment.role === 'road_facing'
+        ? `Road-facing boundary along the ${segment.feature ?? 'road'} centerline`
+        : segment.role === 'water_facing'
+          ? `Water-facing boundary along ${segment.feature ?? 'the watercourse'}`
+          : segment.role === 'closing'
+            ? 'Side/depth boundary closing to the Point of Beginning'
+            : `Side/depth boundary${segment.feature ? ` running to the centerline of ${segment.feature}` : ''}`;
+      const key = `dimension:${label.toLowerCase()}:${value}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        field: 'dimension',
+        label,
+        value,
+        excerpt: segment.callText,
+        provenance,
+        weight: artifact.extractionStatus === 'complete' ? 'well_supported' : 'likely',
+      });
+    }
+  }
+
   // Candidates the extraction already normalized are claims too, and they carry
   // the same page. Owner is the one worth lifting: it is stated, not inferred.
   const owner = artifact.candidates.owner?.trim();
@@ -518,6 +750,14 @@ export function reconcileClaim(
     }
     case 'grantor':
       return settled('adds', 'Establishes who conveyed the parcel, which the Deal did not carry from a document.');
+    case 'dimension':
+      // A measured boundary segment, already bound to the edge it describes.
+      // It is physical geometry: it says where the parcel's edge runs, never
+      // that a right to use the road it reaches has been granted.
+      return settled(
+        'adds',
+        `${claim.label} measured on the survey. It establishes where that boundary runs, not whether legal access is granted.`,
+      );
     case 'roadFrontage':
     case 'surveyBoundary':
       // Physical/mapped evidence. It never establishes a legal right of access:
@@ -612,9 +852,12 @@ export function interpretDealEvidence(input: {
   state: DealWorkingState;
   providerAcres?: number | null;
   providerAcreageLabel?: string | null;
+  providerFrontageFeet?: number | null;
+  providerFrontageLabel?: string | null;
 }): DealEvidenceInterpretation {
   const { groups, kindOf, pageLabelOf } = groupEvidenceDocuments(input.artifacts);
   const claims: EvidenceClaim[] = [];
+  const subjectSegments: BoundarySegment[] = [];
   const unreadable: DealEvidenceInterpretation['unreadable'] = [];
   const pageParcel = new Map<number, { relationship: ClaimParcelRelationship; statedApn: string }>();
 
@@ -645,6 +888,12 @@ export function interpretDealEvidence(input: {
     const raw = claimsFromArtifact(artifact, provenance);
     const { relationship, statedApn } = classifyPageParcelRelationship(raw, input.state.apn);
     if (statedApn) pageParcel.set(artifact.artifactId, { relationship, statedApn });
+    // Only the subject's own pages describe the subject's boundary. A related
+    // parcel's legal description is retained on its own page and never folded
+    // into the subject's frame — invariant 4, in the geometry.
+    if (relationship === 'subject' && (documentKind === 'survey' || documentKind === 'deed')) {
+      subjectSegments.push(...readBoundarySegments(artifact.exactText));
+    }
     for (const item of raw) {
       claims.push(reconcileClaim(item, input.state, relationship));
     }
@@ -654,6 +903,12 @@ export function interpretDealEvidence(input: {
     claims,
     providerAcres: input.providerAcres ?? null,
     providerLabel: input.providerAcreageLabel ?? null,
+  });
+
+  const boundary = reconcileBoundaryFrontage({
+    segments: subjectSegments,
+    providerFrontageFeet: input.providerFrontageFeet ?? null,
+    providerFrontageLabel: input.providerFrontageLabel ?? null,
   });
 
   // Only the subject's own pages can satisfy or contest the subject's
@@ -683,11 +938,12 @@ export function interpretDealEvidence(input: {
     claims,
     unreadable,
     acreage,
+    boundary,
     satisfiedFields,
     openContradictions,
     relatedParcelReferences,
     narrative: buildEvidenceNarrative({
-      groups, claims, unreadable, acreage, openContradictions, relatedParcelReferences,
+      groups, claims, unreadable, acreage, boundary, openContradictions, relatedParcelReferences,
     }),
   };
 }
@@ -703,6 +959,7 @@ export function buildEvidenceNarrative(input: {
   claims: EvidenceClaim[];
   unreadable: DealEvidenceInterpretation['unreadable'];
   acreage: AcreageProvenanceReconciliation | null;
+  boundary?: BoundaryFrontageReconciliation | null;
   openContradictions: EvidenceClaim[];
   relatedParcelReferences: DealEvidenceInterpretation['relatedParcelReferences'];
 }): string {
@@ -739,6 +996,9 @@ export function buildEvidenceNarrative(input: {
   }
   if (input.acreage?.bothLegitimate) {
     parts.push(input.acreage.reason);
+  }
+  if (input.boundary?.reason) {
+    parts.push(input.boundary.reason);
   }
   if (input.unreadable.length) {
     parts.push(
