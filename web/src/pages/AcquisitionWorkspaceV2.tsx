@@ -338,6 +338,12 @@ export function AcquisitionWorkspaceV2() {
   // projected it; nothing passed it to the panels that display those exact
   // fields, so they fell back to a two-key discovery subset of it.
   const [landPortalFacts, setLandPortalFacts] = useState<ParcelFactSheetView | null>(null);
+  // Every operator/seller upload retained on this Deal, from the same store
+  // Smart Intake writes. A read-only listing: opening Documents & Uploads runs
+  // no research and re-reads no artifact.
+  const [dealUploads, setDealUploads] = useState<Array<{
+    id?: number; title?: string; fileName?: string; mimeType?: string; docType?: string; uploadedAt?: string;
+  }>>([]);
   // Property-tax payment status, answered by the collecting office rather than
   // the assessor. Without it the panel could only ever say "not screened".
   const [taxStatus, setTaxStatus] = useState<TaxStatusView | null>(null);
@@ -447,13 +453,17 @@ export function AcquisitionWorkspaceV2() {
         // first paint instead of keeping the entire workspace behind their
         // expensive staleness/read-model rebuilds.
         setLoading(false);
-        const [rr, ai] = await Promise.all([
+        const [rr, ai, up] = await Promise.all([
           apiGet<{ manifest?: ResearchReadinessManifestView }>(
             `/api/landos/deal-cards/${dealId}/research-readiness`,
           ).catch(() => null),
           apiGet<IntelligenceStackResp>(`/api/landos/deal-cards/${dealId}/intelligence`).catch(() => null),
+          apiGet<{ uploads?: Array<Record<string, unknown>> }>(
+            `/api/landos/deal-cards/${dealId}/documents/uploads`,
+          ).catch(() => null),
         ]);
         if (dead) return;
+        setDealUploads((up?.uploads ?? []) as typeof dealUploads);
         setReadiness(rr?.manifest ?? null);
         setAiRead(ai?.products?.deal ?? null);
         setPersistedDealStrategies(ai?.persistedDealStrategies ?? null);
@@ -901,13 +911,21 @@ export function AcquisitionWorkspaceV2() {
           >
             <Users size={14} /> {warRoomBusy ? 'Opening…' : 'War Room'}
           </button>
-          {snap.subjectParcelUrl && (
+          {/* Prefer the canonical verified parcel link; fall back to the
+              operator's own retained LandPortal entry link. A Deal established
+              from an operator-supplied LandPortal URL must be able to reopen
+              it — requiring a `?property=` link to render a NAVIGATION button
+              hid the operator's own link behind Smart Intake history. */}
+          {(snap.subjectParcelUrl || snap.operatorParcelEntryUrl) && (
             <a
               class="awv2-ctl awv2-lp-link"
-              href={snap.subjectParcelUrl}
+              href={snap.subjectParcelUrl || snap.operatorParcelEntryUrl!}
               target="_blank"
               rel="noopener noreferrer"
-              title="Open the exact subject property in LandPortal (new tab)"
+              data-testid="view-in-landportal"
+              title={snap.subjectParcelUrl
+                ? 'Open the exact subject property in LandPortal (new tab)'
+                : 'Open the LandPortal map you supplied for this deal (new tab). This link is an entry point, not verified parcel identity.'}
             >
               <ExternalLink size={14} /> View in LandPortal
             </a>
@@ -1198,8 +1216,39 @@ export function AcquisitionWorkspaceV2() {
                 <FileDown size={14} /> Property Intelligence PDF
               </a>
             </section>
+            {/* Operator/seller uploads. Read from the SAME Deal-scoped upload
+                store Smart Intake writes — no second document system. Anything
+                supplied through Smart Intake or any Deal-level upload appears
+                here with its original file, type and provenance, including
+                files LandOS could not interpret: retained and honestly
+                uninterpreted beats silently missing. Listed first so a handful
+                of seller documents are not buried under map captures. */}
             <section class="awv2-panel" data-domain="evidence">
-              <div class="awv2-panel-title">Retained evidence &amp; document artifacts</div>
+              <div class="awv2-panel-title">Operator &amp; seller uploads</div>
+              {dealUploads.length ? (
+                <ul class="awv2-documents-list" data-testid="documents-uploads-list">
+                  {dealUploads.map((item) => (
+                    <li>
+                      <a
+                        href={`/api/landos/deal-cards/${dealId}/documents/upload-file/${encodeURIComponent(item.fileName ?? item.title ?? '')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <ExternalLink size={13} /> {item.title ?? item.fileName}
+                      </a>
+                      <span class="awv2-pi-note">
+                        {[item.mimeType, item.docType?.replace(/_/g, ' '), item.uploadedAt?.slice(0, 10)]
+                          .filter(Boolean).join(' · ')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p class="awv2-pi-note">No operator or seller uploads have been supplied for this deal yet.</p>
+              )}
+            </section>
+            <section class="awv2-panel" data-domain="evidence">
+              <div class="awv2-panel-title">Retrieved documents &amp; evidence</div>
               {(snap.evidence ?? []).filter((item) => item.viewUrl).length ? (
                 <ul class="awv2-documents-list" data-testid="documents-evidence-list">
                   {(snap.evidence ?? []).filter((item) => item.viewUrl).map((item) => (

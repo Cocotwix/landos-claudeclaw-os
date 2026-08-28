@@ -390,6 +390,11 @@ export interface PropertyIntelligenceSnapshot {
   browserCleanup?: { before: number; after: number; closed: number; note: string } | null;
   /** Route-time retained LandPortal subject link and conditional 3D decision. */
   subjectParcelUrl?: string | null;
+  /**
+   * The operator's own retained LandPortal entry link (usually `?map=`).
+   * Openable navigation, never identity — see the route that populates it.
+   */
+  operatorParcelEntryUrl?: string | null;
   threeDCapture?: { decision: 'eligible' | 'not_applicable' | 'unknown'; averageSlopePercent: number | null; areaAboveTenSlopePercent: number | null; reason: string } | null;
 }
 

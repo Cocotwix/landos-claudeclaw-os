@@ -18,7 +18,11 @@ export const DEAL_PAGES: Array<{ slug: WorkspaceV2Page; label: string; hint: str
   { slug: 'comps', label: 'Comps & Valuation', hint: 'Comparables & supported value' },
   { slug: 'strategy', label: 'Strategy & Underwriting', hint: 'Exits & acquisition economics' },
   { slug: 'seller', label: 'Seller & Activity', hint: 'Seller, comms & timeline' },
-  { slug: 'documents', label: 'Documents', hint: 'Reports, evidence & files' },
+  // The permanent operator-visible case file: everything the Deal holds,
+  // however it arrived — seller/operator uploads, retrieved source documents
+  // and generated reports. Not a separate store; a view over the same
+  // Deal-scoped artifacts Smart Intake and research already write.
+  { slug: 'documents', label: 'Documents & Uploads', hint: 'Uploads, retrieved documents & reports' },
 ];
 
 const PAGE_SLUGS = new Set<string>(DEAL_PAGES.map((p) => p.slug));

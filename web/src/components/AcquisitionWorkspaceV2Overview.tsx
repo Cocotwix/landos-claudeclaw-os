@@ -85,6 +85,8 @@ export interface OverviewSnapshotView {
   dueDiligence?: PiDdItem[];
   evidence?: PiEvidenceItem[];
   subjectParcelUrl?: string | null;
+  /** The operator's retained LandPortal entry link. Navigation, not identity. */
+  operatorParcelEntryUrl?: string | null;
   /**
    * The strategy lane's own output. Every run produces a full read of each
    * exit — what supports it, what blocks it, the effort, the timeline, the

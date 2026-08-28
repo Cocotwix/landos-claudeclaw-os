@@ -3731,11 +3731,41 @@ export function registerLandosRoutes(app: Hono): void {
         Number(submission.id),
         intakeArtifacts.map((artifact) => artifact.extraction.candidates as Record<string, string>),
       );
+      // ── New evidence is itself a trigger into the closed research loop ──
+      //
+      // Retaining the attachment was never the whole job. Evidence arriving on
+      // a Deal is exactly the event the coverage cycle exists to react to: it
+      // reconciles what the Deal now knows, replans coverage, lets the
+      // specialists declare what they still require, runs ONLY that delta
+      // through the existing orchestrator, and cascades the intelligence that
+      // actually moved. That is the same `runDealCoverageCycle` Re-run Research
+      // calls — one loop, two triggers — so nothing here is a second research
+      // engine and the operator never has to press a button to make LandOS
+      // think about a file it just accepted.
+      //
+      // It runs as `automatic`, which deliberately does NOT reopen settled
+      // PARTIAL lanes: an upload closes gaps, it does not license re-running
+      // research nobody is still asking for. Re-run Research keeps that power.
+      //
+      // Detached on purpose. The upload response is the operator's receipt and
+      // must not wait on retrieval; the conversation reads the cycle's result
+      // from retained state the moment it settles, and a cycle that fails
+      // leaves the retained evidence untouched.
+      if (process.env.NODE_ENV !== 'test') {
+        void runDealCoverageCycle(id, deal.entity as CapabilityEntity, 'automatic')
+          .catch((error) => logger.warn(
+            { dealCardId: id, err: (error as Error).message },
+            'deal_evidence_coverage_cycle_failed',
+          ));
+      }
       return c.json({
         submission: { ...submission, resolutionHandoff: handoff },
         // What LandOS decided each file was and whether it could read it, so
         // the conversation can say so instead of the operator guessing.
         artifactRouting: prepared.map((item) => item.routing),
+        // The Deal reacts to this evidence on its own; the conversation says so
+        // rather than leaving the operator with "(6 attachments)" and silence.
+        evidenceTriggeredResearch: true,
         submissions: listLeadCardIntake(id),
         contacts: listResourceContacts(id),
       }, 201);
@@ -9770,9 +9800,25 @@ export function registerLandosRoutes(app: Hono): void {
         }
       : null;
     if (snapshot) {
+      // Two DIFFERENT roles, never collapsed into one field.
+      //
+      // `subjectParcelUrl` is canonical identity: a verified `?property=` link
+      // whose token decodes to this parcel. Only that may stand in for identity
+      // (PERMANENT_MEMORY invariants 2-4), so it keeps its existing hard gate.
+      //
+      // `operatorParcelEntryUrl` is navigation only: the LandPortal link the
+      // operator actually supplied, typically a saved-map `?map=` URL. It names
+      // a map view rather than a parcel, so it proves nothing — but it is still
+      // an openable retained link, and withholding an operator's own link
+      // because it is not proof is the defect, not the safeguard. A Deal that
+      // was established FROM a LandPortal URL must be able to reopen it.
+      const operatorParcelEntryUrl = operatorLandPortalEntryUrlForDeal(dealCardId)
+        ?? operatorLandPortalEntryUrl(linkInspection?.parcelUrl)
+        ?? (linkCardId ? operatorLandPortalEntryUrl(getPropertyCardRow(linkCardId)?.lp_url) : null);
       snapshot = {
         ...snapshot,
         subjectParcelUrl: subjectParcel?.url ?? null,
+        operatorParcelEntryUrl,
         threeDCapture: subjectParcel?.threeDCapture ?? linkInspection?.threeDCapture ?? null,
       };
     }
