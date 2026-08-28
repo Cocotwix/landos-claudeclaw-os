@@ -294,23 +294,65 @@ export function restoreDealCard(id: number): DealCardRow | undefined {
  * PERMANENT (HARD) DELETE — irreversible. Only meaningful from Trash: the card
  * MUST already be soft-deleted (guards against skipping the Trash step). Removes
  * the deal card row plus every deal-scoped row (any landos_* table with a
- * deal_card_id column), in one transaction. Foreign keys aren't enforced, so this
- * also prevents orphan rows. Property Cards themselves are only UNLINKED (they may
- * be shared / independently owned), never deleted. Returns true when removed.
+ * deal_card_id column), in one transaction, so no orphan rows are left behind.
+ * Property Cards themselves are only UNLINKED (they may be shared /
+ * independently owned), never deleted. Returns true when removed.
+ *
+ * Two things this has to get right, both learned from a delete that failed.
+ *
+ * ORDER. The deal-scoped tables are discovered from `sqlite_master`, which lists
+ * them in creation order, not dependency order — so a parent row
+ * (`landos_intake_submission`) is reached before a child that references it
+ * (`landos_intake_artifact`, `landos_intake_fact`). Foreign keys ARE enforced
+ * here, so that aborted the whole purge. `defer_foreign_keys` moves the check to
+ * COMMIT instead of disabling it: within the transaction the rows may go in any
+ * order, and at commit SQLite still refuses to leave a dangling reference. The
+ * pragma is transaction-scoped and clears itself, so nothing outside is relaxed.
+ *
+ * IMMUTABILITY. Smart Intake evidence carries BEFORE DELETE triggers. They are
+ * guarded on the deal's own Trash state, so they still abort every delete on a
+ * live deal and stand aside only for the explicit permanent deletion of a
+ * trashed one. That guard is the reason this path works at all; see `db.ts`.
  */
 export function hardDeleteDealCard(id: number): boolean {
   const db = getLandosDb();
   const existing = getDealCardRow(id);
   if (!existing) return false;
   if (existing.deleted_at == null) return false; // must be in Trash first (soft delete → then hard delete)
-  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'landos_%'").all() as Array<{ name: string }>;
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'landos_%'")
+    .all() as Array<{ name: string }>).map((row) => row.name).filter((name) => name !== 'landos_deal_card');
+
+  // Every column in the schema that points AT this deal card, not just the ones
+  // named `deal_card_id`. `landos_opportunity.legacy_deal_card_id` is spelled
+  // differently and was therefore never cleared, so it stayed behind pointing
+  // at a row that had just been deleted — the dangling reference that made the
+  // purge fail at commit. Reading the edges from the schema means a future
+  // table cannot reintroduce the same gap by choosing another column name.
+  const links = tables.flatMap((table) => (db.prepare(`PRAGMA foreign_key_list(${table})`)
+    .all() as Array<{ table: string; from: string }>)
+    .filter((fk) => fk.table === 'landos_deal_card')
+    .map((fk) => ({ table, column: fk.from })));
+
   const purge = db.transaction(() => {
-    for (const { name } of tables) {
-      if (name === 'landos_deal_card') continue;
-      const cols = db.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
+    db.pragma('defer_foreign_keys = ON');
+    for (const table of tables) {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
       if (cols.some((col) => col.name === 'deal_card_id')) {
-        db.prepare(`DELETE FROM ${name} WHERE deal_card_id = ?`).run(id);
+        db.prepare(`DELETE FROM ${table} WHERE deal_card_id = ?`).run(id);
       }
+    }
+    // Anything still REFERENCING the card through some other column is a record
+    // with its own lifecycle that was merely linked here — an opportunity, like
+    // a property card. It is unlinked, never deleted. The columns are nullable
+    // precisely because the link is optional; a NOT NULL one would mean the row
+    // belongs to the deal, and such a row is already gone above.
+    for (const link of links) {
+      if (link.column === 'deal_card_id') continue;
+      const nullable = (db.prepare(`PRAGMA table_info(${link.table})`)
+        .all() as Array<{ name: string; notnull: number }>)
+        .some((col) => col.name === link.column && col.notnull === 0);
+      if (nullable) db.prepare(`UPDATE ${link.table} SET ${link.column} = NULL WHERE ${link.column} = ?`).run(id);
+      else db.prepare(`DELETE FROM ${link.table} WHERE ${link.column} = ?`).run(id);
     }
     db.prepare('DELETE FROM landos_deal_card WHERE id = ?').run(id);
   });

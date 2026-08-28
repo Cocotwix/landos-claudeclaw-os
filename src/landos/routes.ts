@@ -483,11 +483,16 @@ import {
   type SmartIntakeImageSourceMethod,
 } from './smart-intake-image.js';
 import {
-  SMART_INTAKE_ARTIFACT_MAX_BYTES,
   classifyIntakeArtifact,
   describeIntakeArtifact,
   extractIntakeArtifact,
 } from './smart-intake-artifact.js';
+import {
+  dealEvidenceArtifacts,
+  dealEvidenceSubmissionText,
+  isTranscriptEvidence,
+  prepareDealEvidence,
+} from './deal-evidence-ingest.js';
 import { retrieveRagChunks, buildAgentRagContext, ingestRagDocument, ragIndexStats, htmlToText, RAG_DOC_TYPES, type RagAgentKind, type RagDocType } from './rag-knowledge.js';
 import { ingestCanonicalDealKnowledge, ingestCardEvidence, ingestRepoPlaybooks } from './rag-ingest.js';
 import type { CompRegistry } from './comp-registry.js';
@@ -3657,77 +3662,51 @@ export function registerLandosRoutes(app: Hono): void {
       try { return JSON.parse(sourceMethodsRaw) as unknown; } catch { return []; }
     })();
     const sourceMethods = Array.isArray(parsedSourceMethods) ? parsedSourceMethods : [];
-    // ONE path for every supplied file. What a file IS decides how hard LandOS
-    // tries to read it; it never decides whether the file is allowed to become
-    // evidence. The old branch admitted only PNG/JPEG/WEBP to the artifact
-    // table and dropped everything else into a prose sentence with no artifact
-    // row, so a supplied survey or recording existed nowhere a reader looked.
-    const prepared = await Promise.all(files.map(async (file, index) => {
-      const bytes = Buffer.from(await file.arrayBuffer());
-      const ext = path.extname(file.name).toLowerCase();
-      const classification = classifyIntakeArtifact(file.name, file.type || '');
-      const sourceMethod = ['clipboard', 'upload', 'drop'].includes(String(sourceMethods[index]))
-        ? String(sourceMethods[index]) as SmartIntakeImageSourceMethod
-        : 'upload';
-      return { file, bytes, ext, classification, sourceMethod };
-    }));
-    const empty = prepared.find((item) => item.bytes.length === 0);
-    if (empty) return c.json({ error: `${empty.file.name} is empty.` }, 400);
-    const tooLarge = prepared.find((item) => item.bytes.length > SMART_INTAKE_ARTIFACT_MAX_BYTES);
-    if (tooLarge) return c.json({ error: `${tooLarge.file.name} is larger than the 25 MB Smart Intake limit.` }, 400);
-    const transcript = String(Array.isArray(body.submissionType) ? body.submissionType[0] ?? '' : body.submissionType ?? '') === 'transcript'
-      || ['.srt', '.vtt'].includes(prepared[0].ext);
+    // ONE path for every supplied file, and it is not this route's path. The
+    // classify → read → file sequence lives in `deal-evidence-ingest`, keyed by
+    // deal rather than by screen, so evidence arriving on an EXISTING deal
+    // later (a county PDF in due diligence, a revised plat before closing) uses
+    // the same ingestion without reopening New Lead. This route is one caller.
     try {
-      // Images keep the signature/extension check they always had: a file whose
-      // bytes contradict its declared image type is a real problem worth
-      // reporting, not evidence worth filing.
-      for (const item of prepared) {
-        if (/^image\//i.test(item.classification.mimeType)
-            && item.classification.interpreter === 'vision') {
-          validateSmartIntakeImage(item.bytes, item.classification.mimeType, item.file.name);
-        }
-      }
-      const extracted = await Promise.all(prepared.map(async (item) => (
-        process.env.NODE_ENV === 'test' && item.classification.interpreter !== 'text'
-          ? unavailableSmartIntakeImageExtraction('Model extraction is disabled in route tests.', 'test')
-          : extractIntakeArtifact(item.bytes, item.classification)
-      )));
-      const intakeArtifacts = prepared.map((item, index) => {
-        const uploaded = saveDocumentUpload({
-          dealCardId: id,
-          category: 'other',
-          title: item.file.name,
-          docType: /^image\//i.test(item.classification.mimeType)
-            ? 'smart_intake_image_original'
-            : transcript ? 'transcript' : 'smart_intake_original',
-          fileName: item.file.name,
-          mimeType: item.classification.mimeType,
-          bytes: item.bytes,
-          note: `Immutable Smart Intake evidence — ${item.classification.kind} (${item.sourceMethod}).`,
-        });
-        const uploadUrl = `/api/landos/deal-cards/${id}/documents/upload-file/${encodeURIComponent(uploaded.fileName)}`;
-        return {
-          documentUploadId: uploaded.id,
-          originalFileName: item.file.name,
-          fileUrl: uploadUrl,
-          mimeType: item.classification.mimeType,
-          byteSize: item.bytes.length,
-          sha256: smartIntakeImageSha256(item.bytes),
-          sourceMethod: item.sourceMethod,
-          extraction: extracted[index],
-        };
-      });
+      const prepared = await prepareDealEvidence(
+        await Promise.all(files.map(async (file, index) => ({
+          fileName: file.name,
+          mimeType: file.type || '',
+          bytes: Buffer.from(await file.arrayBuffer()),
+          sourceMethod: ['clipboard', 'upload', 'drop'].includes(String(sourceMethods[index]))
+            ? String(sourceMethods[index]) as SmartIntakeImageSourceMethod
+            : 'upload',
+        }))),
+        {
+          readEvidence: async (bytes, classification) => (
+            // Route tests must not pay for model calls. Formats LandOS reads
+            // WITHOUT a model (text, Office containers) still run for real, so
+            // the tests cover the readers they are meant to cover.
+            process.env.NODE_ENV === 'test'
+              && classification.interpreter !== 'text'
+              && classification.interpreter !== 'ooxml'
+              && classification.interpreter !== 'none'
+              ? unavailableSmartIntakeImageExtraction('Model extraction is disabled in route tests.', 'test')
+              : extractIntakeArtifact(bytes, classification)
+          ),
+        },
+      );
+      const transcript = isTranscriptEvidence(
+        prepared,
+        String(Array.isArray(body.submissionType) ? body.submissionType[0] ?? '' : body.submissionType ?? ''),
+      );
+      const intakeArtifacts = dealEvidenceArtifacts(id, prepared, (item, docType) => saveDocumentUpload({
+        dealCardId: id,
+        category: 'other',
+        title: item.fileName,
+        docType,
+        fileName: item.fileName,
+        mimeType: item.classification.mimeType,
+        bytes: item.bytes,
+        note: `Immutable Smart Intake evidence — ${item.classification.kind} (${item.sourceMethod}).`,
+      }), transcript);
       const operatorNote = String(Array.isArray(body.note) ? body.note[0] ?? '' : body.note ?? '');
-      // Interpreted artifacts already contribute their transcribed text through
-      // the artifact rows. Only the ones LandOS could NOT read need a sentence
-      // in the retained submission, because otherwise nothing in the text a
-      // reader sees would say the file arrived and was not understood.
-      const unreadNotes = prepared.flatMap((item, index) => (
-        extracted[index].status === 'unavailable'
-          ? [describeIntakeArtifact(item.file.name, item.classification, extracted[index])]
-          : []
-      ));
-      const text = [operatorNote, ...unreadNotes].filter(Boolean).join('\n\n');
+      const text = dealEvidenceSubmissionText(prepared, operatorNote);
       const submission = await persistLeadCardIntake({
         dealCardId: id,
         text,
@@ -3749,14 +3728,7 @@ export function registerLandosRoutes(app: Hono): void {
         submission: { ...submission, resolutionHandoff: handoff },
         // What LandOS decided each file was and whether it could read it, so
         // the conversation can say so instead of the operator guessing.
-        artifactRouting: prepared.map((item, index) => ({
-          fileName: item.file.name,
-          kind: item.classification.kind,
-          mimeType: item.classification.mimeType,
-          interpreter: item.classification.interpreter,
-          extractionStatus: extracted[index].status,
-          summary: describeIntakeArtifact(item.file.name, item.classification, extracted[index]),
-        })),
+        artifactRouting: prepared.map((item) => item.routing),
         submissions: listLeadCardIntake(id),
         contacts: listResourceContacts(id),
       }, 201);

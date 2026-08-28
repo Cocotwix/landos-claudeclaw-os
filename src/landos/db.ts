@@ -1142,8 +1142,16 @@ function createLandosSchema(db: Database.Database): void {
     CREATE TRIGGER IF NOT EXISTS landos_intake_artifact_immutable_update
       BEFORE UPDATE ON landos_intake_artifact
       BEGIN SELECT RAISE(ABORT, 'intake artifacts are immutable'); END;
+    -- Immutable WHILE THE DEAL IS LIVE. The guard is the deal's own Trash
+    -- state, matching the property-evidence triggers above: nothing can erase
+    -- an artifact from a deal that is still in play, and an explicit permanent
+    -- delete of an already-trashed deal can erase that deal's whole evidence
+    -- graph. Without the guard, an unconditional ABORT here made permanent
+    -- deletion impossible for any deal Smart Intake had ever touched.
+    -- A NULL deal_card_id COALESCEs to 0 and stays immutable.
     CREATE TRIGGER IF NOT EXISTS landos_intake_artifact_immutable_delete
       BEFORE DELETE ON landos_intake_artifact
+      WHEN COALESCE((SELECT deleted_at FROM landos_deal_card WHERE id = OLD.deal_card_id), 0) = 0
       BEGIN SELECT RAISE(ABORT, 'intake artifacts are immutable'); END;
 
     -- Operator-supplied LINKS are intake evidence in exactly the same sense as
@@ -1173,8 +1181,10 @@ function createLandosSchema(db: Database.Database): void {
     CREATE TRIGGER IF NOT EXISTS landos_intake_link_immutable_update
       BEFORE UPDATE ON landos_intake_link
       BEGIN SELECT RAISE(ABORT, 'intake links are immutable'); END;
+    -- Same rule as the artifact trigger above, for the same reason.
     CREATE TRIGGER IF NOT EXISTS landos_intake_link_immutable_delete
       BEFORE DELETE ON landos_intake_link
+      WHEN COALESCE((SELECT deleted_at FROM landos_deal_card WHERE id = OLD.deal_card_id), 0) = 0
       BEGIN SELECT RAISE(ABORT, 'intake links are immutable'); END;
 
     CREATE TABLE IF NOT EXISTS landos_intake_candidate (
@@ -1302,6 +1312,32 @@ function createLandosSchema(db: Database.Database): void {
   ).run('TY_LAND_BIZ', "Ty's Land Biz");
 
   // ── Additive migrations (idempotent; no data loss) ────────────────────
+
+  // Smart Intake evidence is immutable while the deal is LIVE, not forever.
+  //
+  // The original triggers aborted every DELETE unconditionally, which made the
+  // permanent-delete path structurally impossible for any deal Smart Intake had
+  // touched: `hardDeleteDealCard` purges each deal-scoped table in one
+  // transaction, the first intake row raised ABORT, and the whole purge rolled
+  // back. `CREATE TRIGGER IF NOT EXISTS` cannot repair an existing database, so
+  // the stale definitions are dropped and rebuilt with the same Trash guard the
+  // property-evidence triggers already use. Nothing is deleted here; only the
+  // rule changes, and only for a deal already in Trash.
+  for (const [trigger, table, message] of [
+    ['landos_intake_artifact_immutable_delete', 'landos_intake_artifact', 'intake artifacts are immutable'],
+    ['landos_intake_link_immutable_delete', 'landos_intake_link', 'intake links are immutable'],
+  ] as const) {
+    const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?")
+      .get(trigger) as { sql?: string } | undefined;
+    if (existing?.sql && !/\bWHEN\b/i.test(existing.sql)) {
+      db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+      db.exec(`CREATE TRIGGER ${trigger}
+        BEFORE DELETE ON ${table}
+        WHEN COALESCE((SELECT deleted_at FROM landos_deal_card WHERE id = OLD.deal_card_id), 0) = 0
+        BEGIN SELECT RAISE(ABORT, '${message}'); END`);
+    }
+  }
+
   // Add lead_type to deal/property cards for existing DBs. CREATE TABLE IF NOT
   // EXISTS does not alter an existing table, so add the column when missing.
   const addColumn = (table: string, column: string, ddl: string) => {

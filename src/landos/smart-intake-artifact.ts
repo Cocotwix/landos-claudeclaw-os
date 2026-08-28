@@ -41,6 +41,7 @@ import {
   type SmartIntakeVisionAnalyzer,
 } from './smart-intake-image.js';
 import { generateVisionContent, parseJsonResponse } from '../gemini.js';
+import { OOXML_MIME_TYPES, OOXML_TEXT_LIMIT, readOoxmlText } from './ooxml-text.js';
 
 /** 25 MB. Larger than the image ceiling because documents legitimately are. */
 export const SMART_INTAKE_ARTIFACT_MAX_BYTES = 25 * 1024 * 1024;
@@ -53,9 +54,11 @@ export const SMART_INTAKE_ARTIFACT_MAX_BYTES = 25 * 1024 * 1024;
  *              degrades to `unavailable` with the real error when the model
  *              cannot take the format, which is the honest outcome either way.
  * `text`     — decodable as UTF-8 text; read verbatim with no model call.
+ * `ooxml`    — DOCX/XLSX/PPTX. The container's own text parts are read with
+ *              Node's built-in inflate; no model call and no bespoke parser.
  * `none`     — retained only. LandOS has no reader for it yet, and says so.
  */
-export type IntakeArtifactInterpreter = 'vision' | 'media' | 'text' | 'none';
+export type IntakeArtifactInterpreter = 'vision' | 'media' | 'text' | 'ooxml' | 'none';
 
 export interface IntakeArtifactClassification {
   /** The MIME type LandOS will record, inferred from the browser type or the
@@ -148,6 +151,19 @@ export function classifyIntakeArtifact(
       note: 'Read directly as text and retained verbatim. No model call is needed to see its contents.',
     };
   }
+  // DOCX/XLSX/PPTX are ZIP archives of XML. The multimodal model does not take
+  // the container, but Node's own inflate does, so the operator's document is
+  // read rather than merely shelved. Macro-bearing variants never arrive here:
+  // ACTIVE_CONTENT above already routed them to `none`.
+  if (OOXML_MIME_TYPES.includes(mimeType)) {
+    const kind = /spreadsheetml/i.test(mimeType) ? 'Spreadsheet'
+      : /presentationml/i.test(mimeType) ? 'Presentation'
+        : 'Word document';
+    return {
+      mimeType, interpreter: 'ooxml', kind,
+      note: `Read directly by unpacking the ${kind.toLowerCase()}'s own text, with no model call. Formatting, formulas, and embedded objects are not read, and what is recovered is an unconfirmed intake candidate until a source verifies it.`,
+    };
+  }
   const officeKind = /wordprocessingml|msword/i.test(mimeType) ? 'Word document'
     : /spreadsheetml|ms-excel/i.test(mimeType) ? 'Spreadsheet'
       : /presentationml|powerpoint/i.test(mimeType) ? 'Presentation'
@@ -223,6 +239,28 @@ export async function extractIntakeArtifact(
     return normalizeSmartIntakeImageExtraction(
       { exactText: text, status: 'complete', notes: [classification.note] },
       'direct-text-read',
+    );
+  }
+
+  if (classification.interpreter === 'ooxml') {
+    const read = readOoxmlText(bytes);
+    if (read === null) {
+      return unavailableSmartIntakeImageExtraction(
+        `${classification.kind} could not be unpacked — the file may be damaged, password-protected, or not actually an Office document. It is kept exactly as supplied.`,
+        'retained-only',
+      );
+    }
+    return normalizeSmartIntakeImageExtraction(
+      {
+        exactText: read.text,
+        status: read.truncated ? 'partial' : 'complete',
+        notes: [
+          `Read from ${read.parts.join(', ')}.`,
+          read.truncated ? `Text beyond ${OOXML_TEXT_LIMIT.toLocaleString('en-US')} characters was not retained.` : '',
+          classification.note,
+        ].filter(Boolean),
+      },
+      'ooxml-text-read',
     );
   }
 
