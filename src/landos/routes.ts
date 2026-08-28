@@ -554,7 +554,8 @@ import {
   EXACT_ADDRESS_LANE_ID,
   type ExtractedListingEvidence,
 } from './exact-address-web-discovery.js';
-import { loadSubjectListingDetail } from './subject-listing-store.js';
+import { loadSubjectListingDetail, reprojectSubjectListingDetail } from './subject-listing-store.js';
+import { resolveCanonicalIdentity } from './canonical-identity.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -9748,6 +9749,12 @@ export function registerLandosRoutes(app: Hono): void {
     const linkCardId = linkDeal ? subjectCardId(linkDeal) : null;
     const linkInspection = linkCardId ? loadPropertyInspection(linkCardId) : null;
     const subjectListing = linkCardId ? loadSubjectListingDetail(linkCardId) : null;
+    // Only a CONFIRMED canonical identity may segregate retained evidence. An
+    // unconfirmed guess must never quarantine a record that might be the subject.
+    const subjectCanonicalApn = (() => {
+      const canonical = resolveCanonicalIdentity(dealCardId);
+      return canonical.confirmed ? canonical.apn : null;
+    })();
     const landPortalFacts = linkInspection ? buildParcelFactSheet(linkInspection.parcelFacts) : null;
     const canonicalParcel = linkInspection?.parcelUrlRecord;
     const subjectParcel = canonicalParcel?.verifiedSubject && isVerifiedLandPortalSubjectUrl(canonicalParcel.url)
@@ -10065,7 +10072,10 @@ export function registerLandosRoutes(app: Hono): void {
       // This projects the LATEST attempt that actually retained pages, so the
       // operator can see which providers answered and what they published,
       // rather than the facts living only inside the run record.
-      exactAddressListings: subjectListing?.projection ?? (() => {
+      // Both branches are re-projected against the CONFIRMED canonical parcel:
+      // a same-address record stating another APN is neighbouring evidence, not
+      // the subject, whichever path retained it and however old the row is.
+      exactAddressListings: reprojectSubjectListingDetail(subjectListing, subjectCanonicalApn)?.projection ?? (() => {
         const cardId = resolveSubjectPropertyCard(getDealCard(dealCardId)).cardId;
         if (cardId == null) return null;
         const attempts = propertyResearchStore.listLaneAttempts(cardId)
@@ -10076,9 +10086,10 @@ export function registerLandosRoutes(app: Hono): void {
         const chosen = withPages ?? attempts[attempts.length - 1];
         return projectExactAddressListingEvidence(
           chosen.execution?.result as Parameters<typeof projectExactAddressListingEvidence>[0],
+          { canonicalApn: subjectCanonicalApn },
         );
       })(),
-      subjectListing,
+      subjectListing: reprojectSubjectListingDetail(subjectListing, subjectCanonicalApn),
       landPortalFacts,
       canonicalState: canonicalDealStateFor(dealCardId, snapshot),
       hermesLandPortal: getHermesLandPortalLaneProgress(dealCardId),
@@ -12022,17 +12033,21 @@ export function registerLandosRoutes(app: Hono): void {
   // the intelligence stack — and this is the loop between them.
   const researchCoverageCycles = new Map<number, ResearchCoverageCycleResult>();
 
-  const runDealCoverageCycle = async (id: number, entity: CapabilityEntity) => {
-    const result = await runResearchCoverageCycle({ dealCardId: id, entity }, {
+  const runDealCoverageCycle = async (
+    id: number,
+    entity: CapabilityEntity,
+    trigger: 'automatic' | 'operator_rerun' = 'automatic',
+  ) => {
+    const result = await runResearchCoverageCycle({ dealCardId: id, entity, trigger }, {
       reconcile: (dealCardId) => {
         const manifest = reconcileResearchReadiness(dealCardId);
         return isReconcileError(manifest) ? { error: manifest.error } : manifest;
       },
-      backfill: async (dealCardId, subjectEntity, itemIds) => {
+      backfill: async (dealCardId, subjectEntity, itemIds, options) => {
         const report = await runResearchReadinessBackfill(
           dealCardId,
           subjectEntity,
-          { itemIds, includeStale: true },
+          { itemIds, includeStale: true, includeUnresolved: options?.includeUnresolved === true },
           { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
         );
         return 'error' in report ? null : report.after;
@@ -12241,7 +12256,7 @@ export function registerLandosRoutes(app: Hono): void {
       .then(async () => {
         const current = getDealCard(id);
         if (!current) return;
-        const cycle = await runDealCoverageCycle(id, current.entity as CapabilityEntity);
+        const cycle = await runDealCoverageCycle(id, current.entity as CapabilityEntity, 'operator_rerun');
         if ('error' in cycle) {
           logger.warn({ dealCardId: id, runId: launch.runId, msg: cycle.error }, 'research_coverage_cycle_skipped');
           return;

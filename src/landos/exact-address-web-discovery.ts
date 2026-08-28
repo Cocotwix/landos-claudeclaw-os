@@ -1461,12 +1461,27 @@ function recordRef(view: ListingEvidenceSourceView, reason: string): ReconciledR
   };
 }
 
+/**
+ * The canonical parcel this projection is allowed to describe.
+ *
+ * A street address is not a parcel. Once LandOS holds a confirmed canonical
+ * APN, a retained marketplace record publishing a materially different APN
+ * describes a DIFFERENT parcel that merely shares the address — the same
+ * stated-parcel divergence the identity gate already refuses to reconcile.
+ * Passing it here segregates that record out of the subject before any subject
+ * fact is derived from it.
+ */
+export interface ExactAddressSubjectIdentity {
+  /** Only a CONFIRMED canonical APN should be passed; an unconfirmed guess must not quarantine evidence. */
+  canonicalApn?: string | null;
+}
+
 export function projectExactAddressListingEvidence(result: {
   status: ExactAddressListingEvidenceView['status'];
   note?: string;
   queries?: string[];
   pages?: ExtractedListingEvidence[];
-} | null | undefined): ExactAddressListingEvidenceView | null {
+} | null | undefined, identity?: ExactAddressSubjectIdentity | null): ExactAddressListingEvidenceView | null {
   if (!result) return null;
   // Retained evidence is re-tested on the way out as well as on the way in, so
   // a value stored before its field test existed is not projected today.
@@ -1574,7 +1589,25 @@ export function projectExactAddressListingEvidence(result: {
     };
   });
 
-  const clusters = clusterSubjectRecords(sources);
+  // ── Stated-parcel segregation ────────────────────────────────────────────
+  // Address-matched retrieval routinely returns the NEIGHBOURING parcel: same
+  // street address, different APN, different acreage, a house where the subject
+  // is vacant land. Clustering alone cannot refuse it, because a lone record
+  // has nothing to contradict. The canonical APN is the refusal: a record that
+  // states a different parcel is quarantined here, before it can reach the
+  // canonical cluster, the card, the subject read, or a single derived fact.
+  // It is retained in full as neighbouring/contextual evidence — never merged.
+  const canonicalApn = normalizeApn(identity?.canonicalApn ?? null);
+  const divergentSources = canonicalApn
+    ? sources.filter((source) => {
+      const stated = normalizeApn(source.apn);
+      return !!stated && stated !== canonicalApn;
+    })
+    : [];
+  const divergent = new Set(divergentSources);
+  const subjectSources = divergent.size ? sources.filter((source) => !divergent.has(source)) : sources;
+
+  const clusters = clusterSubjectRecords(subjectSources);
   // One physical subject stays one canonical subject: the largest cluster, then
   // the one whose records are actually on the market, then the freshest.
   const canonical = [...clusters].sort((a, b) => {
@@ -1633,7 +1666,9 @@ export function projectExactAddressListingEvidence(result: {
       : `Superseded: a duplicate record for the same physical subject carrying older or less complete evidence than ${current?.sourceLabel ?? 'the current record'}. Retained as secondary evidence.`));
   const otherRecords = sources
     .filter((source) => !canonicalMembers.includes(source))
-    .map((source) => recordRef(source, 'Not reconciled to the canonical subject: its street address or APN disagrees, or nothing tied it to the subject cluster. Retained separately, never merged into the subject.'));
+    .map((source) => recordRef(source, divergent.has(source)
+      ? `Different parcel: this record states APN ${source.apn} while the canonical subject parcel is ${identity?.canonicalApn}. A shared street address does not make it the subject. Retained as neighbouring/contextual evidence only — it drives no subject listing status, acreage, improvement, sqft, bed/bath, price, valuation or comp.`
+      : 'Not reconciled to the canonical subject: its street address or APN disagrees, or nothing tied it to the subject cluster. Retained separately, never merged into the subject.'));
 
   // An MLS number issued by an MLS is digits. A marketplace's own internal id
   // ("T062626") passes the id shape test and stays retained on its record as
@@ -1666,11 +1701,17 @@ export function projectExactAddressListingEvidence(result: {
         ? `${canonicalMembers.length} retained record(s) describe one physical subject; ${current.sourceLabel} carries the current ${current.listingStatusLabel.toLowerCase()} state.`
           + (supersededRecords.length ? ` ${supersededRecords.length} duplicate record(s) are retained as superseded evidence.` : '')
           + (otherRecords.length ? ` ${otherRecords.length} retained record(s) did not reconcile to this subject.` : '')
-        : 'No retained record could be reconciled into a canonical subject.',
+          + (divergent.size ? ` ${divergent.size} of those state a different parcel than canonical APN ${identity?.canonicalApn} and are held as neighbouring evidence only.` : '')
+        : divergent.size && !subjectSources.length
+          ? `No retained record describes the canonical subject parcel. ${divergent.size} retained record(s) share the street address but state a different APN than ${identity?.canonicalApn}, so they are held as neighbouring evidence and establish no subject fact.`
+          : 'No retained record could be reconciled into a canonical subject.',
     }
     : null;
 
-  const factBase = canonicalMembers.length ? canonicalMembers : sources;
+  // Never the quarantined records. When the ONLY retained record states another
+  // parcel, the subject has no listing-reported facts — which is the truth, and
+  // is not the same thing as adopting the neighbour's.
+  const factBase = canonicalMembers.length ? canonicalMembers : subjectSources;
   const sqfts = factBase.map((s) => s.buildingSqft).filter((v): v is number => typeof v === 'number' && v > 0);
   const acreages = factBase.map((s) => s.acres).filter((v): v is number => typeof v === 'number' && v > 0);
   const buildingSqft = sqfts.length ? Math.max(...sqfts) : null;
@@ -1681,7 +1722,7 @@ export function projectExactAddressListingEvidence(result: {
     .filter((t) => !(ATTACHED_DWELLING_TYPE.test(t) && acres != null && acres >= ATTACHED_DWELLING_ACRE_LIMIT));
   const improved = sqfts.length > 0 || improvedTypes.length > 0;
 
-  const subjectRead = sources.length
+  const subjectRead = subjectSources.length
     ? {
       improved,
       buildingSqft,

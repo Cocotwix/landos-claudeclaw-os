@@ -5,6 +5,7 @@
 // A provider outage or empty revisit is retained as the latest attempt without
 // erasing listing evidence captured by an earlier successful visit.
 
+import { resolveCanonicalIdentity } from './canonical-identity.js';
 import { getLandosDb } from './db.js';
 import {
   mergeRetainedListingRecords,
@@ -104,7 +105,35 @@ export function loadSubjectListingDetail(propertyCardId: number): PersistedSubje
   const row = getLandosDb().prepare(
     'SELECT detail_json FROM landos_subject_listing_detail WHERE property_card_id = ?',
   ).get(propertyCardId) as { detail_json?: string } | undefined;
-  return parseSubjectListingDetail(row?.detail_json);
+  const detail = parseSubjectListingDetail(row?.detail_json);
+  if (!detail) return null;
+  // Every reader gets the same segregation. Only a CONFIRMED canonical identity
+  // may quarantine a record; an unconfirmed guess must never discard evidence
+  // that could still turn out to be the subject.
+  const canonical = resolveCanonicalIdentity(detail.dealCardId);
+  return reprojectSubjectListingDetail(detail, canonical.confirmed ? canonical.apn : null);
+}
+
+/**
+ * Re-project retained listing evidence against the canonical parcel.
+ *
+ * Retention is separate from interpretation. Rows persisted before the
+ * stated-parcel segregation existed still hold the neighbouring record, so the
+ * READ path re-derives the projection rather than trusting the stored one; no
+ * migration, and no retained evidence is destroyed.
+ */
+export function reprojectSubjectListingDetail(
+  detail: PersistedSubjectListingDetail | null,
+  canonicalApn: string | null,
+): PersistedSubjectListingDetail | null {
+  if (!detail || !canonicalApn) return detail;
+  const projection = projectExactAddressListingEvidence({
+    status: detail.retainedPages.length ? 'retrieved' : detail.latestAttempt.status,
+    queries: detail.latestAttempt.queries,
+    pages: detail.retainedPages,
+    note: detail.projection.note,
+  }, { canonicalApn });
+  return projection ? { ...detail, projection } : detail;
 }
 
 export function saveSubjectListingDetail(input: {
@@ -113,6 +142,8 @@ export function saveSubjectListingDetail(input: {
   canonicalAddress: string;
   completedAtIso: string;
   result: SubjectListingDiscoveryResult;
+  /** The CONFIRMED canonical APN, when one exists. Segregates same-address other-parcel records. */
+  canonicalApn?: string | null;
 }): SubjectListingWriteResult {
   ensureTable();
   const db = getLandosDb();
@@ -159,7 +190,7 @@ export function saveSubjectListingDetail(input: {
     queries: input.result.queries,
     pages: retainedPages,
     note: `${input.result.note} ${retentionNote}`.trim(),
-  });
+  }, { canonicalApn: input.canonicalApn ?? null });
   if (!projection) {
     return {
       attempted: true,

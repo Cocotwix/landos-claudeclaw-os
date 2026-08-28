@@ -682,6 +682,18 @@ export interface BackfillSelectionRequest {
   itemIds?: string[];
   /** Also refresh blue (stale) items. Off by default: stale is not missing. */
   includeStale?: boolean;
+  /**
+   * Also re-attempt yellow (unresolved/PARTIAL) items.
+   *
+   * Off by default, and deliberately NOT implied by naming an item: an
+   * automatic cycle must never loop on a lane that already ran and honestly
+   * established nothing. An explicit operator Re-run Research is different —
+   * a zoning search that opened the LDR PDF but never established the district
+   * is an unfinished question, not a permanent verdict, and it gets ONE more
+   * bounded attempt (still one invocation per owning capability) so a different
+   * existing route can try. Exhausting those settles honestly at PARTIAL.
+   */
+  includeUnresolved?: boolean;
 }
 
 /** One capability invocation the backfill will make, and the items it serves. */
@@ -731,7 +743,9 @@ export function selectResearchBackfill(
     if (requested && !requested.has(item.id)) continue;
     const explicit = !!requested;
     const eligible = item.machineBackfillAllowed
-      && (item.status === 'red' || (item.status === 'blue' && (request.includeStale === true || explicit)));
+      && (item.status === 'red'
+        || (item.status === 'blue' && (request.includeStale === true || explicit))
+        || (item.status === 'yellow' && request.includeUnresolved === true));
     if (!eligible) {
       // An item that WOULD be a backfill candidate on status alone, but that no
       // registered capability owns, is refused for that reason — not for its

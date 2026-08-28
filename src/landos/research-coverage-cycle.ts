@@ -273,6 +273,7 @@ export interface ResearchCoverageCycleDeps {
     dealCardId: number,
     entity: CapabilityEntity,
     itemIds: string[],
+    options?: { includeUnresolved?: boolean },
   ) => Promise<ResearchReadinessManifest | null>;
   /** The existing specialist cascade (property → market → seller → deal). */
   cascade?: (dealCardId: number) => Promise<{
@@ -299,7 +300,16 @@ const isManifest = (value: ResearchReadinessManifest | { error: string }): value
  * not invent a second research implementation to make a checklist look full.
  */
 export async function runResearchCoverageCycle(
-  input: { dealCardId: number; entity: CapabilityEntity },
+  input: {
+    dealCardId: number;
+    entity: CapabilityEntity;
+    /**
+     * `automatic` is the cycle a Deal runs on its own; `operator_rerun` is
+     * Tyler pressing Re-run Research. Only the second re-opens PARTIAL lanes,
+     * and only those a specialist still explicitly requires.
+     */
+    trigger?: 'automatic' | 'operator_rerun';
+  },
   deps: ResearchCoverageCycleDeps,
 ): Promise<ResearchCoverageCycleResult | { error: string }> {
   const now = deps.now ?? (() => new Date().toISOString());
@@ -322,13 +332,23 @@ export async function runResearchCoverageCycle(
   });
 
   // ── Retrieval: only the machine-owned gaps, one invocation per capability ──
+  // On an operator Re-run, a PARTIAL lane a specialist still explicitly needs is
+  // re-opened for ONE more bounded attempt so a different existing route can
+  // try. An automatic cycle never does this; a lane nobody still asks for is
+  // left settled at PARTIAL rather than re-run forever.
+  const stillRequired = new Set(requirements.map((requirement) => requirement.itemId));
+  const reopenUnresolved = input.trigger === 'operator_rerun'
+    && plan.entries.some((entry) => entry.state === 'PARTIAL' && entry.machineResolvable && stillRequired.has(entry.id));
   const attemptedItemIds = plan.entries
     .filter((entry) => entry.action === 'run' && entry.machineResolvable)
+    .filter((entry) => entry.state !== 'PARTIAL' || (reopenUnresolved && stillRequired.has(entry.id)))
     .map((entry) => entry.id);
   let manifest: ResearchReadinessManifest = before;
   if (attemptedItemIds.length) {
     try {
-      const after = await deps.backfill(input.dealCardId, input.entity, attemptedItemIds);
+      const after = await deps.backfill(input.dealCardId, input.entity, attemptedItemIds, {
+        includeUnresolved: reopenUnresolved,
+      });
       if (after) manifest = after;
     } catch (error) {
       warnings.push(`Coverage retrieval did not complete: ${error instanceof Error ? error.message : String(error)}.`);

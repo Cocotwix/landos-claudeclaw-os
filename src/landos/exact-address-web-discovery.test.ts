@@ -1242,3 +1242,64 @@ describe('listing wording excerpts stay readable and honest', () => {
     expect(out.length).toBeLessThanOrEqual(321);
   });
 });
+
+describe('stated-parcel segregation in the operator projection', () => {
+  // Deal 90's real contamination: the neighbouring parcel publishes the SAME
+  // street address, so address-matched retrieval retains it, and nothing in the
+  // record itself contradicts a lone cluster. The canonical APN is the refusal.
+  const canonical = (over: Partial<ExtractedListingEvidence> = {}): ExtractedListingEvidence => ({
+    sourceUrl: 'https://www.landwatch.com/greene-county-tennessee-land-for-sale/pid/1',
+    sourceLabel: 'landwatch.com',
+    retrievedAt: '2026-08-20T10:00:00.000Z',
+    legalAccessStatements: [], drivewayStatements: [], directionsStatements: [],
+    streetAddress: '1234 Sample Rd', apn: '00083-A-03400',
+    propertyType: 'vacant land', buildingSqft: null, acres: 1.5,
+    utilities: [], well: null, septic: null, remarks: [],
+    listingStatus: null, listingStatusCode: 'unknown',
+    currentPrice: null, priorAskingPrice: null, originalListPrice: null,
+    listingDate: null, daysOnMarket: null, beds: null, baths: null, yearBuilt: null,
+    structures: [], description: null, features: [], brokerage: null, listingAgent: null,
+    mls: null, listingHistory: [], photoUrls: [], engagement: null,
+    ...over,
+  });
+  const neighbour = canonical({
+    sourceUrl: 'https://www.zillow.com/homedetails/1234-Sample-Rd/999_zpid/',
+    sourceLabel: 'zillow.com',
+    apn: '00083A03300',
+    propertyType: 'mobile / manufactured home',
+    buildingSqft: 2024, acres: 4.51, beds: 6, baths: 2, yearBuilt: 1997,
+    listingStatus: 'Active', listingStatusCode: 'active', currentPrice: 233_100,
+  });
+
+  it('never lets a same-address different-APN record become subject truth', () => {
+    const view = projectExactAddressListingEvidence(
+      { status: 'retrieved', queries: ['1234 Sample Rd'], pages: [neighbour, canonical()] },
+      { canonicalApn: '00083-A-03400' },
+    );
+    expect(view?.subjectRead?.acres).toBe(1.5);
+    expect(view?.subjectRead?.improved).toBe(false);
+    expect(view?.subjectRead?.buildingSqft).toBeNull();
+    const quarantined = view?.reconciliation?.otherRecords ?? [];
+    expect(quarantined.map((record) => record.sourceUrl)).toContain(neighbour.sourceUrl);
+    expect(quarantined[0]?.reason).toMatch(/Different parcel/);
+    // Retained, not deleted: it is still available as neighbouring evidence.
+    expect(view?.sources.some((source) => source.sourceUrl === neighbour.sourceUrl)).toBe(true);
+  });
+
+  it('reports no subject facts rather than adopting the neighbour when it is the only record', () => {
+    const view = projectExactAddressListingEvidence(
+      { status: 'retrieved', queries: ['1234 Sample Rd'], pages: [neighbour] },
+      { canonicalApn: '00083-A-03400' },
+    );
+    expect(view?.subjectRead).toBeNull();
+    expect(view?.reconciliation?.currentRecord).toBeNull();
+    expect(view?.reconciliation?.statement).toMatch(/different APN/);
+  });
+
+  it('quarantines nothing when no confirmed canonical APN is supplied', () => {
+    const view = projectExactAddressListingEvidence(
+      { status: 'retrieved', queries: ['1234 Sample Rd'], pages: [neighbour, canonical()] },
+    );
+    expect(view?.reconciliation?.otherRecords.some((r) => /Different parcel/.test(r.reason))).toBe(false);
+  });
+});
