@@ -103,6 +103,54 @@ describe('merging retained inspections', () => {
   });
 });
 
+describe('parcel-specific evidence follows the parcel', () => {
+  // A photograph of the neighbouring lot is not a photograph of this one, and a
+  // comp set assembled around another parcel's location and acreage is not this
+  // subject's comp set. Segregation used to stop at the fact sheet, so both were
+  // still presented as the subject's own.
+  const neighbourEvidence: PropertyInspectionRecord = {
+    ...NEIGHBOUR,
+    assets: [{ key: 'parcel_view', label: 'Parcel view', kind: 'parcel_page', purpose: 'landportal_property_loaded', storedPath: '/v/neighbour.png', timestamp: 't' }] as PropertyInspectionRecord['assets'],
+    overlays: [{ overlay: 'topography', detail: 'Neighbour slope overlay', screenshotKey: 'n1' }] as unknown as PropertyInspectionRecord['overlays'],
+    visualObservations: [{ label: 'Structure', detail: 'House visible on parcel', evidence: '/v/neighbour.png' }] as PropertyInspectionRecord['visualObservations'],
+    comparables: [{ rawText: '$99,000 Acres: 1.50 | APN: 11111-1-11111', price: '$99,000', acres: 1.5 }] as unknown as PropertyInspectionRecord['comparables'],
+    sources: [{ provider: 'LandPortal', stage: 'landportal', status: 'used', confidence: 'high', url: 'https://landportal.com/', note: 'Neighbour read.' }] as PropertyInspectionRecord['sources'],
+    missingInformation: ['Official acreage'],
+  };
+  const subjectEvidence: PropertyInspectionRecord = {
+    ...SUBJECT,
+    assets: [{ key: 'parcel_view', label: 'Parcel view', kind: 'parcel_page', purpose: 'landportal_property_loaded', storedPath: '/v/subject.png', timestamp: 't' }] as PropertyInspectionRecord['assets'],
+    comparables: [{ rawText: '$35,000 Acres: 1.50 | APN: 00019-0-00000', price: '$35,000', acres: 1.5 }] as unknown as PropertyInspectionRecord['comparables'],
+  };
+
+  it('drops the superseded parcel imagery, overlays, observations and comps', () => {
+    const merged = mergePropertyInspections([neighbourEvidence, subjectEvidence])!;
+    expect(merged.assets.map((a) => a.storedPath)).toEqual(['/v/subject.png']);
+    expect(merged.overlays).toHaveLength(0);
+    expect(merged.visualObservations).toHaveLength(0);
+    // The comp set searched around the neighbour is not this subject's.
+    expect(merged.comparables.map((c) => c.rawText)).toEqual(['$35,000 Acres: 1.50 | APN: 00019-0-00000']);
+  });
+
+  it('keeps provenance and market context, which the correction does not falsify', () => {
+    const merged = mergePropertyInspections([neighbourEvidence, subjectEvidence])!;
+    // The audit trail of what was read, and when, stays complete.
+    expect(merged.sources.some((s) => s.note === 'Neighbour read.')).toBe(true);
+    expect(merged.missingInformation).toContain('Official acreage');
+  });
+
+  it('keeps parcel-specific evidence from a record that states no parcel', () => {
+    const contextual: PropertyInspectionRecord = {
+      ...empty,
+      parcelUrl: 'https://bradfordcountyfl.gov/gis',
+      parcelFacts: { 'Zoning Code': 'A-1' },
+      visualObservations: [{ label: 'Access', detail: 'Paved road frontage', evidence: 'county gis' }] as PropertyInspectionRecord['visualObservations'],
+    };
+    const merged = mergePropertyInspections([contextual, subjectEvidence])!;
+    expect(merged.visualObservations).toHaveLength(1);
+  });
+});
+
 describe('the Deal Card stops reading the neighbour as the subject', () => {
   it('reads a vacant parcel once the subject record supersedes the neighbouring one', () => {
     const card = upsertPropertyCard({

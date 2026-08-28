@@ -1177,17 +1177,35 @@ export function mergePropertyInspections(records: Array<PropertyInspectionRecord
   const latestParcelUrl = [...usable].reverse().map((r) => r.parcelUrl).find((url) => nonBlank(url));
   const latestComparablesUrl = [...usable].reverse().map((r) => r.comparablesUrl).find((url) => nonBlank(url));
   const all = <T>(pick: (record: PropertyInspectionRecord) => T[]) => usable.flatMap((record) => pick(record) ?? []);
+  // ── PARCEL-SPECIFIC EVIDENCE FOLLOWS THE PARCEL ──────────────────────────
+  //
+  // Segregation used to stop at the fact sheet, so a capture of the WRONG
+  // parcel still contributed its imagery, its overlay and terrain observations,
+  // and the comparables it was searched for. A photograph of the neighbouring
+  // lot is not a photograph of this one, and a comp set assembled around
+  // another parcel's location and acreage is not this subject's comp set —
+  // both were being presented as the subject's own (permanent memory invariant
+  // 4, the same rule the facts already follow).
+  //
+  // These four are parcel-specific and are taken only from records that state
+  // THIS parcel. `sources`, `evidence`, `discoveryQuestions` and
+  // `missingInformation` deliberately still come from every record: they are
+  // the provenance trail and market/jurisdiction context, which do not become
+  // false because the subject was corrected. Nothing is deleted here either —
+  // the superseded capture's activity row is untouched and readable.
+  const ofSubjectParcel = <T>(pick: (record: PropertyInspectionRecord) => T[]) =>
+    factRecords.flatMap((record) => pick(record) ?? []);
   return {
     parcelUrl: landPortalUrl ?? latestParcelUrl ?? null,
     parcelUrlRecord: latestCanonical,
-    threeDCapture: [...usable].reverse().map((r) => r.threeDCapture ?? null).find((value): value is ThreeDCaptureEligibility => !!value) ?? null,
+    threeDCapture: [...factRecords].reverse().map((r) => r.threeDCapture ?? null).find((value): value is ThreeDCaptureEligibility => !!value) ?? null,
     comparablesUrl: latestComparablesUrl ?? null,
     comparablesCapturedAt: [...usable].reverse().map((r) => r.comparablesCapturedAt ?? null).find(nonBlank) ?? null,
     parcelFacts: facts,
-    assets: mergeInspectionAssets(all((r) => r.assets)),
-    overlays: mergeUniqueBy(all((r) => r.overlays), (row) => `${row.overlay}|${row.screenshotKey ?? ''}`),
-    visualObservations: mergeUniqueBy(all((r) => r.visualObservations), (row) => `${row.label}|${row.detail}|${row.evidence}`),
-    comparables: mergeComparableRows(all((r) => r.comparables)),
+    assets: mergeInspectionAssets(ofSubjectParcel((r) => r.assets)),
+    overlays: mergeUniqueBy(ofSubjectParcel((r) => r.overlays), (row) => `${row.overlay}|${row.screenshotKey ?? ''}`),
+    visualObservations: mergeUniqueBy(ofSubjectParcel((r) => r.visualObservations), (row) => `${row.label}|${row.detail}|${row.evidence}`),
+    comparables: mergeComparableRows(ofSubjectParcel((r) => r.comparables)),
     sources: mergeUniqueBy(all((r) => r.sources ?? []), (row) => `${row.provider}|${row.stage}|${row.url ?? ''}`),
     evidence: mergeUniqueBy(all((r) => r.evidence ?? []), (row) => `${row.label}|${row.source ?? ''}|${row.url ?? ''}|${row.detail}`),
     discoveryQuestions: [...new Set(all((r) => r.discoveryQuestions ?? []).filter(nonBlank))],
