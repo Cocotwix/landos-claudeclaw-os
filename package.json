@@ -56,7 +56,7 @@
     "landos:control:test": "node --test scripts/control/*.test.mjs",
     "landos:build": "node scripts/devloop/build.mjs",
     "landos:build:watch": "node scripts/devloop/build.mjs watch",
-    "landos:build:test": "node --test scripts/devloop/build.test.mjs",
+    "landos:build:test": "node --test scripts/devloop/build.test.mjs scripts/devloop/builders.test.mjs",
     "landos:data:backup": "node scripts/data/landos-business-backup.mjs backup",
     "landos:data:restore": "node scripts/data/landos-business-backup.mjs restore",
     "landos:data:drill": "node scripts/data/landos-business-backup.mjs drill",

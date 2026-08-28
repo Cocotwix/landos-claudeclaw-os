@@ -77,7 +77,7 @@ export const BUILDERS = [
     version: ['--version'],
     invoke({ cwd, attemptDir }) {
       return {
-        args: ['exec', '--cd', quote(cwd), '-s', 'danger-full-access', '-o', quote(path.join(attemptDir, 'final.txt')), '-'],
+        args: ['exec', '--cd', cwd, '-s', 'danger-full-access', '-o', path.join(attemptDir, 'final.txt'), '-'],
         stdin: null,
         finalMessageFile: 'final.txt',
       };
@@ -86,14 +86,54 @@ export const BUILDERS = [
   },
 ];
 
+// Windows only creates a console window for a launch that actually needs a
+// console. A builder run through a shell gets a cmd.exe wrapper, and that
+// wrapper owns a console: windowsHide suppresses the wrapper's own window, but
+// a console/TUI builder underneath it (codex exec) materializes that console
+// anyway, and Windows 11 hands the materialized console to the default
+// terminal, which opens a real, focus-stealing window in the middle of a
+// sprint. Launching the builder image directly leaves no wrapper console to
+// materialize. Builders that only ship a .cmd/.bat shim cannot run without a
+// shell, so those keep the wrapper rather than failing to launch at all.
+const DIRECT_WINDOWS_EXTENSIONS = ['.exe', '.com'];
+
+export function resolveLaunch(
+  command,
+  { platform = process.platform, env = process.env, exists = existsSync } = {},
+) {
+  if (platform !== 'win32') return { command, shell: false };
+
+  const direct = (value) => DIRECT_WINDOWS_EXTENSIONS.includes(path.extname(value).toLowerCase());
+  if (path.isAbsolute(command) || command.includes('/') || command.includes('\\')) {
+    return { command, shell: !direct(command) };
+  }
+
+  const named = path.extname(command) !== '';
+  const candidates = named ? [command] : DIRECT_WINDOWS_EXTENSIONS.map((ext) => `${command}${ext}`);
+  const dirs = String(env.PATH ?? env.Path ?? '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const candidate of candidates) {
+      const full = path.join(dir, candidate);
+      if (exists(full) && direct(full)) return { command: full, shell: false };
+    }
+  }
+  return { command, shell: true };
+}
+
 export function getBuilder(id, registry = BUILDERS) {
   const builder = registry.find((entry) => entry.id === id);
   if (!builder) throw new Error(`Unknown builder "${id}". Known: ${registry.map((e) => e.id).join(', ')}`);
   return builder;
 }
 
-export function detectBuilder(builder, { run = spawnSync } = {}) {
-  const result = run(builder.command, builder.version, { shell: true, encoding: 'utf8', timeout: 60_000 });
+export function detectBuilder(builder, { run = spawnSync, resolveFn = resolveLaunch } = {}) {
+  const launch = resolveFn(builder.command);
+  const result = run(launch.command, builder.version, {
+    shell: launch.shell,
+    windowsHide: true,
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
   return { id: builder.id, label: builder.label, available: !result.error && result.status === 0 };
 }
 
@@ -110,10 +150,10 @@ export function nextBuilderId(currentId, available) {
   return index === -1 ? pool[0] : pool[(index + 1) % pool.length];
 }
 
-// Every builder launches through a shell, so the child is the shell and the
-// worker is its grandchild. On Windows a SIGTERM to cmd.exe leaves the real
-// process holding the stdio pipes open and 'close' never fires. Killing the
-// tree is what makes a timeout real.
+// The child is the builder itself, or a cmd.exe wrapper when only a shim was
+// resolvable. On Windows a SIGTERM to cmd.exe leaves the real process holding
+// the stdio pipes open and 'close' never fires, and a builder spawns children
+// of its own either way. Killing the tree is what makes a timeout real.
 export function killTree(child) {
   if (!child?.pid) return;
   try {
@@ -134,17 +174,22 @@ export function killTree(child) {
 export function launchWorker(
   builder,
   { cwd, promptText, attemptDir, tools, timeoutMs = DEFAULT_TIMEOUT_MS },
-  { spawnFn = spawn } = {},
+  { spawnFn = spawn, resolveFn = resolveLaunch } = {},
 ) {
   const plan = builder.invoke({ cwd, promptText, attemptDir, tools });
+  const launch = resolveFn(builder.command);
+  // Node joins argv into one command string for a shell launch and quotes
+  // nothing; without a shell it quotes each argument itself, and a
+  // pre-quoted argument would reach the builder with literal quotes in it.
+  const args = launch.shell ? plan.args.map(quote) : plan.args;
   const startedAt = Date.now();
 
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawnFn(builder.command, plan.args, {
+      child = spawnFn(launch.command, args, {
         cwd,
-        shell: true,
+        shell: launch.shell,
         windowsHide: true,
         env: envWithSafeGitDirectory(cwd),
       });
