@@ -103,7 +103,9 @@ import {
   getCardActivity,
   upsertPropertyCard,
 } from './property-card.js';
-import { isVerifiedLandPortalSubjectUrl, landPortalIdentityFromUrl, operatorLandPortalEntryUrl, sameLandPortalParcel } from './landportal-operating-rules.js';
+import { isOperatorEntryOnlyLandPortalUrl, isVerifiedLandPortalSubjectUrl, landPortalIdentityFromUrl, operatorLandPortalEntryUrl, sameLandPortalParcel } from './landportal-operating-rules.js';
+import { listIntakeLinks, operatorLandPortalEntryUrlForDeal, recordIntakeLinks } from './intake-links.js';
+import { operatorSuppliedSubjectFor } from './operator-supplied-subject.js';
 import { isAcceptedLandPortalVisualForProperty } from './landportal-evidence-validation.js';
 import { captureAndPersistAcceptedIdentityVisuals, captureAndPersistCardVisuals } from './visual-capture-workflow.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
@@ -202,7 +204,7 @@ import {
   projectCurrentDealBrainGuidance,
   retireDealBrainReplies,
 } from './deal-brain-guidance.js';
-import { runSmartIntakeSupervisor } from './smart-intake-supervisor.js';
+import { buildSupervisorEvidence, runSmartIntakeSupervisor } from './smart-intake-supervisor.js';
 import { readDerivedSnapshot, writeDerivedSnapshot } from './derived-intelligence-store.js';
 import {
   INTELLIGENCE_RECONCILIATION_SNAPSHOT_TYPE,
@@ -1644,11 +1646,26 @@ export function landPortalSubjectFactsHandoff(input: {
 }): ((payload: { url: string; fields: Record<string, string> }) => void) | undefined {
   const { cardId, dealCardId, retainedUrl, onSubjectReady } = input;
   const retainedIdentity = retainedUrl ? landPortalIdentityFromUrl(retainedUrl) : null;
-  if (!retainedUrl || !retainedIdentity || !onSubjectReady) return undefined;
+  // An OPERATOR entry link (a saved map) carries no decodable parcel identity,
+  // so the identity comparison below cannot be the guard for it. Requiring one
+  // meant no handoff hook was created at all, and a run that opened the parcel
+  // directly still waited out the whole capture. The equivalent guarantee for
+  // this shape is that the facts came back from the exact URL we opened, and
+  // that the record itself names a parcel — which is what actually establishes
+  // identity here. The link remains an entry point and never a fact.
+  const entryOnlyUrl = !retainedIdentity && isOperatorEntryOnlyLandPortalUrl(retainedUrl) ? retainedUrl : null;
+  if (!retainedUrl || (!retainedIdentity && !entryOnlyUrl) || !onSubjectReady) return undefined;
   let handedOff = false;
   return ({ url, fields }) => {
     if (handedOff) return;
-    if (!sameLandPortalParcel(landPortalIdentityFromUrl(url), retainedIdentity)) {
+    if (entryOnlyUrl) {
+      const namesParcel = Object.entries(fields)
+        .some(([key, value]) => /^(?:parcel id|parcel number|apn)$/i.test(key) && String(value ?? '').trim());
+      if (url !== entryOnlyUrl || !namesParcel) {
+        logger.warn({ event: 'landportal_subject_handoff_entry_url_unverified', cardId }, 'landportal_subject_handoff_entry_url_unverified');
+        return;
+      }
+    } else if (!sameLandPortalParcel(landPortalIdentityFromUrl(url), retainedIdentity)) {
       logger.warn({ event: 'landportal_subject_handoff_parcel_mismatch', cardId }, 'landportal_subject_handoff_parcel_mismatch');
       return;
     }
@@ -1936,6 +1953,17 @@ export function registerLandosRoutes(app: Hono): void {
       leadType: profile.syntheticOnly ? 'test' : 'manual',
     });
     linkPropertyToDeal({ dealCardId: deal.id, cardId: property.id, role: 'subject' });
+    // EVERY link the operator supplied is filed as intake evidence, not only a
+    // LandPortal one and not only into `lp_url`. That column is a single mutable
+    // field research lanes also write, and a lane overwriting it is how a
+    // supplied parcel link stopped existing; these rows are immutable, so the
+    // operator's own words about the subject survive whatever the lanes do.
+    recordIntakeLinks({
+      dealCardId: deal.id,
+      text: rawInput,
+      urls: [suppliedLandPortalUrl],
+      source: 'operator:new_lead',
+    });
     // The seller/lead becomes a real person record with UNKNOWN authority, so
     // "Seller / Lead" is populated everywhere it is read and no signing
     // authority is implied by intake alone.
@@ -3633,7 +3661,13 @@ export function registerLandosRoutes(app: Hono): void {
         });
         const uploadUrl = `/api/landos/deal-cards/${id}/documents/upload-file/${encodeURIComponent(uploaded.fileName)}`;
         const operatorNote = String(Array.isArray(body.note) ? body.note[0] ?? '' : body.note ?? '');
-        const text = textReadable ? first.bytes.toString('utf8') : `Uploaded ${first.file.name}.${operatorNote ? ` Operator note: ${operatorNote}` : ''}`;
+        // A format LandOS cannot read yet is RETAINED and the limitation is
+        // stated, rather than the file being refused or its absence going
+        // unexplained. The operator supplied it for a reason; saying "kept, not
+        // read, here is why" is a true answer they can act on.
+        const text = textReadable
+          ? first.bytes.toString('utf8')
+          : `Attached ${first.file.name} (${first.inferredMime || 'unknown type'}, ${first.bytes.length.toLocaleString('en-US')} bytes). It is retained on this deal, but its contents were not read: LandOS has no reader for this format yet. Say what is in it and that becomes part of the deal.${operatorNote ? ` Operator note: ${operatorNote}` : ''}`;
         const submission = await persistLeadCardIntake({
           dealCardId: id,
           text,
@@ -8220,15 +8254,30 @@ export function registerLandosRoutes(app: Hono): void {
       // verifies it, and still falls back to searching without one).
       const retainedInspection = loadPropertyInspection(cardId);
       // Order matters: a parcel URL LandOS already retained and verified beats
-      // the operator's link. Only when nothing is retained does the operator's
-      // own supplied link become the entry point — it still gets opened,
-      // verified, and falls back to searching if it is not the subject parcel.
-      const operatorEntryUrl = operatorLandPortalEntryUrl(getPropertyCardRow(cardId)?.lp_url);
-      const retainedParcel = retainedInspection?.parcelUrl
-        ? { url: retainedInspection.parcelUrl, source: retainedInspection.parcelUrlRecord?.source ?? 'retained:property_inspection.parcelUrl' }
+      // the operator's link. Only when nothing usable is retained does the
+      // operator's own supplied link become the entry point — it still gets
+      // opened, verified, and falls back to searching if it is not the subject.
+      //
+      // "Usable" is the load-bearing word. A failed LandPortal run persists
+      // whatever page it ended on as `parcelUrl`, and on Deal 90 that was the
+      // bare site root. Treating that as a retained parcel URL both wasted a
+      // navigation and — because it ranked above the operator's link — meant the
+      // operator's own saved-map link was never opened at all.
+      const retainedEntryUrl = operatorLandPortalEntryUrl(retainedInspection?.parcelUrl)
+        ?? (retainedInspection?.parcelUrl && !/landportal\.com/i.test(retainedInspection.parcelUrl)
+          ? retainedInspection.parcelUrl
+          : null);
+      // The operator's link comes from the immutable intake record, not from
+      // `lp_url`: research lanes write that column, so it is not a durable
+      // account of what the operator supplied.
+      const operatorEntryUrl = operatorLandPortalEntryUrlForDeal(dealCardId)
+        ?? operatorLandPortalEntryUrl(getPropertyCardRow(cardId)?.lp_url);
+      const retainedParcel = retainedEntryUrl
+        ? { url: retainedEntryUrl, source: retainedInspection?.parcelUrlRecord?.source ?? 'retained:property_inspection.parcelUrl' }
         : operatorEntryUrl
           ? { url: operatorEntryUrl, source: 'operator:intake_landportal_url' }
           : null;
+      const operatorSupplied = !!retainedParcel && retainedParcel.source === 'operator:intake_landportal_url';
       if (retainedParcel?.url) {
         logger.info({
           event: 'landportal_capture_direct_entry',
@@ -8255,6 +8304,16 @@ export function registerLandosRoutes(app: Hono): void {
           city: searchKey.city ?? undefined,
           owner: searchKey.owner ?? undefined,
           landPortalParcelUrl: retainedParcel?.url ?? undefined,
+          // When the entry point is the OPERATOR'S own link, the record it opens
+          // is checked against what the operator actually told us, not against
+          // identity a previous unverified run guessed onto the card. On Deal 90
+          // that guess was the neighbouring parcel's APN and owner, and checking
+          // the operator's own link against it would have rejected the right
+          // parcel and gone back to the search that produced the wrong one.
+          // An accepted (verified) card is never overridden this way.
+          operatorSuppliedSubject: operatorSupplied
+            ? operatorSuppliedSubjectFor(dealCardId, cardId) ?? undefined
+            : undefined,
         },
         // Discovery still attempts the practical county assessor/recorder
         // source after LandPortal establishes the subject. qPublic is
@@ -11124,6 +11183,28 @@ export function registerLandosRoutes(app: Hono): void {
   // steps should run. This never creates a lead and never restarts the pipeline:
   // `plan.steps` is a closed set of already-registered capabilities, and running
   // them stays an explicit operator action so nothing expensive fires from typing.
+  // The conversation as it stands, with no model call and no work started.
+  // Without this the Smart Intake thread existed only in component state, so a
+  // refresh showed an empty conversation on a deal that had one — which reads
+  // exactly like "it forgot", the failure the conversation exists to end.
+  app.get('/api/landos/deal-cards/:id/smart-intake', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const deal = getDealCard(id);
+    if (!deal) return c.json({ error: 'deal card not found' }, 404);
+    const cardId = subjectCardId(deal) ?? null;
+    const evidence = buildSupervisorEvidence(id, cardId, '');
+    return c.json({
+      thread: listDealBrainGuidance(id),
+      state: {
+        resolution: evidence.resolution,
+        landPortal: evidence.landPortal,
+        identityConfidence: evidence.smartIntake.confidence,
+        artifacts: evidence.artifacts,
+      },
+    });
+  });
+
   app.post('/api/landos/deal-cards/:id/smart-intake', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
@@ -11146,6 +11227,9 @@ export function registerLandosRoutes(app: Hono): void {
           resolution: result.evidence.resolution,
           landPortal: result.evidence.landPortal,
           identityConfidence: result.evidence.smartIntake.confidence,
+          // What the operator has attached, so the conversation can show it
+          // instead of the operator having to remember what they sent.
+          artifacts: result.evidence.artifacts,
         },
         thread: listDealBrainGuidance(id),
       });

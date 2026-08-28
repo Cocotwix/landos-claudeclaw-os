@@ -8,6 +8,7 @@
 
 import { addressVariantsCompatible } from './instruction-consistency.js';
 import { decodeLandPortalCanonicalIdentity } from './landportal-canonical-identity.js';
+import { operatorLandPortalEntryUrl } from './landportal-operating-rules.js';
 import type { PropertyPatch } from './normalized-property.js';
 
 export type DiscoveryIdentityState = 'confirmed' | 'provisional' | 'conflicted' | 'unresolved';
@@ -109,11 +110,27 @@ function fact(facts: Record<string, string>, patterns: RegExp[]): string | null 
   return null;
 }
 
+/**
+ * A LandPortal address the parcel facts may be attributed to.
+ *
+ * A canonical `?property=` link is one. An operator's saved-map link is the
+ * other: it opens the parcel record directly, and the workflow that opened it
+ * puts whatever it landed on through the same parcel checkpoint before a fact
+ * is read. Refusing that shape here rejected a parcel LandOS had already
+ * verified, for want of a URL spelling.
+ *
+ * This admits the SURFACE, never the identity. Nothing about the map link is
+ * treated as a parcel key: `decodeLandPortalCanonicalIdentity` still returns
+ * nothing for it, `verifiedSubject` below still has to be true, and the
+ * APN/county/state agreement gates are unchanged. The parcel that is admitted
+ * is the one the opened record itself stated.
+ */
 function isLandPortalParcelUrl(value: string | null | undefined): value is string {
   try {
     const url = new URL(String(value ?? ''));
-    return /(^|\.)landportal\.com$/i.test(url.hostname)
-      && (url.searchParams.has('property') || /\/property\//i.test(url.pathname));
+    if (!/(^|\.)landportal\.com$/i.test(url.hostname)) return false;
+    if (url.searchParams.has('property') || /\/property\//i.test(url.pathname)) return true;
+    return operatorLandPortalEntryUrl(value) !== null;
   } catch {
     return false;
   }

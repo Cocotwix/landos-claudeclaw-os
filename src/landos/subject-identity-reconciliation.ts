@@ -39,6 +39,11 @@
 import { logger } from '../logger.js';
 import { nameCardFromCanonicalIdentity } from './canonical-identity.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
+import { getOpportunityByDealCardId } from './opportunity.js';
+import {
+  quarantineMismatchedPropertyInspections,
+  restoreMatchingPropertyInspections,
+} from './opportunity-research-mission.js';
 import { getPropertyCardRow, loadPropertyInspection, upsertPropertyCard } from './property-card.js';
 import { resolveCensusGeography, type CensusGeography } from './land-use-authority.js';
 import {
@@ -502,6 +507,38 @@ export async function reconcileSubjectIdentity(
     // an unresolved parcel while the confirmed APN sat beside them. Idempotent,
     // and it never rewrites a title that says something real.
     try { nameCardFromCanonicalIdentity(dealCardId, actor); } catch { /* the label never blocks the identity */ }
+    // ── EVIDENCE FOLLOWS IDENTITY ────────────────────────────────────────────
+    //
+    // Accepting a parcel decides which retained research was about THIS parcel.
+    // Until now nothing acted on that: an inspection captured for a different
+    // parcel during an earlier, wrong resolution stayed a first-class subject
+    // record, and its structure, acreage and improvement facts kept reaching the
+    // Deal Card as if they were the subject's.
+    //
+    // This runs the reconciliation that already exists for the operator's own
+    // parcel-correction action, on the same terms: nothing is deleted, the
+    // activity rows stay exactly as captured, and evidence previously
+    // quarantined is RESTORED first when the accepted identity now corroborates
+    // it. Only which records canonical readers treat as the subject changes.
+    if (apn) {
+      try {
+        const constraints = { address: intakeAddress, city, county, state, apn, source: 'property_fallback' as const };
+        const opportunity = getOpportunityByDealCardId(dealCardId);
+        if (opportunity) {
+          const restored = restoreMatchingPropertyInspections(opportunity.id, cardId, constraints);
+          const quarantined = quarantineMismatchedPropertyInspections(opportunity.id, cardId, constraints);
+          if (restored.length || quarantined.length) {
+            logger.info({
+              dealCardId, cardId, apn, restored: restored.length, quarantined: quarantined.length,
+            }, 'subject_identity_evidence_reconciled');
+          }
+        }
+      } catch (err) {
+        // Identity is decided and persisted; failing to re-file the evidence
+        // must not undo that. It is retried on the next reconciliation.
+        logger.warn({ err, dealCardId, cardId }, 'subject_identity_evidence_reconcile_failed');
+      }
+    }
   } catch (err) {
     logger.warn({ err, dealCardId, cardId }, 'subject_identity_persist_failed');
     result.persistWarnings = [

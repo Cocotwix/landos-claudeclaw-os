@@ -44,12 +44,14 @@ import { filterEligibleAssetMap, type VisualAssociation } from './visual-eligibi
 import { classifySource, evaluateFact, type SourceType } from './source-evidence.js';
 import {
   isVerifiedLandPortalSubjectUrl,
+  operatorLandPortalEntryUrl,
   sameLandPortalParcel,
   validateLandPortalSubjectUrl,
   type LandPortalParcelUrlRecord,
   type ThreeDCaptureEligibility,
 } from './landportal-operating-rules.js';
 import type { LandPortalVisualValidation } from './landportal-evidence-validation.js';
+import { apnIdentifiersEquivalent } from './landportal-capability.js';
 import {
   addressVariantsCompatible,
   evaluatePropertyInstructionConsistency,
@@ -323,6 +325,25 @@ export function upsertPropertyCard(
     }
   }
 
+  // ── A PARCEL LINK, OR NOTHING ─────────────────────────────────────────────
+  //
+  // `lp_url` is meant to hold the LandPortal record for THIS parcel. A run that
+  // fails to reach a parcel ends on the site root, and persisting that as the
+  // parcel URL both destroyed the operator's own saved-map link and made every
+  // later run believe it already had an entry point. A LandPortal address that
+  // addresses no parcel and no saved map is not a parcel link; it is dropped,
+  // and whatever the card already holds is left alone. Non-LandPortal URLs (a
+  // county parcel page, for instance) are unaffected — this module has no
+  // authority to judge those.
+  const suppliedLpUrl = (input.lpUrl ?? '').trim();
+  const lpUrlToPersist = suppliedLpUrl && /landportal\.com/i.test(suppliedLpUrl)
+    && !operatorLandPortalEntryUrl(suppliedLpUrl)
+    ? ''
+    : suppliedLpUrl;
+  if (suppliedLpUrl && !lpUrlToPersist) {
+    warnings.push(`lpUrl "${suppliedLpUrl}" addresses no LandPortal parcel or saved map, so it was not stored as the parcel link; the existing link is unchanged.`);
+  }
+
   const now = Math.floor(Date.now() / 1000);
   let existing = findExistingCard(input);
 
@@ -457,7 +478,7 @@ export function upsertPropertyCard(
       preserveOwnerReconciledIdentity ? '' : input.apn ?? '', preserveOwnerReconciledIdentity ? '' : input.apn ?? '',
       preserveOwnerReconciledIdentity ? '' : input.lpPropertyId ?? '', preserveOwnerReconciledIdentity ? '' : input.lpPropertyId ?? '',
       preserveOwnerReconciledIdentity ? '' : input.fips ?? '', preserveOwnerReconciledIdentity ? '' : input.fips ?? '',
-      preserveOwnerReconciledIdentity ? '' : input.lpUrl ?? '', preserveOwnerReconciledIdentity ? '' : input.lpUrl ?? '',
+      preserveOwnerReconciledIdentity ? '' : lpUrlToPersist, preserveOwnerReconciledIdentity ? '' : lpUrlToPersist,
       preserveOwnerReconciledIdentity ? '' : input.county ?? '', preserveOwnerReconciledIdentity ? '' : input.county ?? '',
       preserveOwnerReconciledIdentity ? '' : input.state ?? '', preserveOwnerReconciledIdentity ? '' : input.state ?? '',
       preserveOwnerReconciledIdentity ? '' : input.city ?? '', preserveOwnerReconciledIdentity ? '' : input.city ?? '',
@@ -497,7 +518,7 @@ export function upsertPropertyCard(
     input.apn ?? '',
     input.lpPropertyId ?? '',
     input.fips ?? '',
-    input.lpUrl ?? '',
+    lpUrlToPersist,
     input.county ?? '',
     input.state ?? '',
     input.city ?? '',
@@ -1099,8 +1120,14 @@ function mergeInspectionAssets(rows: LandPortalInspectionAsset[]): LandPortalIns
 export function mergePropertyInspections(records: Array<PropertyInspectionRecord | null | undefined>): PropertyInspectionRecord | null {
   const usable = records.filter((record): record is PropertyInspectionRecord => !!record);
   if (!usable.length) return null;
+  // A verified operator-entry record counts here too. It is not a canonical
+  // parcel key — it carries no fips or propertyId and never will — but it does
+  // record that this exact URL was opened and its parcel confirmed on screen,
+  // which is the association this field exists to state. Dropping it left a
+  // verified parcel reading as unverified.
   const canonicalRecords = usable.flatMap((record) => [record.parcelUrlRecord ?? null])
-    .filter((record): record is LandPortalParcelUrlRecord => !!record && isVerifiedLandPortalSubjectUrl(record.url) && record.verifiedSubject);
+    .filter((record): record is LandPortalParcelUrlRecord => !!record && record.verifiedSubject
+      && (isVerifiedLandPortalSubjectUrl(record.url) || operatorLandPortalEntryUrl(record.url) !== null));
   let latestCanonical: LandPortalParcelUrlRecord | null = null;
   for (const record of canonicalRecords) {
     if (!latestCanonical || sameLandPortalParcel(
@@ -1110,7 +1137,35 @@ export function mergePropertyInspections(records: Array<PropertyInspectionRecord
   }
   const factRecords = latestCanonical
     ? usable.filter((record) => record.parcelUrl === latestCanonical!.url || record.parcelUrlRecord?.url === latestCanonical!.url)
-    : usable;
+    // ── FACTS FROM ANOTHER PARCEL ARE NEVER THIS PARCEL'S FACTS ──────────────
+    //
+    // Without a canonical parcel URL to segregate on, every retained inspection
+    // used to merge into one fact set — including ones captured for a DIFFERENT
+    // parcel. That is how a subject whose own record says "Building SqFt 0,
+    // Vacant Land" carried a 1,404 sqft house: an earlier failed run had read
+    // the neighbouring parcel, and its facts merged in and outranked nothing,
+    // because nothing compared the two records' own stated identity.
+    //
+    // The records themselves state which parcel they describe. The most recent
+    // stated parcel is the subject; a record stating a different one is evidence
+    // about another property (permanent memory invariant 4) and is left out of
+    // the merged facts. It is NOT deleted — the activity row stays exactly as
+    // captured, so the history of what was read and when is intact. A record
+    // that states no parcel at all contradicts nothing and still merges.
+    : (() => {
+      const statedApn = (record: PropertyInspectionRecord): string | null => {
+        const facts = record.parcelFacts ?? {};
+        const value = facts['Parcel ID'] ?? facts['APN'] ?? facts['Parcel Number'];
+        const trimmed = String(value ?? '').trim();
+        return trimmed && trimmed !== '-' ? trimmed : null;
+      };
+      const subjectApn = [...usable].reverse().map(statedApn).find((apn): apn is string => !!apn) ?? null;
+      if (!subjectApn) return usable;
+      return usable.filter((record) => {
+        const apn = statedApn(record);
+        return apn == null || apnIdentifiersEquivalent(apn, subjectApn);
+      });
+    })();
   const facts: Record<string, string> = {};
   for (const record of factRecords) {
     for (const [key, value] of Object.entries(record.parcelFacts ?? {})) {

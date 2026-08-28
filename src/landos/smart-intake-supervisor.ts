@@ -37,6 +37,8 @@ import { COMPS_VALUATION_CAPABILITY_ID } from './comps-valuation-capability.js';
 import { ZONING_SUBDIVISION_CAPABILITY_ID } from './zoning-subdivision-capability.js';
 import { operatorLandPortalEntryUrl, isVerifiedLandPortalSubjectUrl } from './landportal-operating-rules.js';
 import { getPropertyCardRow } from './property-card.js';
+import { listIntakeLinks, recordIntakeLinks, type IntakeLinkRecord } from './intake-links.js';
+import { listLeadCardIntake } from './lead-card-intake.js';
 import { logger } from '../logger.js';
 
 /**
@@ -93,6 +95,18 @@ export interface SupervisorEvidence {
   smartIntake: SmartIntake;
   /** The operator conversation so far, oldest first. */
   thread: DealBrainGuidanceEntry[];
+  /**
+   * Everything the operator ATTACHED, as opposed to typed: links and files.
+   *
+   * These are read from the immutable intake record, so the supervisor can
+   * account for a supplied artifact even when no lane has managed to use it yet.
+   * "You gave me a link and nothing opened it" is a true and useful answer; the
+   * failure mode this replaces was staying silent about it entirely.
+   */
+  artifacts: {
+    links: IntakeLinkRecord[];
+    files: Array<{ name: string; mimeType: string; extractionStatus: string; note: string }>;
+  };
 }
 
 /** The supervisor's answer. `steps` may be empty: "I need something from you
@@ -172,7 +186,26 @@ export function buildSupervisorEvidence(
     : null;
 
   const cardUrl = propertyCardId == null ? null : str(readCard(propertyCardId)?.lp_url);
-  const supplied = cardUrl ?? smartIntake.fields.lpUrl ?? null;
+  // The immutable intake record answers "what did the operator give us" even
+  // after a research lane has overwritten the card's own link column.
+  const links = (() => {
+    try { return listIntakeLinks(dealCardId); } catch { return [] as IntakeLinkRecord[]; }
+  })();
+  const suppliedLandPortalLink = [...links].reverse()
+    .find((link) => operatorLandPortalEntryUrl(link.url) !== null)?.url ?? null;
+  const supplied = suppliedLandPortalLink ?? cardUrl ?? smartIntake.fields.lpUrl ?? null;
+
+  const files = (() => {
+    try {
+      return listLeadCardIntake(dealCardId).flatMap((submission) =>
+        ((submission.artifacts as Array<Record<string, unknown>>) ?? []).map((artifact) => ({
+          name: String(artifact.originalFileName ?? 'attachment'),
+          mimeType: String(artifact.mimeType ?? 'unknown'),
+          extractionStatus: String(artifact.extractionStatus ?? 'unavailable'),
+          note: String(artifact.exactExtractedText ?? '').slice(0, 400),
+        })));
+    } catch { return []; }
+  })();
 
   return {
     dealCardId,
@@ -185,6 +218,7 @@ export function buildSupervisorEvidence(
     },
     smartIntake,
     thread,
+    artifacts: { links, files },
   };
 }
 
@@ -236,6 +270,19 @@ export function supervisorPrompt(evidence: SupervisorEvidence, operatorText: str
             : '',
         ].filter(Boolean).join('\n')
       : 'None supplied.',
+    '',
+    '── WHAT THE OPERATOR ATTACHED (kept exactly as supplied) ──',
+    evidence.artifacts.links.length || evidence.artifacts.files.length
+      ? [
+          ...evidence.artifacts.links.map((link) =>
+            `LINK ${link.url}\n  read as: ${link.classification}${link.capability ? ` → handled by the ${link.capability} capability` : ' → no specialized path; general browser + your own reading'}\n  ${link.note}`),
+          ...evidence.artifacts.files.map((file) =>
+            `FILE ${file.name} (${file.mimeType}) — reading: ${file.extractionStatus}${file.note ? `\n  what was read: ${file.note}` : ''}`),
+        ].join('\n')
+      : 'Nothing attached.',
+    'These were supplied for a reason. If one has not been used yet, say so plainly',
+    'and say what using it would take. Never treat an attachment as a property fact:',
+    'a link is somewhere to look, and a file is something that was read.',
     '',
     '── PROPERTY RESOLUTION: WHAT ACTUALLY HAPPENED ──',
     r
@@ -339,6 +386,12 @@ export async function runSmartIntakeSupervisor(input: {
   if (operatorText.trim()) {
     try { operatorEntry = append(dealCardId, 'operator', operatorText); } catch (err) {
       logger.warn({ err, dealCardId }, 'smart_intake_supervisor_guidance_store_failed');
+    }
+    // A link pasted into the conversation is supplied evidence exactly as one
+    // pasted into the form. It is filed here so it survives this turn, whatever
+    // the model then does with it.
+    try { recordIntakeLinks({ dealCardId, text: operatorText, source: 'operator:smart_intake_conversation' }); } catch (err) {
+      logger.warn({ err, dealCardId }, 'smart_intake_supervisor_link_store_failed');
     }
   }
 

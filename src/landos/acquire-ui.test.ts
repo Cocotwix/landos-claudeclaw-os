@@ -28,8 +28,33 @@ describe('Acquire — conversational manual lead intake', () => {
   });
 
   it('states preservation and prohibited side effects clearly', () => {
-    expect(SRC).toContain('saves your original words');
+    // Preservation now covers links and files as well as the typed words,
+    // because those are supplied evidence too and are retained the same way.
+    expect(SRC).toContain('keeps your original words and every link and file exactly as supplied');
     expect(SRC).toContain('No paid action, seller contact, offer, or contract is sent.');
+  });
+
+  it('accepts attachments alongside the paste, without requiring either one', () => {
+    for (const hook of ['manual-lead-attach', 'manual-lead-attachments']) {
+      expect(SRC.includes(`data-testid="${hook}"`), `missing ${hook}`).toBe(true);
+    }
+    // Drag/drop and clipboard files reach the same handler as the file picker.
+    expect(SRC).toMatch(/onDrop=/);
+    expect(SRC).toMatch(/onPaste=/);
+    // An attachment-only lead is valid: the operator sent a survey and nothing
+    // else, and refusing it would discard the one thing they had.
+    expect(SRC).toMatch(/!rawInput\.trim\(\) && attachments\.length === 0/);
+  });
+
+  it('never discards the created lead when an attachment fails to save', () => {
+    // The Lead Card is the point. A failed upload is reported against the deal
+    // that exists, not turned into "the lead could not be created".
+    expect(SRC).toMatch(/The Lead Card was created, but/);
+    expect(SRC).toMatch(/data-testid="manual-lead-error"/);
+  });
+
+  it('says plainly that an unreadable format is still kept', () => {
+    expect(SRC).toContain('A file it has no reader for is still kept and says so');
   });
 
   it('does not revive API-first LandPortal or direct Deal Card creation paths', () => {

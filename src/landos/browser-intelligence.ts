@@ -122,6 +122,21 @@ export interface BrowserSearchKey {
    *  directly instead of hopping surfaces and re-running its ranked search; the
    *  record is still visually verified before anything is extracted from it. */
   landPortalParcelUrl?: string;
+  /**
+   * The subject as the OPERATOR described it, supplied only when
+   * `landPortalParcelUrl` is the operator's OWN link rather than a parcel URL
+   * LandOS retained and verified.
+   *
+   * A record opened from the operator's own link is checked against this instead
+   * of against the search key, because the search key is read off a property
+   * card that a previous unverified run may already have written the WRONG
+   * parcel's identity onto — in which case the wrong answer would veto the right
+   * one and send the run back to the search that produced it. It is never used
+   * to search, and it is never supplied for an accepted (verified) card.
+   */
+  operatorSuppliedSubject?: {
+    address?: string; apn?: string; city?: string; county?: string; state?: string; zip?: string;
+  };
   /** Already-confirmed subject measures, when the caller holds them (e.g. from an
    *  official assessor record). They are never used to SEARCH — they are used to
    *  cross-check that the parcel a site opened is actually the subject. */

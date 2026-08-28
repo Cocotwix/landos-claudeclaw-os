@@ -46,7 +46,7 @@ import {
   validateLandPortalVisualEvidence,
   type LandPortalVisualView,
 } from './landportal-evidence-validation.js';
-import { operatorLandPortalEntryUrl, validateLandPortalSubjectUrl } from './landportal-operating-rules.js';
+import { isOperatorEntryOnlyLandPortalUrl, operatorLandPortalEntryUrl, validateLandPortalSubjectUrl } from './landportal-operating-rules.js';
 // The SHARED LandPortal capability. Every consequential action in this workflow —
 // submitting a search, selecting a result, extracting facts, capturing a
 // screenshot — passes through its visual checkpoints. No LandPortal result is
@@ -904,6 +904,17 @@ async function runLandPortalAgentic(
     // weaker-but-openable link costs nothing: it either verifies or falls back to
     // the ordinary search exactly as a stale canonical URL already does.
     const retainedParcelUrl = operatorLandPortalEntryUrl(key.landPortalParcelUrl);
+    // The subject the DIRECT-ENTRY checkpoint compares the opened record against.
+    // For a link LandOS retained itself this is the ordinary subject. For the
+    // OPERATOR'S own link the caller supplies the operator's own description
+    // instead, because the card may already carry a previous run's wrong parcel
+    // and that wrong answer must not be allowed to veto the right one.
+    const entrySubject = key.operatorSuppliedSubject
+      ? subjectFromKey({ ...key.operatorSuppliedSubject, apnAlternates: key.apnAlternates })
+      : subject;
+    // Set when direct entry already ran the deterministic capture to read the
+    // record's panel; the capture below reuses it instead of running twice.
+    let directCapture: Awaited<ReturnType<NonNullable<BrowserDriver['captureLandPortalVisuals']>>> | null = null;
     let obs: PageObservation;
     if (retainedParcelUrl) {
       await driver.open(retainedParcelUrl, t());
@@ -921,7 +932,7 @@ async function runLandPortalAgentic(
       if (isLandPortalParcelRecordUrl(obs.url)) {
         const detailShot = await driver.screenshot(LANDPORTAL_PARCEL_VERIFY_PURPOSE, t()).catch(() => null);
         const detailFrame = parcelDetailFrame(obs, detailShot?.path ?? null, true);
-        const directCheck = verifyParcelSelected(detailFrame, subject);
+        const directCheck = verifyParcelSelected(detailFrame, entrySubject);
         checkpoints.push(directCheck);
         if (directCheck.passed) {
           if (detailFrame.apn) verifiedParcelApn = detailFrame.apn;
@@ -931,6 +942,100 @@ async function runLandPortalAgentic(
           trace.push(`direct(parcel) OK:${directCheck.confirmed.length} confirmed${directCheck.unverified.length ? `, ${directCheck.unverified.length} not displayed` : ''}`);
         } else {
           trace.push(`direct(parcel) BLOCKED:${directCheck.blockers.join('; ')}`);
+        }
+      } else if (isOperatorEntryOnlyLandPortalUrl(key.landPortalParcelUrl) && obs.url === retainedParcelUrl && driver.captureLandPortalVisuals) {
+        // ── THE OPENED RECORD IS THE RECORD, WHATEVER THE URL SAYS ──────────
+        //
+        // Scoped to an OPERATOR ENTRY-ONLY link that is still on screen. A
+        // canonical `?property=` link promises identity in the address itself,
+        // so one that fails to open its record has failed and must fall back to
+        // the search — that path is unchanged. This branch is only for the
+        // shape that never had identity in the address to begin with.
+        //
+        // A LandPortal saved-map link lands ON the parcel with its detail panel
+        // already open and fully populated, but the app never rewrites the URL
+        // to the `?property=` form. Requiring that shape therefore threw away a
+        // record we were already looking at and sent the run back to a blind
+        // address search — which, on the acceptance lead, selected the
+        // neighbouring parcel.
+        //
+        // The generic page reader cannot see the panel (it reads label/value
+        // pairs and LandPortal renders tab-rows), so the record is read with the
+        // deterministic capture that owns that reader. It is the same capture
+        // the search path ends in, kept here so it runs once, and its fields go
+        // through the SAME checkpoint. Nothing is extracted before that passes.
+        //
+        // VERIFY ON THE PANEL, NOT ON THE WHOLE CAPTURE. The capture announces
+        // the parcel's own facts the moment it has read them and then spends
+        // another minute or more on imagery, overlays, terrain and comparables.
+        // Awaiting all of that before deciding whether this is even the right
+        // parcel is the wait the early handoff exists to remove, so the panel
+        // read and the finished capture are raced and whichever answers first
+        // carries the checkpoint. The capture keeps running either way.
+        try {
+          // The proof shot of the record as opened, taken before the capture
+          // starts working the page. Same shot the canonical-URL branch takes.
+          const entryShot = await driver.screenshot(LANDPORTAL_PARCEL_VERIFY_PURPOSE, t()).catch(() => null);
+          let settlePanel: ((fields: Record<string, string>) => void) | null = null;
+          const panelRead = new Promise<Record<string, string>>((resolve) => { settlePanel = resolve; });
+          const capturing = driver.captureLandPortalVisuals(obs.url, {
+            ...t(),
+            onSubjectFacts: (payload) => {
+              settlePanel?.(payload.fields ?? {});
+              hooks.onSubjectFacts?.(payload);
+            },
+          });
+          // The loser of the race must not surface as an unhandled rejection.
+          capturing.catch(() => { /* reported through the awaited path below */ });
+          const panel = await Promise.race([panelRead, capturing.then((v) => v.fields ?? {})]);
+          if (Object.keys(panel).length > 0) {
+            const detailFrame: ParcelDetailFrame = {
+              url: obs.url,
+              // The saved map renders the parcel it was saved on; the capture's
+              // own screenshot is what the checkpoint inspects for it. At panel
+              // time the screenshot does not exist yet, so the page's own map is
+              // what the checkpoint has to judge — the capture's screenshot is
+              // still assessed on its own terms when it lands.
+              parcelHighlighted: obs.hasMap ? true : null,
+              detailPanelOpen: true,
+              owner: fieldLike(panel, /owner name|^owner$/i),
+              address: fieldLike(panel, /^parcel address$/i) ?? fieldLike(panel, /parcel address|situs|site address|^address$/i),
+              city: fieldLike(panel, /parcel address city|^city$/i),
+              county: fieldLike(panel, /parcel address county|^county$/i),
+              state: fieldLike(panel, /parcel address state|^state$/i),
+              apn: fieldLike(panel, /parcel id|parcel number|^apn$/i),
+              acreage: numberLike(panel, /^acres$|deeded acres|gis acres/i),
+              lat: numberLike(panel, /centroid latitude|latitude|^lat$/i),
+              lng: numberLike(panel, /centroid longitude|longitude|^lon|^lng$/i),
+              landPortalPropertyId: (obs.url.match(/[?&]property=([^&]+)/) || [])[1] ?? null,
+              fips: fieldLike(panel, /fips/i),
+              screenshotPath: entryShot?.path ?? null,
+            };
+            const directCheck = verifyParcelSelected(detailFrame, entrySubject);
+            checkpoints.push(directCheck);
+            if (directCheck.passed) {
+              if (detailFrame.apn) verifiedParcelApn = detailFrame.apn;
+              picked = { index: -1, score: 0, matched: ['operator_entry_url'] };
+              usedMethod = RETAINED_URL_METHOD;
+              verifiedReached = true;
+              // The capture is still running. It is awaited once, below, where
+              // the search path awaits its own — so it is never run twice and
+              // its imagery still lands on this run's evidence.
+              directCapture = await capturing;
+              trace.push(`direct(entry-url) OK:${directCheck.confirmed.length} confirmed, panel fields=${Object.keys(panel).length}`);
+            } else {
+              trace.push(`direct(entry-url) BLOCKED:${directCheck.blockers.join('; ')}`);
+              // Let the capture finish so it does not keep working a page the
+              // run has abandoned, but never reuse it: the search below may
+              // reach a DIFFERENT parcel, and this capture is not of it.
+              await capturing.catch(() => null);
+            }
+          } else {
+            trace.push(`direct(entry-url) NO-PANEL:${obs.url || 'no url'}`);
+            await capturing.catch(() => null);
+          }
+        } catch (err) {
+          trace.push(`direct(entry-url) FAILED:${err instanceof Error ? err.message : String(err)}`);
         }
       } else {
         trace.push(`direct(parcel) NOT-A-RECORD:${obs.url || 'no url'}`);
@@ -1272,10 +1377,14 @@ async function runLandPortalAgentic(
       provesFact: `The subject parcel ${key.apn ?? key.address ?? 'record'} as LandPortal renders it, with its boundary in context.`,
       boundaryRequired: true,
       // The verified record's own identifier counts as a subject identifier for
-      // capture judging — see verifiedParcelApn above.
+      // capture judging — see verifiedParcelApn above. And when the record was
+      // reached through the operator's own entry link, the subject it is judged
+      // against is the operator's, for the same reason the parcel checkpoint
+      // uses it: the card may carry a previous run's wrong parcel, and judging
+      // a correct capture against that reads as "wrong parcel photographed".
       subject: verifiedParcelApn
-        ? { ...subject, apnAlternates: [...(subject.apnAlternates ?? []), verifiedParcelApn] }
-        : subject,
+        ? { ...entrySubject, apnAlternates: [...(entrySubject.apnAlternates ?? []), verifiedParcelApn] }
+        : entrySubject,
     };
     // WHICH parcel the capture shows is read from the OPENED RECORD, not from the
     // caller's input. An owner search legitimately starts with no APN at all, and
@@ -1301,7 +1410,21 @@ async function runLandPortalAgentic(
       return true;
     };
 
-    if (obs.url && /[?&]property=/.test(obs.url) && driver.captureLandPortalVisuals) {
+    // The capture that direct entry already performed to READ the record is the
+    // same capture this step would run. Reusing it keeps one browser pass per
+    // run; without it, entering at the operator's link would capture twice.
+    if (directCapture) {
+      const v = directCapture;
+      lpVisuals = v;
+      if (Object.keys(v.fields).length > Object.keys(panelFields).length) panelFields = { ...panelFields, ...v.fields };
+      if (v.parcelShotPath && !acceptCapture(
+        { path: v.parcelShotPath, capturedAtIso: v.capturedAtIso, purpose: LANDPORTAL_SCREENSHOT_PURPOSE },
+        byteSize(v.parcelShotPath),
+      )) {
+        lpVisuals = { ...v, parcelShotPath: null };
+      }
+      trace.push(`lpVisuals(direct-entry): fields=${Object.keys(v.fields).length} comps=${v.compRows.length} mapReached=${v.mapReached}`);
+    } else if (obs.url && /[?&]property=/.test(obs.url) && driver.captureLandPortalVisuals) {
       try {
         const v = await driver.captureLandPortalVisuals(obs.url, { ...t(), onSubjectFacts: hooks.onSubjectFacts });
         if (v.parcelShotPath || Object.keys(v.fields).length > 0) {
@@ -1353,7 +1476,21 @@ async function runLandPortalAgentic(
     // never overwrite with a wrong APN. Fires regardless of which method resolved
     // the parcel (APN search that fuzzy-matched, or an address cross-check).
     const compactId = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const providedApnIds = [key.apn, ...(key.apnAlternates ?? [])].filter(Boolean).map((a) => compactId(a as string));
+    // WHOSE identifier is being cross-checked.
+    //
+    // Normally it is the search key's, which is the operator's. But when the run
+    // entered at the OPERATOR'S own link, the search key was read off a property
+    // card that a previous unverified run may have written the WRONG parcel's
+    // APN onto — and on Deal 90 it had. Letting that stale identifier veto here
+    // rejects the record the operator personally pointed us at, which is the
+    // same "two gates disagreeing about one parcel" defect the comment above
+    // describes, one step later. The operator's own identifier is used instead
+    // (often none), and the stale card identifier is reported below as what it
+    // is: a superseded identifier the operator needs to know about.
+    const operatorEntryCheck = usedMethod === RETAINED_URL_METHOD && !!key.operatorSuppliedSubject;
+    const checkApn = operatorEntryCheck ? key.operatorSuppliedSubject?.apn : key.apn;
+    const checkApnAlternates = operatorEntryCheck ? [] : (key.apnAlternates ?? []);
+    const providedApnIds = [checkApn, ...checkApnAlternates].filter(Boolean).map((a) => compactId(a as string));
     const resolvedApn = facts.find((f) => f.key === 'apn')?.value;
     // ONE parcel, two spellings, is not a conflict. This check compared raw
     // compacted strings, so Williamson County's `042 123.00` and LandPortal's
@@ -1363,13 +1500,28 @@ async function runLandPortalAgentic(
     // Two gates disagreeing about one parcel is the defect; both now ask the
     // same jurisdiction-aware question. A genuinely different identifier still
     // conflicts, which is what this gate exists for.
-    const providedApnForms = [key.apn, ...(key.apnAlternates ?? [])].filter((a): a is string => !!a);
-    const apnConflict = !!(key.apn && resolvedApn && providedApnIds.length > 0
+    const providedApnForms = [checkApn, ...checkApnAlternates].filter((a): a is string => !!a);
+    const apnConflict = !!(checkApn && resolvedApn && providedApnIds.length > 0
       && !providedApnIds.includes(compactId(resolvedApn))
       && !providedApnForms.some((form) => apnIdentifiersEquivalent(form, resolvedApn)));
+    // The card was carrying a DIFFERENT parcel, and the operator's own link has
+    // just shown which parcel this actually is. That is decision-relevant and it
+    // is stated plainly — it establishes no fact by itself; the resolver decides
+    // whether the retained identifier is superseded.
+    if (operatorEntryCheck && key.apn && resolvedApn && !apnIdentifiersEquivalent(key.apn, resolvedApn)) {
+      facts.push({
+        key: 'supersededApn',
+        label: 'Identifier previously on this card names a different parcel',
+        value: `This record was opened at the LandPortal link you supplied and its own parcel identifier is "${resolvedApn}". The identifier previously carried on this card, "${key.apn}", is a different parcel and was not established from your link.`,
+        sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE,
+        confidence: 'high', origin: 'landportal', status: 'needs_verification',
+        extractionMethod: 'identifier cross-check (operator entry link vs identifier retained on the card)',
+      });
+      trace.push(`SUPERSEDED-APN: card ${key.apn} ≠ operator-entry record ${resolvedApn}`);
+    }
     if (apnConflict) {
-      facts.push({ key: 'apnConflict', label: 'APN identifier mismatch — wrong parcel', value: `Requested APN "${key.apn}" does not match the resolved LandPortal parcel APN "${resolvedApn}". These are DIFFERENT parcels. The resolved parcel is NOT accepted as the subject — the parcel stays unconfirmed and no downstream intelligence runs until the correct parcel is identified.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (requested APN vs resolved parcel APN)' });
-      trace.push(`APN-CONFLICT: provided ${key.apn} ≠ resolved ${resolvedApn}`);
+      facts.push({ key: 'apnConflict', label: 'APN identifier mismatch — wrong parcel', value: `Requested APN "${checkApn}" does not match the resolved LandPortal parcel APN "${resolvedApn}". These are DIFFERENT parcels. The resolved parcel is NOT accepted as the subject — the parcel stays unconfirmed and no downstream intelligence runs until the correct parcel is identified.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (requested APN vs resolved parcel APN)' });
+      trace.push(`APN-CONFLICT: provided ${checkApn} ≠ resolved ${resolvedApn}`);
     }
     if (apnConflict) {
       const mismatch = facts.find((fact) => fact.key === 'apnConflict');

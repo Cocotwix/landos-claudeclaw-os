@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { getLandosDb, landosAudit, type LandosEntity } from './db.js';
 import { extractSafePhone } from './contact-phone.js';
+import { listIntakeLinks, recordIntakeLinks } from './intake-links.js';
 import type {
   SmartIntakeImageExtraction,
   SmartIntakeImageMimeType,
@@ -576,6 +577,15 @@ export async function persistLeadCardIntake(input: {
     clean(input.mimeType),
     idempotencyKey,
   ).lastInsertRowid);
+  // A pasted link is evidence the operator chose to give us, so it is filed
+  // immediately and immutably — before analysis, which may fail. Nothing here
+  // opens it; classification only says which existing path should.
+  const links = recordIntakeLinks({
+    dealCardId: input.dealCardId,
+    submissionId,
+    text: original,
+    source: `${source} submission`,
+  });
   try {
     const extractedImageText = imageArtifacts.map((artifact) => artifact.extraction.exactText).filter(Boolean).join('\n\n');
     const analysisText = [original, extractedImageText].filter((part) => part.length > 0).join('\n\n');
@@ -674,6 +684,7 @@ export async function persistLeadCardIntake(input: {
       followUps: analysis.followUps,
       facts: factRows,
       artifacts: artifactRows,
+      links,
       resources,
       resolutionHandoff: null,
       status: 'complete',
@@ -690,6 +701,12 @@ export function listLeadCardIntake(dealCardId: number): Array<Record<string, unk
   const facts = db.prepare(`SELECT * FROM landos_intake_fact WHERE deal_card_id=? ORDER BY created_at DESC,id DESC`).all(dealCardId) as Array<Record<string, unknown>>;
   const artifacts = db.prepare(`SELECT * FROM landos_intake_artifact WHERE deal_card_id=? ORDER BY captured_at DESC,id DESC`).all(dealCardId) as Array<Record<string, unknown>>;
   const candidates = db.prepare(`SELECT * FROM landos_intake_candidate WHERE deal_card_id=? ORDER BY artifact_id,id`).all(dealCardId) as Array<Record<string, unknown>>;
+  // Supplied links read back with the submission that carried them. Links
+  // recovered from older raw intake have no submission, so they travel with the
+  // earliest submission rather than disappearing from the card.
+  const links = listIntakeLinks(dealCardId);
+  const unparented = links.filter((link) => link.submissionId == null);
+  const oldestSubmissionId = rows.length ? Number(rows[rows.length - 1].id) : null;
   return rows.map((row) => {
     const extracted = JSON.parse(String(row.extracted_json ?? '{}')) as { transcript?: TranscriptExtraction; [key: string]: unknown };
     if (extracted.transcript?.unresolvedQuestions?.length) {
@@ -704,6 +721,10 @@ export function listLeadCardIntake(dealCardId: number): Array<Record<string, unk
       mimeType: row.mime_type, summary: row.summary, sections: JSON.parse(String(row.routed_sections_json ?? '[]')),
       extracted, resolutionHandoff: JSON.parse(String(row.resolution_json ?? '{}')), status: row.status, createdAt: row.created_at,
       facts: facts.filter((fact) => fact.submission_id === row.id).map((fact) => ({ ...fact, conflictNote: fact.conflict_note })),
+      links: [
+        ...links.filter((link) => link.submissionId === row.id),
+        ...(row.id === oldestSubmissionId ? unparented : []),
+      ],
       artifacts: artifacts.filter((artifact) => artifact.submission_id === row.id).map((artifact) => {
         const extraction = JSON.parse(String(artifact.extraction_json ?? '{}')) as SmartIntakeImageExtraction;
         return {

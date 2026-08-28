@@ -8,7 +8,7 @@ import {
 } from './property-card.js';
 import { captureAndPersistCardVisuals, type CaptureWorkflowResult } from './visual-capture-workflow.js';
 import { resolveGoogleVisualEnv } from './providers/google-visual.js';
-import { evaluateThreeDCaptureEligibility } from './landportal-operating-rules.js';
+import { evaluateThreeDCaptureEligibility, operatorLandPortalEntryUrl } from './landportal-operating-rules.js';
 
 export interface PropertyInspectionRoute {
   provider: string;
@@ -459,10 +459,43 @@ function baseRoutes(): PropertyInspectionRoute[] {
   ];
 }
 
-function packageFromLandPortal(ev: BrowserEvidence): PendingPropertyInspectionRecord | null {
+function packageFromLandPortal(ev: BrowserEvidence, cardId?: number): PendingPropertyInspectionRecord | null {
   if (!ev.inspection) return null;
+  // ── THE VERIFIED ENTRY RECORD ────────────────────────────────────────────
+  //
+  // A canonical `?property=` capture carries its own parcelUrlRecord, because
+  // the URL itself decodes to a parcel key. An operator entry link does not —
+  // and without a record, downstream admission read `verifiedSubject` as false
+  // and refused a parcel the parcel checkpoint had just confirmed on screen.
+  //
+  // So when this run actually PASSED `parcel_selected`, that verdict is written
+  // down, on the same record shape everything already reads. The URL stays an
+  // entry point: no fips/propertyId is claimed for it, and the APN recorded is
+  // the one the opened record stated, not anything decoded from the link.
+  // `retrieved` is itself the checkpoint's verdict: the workflow returns
+  // no_match or partial before this whenever `parcel_selected` did not pass, so
+  // it cannot report retrieved on an unverified parcel. The checkpoint list is
+  // also consulted, because it is the explicit signal when it is populated.
+  const verifiedParcel = ev.status === 'retrieved'
+    || (ev.visualCheckpoints ?? []).some((c) => c.kind === 'parcel_selected' && c.passed);
+  const entryUrl = operatorLandPortalEntryUrl(ev.inspection.parcelUrl);
+  const openedApn = ev.facts.find((fact) => fact.key === 'apn')?.value ?? null;
+  const entryRecord = !ev.inspection.parcelUrlRecord && verifiedParcel && entryUrl && openedApn
+    ? {
+      url: entryUrl,
+      source: 'operator:landportal_entry_url_verified_on_screen',
+      capturedAt: new Date().toISOString(),
+      propertyCardId: cardId ?? 0,
+      dealCardId: null,
+      verifiedSubject: true,
+      apn: openedApn,
+      fips: null,
+      propertyId: null,
+    }
+    : null;
   return {
     ...ev.inspection,
+    ...(entryRecord ? { parcelUrlRecord: entryRecord } : {}),
     sources: [{
       provider: 'LandPortal',
       stage: 'landportal',
@@ -586,7 +619,7 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   const landPortalBudgetMs = (): number => Math.max(1, remainingMs() - officialRecordsReserveMs);
 
   if (landPortalEvidence?.inspection) {
-    const lp = packageFromLandPortal(landPortalEvidence);
+    const lp = packageFromLandPortal(landPortalEvidence, input.cardId);
     if (lp) inspection = lp;
     upsertRoute(routes, 'LandPortal', { status: 'used', confidence: 'high', note: landPortalEvidence.note || 'LandPortal inspection reused from browser evidence.', url: inspection.parcelUrl });
   } else if (deps.landPortalBrowser?.configured()) {
@@ -595,7 +628,7 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
       { timeoutMs: landPortalBudgetMs(), onSubjectFacts: input.onLandPortalSubjectFacts },
     );
     if (landPortalEvidence.inspection) {
-      const lp = packageFromLandPortal(landPortalEvidence);
+      const lp = packageFromLandPortal(landPortalEvidence, input.cardId);
       if (lp) inspection = lp;
       upsertRoute(routes, 'LandPortal', { status: landPortalEvidence.status === 'retrieved' ? 'used' : 'partial', confidence: 'high', note: landPortalEvidence.note || 'LandPortal inspection captured.', url: inspection.parcelUrl });
     } else {

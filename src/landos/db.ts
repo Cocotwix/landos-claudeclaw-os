@@ -1146,6 +1146,37 @@ function createLandosSchema(db: Database.Database): void {
       BEFORE DELETE ON landos_intake_artifact
       BEGIN SELECT RAISE(ABORT, 'intake artifacts are immutable'); END;
 
+    -- Operator-supplied LINKS are intake evidence in exactly the same sense as
+    -- an uploaded screenshot: the operator gave them for a reason, so they are
+    -- stored verbatim and immutably, associated with the deal, and available to
+    -- every reader. They deliberately do NOT live on the property card: lp_url
+    -- is a single mutable field that research lanes overwrite, and a lane
+    -- writing the bare site root over the operator's own saved-map link is what
+    -- made a supplied parcel link disappear. Nothing here is parcel identity —
+    -- a link is an entry point and a classification, never a verified fact.
+    CREATE TABLE IF NOT EXISTS landos_intake_link (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_card_id   INTEGER NOT NULL REFERENCES landos_deal_card(id),
+      submission_id  INTEGER,
+      url            TEXT NOT NULL,
+      url_key        TEXT NOT NULL,
+      host           TEXT NOT NULL DEFAULT '',
+      classification TEXT NOT NULL DEFAULT 'web',
+      capability     TEXT NOT NULL DEFAULT '',
+      note           TEXT NOT NULL DEFAULT '',
+      source         TEXT NOT NULL DEFAULT 'operator',
+      created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      UNIQUE(deal_card_id, url_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_intake_link_card
+      ON landos_intake_link(deal_card_id, created_at DESC, id DESC);
+    CREATE TRIGGER IF NOT EXISTS landos_intake_link_immutable_update
+      BEFORE UPDATE ON landos_intake_link
+      BEGIN SELECT RAISE(ABORT, 'intake links are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS landos_intake_link_immutable_delete
+      BEFORE DELETE ON landos_intake_link
+      BEGIN SELECT RAISE(ABORT, 'intake links are immutable'); END;
+
     CREATE TABLE IF NOT EXISTS landos_intake_candidate (
       id             INTEGER PRIMARY KEY AUTOINCREMENT,
       submission_id  INTEGER NOT NULL REFERENCES landos_intake_submission(id),

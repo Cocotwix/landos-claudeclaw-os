@@ -2392,10 +2392,80 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           }
           return empty;
         }
+        // ── THE HEADINGS ARE NOT THE FACTS ──────────────────────────────────
+        //
+        // The gate above passes on the panel's HEADINGS ("Property Overview",
+        // "Parcel ID", "Owner Name"). LandPortal then paints the parcel panel in
+        // two further stages, measured on the acceptance parcel:
+        //
+        //   ~2s   0 rows
+        //   ~4s   22 rows rendered, every VALUE cell still empty
+        //   ~6s   74 rows, 67 readable title/value pairs, stable thereafter
+        //
+        // Reading at the gate therefore returned three fields out of sixty-seven
+        // — and three is enough to identify the parcel, which is exactly why the
+        // shortfall was invisible: the run looked correct and the Deal Card was
+        // missing almost everything the parcel record actually says.
+        //
+        // So wait for the READABLE PAIRS to stop arriving, not the rows: a row
+        // whose value has not painted is not yet a fact. Bounded, and it never
+        // fails the capture — the read below is unchanged and a panel that never
+        // fills is reported as what it is.
+        const countPanelFacts = () => page.evaluate<number>((() => {
+          let pairs = 0;
+          document.querySelectorAll('p.tab-row,.tab-row').forEach((el: any) => {
+            const style = (window as any).getComputedStyle ? (window as any).getComputedStyle(el) : null;
+            if (style && (style.display === 'none' || style.visibility === 'hidden')) return;
+            const title = el.querySelector ? el.querySelector('.tab-row__title') : null;
+            const value = el.querySelector ? el.querySelector('.tab-row__value') : null;
+            if (title && value && (title.textContent || '').trim() && (value.textContent || '').trim()) pairs += 1;
+          });
+          return pairs;
+        }) as unknown as () => number);
+        let settledFacts = await countPanelFacts().catch(() => 0);
+        await pollUntil(async () => {
+          const seen = await countPanelFacts().catch(() => settledFacts);
+          const stable = seen > 0 && seen === settledFacts;
+          settledFacts = seen;
+          return stable;
+        }, 12_000);
         // Read facts only after the authenticated parcel panel is ready. The
         // former pre-readiness scrape could snapshot a partial SPA and its
         // generic two-span fallback could pair unrelated terrain values.
         const fieldsOut = await page.evaluate<{ fields: Record<string, string> }>(FIELDS as unknown as () => { fields: Record<string, string> });
+        logger.info({
+          event: 'landportal_panel_read',
+          settledFacts,
+          fields: Object.keys(fieldsOut.fields ?? {}).length,
+        }, 'landportal_panel_read');
+
+        // ── HAND THE SUBJECT OVER AS SOON AS THE PANEL IS READ ──────────────
+        //
+        // The identity handoff used to live only inside the API branch below,
+        // and that branch runs only for a URL carrying a decodable property id
+        // and FIPS. An operator's saved-map link carries neither — so on a link
+        // that lands directly on the parcel with its panel fully rendered, the
+        // subject was never announced, and the identity lane waited out the
+        // whole capture (imagery, overlays, terrain, comps) for facts it was
+        // already holding. That is the exact defect the early handoff exists to
+        // prevent, one URL shape later.
+        //
+        // The panel above has already passed the authenticated/property-panel/
+        // rendered-map gate, so these are the record's own facts. The API read
+        // below still runs and still enriches the capture; it simply is no
+        // longer what decides whether identity is announced at all.
+        const panelParcelId = Object.entries(fieldsOut.fields ?? {})
+          .find(([key]) => /^(?:parcel id|parcel number|apn)$/i.test(key))?.[1];
+        let subjectAnnounced = false;
+        const announceSubject = (): void => {
+          if (subjectAnnounced || !opts.onSubjectFacts) return;
+          subjectAnnounced = true;
+          try { opts.onSubjectFacts({ url, fields: { ...(fieldsOut.fields ?? {}) } }); }
+          catch (error) {
+            logger.warn({ event: 'landportal_subject_facts_handoff_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_subject_facts_handoff_failed');
+          }
+        };
+        if (panelParcelId && String(panelParcelId).trim()) announceSubject();
 
         // ── DIRECT RETRIEVAL: LandPortal's own parcel endpoint ──────────────
         // The page we are already authenticated on serves itself from
@@ -2508,17 +2578,14 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
             comps: apiCompCards.length,
             compDeedRecords: deedRecords.size,
           }, 'landportal_api_subject_read');
-          // HAND THE SUBJECT OVER NOW. The parcel facts are complete at this
-          // point; everything below is imagery, and the identity lane used to
-          // wait the whole capture out for data it already had. This only
-          // announces what was read — the capture continues exactly as before,
-          // and a consumer that throws cannot affect it.
-          if (opts.onSubjectFacts) {
-            try { opts.onSubjectFacts({ url, fields: { ...(fieldsOut.fields ?? {}) } }); }
-            catch (error) {
-              logger.warn({ event: 'landportal_subject_facts_handoff_failed', error: error instanceof Error ? error.message : String(error) }, 'landportal_subject_facts_handoff_failed');
-            }
-          }
+          // HAND THE SUBJECT OVER NOW, if the panel read above did not already.
+          // The parcel facts are complete at this point; everything below is
+          // imagery, and the identity lane used to wait the whole capture out
+          // for data it already had. This only announces what was read — the
+          // capture continues exactly as before, and a consumer that throws
+          // cannot affect it. The API facts have been merged into `fieldsOut`,
+          // so a capture that reaches here announces the stronger read.
+          announceSubject();
         }
         // Capture only the painted map canvas, never the full LandPortal page.
         // Before every frame, remove visible ads/offers/modals/chat/banner UI
