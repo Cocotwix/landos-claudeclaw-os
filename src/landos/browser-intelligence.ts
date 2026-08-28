@@ -554,8 +554,14 @@ export interface BrowserRunHooks {
   isCancelled?: () => boolean;
   /** Fired when the verified subject parcel's own facts have been read, ahead of
    *  the run's imagery and deep-record work. A caller that only needs identity
-   *  can settle on this instead of the whole run. */
-  onSubjectFacts?: (payload: { url: string; fields: Record<string, string> }) => void;
+   *  can settle on this instead of the whole run.
+   *
+   *  `verifiedParcelApn` is set when the run reached this record through an
+   *  operator entry link and the parcel checkpoint has PASSED on it. It carries
+   *  the identifier the opened record itself stated, so the consumer can record
+   *  the verification this run performed instead of a later run discovering it
+   *  through persistence. Absent means "not verified by this hook's caller". */
+  onSubjectFacts?: (payload: { url: string; fields: Record<string, string>; verifiedParcelApn?: string | null }) => void;
 }
 
 export interface BrowserService {

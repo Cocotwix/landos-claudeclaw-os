@@ -1643,7 +1643,7 @@ export function landPortalSubjectFactsHandoff(input: {
   dealCardId: number | null;
   retainedUrl: string | null;
   onSubjectReady?: (capture: { ok: boolean; note: string; comparableCount: number }) => void;
-}): ((payload: { url: string; fields: Record<string, string> }) => void) | undefined {
+}): ((payload: { url: string; fields: Record<string, string>; verifiedParcelApn?: string | null }) => void) | undefined {
   const { cardId, dealCardId, retainedUrl, onSubjectReady } = input;
   const retainedIdentity = retainedUrl ? landPortalIdentityFromUrl(retainedUrl) : null;
   // An OPERATOR entry link (a saved map) carries no decodable parcel identity,
@@ -1656,7 +1656,7 @@ export function landPortalSubjectFactsHandoff(input: {
   const entryOnlyUrl = !retainedIdentity && isOperatorEntryOnlyLandPortalUrl(retainedUrl) ? retainedUrl : null;
   if (!retainedUrl || (!retainedIdentity && !entryOnlyUrl) || !onSubjectReady) return undefined;
   let handedOff = false;
-  return ({ url, fields }) => {
+  return ({ url, fields, verifiedParcelApn }) => {
     if (handedOff) return;
     if (entryOnlyUrl) {
       const namesParcel = Object.entries(fields)
@@ -1674,8 +1674,30 @@ export function landPortalSubjectFactsHandoff(input: {
     handedOff = true;
     // Cumulative, non-destructive: the same merge every other inspection write
     // uses. No assets are claimed here — the capture still owns them.
+    //
+    // The verification this run performed is written down WITH the facts. The
+    // run that opens and confirms the parcel is the run that should be able to
+    // admit it; recording the verdict only when the full capture finished meant
+    // admission read an unverified record and the subject resolved one
+    // invocation late. Same record shape everything already reads — the entry
+    // URL stays a route, so no fips or property id is claimed for it and the
+    // APN written is the one the opened record stated.
+    const verifiedEntryRecord = entryOnlyUrl && verifiedParcelApn
+      ? {
+        url: entryOnlyUrl,
+        source: 'operator:landportal_entry_url_verified_on_screen',
+        capturedAt: new Date().toISOString(),
+        propertyCardId: cardId,
+        dealCardId,
+        verifiedSubject: true,
+        apn: verifiedParcelApn,
+        fips: null,
+        propertyId: null,
+      }
+      : null;
     persistPropertyInspection(cardId, {
       parcelUrl: retainedUrl,
+      ...(verifiedEntryRecord ? { parcelUrlRecord: verifiedEntryRecord } : {}),
       comparablesUrl: null,
       parcelFacts: fields,
       assets: [], overlays: [], visualObservations: [], comparables: [],

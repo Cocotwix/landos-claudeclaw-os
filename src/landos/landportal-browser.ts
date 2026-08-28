@@ -978,11 +978,20 @@ async function runLandPortalAgentic(
           const entryShot = await driver.screenshot(LANDPORTAL_PARCEL_VERIFY_PURPOSE, t()).catch(() => null);
           let settlePanel: ((fields: Record<string, string>) => void) | null = null;
           const panelRead = new Promise<Record<string, string>>((resolve) => { settlePanel = resolve; });
+          // The subject is announced AFTER the checkpoint, not when the panel is
+          // read. Announcing on the read handed the run's own identity consumer
+          // an unverified parcel, so the consumer could not record the verified
+          // verdict — and the verdict only reached it through persistence, on
+          // the NEXT invocation. Held here, forwarded below once the checkpoint
+          // has actually passed, so one run verifies and admits.
+          let announced: { url: string; fields: Record<string, string> } | null = null as
+            | { url: string; fields: Record<string, string> }
+            | null;
           const capturing = driver.captureLandPortalVisuals(obs.url, {
             ...t(),
             onSubjectFacts: (payload) => {
+              announced = payload;
               settlePanel?.(payload.fields ?? {});
-              hooks.onSubjectFacts?.(payload);
             },
           });
           // The loser of the race must not surface as an unhandled rejection.
@@ -1018,6 +1027,14 @@ async function runLandPortalAgentic(
               picked = { index: -1, score: 0, matched: ['operator_entry_url'] };
               usedMethod = RETAINED_URL_METHOD;
               verifiedReached = true;
+              // The parcel is verified: NOW the subject may be announced, and it
+              // is announced as verified so this run's own consumer can record
+              // the verdict rather than waiting for a later invocation to read
+              // it back off disk.
+              if (announced) {
+                try { hooks.onSubjectFacts?.({ ...announced, verifiedParcelApn: detailFrame.apn }); }
+                catch { /* a consumer that throws cannot affect the run */ }
+              }
               // The capture is still running. It is awaited once, below, where
               // the search path awaits its own — so it is never run twice and
               // its imagery still lands on this run's evidence.

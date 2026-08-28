@@ -158,15 +158,36 @@ describe('operator saved-map link enters the record directly', () => {
     expect(calls.capturedAt).toEqual([MAP_URL]);
   });
 
-  it('streams the subject facts to the run hook as soon as the panel is read', async () => {
+  it('announces the subject as VERIFIED, so the same run can admit it', async () => {
+    // The announcement used to fire when the panel was read, before the parcel
+    // checkpoint had judged it. The consumer therefore had no verdict to record,
+    // the verdict only reached it once the full capture had persisted, and the
+    // subject resolved one invocation LATE: run N verified, run N+1 admitted.
+    // The run that opens and confirms the parcel must be the run that admits it.
     const { driver } = landPortalFake();
-    const handoffs: Array<{ url: string; fields: Record<string, string> }> = [];
+    const handoffs: Array<{ url: string; fields: Record<string, string>; verifiedParcelApn?: string | null }> = [];
     await makeLandPortalBrowser({ driver }).runWorkflow(
       { searchKey: { ...CONTAMINATED_KEY, landPortalParcelUrl: MAP_URL, operatorSuppliedSubject: OPERATOR_SUBJECT } },
       { timeoutMs: 2000, onSubjectFacts: (p) => handoffs.push(p) },
     );
     expect(handoffs).toHaveLength(1);
     expect(handoffs[0].fields['Parcel ID']).toBe('00083-A-03400');
+    // The identifier the OPENED RECORD stated, carried with the announcement.
+    expect(handoffs[0].verifiedParcelApn).toBe('00083-A-03400');
+  });
+
+  it('never announces a parcel the checkpoint refused', async () => {
+    // A saved-map link pointing at a different property announces nothing, so
+    // no consumer can record a verification that did not happen.
+    const { driver } = landPortalFake({
+      panel: { ...PANEL, 'Parcel Address': '4100 STATE ROAD 100', 'Parcel Address State': 'GA' },
+    });
+    const handoffs: Array<{ verifiedParcelApn?: string | null }> = [];
+    await makeLandPortalBrowser({ driver }).runWorkflow(
+      { searchKey: { ...CONTAMINATED_KEY, landPortalParcelUrl: MAP_URL, operatorSuppliedSubject: OPERATOR_SUBJECT } },
+      { timeoutMs: 2000, onSubjectFacts: (p) => handoffs.push(p) },
+    );
+    expect(handoffs).toHaveLength(0);
   });
 
   it('is not vetoed by the wrong owner a previous unverified run wrote on the card', async () => {
