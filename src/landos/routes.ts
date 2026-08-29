@@ -316,6 +316,7 @@ import { executePropertyProvider, type NormalizedPropertyEvidence, type Property
 import { gatherCardImages, loadCardVisionAnalysis } from './browser-vision.js';
 import { investigatePropertyWithGev, loadCardGevSpatialAnalysis } from './gev-property-investigation.js';
 import { sanitizeVisualIntelligenceRecord, type VisualIntelligenceRecord } from './visual-intelligence.js';
+import { buildDealParcelScopeView, subjectIsVacantLand, type DealParcelScopeView } from './deal-parcel-scope-view.js';
 import { buildDealOperatorAnalysis, emptyDealOperatorContext, runWholeCardOperatorAnalyst, type DealOperatorContext, type OperatorResearchAttempt, type ResearchAttemptStatus } from './deal-operator-analysis.js';
 import { ManagedIdentityRepository, EnvironmentManagedEmailProvider, managedIdentityStatus } from './managed-identity.js';
 import { WindowsCredentialVault } from './windows-credential-vault.js';
@@ -3290,11 +3291,30 @@ export function registerLandosRoutes(app: Hono): void {
     let businessSpine: ReturnType<typeof assembleBusinessObjects> | undefined;
     try { businessSpine = assembleBusinessObjects(id); } catch { businessSpine = undefined; }
     const opportunity = getOpportunityByDealCardId(id);
+    // Parcel scope: which of the retained parcels is the subject, which belong
+    // to the seller, and which are simply the neighbours a map sweep saw. Read
+    // from the confirmed identity so a scope label can never restate the
+    // subject, and guarded so a scope issue cannot break the Deal Card read.
+    let parcelScope: DealParcelScopeView | undefined;
+    try {
+      const identity = getLandosDb().prepare(
+        `SELECT apn, owner, acreage FROM landos_property_identity_version
+           WHERE deal_card_id=? AND is_current=1 ORDER BY id DESC LIMIT 1`,
+      ).get(id) as { apn: string | null; owner: string | null; acreage: number | null } | undefined;
+      parcelScope = buildDealParcelScopeView({
+        dealCardId: id,
+        subjectApn: identity?.apn ?? null,
+        subjectOwner: identity?.owner ?? null,
+        subjectAcres: identity?.acreage ?? null,
+        subjectIsVacant: subjectIsVacantLand(id, identity?.apn ?? null),
+      });
+    } catch { parcelScope = undefined; }
     return c.json({
       dealCard: deal,
       businessSpine,
       header: businessSpine?.header,
       opportunity,
+      parcelScope,
       researchMission: opportunity ? latestResearchMission(opportunity.id) : null,
     });
   });

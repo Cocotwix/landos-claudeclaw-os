@@ -81,6 +81,130 @@ function visibleEvidenceGaps(snapshot: PiSnapshot | null): string[] {
     .slice(0, 12);
 }
 
+interface ParcelScopeNeighbor {
+  apn: string | null;
+  displayedOwner: string | null;
+  ownerRelationLabel: string;
+  improvement: 'improved' | 'vacant' | 'unknown';
+  scope: string;
+  scopeLabel: string;
+  basis: string;
+}
+
+interface ParcelScopeView {
+  subjectApn: string | null;
+  subjectOwner: string | null;
+  subjectAcres: number | null;
+  subjectIsVacant: boolean;
+  operatorContext: {
+    statement: string;
+    clusterParcelCount: number | null;
+    adjoiningManufacturedHome: boolean;
+    corroborationLabel: string;
+  } | null;
+  neighbors: ParcelScopeNeighbor[];
+  listing: { label: string; basis: string; acres: number | null; price: number | null; carriesSubjectFacts: boolean } | null;
+  landHome: { triggered: boolean; legallyApproved: boolean; label: string; reason: string; openQuestions: string[] };
+  subjectFactGuard: string;
+}
+
+// Parcel scope. A subject investigation retains whatever sat next to the subject
+// on the map, so the Deal has to say out loud which parcel is being bought,
+// which ones the sellers keep, and which belong to somebody else entirely.
+function ParcelScopePanel({ scope }: { scope: ParcelScopeView | null }) {
+  if (!scope) return null;
+  const sellerSide = scope.neighbors.filter((n) => n.scope === 'related_seller_parcel');
+  const others = scope.neighbors.filter((n) => n.scope !== 'related_seller_parcel');
+  return (
+    <section data-testid="parcel-scope" class="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 space-y-3">
+      <div class="flex flex-wrap items-baseline gap-2">
+        <h3 class="text-sm font-semibold text-[var(--color-text)]">Parcel scope</h3>
+        <span class="text-[11px] text-[var(--color-muted)]">Subject, seller holding, and neighbouring land kept apart.</span>
+      </div>
+
+      <div data-testid="parcel-scope-subject" class="rounded-lg border border-[var(--color-accent)] p-3">
+        <div class="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-accent)]">Transaction subject</div>
+        <div class="mt-1 text-[13px] font-semibold text-[var(--color-text)]">
+          APN {scope.subjectApn ?? 'unresolved'}
+          {scope.subjectAcres != null ? ` · ${scope.subjectAcres} AC` : ''}
+          {scope.subjectIsVacant ? ' · vacant land' : ''}
+        </div>
+        {scope.subjectOwner && <div class="text-[12px] text-[var(--color-muted)]">{scope.subjectOwner}</div>}
+      </div>
+
+      {scope.operatorContext && (
+        <div data-testid="parcel-scope-operator" class="rounded-lg border border-[var(--color-border)] p-3">
+          <div class="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
+            Operator-confirmed context
+            {scope.operatorContext.clusterParcelCount != null ? ` · ${scope.operatorContext.clusterParcelCount} seller parcels` : ''}
+          </div>
+          <p class="mt-1 text-[12px] text-[var(--color-text)]">{scope.operatorContext.statement}</p>
+          <p class="mt-1 text-[11px] text-[var(--color-muted)]">{scope.operatorContext.corroborationLabel}</p>
+        </div>
+      )}
+
+      {sellerSide.length > 0 && (
+        <div data-testid="parcel-scope-seller-cluster" class="rounded-lg border border-[var(--color-border)] p-3">
+          <div class="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">Seller ownership cluster</div>
+          <ul class="mt-1 space-y-1">
+            {sellerSide.map((n) => (
+              <li key={n.apn ?? n.displayedOwner} class="text-[12px] text-[var(--color-text)]">
+                <span class="font-semibold">{n.apn ?? 'APN not displayed'}</span>
+                {n.displayedOwner ? ` · ${n.displayedOwner}` : ''} · <span class="text-[var(--color-muted)]">{n.basis}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {others.length > 0 && (
+        <div data-testid="parcel-scope-neighbors" class="rounded-lg border border-dashed border-[var(--color-border)] p-3">
+          <div class="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">Not part of this deal</div>
+          <ul class="mt-1 space-y-1">
+            {others.map((n) => (
+              <li key={n.apn ?? n.displayedOwner} class="text-[12px] text-[var(--color-text)]">
+                <span class="font-semibold">{n.apn ?? 'APN not displayed'}</span>
+                {n.displayedOwner ? ` · ${n.displayedOwner}` : ''}
+                {' · '}<span class="rounded bg-[var(--color-bg)] px-1 text-[11px] text-[var(--color-muted)]">{n.scopeLabel}</span>
+                {n.improvement !== 'unknown' ? ` · ${n.improvement}` : ''}
+                <div class="text-[11px] text-[var(--color-muted)]">{n.basis}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {scope.listing && (
+        <div data-testid="parcel-scope-listing" class="rounded-lg border border-[var(--color-border)] p-3">
+          <div class="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">Retained listing · {scope.listing.label}</div>
+          <div class="mt-1 text-[12px] text-[var(--color-text)]">
+            {scope.listing.acres != null ? `${scope.listing.acres} acres` : 'acreage not stated'}
+            {scope.listing.price != null ? ` · $${scope.listing.price.toLocaleString()}` : ''}
+          </div>
+          <p class="mt-1 text-[11px] text-[var(--color-muted)]">{scope.listing.basis}</p>
+        </div>
+      )}
+
+      <div data-testid="parcel-scope-land-home" class={`rounded-lg border p-3 ${scope.landHome.triggered ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'}`}>
+        <div class="text-[12px] font-semibold text-[var(--color-text)]">{scope.landHome.label}</div>
+        <p class="mt-1 text-[11px] text-[var(--color-muted)]">{scope.landHome.reason}</p>
+        {scope.landHome.triggered && (
+          <>
+            <p class="mt-1 text-[11px] font-semibold text-[var(--color-muted)]">Not a finding that a manufactured home may lawfully be placed on the subject. Still to establish:</p>
+            <ul class="mt-1 list-disc pl-4">
+              {scope.landHome.openQuestions.map((q) => (
+                <li key={q} class="text-[11px] text-[var(--color-muted)]">{q}</li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+
+      <p class="text-[11px] text-[var(--color-muted)]">{scope.subjectFactGuard}</p>
+    </section>
+  );
+}
+
 function DealResearchProgressPanel({ progress, retrying, actionError, canonicalConfirmed, onRetry }: { progress: DealResearchProgress; retrying: boolean; actionError: string; canonicalConfirmed?: boolean; onRetry: () => void }) {
   const mission = progress.mission;
   if (!mission) return null;
@@ -2163,6 +2287,7 @@ function ParcelRosterBlock({ entry, cards, token }: { entry: ParcelRosterEntryVi
 
 export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardId?: number; entity?: EntityFilter; onOpenDeal?: (id: number) => void }) {
   const [deal, setDeal] = useState<DealCardDetail | null>(null);
+  const [parcelScope, setParcelScope] = useState<ParcelScopeView | null>(null);
   const [spine, setSpine] = useState<BusinessSpineView | null>(null);
   // Property Intelligence: ONE parent mission per Deal Card. The hook owns the
   // launch, live specialist progress polling, and the joined snapshot every tab
@@ -2247,8 +2372,9 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
       // (Overview by default). Reloading the SAME card never moves the operator.
       if (resetTab && openedDealIdRef.current !== id) setActiveTabState(restoreDealTab(id));
       openedDealIdRef.current = id;
-      const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null; opportunity?: DealResearchOpportunity | null; researchMission?: DealResearchMission | null }>(`/api/landos/deal-cards/${id}`);
+      const res = await apiGet<{ dealCard: DealCardDetail; businessSpine?: BusinessSpineView | null; opportunity?: DealResearchOpportunity | null; researchMission?: DealResearchMission | null; parcelScope?: ParcelScopeView | null }>(`/api/landos/deal-cards/${id}`);
       setDeal(res.dealCard);
+      setParcelScope(res.parcelScope ?? null);
       setSpine(res.businessSpine ?? null);
       setResearchProgress(res.opportunity ? { opportunity: res.opportunity, mission: res.researchMission ?? null } : null);
       const [rres] = await Promise.all([
@@ -2813,6 +2939,8 @@ export function DealCard({ dealCardId, entity = 'all', onOpenDeal }: { dealCardI
           {researchProgress && (
             <DealResearchProgressPanel progress={researchProgress} retrying={researchRetrying} actionError={researchActionError} canonicalConfirmed={piSnapshot?.identity.state === 'confirmed' || resolution?.confirmed} onRetry={() => void retryResearch()} />
           )}
+
+          <ParcelScopePanel scope={parcelScope} />
 
           {/* ── THE ACTIVE WORKSPACE ────────────────────────────────────────
               Exactly one tab's panel is in the document at a time, wrapped in a
