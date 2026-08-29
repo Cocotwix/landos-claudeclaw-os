@@ -114,14 +114,26 @@ function loadProviderAcreage(dealCardId: number): { acres: number | null; label:
  */
 function loadProviderFrontage(dealCardId: number): { feet: number | null; label: string | null } {
   try {
+    // Subject-scoped, deliberately. A Deal's retained inspections include
+    // panels for parcels that are NOT the subject, so a frontage figure is only
+    // the subject's when the SAME capture also named the canonical APN.
+    // Without that join a neighbouring parcel's 405.17 ft reads as this
+    // parcel's frontage — invariant 4, in the provider facts.
+    const canonical = String(loadDealWorkingState(dealCardId).apn ?? '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+    if (!canonical) return { feet: null, label: null };
     const row = getLandosDb().prepare(`
-      SELECT normalized_value_json, raw_value_json, fact_key, source_name
-        FROM landos_property_evidence_item
-       WHERE deal_card_id = ?
-         AND evidence_kind = 'normalized_fact'
-         AND fact_key LIKE '%rontage%'
-       ORDER BY id DESC LIMIT 1
-    `).get(dealCardId) as Record<string, unknown> | undefined;
+      SELECT f.normalized_value_json, f.raw_value_json, f.fact_key, f.source_name
+        FROM landos_property_evidence_item f
+        JOIN landos_property_evidence_item pid
+          ON pid.deal_card_id = f.deal_card_id
+         AND pid.artifact_ref = f.artifact_ref
+         AND pid.fact_key = 'LandPortal parcel identifier'
+       WHERE f.deal_card_id = ?
+         AND f.evidence_kind = 'normalized_fact'
+         AND f.fact_key = 'LandPortal road frontage'
+         AND UPPER(REPLACE(REPLACE(REPLACE(pid.normalized_value_json, '"', ''), '-', ''), '.', '')) = ?
+       ORDER BY f.id DESC LIMIT 1
+    `).get(dealCardId, canonical) as Record<string, unknown> | undefined;
     if (!row) return { feet: null, label: null };
     const raw = String(row.normalized_value_json ?? row.raw_value_json ?? '').replace(/"/g, '');
     const feet = Number.parseFloat(raw);

@@ -52,6 +52,7 @@ import {
 } from './landportal-operating-rules.js';
 import type { LandPortalVisualValidation } from './landportal-evidence-validation.js';
 import { apnIdentifiersEquivalent } from './landportal-capability.js';
+import { persistRetainedLandPortalParcelFactsForCard } from './landportal-parcel-facts.js';
 import {
   addressVariantsCompatible,
   evaluatePropertyInstructionConsistency,
@@ -1243,6 +1244,12 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
     ref: JSON.stringify(payload),
   });
   promoteRetainedParcelEnrichment(cardId, payload.parcelFacts);
+  // The parcel panel is evidence, not just a capture. Promoting it here — at
+  // the moment the verified inspection is retained — is what stops a Deal from
+  // holding a provider record that says 1.500 acres while every downstream read
+  // resolves its acreage from a GIS polygon instead. Idempotent by key, so a
+  // re-capture of the same inspection adds nothing.
+  persistRetainedLandPortalParcelFactsForCard(cardId);
 }
 
 /**

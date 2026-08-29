@@ -93,14 +93,20 @@ export interface RetainedLandPortalCapture {
  * the same way, with no per-Deal wiring.
  */
 export function readRetainedLandPortalCaptures(dealCardId: number): RetainedLandPortalCapture[] {
+  // A Deal reaches its property cards through the membership table, which is
+  // also what keeps a neighbouring parcel's own card out of this Deal's facts.
   const rows = getLandosDb().prepare(`
     SELECT a.id, a.card_id, a.ref, a.created_at
       FROM landos_card_activity a
-      JOIN landos_property_card p ON p.id = a.card_id
-     WHERE p.deal_card_id = ?
+      JOIN landos_deal_card_property dp ON dp.card_id = a.card_id
+     WHERE dp.deal_card_id = ?
        AND a.kind = 'property_inspection'
      ORDER BY a.id DESC
   `).all(dealCardId) as Array<Record<string, unknown>>;
+  // Only the most recent panel that actually carried parcel facts is current
+  // provider state. Every earlier inspection is a superseded read of the same
+  // parcel, and normalizing all of them would write one near-identical fact set
+  // per historical capture — 21 copies on this Deal — for no added evidence.
   const out: RetainedLandPortalCapture[] = [];
   for (const row of rows) {
     let ref: Record<string, unknown>;
@@ -116,6 +122,7 @@ export function readRetainedLandPortalCaptures(dealCardId: number): RetainedLand
       if (typeof value === 'string') parcelFacts[key] = value;
     }
     if (!Object.keys(parcelFacts).length) continue;
+    if (out.length >= 1) break;
     out.push({
       activityId: Number(row.id),
       propertyCardId: Number(row.card_id),
@@ -164,6 +171,45 @@ function currentIdentityVersionId(dealCardId: number): number | null {
      WHERE deal_card_id = ? ORDER BY id DESC LIMIT 1
   `).get(dealCardId) as { id: number } | undefined;
   return row?.id ?? null;
+}
+
+/**
+ * Normalize from the property card the inspection was captured on.
+ *
+ * The capture seam knows the property card; the evidence store is Deal-scoped.
+ * This resolves one to the other so the seam does not have to, and so there is
+ * exactly one normalizer rather than a second one that drifts.
+ */
+export function persistRetainedLandPortalParcelFactsForCard(
+  propertyCardId: number,
+): LandPortalNormalizationResult {
+  const row = getLandosDb().prepare(
+    'SELECT deal_card_id FROM landos_deal_card_property WHERE card_id = ? ORDER BY id DESC LIMIT 1',
+  ).get(propertyCardId) as { deal_card_id: number | null } | undefined;
+  if (row?.deal_card_id == null) return { captures: 0, factsWritten: 0, factKeys: [] };
+  return persistRetainedLandPortalParcelFacts(row.deal_card_id);
+}
+
+/**
+ * Bring already-retained inspections up to date, once.
+ *
+ * Deals whose parcel panel was captured before this normalizer existed hold
+ * the evidence but not the facts. This is a backfill, not a read-path
+ * mutation: ordinary GETs must not write, so the repair runs deliberately and
+ * is safe to repeat because every write is keyed on its capture.
+ */
+export function backfillRetainedLandPortalParcelFacts(): Array<{ dealCardId: number } & LandPortalNormalizationResult> {
+  const rows = getLandosDb().prepare(`
+    SELECT DISTINCT dp.deal_card_id AS dealCardId
+      FROM landos_card_activity a
+      JOIN landos_deal_card_property dp ON dp.card_id = a.card_id
+     WHERE a.kind = 'property_inspection'
+     ORDER BY dp.deal_card_id
+  `).all() as Array<{ dealCardId: number }>;
+  return rows.map((row) => ({
+    dealCardId: row.dealCardId,
+    ...persistRetainedLandPortalParcelFacts(row.dealCardId),
+  }));
 }
 
 export interface LandPortalNormalizationResult {

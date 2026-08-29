@@ -62,3 +62,39 @@ describe('the LandPortal parcel panel becomes normalized evidence', () => {
     expect(facts.find((f) => f.factKey === 'LandPortal road frontage')?.rawValue).toBe('157.40 ft');
   });
 });
+
+describe('only the current panel is normalized', () => {
+  it('reads one capture, not every historical inspection', () => {
+    // Deal 90 held 21 retained inspections. Normalizing all of them wrote a
+    // near-identical fact set per capture and put a superseded panel's numbers
+    // beside the current one. Only the newest panel carrying parcel facts is
+    // current provider state.
+    const panels = [
+      { 'Parcel ID': '00083-A-03400', Acres: '1.500' },
+      { 'Parcel ID': '00083-A-03400', Acres: '1.500' },
+    ];
+    const perPanel = panels.map((p) => normalizeLandPortalParcelFacts(p));
+    expect(perPanel[0]).toEqual(perPanel[1]);
+    // Identical panels produce identical facts, so the idempotency key that
+    // includes the capture is what keeps replay from duplicating them.
+    expect(perPanel[0].length).toBe(2);
+  });
+
+  it('never lets another parcel panel supply subject numbers', () => {
+    // A neighbouring parcel's panel normalizes to the same keys. What makes it
+    // safe is that it carries its OWN parcel identifier, so a subject-scoped
+    // read can tell the two apart instead of taking the newest row.
+    const neighbour = normalizeLandPortalParcelFacts({
+      'Parcel ID': '00083-8-02600', 'Road Frontage': '405.17 ft',
+    });
+    const subject = normalizeLandPortalParcelFacts({
+      'Parcel ID': '00083-A-03400', 'Road Frontage': '157.40 ft',
+    });
+    const idOf = (f: ReturnType<typeof normalizeLandPortalParcelFacts>) =>
+      f.find((x) => x.factKey === 'LandPortal parcel identifier')?.normalizedValue;
+    expect(idOf(neighbour)).toBe('00083-8-02600');
+    expect(idOf(subject)).toBe('00083-A-03400');
+    expect(neighbour.find((x) => x.factKey === 'LandPortal road frontage')?.normalizedValue).toBe(405.17);
+    expect(subject.find((x) => x.factKey === 'LandPortal road frontage')?.normalizedValue).toBe(157.4);
+  });
+});
