@@ -226,6 +226,27 @@ function assessorTaxProbe(ctx: ReconcileContext): ResearchReadinessProbe {
   };
 }
 
+/** Acreage below which a parcel has no realistic land-division thesis. Two
+ *  rural homesites need roughly this much before a split is worth researching;
+ *  below it the ordinance answers a question the deal is not asking. */
+const SUBDIVISION_MIN_ACRES = 4;
+
+/**
+ * Whether this subject is large enough for land division to be worth
+ * researching. Unknown acreage keeps the lane live: silence is not a reason to
+ * skip work.
+ */
+function subdivisionAcresPlausible(ctx: ReconcileContext): boolean {
+  const row = getLandosDb().prepare(`
+    SELECT acreage FROM landos_property_identity_version
+    WHERE deal_card_id = ? AND is_current = 1
+    ORDER BY id DESC LIMIT 1
+  `).get(ctx.dealCardId) as { acreage?: number | null } | undefined;
+  const acres = typeof row?.acreage === 'number' ? row.acreage : null;
+  if (acres == null || !Number.isFinite(acres) || acres <= 0) return true;
+  return acres >= SUBDIVISION_MIN_ACRES;
+}
+
 function officialParcelRecordProbe(ctx: ReconcileContext): ResearchReadinessProbe {
   const row = getLandosDb().prepare(`
     SELECT parcel_match_status, platform_family, retrieved_at
@@ -314,6 +335,19 @@ function zoningProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
     },
     {
       itemId: 'subdivision_rules',
+      // A research capability existing is not a reason to run it on every
+      // parcel. Land division needs a parcel with something to divide: on a
+      // small rural homesite there is no split to test, so the ordinance is not
+      // missing evidence, it is evidence nobody needs. Marking it inapplicable
+      // closes it honestly instead of parking it at BLOCKED where it holds up
+      // valuation and strategy for a question this deal never asks.
+      //
+      // Acreage alone decides: rules already retained turn the item green
+      // through usableEvidence before applicability is consulted, so naming
+      // them here would only keep a lane alive that has nothing left to ask.
+      // The capability itself is untouched and still runs wherever a
+      // subdivision thesis is credible.
+      applicable: subdivisionAcresPlausible(ctx),
       attempted: knowledgePlan ? knowledgePlan.counts.expected > 0 : zoningRan,
       technicalSuccess: knowledgePlan ? true : reading.result ? reading.succeeded : zoningRan,
       usableEvidence: knowledgePlan
