@@ -1605,6 +1605,27 @@ export function projectExactAddressListingEvidence(result: {
     })
     : [];
   const divergent = new Set(divergentSources);
+  // A record that states no APN cannot be refused on its own, but a sibling can
+  // refuse it: once another retained record proves that this street address
+  // belongs to a different parcel, the address has stopped being the subject's,
+  // and an APN-less record sharing it inherits that. Without this a marketplace
+  // page that simply omits the parcel number becomes the canonical subject and
+  // carries a neighbouring parcel's status, acreage and price onto the card.
+  const divergentAddresses = new Set(
+    divergentSources
+      .map((source) => source.normalizedStreetAddress)
+      .filter((value): value is string => !!value && value.trim() !== ''),
+  );
+  if (divergentAddresses.size) {
+    for (const source of sources) {
+      if (divergent.has(source)) continue;
+      // Only silence on the address. A record stating the canonical APN outranks
+      // an address collision and stays the subject's own.
+      if (normalizeApn(source.apn)) continue;
+      const address = source.normalizedStreetAddress;
+      if (!!address && divergentAddresses.has(address)) divergent.add(source);
+    }
+  }
   const subjectSources = divergent.size ? sources.filter((source) => !divergent.has(source)) : sources;
 
   const clusters = clusterSubjectRecords(subjectSources);
@@ -1668,7 +1689,9 @@ export function projectExactAddressListingEvidence(result: {
     .filter((source) => !canonicalMembers.includes(source))
     .map((source) => recordRef(source, divergent.has(source)
       ? `Different parcel: this record states APN ${source.apn} while the canonical subject parcel is ${identity?.canonicalApn}. A shared street address does not make it the subject. Retained as neighbouring/contextual evidence only — it drives no subject listing status, acreage, improvement, sqft, bed/bath, price, valuation or comp.`
-      : 'Not reconciled to the canonical subject: its street address or APN disagrees, or nothing tied it to the subject cluster. Retained separately, never merged into the subject.'));
+      : divergentAddresses.size && !normalizeApn(source.apn) && !!source.normalizedStreetAddress && divergentAddresses.has(source.normalizedStreetAddress)
+        ? `Different parcel: this record states no APN, and another retained record for the same street address states a parcel other than the canonical subject ${identity?.canonicalApn}. A shared street address does not make it the subject. Retained as neighbouring/contextual evidence only — it drives no subject listing status, acreage, improvement, sqft, bed/bath, price, valuation or comp.`
+        : 'Not reconciled to the canonical subject: its street address or APN disagrees, or nothing tied it to the subject cluster. Retained separately, never merged into the subject.'));
 
   // An MLS number issued by an MLS is digits. A marketplace's own internal id
   // ("T062626") passes the id shape test and stays retained on its record as

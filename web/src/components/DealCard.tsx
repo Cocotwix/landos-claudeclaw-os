@@ -103,7 +103,7 @@ export interface ParcelScopeView {
     corroborationLabel: string;
   } | null;
   neighbors: ParcelScopeNeighbor[];
-  listing: { label: string; basis: string; acres: number | null; price: number | null; carriesSubjectFacts: boolean } | null;
+  listing: { label: string; basis: string; acres: number | null; price: number | null; apn: string | null; buildingSqft: number | null; beds: number | null; carriesSubjectFacts: boolean } | null;
   landHome: { triggered: boolean; legallyApproved: boolean; label: string; reason: string; openQuestions: string[] };
   subjectFactGuard: string;
 }
@@ -178,8 +178,11 @@ export function ParcelScopePanel({ scope }: { scope: ParcelScopeView | null }) {
         <div data-testid="parcel-scope-listing" class="rounded-lg border border-[var(--color-border)] p-3">
           <div class="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">Retained listing · {scope.listing.label}</div>
           <div class="mt-1 text-[12px] text-[var(--color-text)]">
+            {scope.listing.apn ? `APN ${scope.listing.apn} · ` : ''}
             {scope.listing.acres != null ? `${scope.listing.acres} acres` : 'acreage not stated'}
-            {scope.listing.price != null ? ` · $${scope.listing.price.toLocaleString()}` : ''}
+            {scope.listing.buildingSqft != null ? ` · ${scope.listing.buildingSqft.toLocaleString()} sqft` : ''}
+            {scope.listing.beds != null ? ` · ${scope.listing.beds} bd` : ''}
+            {scope.listing.price != null ? ` · asking $${scope.listing.price.toLocaleString()}` : ''}
           </div>
           <p class="mt-1 text-[11px] text-[var(--color-muted)]">{scope.listing.basis}</p>
         </div>
