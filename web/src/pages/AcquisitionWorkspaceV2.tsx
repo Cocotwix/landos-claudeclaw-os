@@ -758,7 +758,14 @@ export function AcquisitionWorkspaceV2() {
   const acreageDecision = acreageExtent?.decision ?? null;
   const acreageResolved = acreageDecision?.status === 'resolved_current_canonical'
     || acreageDecision?.status === 'resolved_current_vs_historical_extent';
+  // The reconciled working acreage is the shared answer: the same evidence
+  // read Documents & Uploads shows, chosen by which basis measured the parcel
+  // rather than by which surface asked. Taking the identity snapshot first is
+  // what let the header report a GIS polygon area (1.846) while Documents
+  // reported the surveyed 1.50 on the same Deal. This is a read of the
+  // reconciliation, not a preference: no acreage is named here.
   const acres = (acreageResolved ? acreageDecision?.canonicalAcres : null)
+    ?? evidenceRead?.acreage?.workingAcres
     ?? id.acres ?? deal?.dealCard?.propertyCards?.[0]?.acres ?? null;
 
   // Hero preference: widest capture that still reads as the parcel. The tight

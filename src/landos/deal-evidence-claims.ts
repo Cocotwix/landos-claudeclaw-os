@@ -784,6 +784,9 @@ export function reconcileAcreageProvenance(input: {
   claims: EvidenceClaim[];
   providerAcres: number | null;
   providerLabel: string | null;
+  /** What the parcel RECORD reports, as distinct from area computed off a map. */
+  parcelRecordAcres?: number | null;
+  parcelRecordLabel?: string | null;
 }): AcreageProvenanceReconciliation | null {
   const entries: AcreageProvenanceReconciliation['entries'] = [];
   for (const claim of input.claims) {
@@ -803,6 +806,15 @@ export function reconcileAcreageProvenance(input: {
       artifactId: claim.provenance.artifactId,
     });
   }
+  if (input.parcelRecordAcres != null && Number.isFinite(input.parcelRecordAcres)) {
+    entries.push({
+      acres: input.parcelRecordAcres,
+      basis: 'provider',
+      label: 'Parcel-record acreage',
+      source: input.parcelRecordLabel ?? 'Provider parcel record',
+      artifactId: null,
+    });
+  }
   if (input.providerAcres != null && Number.isFinite(input.providerAcres)) {
     entries.push({
       acres: input.providerAcres,
@@ -814,8 +826,16 @@ export function reconcileAcreageProvenance(input: {
   }
   if (!entries.length) return null;
 
+  // Strength order, and the reason for it. A field-run boundary outranks a
+  // deed's recital, which outranks what a parcel record reports, which outranks
+  // an area computed from a digitized polygon. The last of those is the only
+  // one not measured against the parcel itself, which is why it is never the
+  // working figure when anything better is on record — and why a Deal with no
+  // survey at all still prefers its parcel record over its map geometry.
   const surveyed = entries.find((e) => e.basis === 'survey');
-  const documentEntry = surveyed ?? entries.find((e) => e.basis === 'deed');
+  const documentEntry = surveyed
+    ?? entries.find((e) => e.basis === 'deed')
+    ?? entries.find((e) => e.basis === 'provider');
   const computed = entries.find((e) => e.basis === 'gis_calculated');
 
   if (documentEntry && computed && Math.abs(documentEntry.acres - computed.acres) >= 0.01) {
@@ -854,6 +874,8 @@ export function interpretDealEvidence(input: {
   providerAcreageLabel?: string | null;
   providerFrontageFeet?: number | null;
   providerFrontageLabel?: string | null;
+  parcelRecordAcres?: number | null;
+  parcelRecordLabel?: string | null;
 }): DealEvidenceInterpretation {
   const { groups, kindOf, pageLabelOf } = groupEvidenceDocuments(input.artifacts);
   const claims: EvidenceClaim[] = [];
@@ -903,6 +925,8 @@ export function interpretDealEvidence(input: {
     claims,
     providerAcres: input.providerAcres ?? null,
     providerLabel: input.providerAcreageLabel ?? null,
+    parcelRecordAcres: input.parcelRecordAcres ?? null,
+    parcelRecordLabel: input.parcelRecordLabel ?? null,
   });
 
   const boundary = reconcileBoundaryFrontage({

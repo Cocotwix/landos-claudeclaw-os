@@ -145,6 +145,41 @@ function loadProviderFrontage(dealCardId: number): { feet: number | null; label:
 }
 
 /**
+ * What the parcel RECORD reports, subject-scoped the same way frontage is.
+ *
+ * Kept apart from the GIS figure because they are different measurements: one
+ * is the acreage the record carries, the other an area computed from a
+ * digitized polygon. A panel belonging to another parcel is excluded by the
+ * same identifier join, so a neighbour's acreage can never become the
+ * subject's working figure.
+ */
+function loadParcelRecordAcreage(dealCardId: number): { acres: number | null; label: string | null } {
+  try {
+    const canonical = String(loadDealWorkingState(dealCardId).apn ?? '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+    if (!canonical) return { acres: null, label: null };
+    const row = getLandosDb().prepare(`
+      SELECT f.normalized_value_json, f.raw_value_json, f.source_name
+        FROM landos_property_evidence_item f
+        JOIN landos_property_evidence_item pid
+          ON pid.deal_card_id = f.deal_card_id
+         AND pid.artifact_ref = f.artifact_ref
+         AND pid.fact_key = 'LandPortal parcel identifier'
+       WHERE f.deal_card_id = ?
+         AND f.evidence_kind = 'normalized_fact'
+         AND f.fact_key = 'Parcel-record acreage'
+         AND UPPER(REPLACE(REPLACE(REPLACE(pid.normalized_value_json, '"', ''), '-', ''), '.', '')) = ?
+       ORDER BY f.id DESC LIMIT 1
+    `).get(dealCardId, canonical) as Record<string, unknown> | undefined;
+    if (!row) return { acres: null, label: null };
+    const acres = Number.parseFloat(String(row.normalized_value_json ?? row.raw_value_json ?? '').replace(/"/g, ''));
+    if (!Number.isFinite(acres)) return { acres: null, label: null };
+    return { acres, label: String(row.source_name ?? 'Provider parcel record') };
+  } catch {
+    return { acres: null, label: null };
+  }
+}
+
+/**
  * Interpret everything this Deal has retained.
  *
  * Safe to call on every evidence event: it is derived state over immutable
@@ -155,6 +190,7 @@ export function interpretRetainedDealEvidence(dealCardId: number): DealEvidenceI
   const state = loadDealWorkingState(dealCardId);
   const provider = loadProviderAcreage(dealCardId);
   const frontage = loadProviderFrontage(dealCardId);
+  const parcelRecord = loadParcelRecordAcreage(dealCardId);
   return interpretDealEvidence({
     artifacts,
     state,
@@ -162,5 +198,7 @@ export function interpretRetainedDealEvidence(dealCardId: number): DealEvidenceI
     providerAcreageLabel: provider.label,
     providerFrontageFeet: frontage.feet,
     providerFrontageLabel: frontage.label,
+    parcelRecordAcres: parcelRecord.acres,
+    parcelRecordLabel: parcelRecord.label,
   });
 }
