@@ -557,7 +557,7 @@ import {
   type ExtractedListingEvidence,
 } from './exact-address-web-discovery.js';
 import { loadSubjectListingDetail, reprojectSubjectListingDetail } from './subject-listing-store.js';
-import { resolveCanonicalIdentity } from './canonical-identity.js';
+import { resolveCanonicalIdentity, supersessionLabel } from './canonical-identity.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -3423,7 +3423,44 @@ export function registerLandosRoutes(app: Hono): void {
   app.get('/api/landos/deal-cards/:id/intake', (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
-    return c.json({ submissions: listLeadCardIntake(id) });
+    // History is preserved exactly as it was written. What changes is how it is
+    // PRESENTED: once the Deal's canonical parcel identity is accepted, an older
+    // attempt that concluded unresolved is historical, not the current state, and
+    // it is labeled as such by the shared supersession rule rather than by a
+    // literal in one component. Nothing is rewritten or deleted.
+    const canonical = resolveCanonicalIdentity(id);
+    const submissions = listLeadCardIntake(id).map((submission) => {
+      const handoff = (submission as { resolutionHandoff?: Record<string, unknown> | null }).resolutionHandoff;
+      if (!handoff) return submission;
+      const attemptStatus = String(
+        handoff.resolutionStatus ?? handoff.state ?? 'unresolved',
+      );
+      const { superseded, label } = supersessionLabel({
+        canonical,
+        attemptStatus: attemptStatus === 'attempted' ? 'unresolved' : attemptStatus,
+        attemptAtSeconds: (submission as { createdAt?: number }).createdAt ?? null,
+      });
+      if (!superseded) return submission;
+      return { ...submission, resolutionHandoff: { ...handoff, superseded: true, supersededLabel: label } };
+    });
+    return c.json({
+      submissions,
+      // The current accepted identity, so the conversation states what is true
+      // now beside the attempts that were true then.
+      canonicalIdentity: {
+        status: canonical.status,
+        confirmed: canonical.confirmed,
+        apn: canonical.apn,
+        owner: canonical.owner,
+        county: canonical.county,
+        state: canonical.state,
+        basis: canonical.basis,
+      },
+      // What the retained documents actually established. Derived on read from
+      // the same immutable artifacts, so the conversation shows the evidence
+      // response without the operator sending another message.
+      evidenceInterpretation: interpretRetainedDealEvidenceSafely(id),
+    });
   });
 
   const configuredIntakeAnalyzer = async (prompt: string): Promise<unknown> => {
@@ -3741,12 +3778,7 @@ export function registerLandosRoutes(app: Hono): void {
       // reconciles them against the Deal's working conclusion — no retrieval, no
       // model call, no second evidence store — so the cycle that follows already
       // knows which requirements the documents closed and which they contested.
-      const interpretation = (() => {
-        try { return interpretRetainedDealEvidence(id); } catch (error) {
-          logger.warn({ dealCardId: id, err: (error as Error).message }, 'deal_evidence_interpretation_failed');
-          return null;
-        }
-      })();
+      const interpretation = interpretRetainedDealEvidenceSafely(id);
 
       // ── New evidence is itself a trigger into the closed research loop ──
       //
@@ -5536,6 +5568,24 @@ export function registerLandosRoutes(app: Hono): void {
       return c.json({ error: (err as Error).message }, 400);
     }
   });
+
+  // One shared, cached-per-request read of the Deal's retained evidence. Every
+  // surface that needs the reconciled answer calls THIS - the workspace's first
+  // paint, Documents & Uploads, and Smart Intake - so no surface carries its own
+  // copy of the acreage/boundary selection rules.
+  function interpretRetainedDealEvidenceSafely(dealCardId: number): DealEvidenceInterpretation | null {
+    try {
+      return interpretRetainedDealEvidence(dealCardId);
+    } catch (error) {
+      logger.warn({ dealCardId, err: (error as Error).message }, 'deal_evidence_interpretation_failed');
+      return null;
+    }
+  }
+
+  /** The reconciled acreage alone, for reads that only need the working figure. */
+  function evidenceAcreageFor(dealCardId: number) {
+    return interpretRetainedDealEvidenceSafely(dealCardId)?.acreage ?? null;
+  }
 
   // Derived, idempotent, and free: the interpretation of everything this Deal
   // has already retained. Documents & Uploads reads it to show the deed/survey
@@ -10411,6 +10461,15 @@ export function registerLandosRoutes(app: Hono): void {
           landUseIntelligence: propertyIntelligence.landUseIntelligence,
           landPortalFacts: propertyIntelligence.landPortalFacts,
           taxStatus: propertyIntelligence.taxStatus,
+          // The reconciled acreage travels with the FIRST read the workspace
+          // makes. It is the same shared answer Documents & Uploads and the
+          // evidence-interpretation endpoint return - not a second selection
+          // rule - and it is here so the header's first meaningful paint is
+          // already the working acreage. Before this, the header rendered the
+          // identity snapshot's GIS-derived figure for as long as the
+          // secondary evidence read took to arrive, so the operator watched
+          // the parcel change size on load.
+          evidenceAcreage: evidenceAcreageFor(id),
         },
         marketContext: marketContextFor(deal),
         landPortalFacts: propertyIntelligence.landPortalFacts,
@@ -11288,14 +11347,38 @@ export function registerLandosRoutes(app: Hono): void {
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const cardId = subjectCardId(deal) ?? null;
     const evidence = buildSupervisorEvidence(id, cardId, '');
+    // Old conclusions are kept verbatim. Once the canonical identity is
+    // accepted, a turn that concluded the parcel was unresolved is history and
+    // is labeled by the shared supersession rule, so the current state reads as
+    // current and the failed attempt reads as the record of an attempt. Only
+    // turns superseded by a LATER turn are marked: the newest conclusion is
+    // never labeled historical by its own predecessors.
+    const canonical = resolveCanonicalIdentity(id);
+    const rawThread = listDealBrainGuidance(id);
+    const lastAssistantId = [...rawThread].reverse()
+      .find((turn) => turn.role !== 'operator')?.id ?? null;
+    const UNRESOLVED_CONCLUSION = /\bNEEDS_INPUT\b|\bUNRESOLVED\b|could not (?:confirm|verify|identify|resolve)|does not identify a specific parcel|no exact parcel-level source/i;
+    const thread = rawThread.map((turn) => {
+      if (turn.role === 'operator' || turn.id === lastAssistantId) return turn;
+      if (!UNRESOLVED_CONCLUSION.test(String(turn.text ?? ''))) return turn;
+      const { superseded, label } = supersessionLabel({ canonical, attemptStatus: 'unresolved' });
+      return superseded ? { ...turn, superseded: true, supersededLabel: label } : turn;
+    });
     return c.json({
-      thread: listDealBrainGuidance(id),
+      thread,
       state: {
         resolution: evidence.resolution,
         landPortal: evidence.landPortal,
         identityConfidence: evidence.smartIntake.confidence,
         artifacts: evidence.artifacts,
       },
+      // The current identity and the current evidence read travel with the
+      // conversation, so it answers from the retained documents on open.
+      canonicalIdentity: {
+        status: canonical.status, confirmed: canonical.confirmed,
+        apn: canonical.apn, owner: canonical.owner, basis: canonical.basis,
+      },
+      evidenceInterpretation: interpretRetainedDealEvidenceSafely(id),
     });
   });
 

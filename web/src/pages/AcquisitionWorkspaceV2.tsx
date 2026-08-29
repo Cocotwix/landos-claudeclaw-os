@@ -80,6 +80,11 @@ import '../styles/workspace-v2-lead-design.css';
 // ── Minimal read-model types (fields this view consumes) ───────────────
 
 /** The server's derived read of the evidence this Deal already retained. */
+type EvidenceAcreageView = {
+  entries: Array<{ acres: number; basis: string; label: string; source: string }>;
+  workingAcres: number | null; workingBasis: string | null; reason: string; bothLegitimate: boolean;
+};
+
 interface EvidenceInterpretationView {
   groups: Array<{ kind: string; label: string; artifactIds: number[]; pageCount: number }>;
   claims: Array<{
@@ -87,10 +92,7 @@ interface EvidenceInterpretationView {
     reason: string; provenance: { artifactId: number; fileName: string; pageLabel: string };
   }>;
   unreadable: Array<{ artifactId: number; fileName: string; reason: string }>;
-  acreage: {
-    entries: Array<{ acres: number; basis: string; label: string; source: string }>;
-    workingAcres: number | null; workingBasis: string | null; reason: string; bothLegitimate: boolean;
-  } | null;
+  acreage: EvidenceAcreageView | null;
   boundary: {
     surveyedRoadFacingFeet: number | null; roadFeature: string | null;
     providerFrontageFeet: number | null; providerFrontageLabel: string | null;
@@ -216,6 +218,7 @@ interface IntelResp {
     exactAddressListings?: ExactAddressListingsView | null;
     landPortalFacts?: ParcelFactSheetView | null;
     taxStatus?: TaxStatusView | null;
+    evidenceAcreage?: EvidenceAcreageView | null;
   };
   marketContext?: MarketContextView;
   landPortalFacts?: ParcelFactSheetView | null;
@@ -371,6 +374,10 @@ export function AcquisitionWorkspaceV2() {
   // no model, and re-reads no file — which is why a hard refresh reproduces the
   // same grouping, claims and provenance rather than losing them.
   const [evidenceRead, setEvidenceRead] = useState<EvidenceInterpretationView | null>(null);
+  // The reconciled acreage as it arrives on the FIRST read, before the deeper
+  // evidence projection lands. Same server-side answer, same shape; holding it
+  // separately is what keeps the header from painting the GIS figure first.
+  const [firstPaintAcreage, setFirstPaintAcreage] = useState<EvidenceAcreageView | null>(null);
   // Property-tax payment status, answered by the collecting office rather than
   // the assessor. Without it the panel could only ever say "not screened".
   const [taxStatus, setTaxStatus] = useState<TaxStatusView | null>(null);
@@ -474,6 +481,7 @@ export function AcquisitionWorkspaceV2() {
         setCompsValuation(i?.propertyIntelligence?.compsValuation ?? null);
         setLandPortalFacts(i?.propertyIntelligence?.landPortalFacts ?? i?.landPortalFacts ?? null);
         setTaxStatus(i?.propertyIntelligence?.taxStatus ?? null);
+        setFirstPaintAcreage(i?.propertyIntelligence?.evidenceAcreage ?? null);
         // Overview is usable from the canonical Deal, Property and Acquisition
         // reads above. Research Readiness and the specialist stack are
         // secondary persisted projections; let them hydrate immediately after
@@ -766,6 +774,9 @@ export function AcquisitionWorkspaceV2() {
   // reconciliation, not a preference: no acreage is named here.
   const acres = (acreageResolved ? acreageDecision?.canonicalAcres : null)
     ?? evidenceRead?.acreage?.workingAcres
+    // Present from the first read, so the header never shows the snapshot's
+    // GIS acreage while the deeper evidence projection is still in flight.
+    ?? firstPaintAcreage?.workingAcres
     ?? id.acres ?? deal?.dealCard?.propertyCards?.[0]?.acres ?? null;
 
   // Hero preference: widest capture that still reads as the parcel. The tight
@@ -1029,6 +1040,7 @@ export function AcquisitionWorkspaceV2() {
               phaseLabel: intelPhase ? PHASE_LABEL[intelPhase] ?? intelPhase : null,
               whatChanged: aiRead?.whatChanged ?? null,
             }}
+            workingAcres={evidenceRead?.acreage?.workingAcres ?? firstPaintAcreage?.workingAcres ?? null}
             specialistReads={{
               property: propertyIntelRead,
               market: marketIntelRead,

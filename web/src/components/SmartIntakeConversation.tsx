@@ -20,10 +20,19 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Link2, MessagesSquare, Paperclip, Send, X } from 'lucide-preact';
 import { apiGet, apiPost, apiPostForm } from '@/lib/api';
+import {
+  EvidenceReadMessage,
+  type CanonicalIdentitySummary,
+  type EvidenceInterpretation,
+} from '@/components/LeadCardIntake';
 
 interface GuidanceTurn {
   id: number;
   role: 'operator' | 'deal_brain';
+  // Stamped by the shared supersession rule when a later accepted identity
+  // overtook this turn's conclusion. The turn's text is never rewritten.
+  superseded?: boolean;
+  supersededLabel?: string | null;
   text: string;
 }
 
@@ -58,6 +67,8 @@ interface SmartIntakeResponse {
   plan?: SmartIntakePlan;
   thread?: GuidanceTurn[];
   state?: SmartIntakeState;
+  evidenceInterpretation?: EvidenceInterpretation | null;
+  canonicalIdentity?: CanonicalIdentitySummary | null;
 }
 
 /** How a supplied link reads on screen. Routing, never a property fact. */
@@ -85,6 +96,11 @@ export function SmartIntakeConversation({ dealId }: { dealId: number }) {
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // What the retained documents established, derived server-side from the
+  // immutable artifacts. Uploading evidence used to leave the conversation at
+  // "(6 attachments)" and nothing else; this is the answer to that.
+  const [evidenceRead, setEvidenceRead] = useState<EvidenceInterpretation | null>(null);
+  const [canonicalIdentity, setCanonicalIdentity] = useState<CanonicalIdentitySummary | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -101,6 +117,8 @@ export function SmartIntakeConversation({ dealId }: { dealId: number }) {
     .then((res) => {
       if (Array.isArray(res.thread)) setThread(res.thread);
       applyState(res.state);
+      setEvidenceRead(res.evidenceInterpretation ?? null);
+      setCanonicalIdentity(res.canonicalIdentity ?? null);
       setError(null);
     })
     .catch((err: Error) => setError(`The Smart Intake conversation could not be loaded (${err.message}). Nothing was lost; reload to try again.`));
@@ -220,11 +238,28 @@ export function SmartIntakeConversation({ dealId }: { dealId: number }) {
       {thread.length > 0 && (
         <div class="awv2-dealbrain-thread" ref={scroller} data-testid="smart-intake-thread">
           {thread.slice(-12).map((entry) => (
-            <div key={entry.id} class={`awv2-dealbrain-turn t-${entry.role === 'operator' ? 'operator' : 'brain'}`}>
+            <div
+              key={entry.id}
+              data-superseded={entry.superseded ? 'true' : undefined}
+              class={`awv2-dealbrain-turn t-${entry.role === 'operator' ? 'operator' : 'brain'}`}
+              style={entry.superseded ? { opacity: 0.6 } : undefined}
+            >
               <small>{entry.role === 'operator' ? 'You (guidance)' : 'Smart Intake'}</small>
+              {entry.superseded && (
+                <small data-testid="smart-intake-turn-superseded" style={{ display: 'block', fontWeight: 600 }}>
+                  Historical / {entry.supersededLabel}
+                </small>
+              )}
               <p>{entry.text}</p>
             </div>
           ))}
+        </div>
+      )}
+
+      {evidenceRead && (
+        <div class="awv2-dealbrain-turn t-brain" data-testid="smart-intake-evidence-turn">
+          <small>Smart Intake — current read of the retained evidence</small>
+          <EvidenceReadMessage evidence={evidenceRead} canonical={canonicalIdentity} />
         </div>
       )}
 

@@ -39,6 +39,27 @@ type ResolutionHandoff = {
   smallestNextIdentifier?: string; guidance?: string | null;
   canonicalPromotionApplied?: boolean; promotion?: { canonicalPromotionApplied?: boolean; note?: string };
   ownerContactMatchRequired?: boolean; message?: string;
+  // Stamped by the shared read model when the Deal's canonical identity has
+  // moved past this attempt. The attempt itself is never rewritten.
+  superseded?: boolean; supersededLabel?: string | null;
+};
+export type EvidenceInterpretation = {
+  groups: Array<{ kind: string; label: string; artifactIds: number[]; pageCount: number; unreadablePageCount: number }>;
+  claims: Array<{ field: string; label: string; value: string; relation: string; parcelRelationship: string; reason: string;
+    provenance: { artifactId: number; fileName: string; pageLabel: string } }>;
+  unreadable: Array<{ artifactId: number; fileName: string; reason: string }>;
+  acreage: { entries: Array<{ acres: number; basis: string; label: string; source: string }>;
+    workingAcres: number | null; workingBasis: string | null; reason: string; bothLegitimate: boolean } | null;
+  boundary: { surveyedRoadFacingFeet: number | null; roadFeature: string | null; providerFrontageFeet: number | null;
+    providerFrontageLabel: string | null; longestSideDepthFeet: number | null; reason: string } | null;
+  narrative: string;
+  satisfiedFields: string[];
+  openContradictions: Array<{ label: string; reason: string }>;
+  relatedParcelReferences: Array<{ artifactId: number; statedApn: string; relationship: string; pageLabel: string }>;
+};
+export type CanonicalIdentitySummary = {
+  status: string; confirmed: boolean; apn?: string | null; owner?: string | null;
+  county?: string | null; state?: string | null; basis?: string | null;
 };
 type IntakeCandidate = { id: number; key: string; value: string; confidence: string; uncertain: boolean; source: string };
 type IntakeArtifact = {
@@ -108,6 +129,116 @@ const resolutionLaneLabel = (lane: string) => ({
   landportal: 'LandPortal parcel-level browser search',
 }[lane] ?? lane.replace(/_/g, ' '));
 
+const relationshipLabel = (value: string) => ({
+  subject: 'subject parcel',
+  related_parcel: 'related parcel',
+  unresolved_relationship: 'related parcel, relationship not yet established',
+}[value] ?? value.replace(/_/g, ' '));
+
+const satisfiedLabel = (value: string) => ({
+  acreage: 'acreage',
+  legalDescription: 'legal description',
+  surveyBoundary: 'surveyed boundary',
+  floodZone: 'flood zone',
+  owner: 'owner of record',
+  apn: 'parcel identifier',
+}[value] ?? value.replace(/([A-Z])/g, ' $1').toLowerCase());
+
+/**
+ * What the retained documents actually said, in the conversation, without the
+ * operator having to ask a second time.
+ *
+ * Every line here is read from the server's interpretation of the immutable
+ * artifacts — the same read Documents & Uploads and the workspace header use.
+ * Nothing is canned: if a Deal has no retained evidence this renders nothing,
+ * and if the interpretation changes so does the message.
+ */
+export function EvidenceReadMessage(
+  { evidence, canonical }: { evidence: EvidenceInterpretation; canonical?: CanonicalIdentitySummary | null },
+) {
+  const pages = evidence.groups.reduce((total, group) => total + group.pageCount, 0);
+  if (!pages) return null;
+  const subjectClaims = evidence.claims.filter((claim) => claim.parcelRelationship === 'subject');
+  return (
+    <div data-testid="smart-intake-evidence-read" class="rounded-md border border-[var(--color-accent)] bg-[var(--color-bg)] p-3 text-[11.5px] text-[var(--color-text-muted)] space-y-2">
+      <div class="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--color-accent)]">
+        What LandOS read in the retained evidence
+      </div>
+      <div data-testid="evidence-read-narrative" class="text-[var(--color-text)]">{evidence.narrative}</div>
+      <div class="grid gap-1">
+        {evidence.groups.map((group) => (
+          <div key={group.kind}>
+            <span class="font-medium text-[var(--color-text)]">{group.label}</span>
+            {group.unreadablePageCount > 0
+              ? ` — ${group.unreadablePageCount} page${group.unreadablePageCount === 1 ? '' : 's'} retained but not interpreted`
+              : canonical?.confirmed ? ' — read against the accepted subject parcel' : ''}
+          </div>
+        ))}
+      </div>
+      {evidence.acreage && (
+        <div data-testid="evidence-read-acreage">
+          <span class="font-medium text-[var(--color-text)]">Acreage: </span>
+          {evidence.acreage.entries.map((entry) => `${entry.acres} ac (${entry.label.toLowerCase()})`).join(' · ')}
+          {evidence.acreage.workingAcres != null && ` — working acreage ${evidence.acreage.workingAcres} ac from the ${(evidence.acreage.workingBasis ?? '').toLowerCase()}.`}
+        </div>
+      )}
+      {evidence.boundary && (
+        <div data-testid="evidence-read-boundary">
+          <span class="font-medium text-[var(--color-text)]">Boundary and frontage: </span>
+          {[
+            evidence.boundary.surveyedRoadFacingFeet != null
+              ? `survey road-facing ${evidence.boundary.surveyedRoadFacingFeet} ft${evidence.boundary.roadFeature ? ` along ${evidence.boundary.roadFeature}` : ''}`
+              : null,
+            evidence.boundary.longestSideDepthFeet != null
+              ? `${evidence.boundary.longestSideDepthFeet} ft side/depth, not frontage`
+              : null,
+            evidence.boundary.providerFrontageFeet != null
+              ? `${evidence.boundary.providerFrontageLabel ?? 'Provider'} frontage ${evidence.boundary.providerFrontageFeet} ft`
+              : null,
+          ].filter(Boolean).join(' · ')}
+          {'. '}
+          {evidence.boundary.reason}
+        </div>
+      )}
+      {evidence.relatedParcelReferences.length > 0 && (
+        <div data-testid="evidence-read-related-parcels">
+          <span class="font-medium text-[var(--color-text)]">Other parcels referenced: </span>
+          {evidence.relatedParcelReferences
+            .map((ref) => `${ref.statedApn} on ${ref.pageLabel} — ${relationshipLabel(ref.relationship)}`)
+            .join(' · ')}
+          {canonical?.confirmed ? '. The accepted subject parcel is unchanged; nothing from another parcel is carried onto it.' : ''}
+        </div>
+      )}
+      {evidence.unreadable.length > 0 && (
+        <div data-testid="evidence-read-unreadable">
+          <span class="font-medium text-[var(--color-text)]">Retained but unreadable: </span>
+          {evidence.unreadable.map((page) => `${page.fileName} — ${page.reason}`).join(' · ')}
+        </div>
+      )}
+      <div data-testid="evidence-read-changed">
+        <span class="font-medium text-[var(--color-text)]">What these documents changed: </span>
+        {evidence.satisfiedFields.length
+          ? `${evidence.satisfiedFields.map(satisfiedLabel).join(', ')} now rest on the seller's own pages rather than on provider data alone. ${subjectClaims.length} subject-parcel claim${subjectClaims.length === 1 ? '' : 's'} carry a page citation.`
+          : 'Nothing on the subject parcel changed: no subject-parcel claim survived interpretation.'}
+      </div>
+      <div data-testid="evidence-read-next">
+        <span class="font-medium text-[var(--color-text)]">Still open, and what LandOS is doing next: </span>
+        {[
+          evidence.boundary && evidence.boundary.providerFrontageFeet != null
+            ? 'physical frontage is evidenced, a recorded legal right of access is not — that stays an open requirement'
+            : null,
+          evidence.relatedParcelReferences.some((ref) => ref.relationship === 'unresolved_relationship')
+            ? 'the deed’s other parcel stays a related reference until its relationship is established'
+            : null,
+          evidence.unreadable.length ? 'the unreadable page is claimed from nowhere' : null,
+        ].filter(Boolean).join('; ') || 'no open item was raised by these documents'}
+        {'. '}
+        LandOS reconciled coverage from this evidence and sent only the remaining requirements to retrieval — no Re-run Research needed.
+      </div>
+    </div>
+  );
+}
+
 function ResolutionHandoffPanel({ handoff }: { handoff: ResolutionHandoff }) {
   // A confirmed Deal Card keeps its accepted parcel; the latest attempt is
   // history relative to that accepted identity, never an override of it.
@@ -120,7 +251,12 @@ function ResolutionHandoffPanel({ handoff }: { handoff: ResolutionHandoff }) {
   ].filter(Boolean).join(' · ');
   return (
     <div data-testid="smart-intake-resolution-handoff" class="mt-2 rounded-md border border-[var(--color-border)] p-2.5 text-[11px] text-[var(--color-text-muted)] space-y-2">
-      <div>
+      {handoff.superseded && (
+        <div data-testid="resolution-superseded" class="rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-medium text-[var(--color-text-muted)]">
+          Historical / superseded — {handoff.supersededLabel}
+        </div>
+      )}
+      <div class={handoff.superseded ? 'opacity-60' : undefined}>
         <div class="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--color-accent)]">Parcel resolution — every lookup path, source, and outcome</div>
         <div data-testid="resolution-status-line" class="mt-0.5 font-medium text-[var(--color-text)]">{statusLine}</div>
         {handoff.message && <div class="mt-1">{handoff.message}</div>}
@@ -255,14 +391,27 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
   const [viewerArtifact, setViewerArtifact] = useState<IntakeArtifact | null>(null);
   const [viewerActualSize, setViewerActualSize] = useState(false);
   const [loadError, setLoadError] = useState('');
+  // Derived on the server from the retained artifacts. Held here so the
+  // conversation shows the evidence response on open, not only after an upload.
+  const [evidenceRead, setEvidenceRead] = useState<EvidenceInterpretation | null>(null);
+  const [canonicalIdentity, setCanonicalIdentity] = useState<CanonicalIdentitySummary | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const withToken = (url: string) => url;
   // Retained originals are evidence. A failed reload must never blank them: an
   // empty panel is indistinguishable from "this Deal Card never had a
   // screenshot", which is exactly how retained evidence appears to go missing.
   // On failure keep whatever is already on screen and say the reload failed.
-  const load = () => apiGet<{ submissions: Submission[] }>(`/api/landos/deal-cards/${dealId}/intake`)
-    .then((result) => { setSubmissions(result.submissions); setLoadError(''); })
+  const load = () => apiGet<{
+    submissions: Submission[];
+    evidenceInterpretation?: EvidenceInterpretation | null;
+    canonicalIdentity?: CanonicalIdentitySummary | null;
+  }>(`/api/landos/deal-cards/${dealId}/intake`)
+    .then((result) => {
+      setSubmissions(result.submissions);
+      setEvidenceRead(result.evidenceInterpretation ?? null);
+      setCanonicalIdentity(result.canonicalIdentity ?? null);
+      setLoadError('');
+    })
     .catch((error: Error) => setLoadError(`Retained Smart Intake evidence could not be reloaded (${error.message}). Nothing was deleted; reload the Deal Card to try again.`));
   useEffect(() => { void load(); }, [dealId]);
   useEffect(() => {
@@ -331,7 +480,10 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
     if (!text.trim() && pendingImages.length === 0) { setMessage('Paste information or add an image.'); return; }
     setBusy(true); setMessage('');
     try {
-      let result: { submission: Submission; submissions: Submission[]; duplicatePrevented?: boolean };
+      let result: {
+        submission: Submission; submissions: Submission[]; duplicatePrevented?: boolean;
+        evidenceInterpretation?: EvidenceInterpretation | null;
+      };
       if (pendingImages.length > 0) {
         const body = new FormData();
         pendingImages.forEach((pending) => body.append('files', pending.file));
@@ -345,6 +497,11 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
         result = await apiPost(`/api/landos/deal-cards/${dealId}/intake`, { text, submissionType: type, source: 'Deal Card smart intake', submissionKey });
       }
       setSubmissions(result.submissions);
+      // The upload already interpreted what it retained; show that answer at
+      // once, then reload so the attempt history picks up its current
+      // supersession stamping. The operator sends no second message.
+      if (result.evidenceInterpretation !== undefined) setEvidenceRead(result.evidenceInterpretation ?? null);
+      void load();
       setText('');
       setPendingImages([]);
       setSubmissionKey(globalThis.crypto?.randomUUID?.() ?? `intake-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -378,6 +535,7 @@ export function SmartIntakePanel({ dealId, token = '', onChanged }: { dealId: nu
         <h3 class="text-[14px] font-semibold text-[var(--color-text)]">Smart Intake — update this Deal Card</h3>
         <div class="text-[11.5px] text-[var(--color-text-muted)]">Paste or type addresses, parcel IDs, seller or wholesaler details, notes, emails, and call transcripts. Paste screenshots with Ctrl+V, choose images, or drop PNG, JPG/JPEG, and WEBP files below. Text remains editable and nothing submits until you choose Save and organize.</div>
       </div>
+      {evidenceRead && <EvidenceReadMessage evidence={evidenceRead} canonical={canonicalIdentity} />}
       {loadError && <div data-testid="smart-intake-load-error" class="rounded-md border border-[var(--color-status-warn,var(--color-border))] px-3 py-2 text-[11.5px] text-amber-700 dark:text-amber-300">{loadError}</div>}
       <div class="order-last flex flex-col gap-3">
       <div class="flex gap-2 items-start flex-wrap">

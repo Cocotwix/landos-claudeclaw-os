@@ -256,6 +256,8 @@ interface OverviewSectionProps {
   } | null;
   /** The three persisted specialist intelligence products (Property, Market +
    *  Area, Seller) and the per-layer staleness map. Rendering runs nothing. */
+  /** The reconciled working acreage, from the shared Deal evidence read. */
+  workingAcres?: number | null;
   specialistReads?: {
     property: PropertyIntelligenceReadView | null;
     market: MarketIntelligenceReadView | null;
@@ -470,6 +472,7 @@ export function OverviewSection({
   landUseIntelligence,
   acquisitionIntelligence,
   intelligence,
+  workingAcres,
   specialistReads,
   dealBrain,
   researchReadiness,
@@ -716,7 +719,12 @@ export function OverviewSection({
   const acreageRecon = specialistReads?.acreage?.record?.decision ?? null;
   const acreageReconResolved = acreageRecon?.status === 'resolved_current_canonical'
     || acreageRecon?.status === 'resolved_current_vs_historical_extent';
-  const headingAcres = (acreageReconResolved ? acreageRecon?.canonicalAcres : null) ?? identity.acres ?? null;
+  // Same ladder the Deal header uses, and for the same reason: the identity
+  // snapshot carries the GIS polygon area, so taking it before the reconciled
+  // working acreage puts a second parcel size on the page next to the header's.
+  const headingAcres = (acreageReconResolved ? acreageRecon?.canonicalAcres : null)
+    ?? workingAcres
+    ?? identity.acres ?? null;
   const subjectHeading = `${subjectStructure}${headingAcres != null ? ` • ${headingAcres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : ''}`;
   // The map overlay leads with the property type and acreage only.
   const railHeading = `${railPropertyType(subjectStructure)}${headingAcres != null ? ` · ${headingAcres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : ''}`;
