@@ -231,8 +231,14 @@ export function retainedListingFacts(dealCardId: number): RetainedListing | null
         .filter((v): v is RetainedPage => v != null && typeof v === 'object');
     } catch { continue; }
     // A lane retains several pages for one address and most come back empty, so
-    // the one that actually carried acreage is the listing worth scoping.
-    const page = pages.find((p) => typeof p.acres === 'number' && Number.isFinite(p.acres));
+    // the one that actually carried acreage is the listing worth scoping. Among
+    // those, a page stating its own APN is worth strictly more than one that
+    // does not: the APN settles the scope outright, while an APN-less page
+    // leaves it to be inferred from acreage. A later re-run that happens to
+    // retain the silent page first must not cost the Deal that answer.
+    const withAcres = pages.filter((p) => typeof p.acres === 'number' && Number.isFinite(p.acres));
+    const page = withAcres.find((p) => typeof p.apn === 'string' && p.apn.trim() !== '')
+      ?? withAcres[0];
     if (!page) continue;
     const text = [page.structures, page.features, page.remarks]
       .flatMap((v) => (Array.isArray(v) ? v : []))
