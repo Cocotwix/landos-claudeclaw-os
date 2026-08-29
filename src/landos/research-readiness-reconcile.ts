@@ -92,6 +92,10 @@ function factProvider(record: CanonicalPropertyResearchRecord | null, key: strin
 /** A retained string fact, ignoring LandPortal's "-" placeholder for "blank". */
 function factText(record: CanonicalPropertyResearchRecord | null, key: string): string | null {
   const value = factValue(record, key);
+  // A measurement retained as a number is the same reading as one retained as
+  // a string. Refusing the number made a frontage figure that was on file read
+  // as absent purely because of how the lane stored it.
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null;
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed && trimmed !== '-' ? trimmed : null;
@@ -148,6 +152,73 @@ interface ReconcileContext {
   card: Record<string, unknown>;
   research: CanonicalPropertyResearchRecord | null;
   capability: (capabilityId: string) => CapabilityReading;
+}
+
+/**
+ * Fold the latest property-intelligence snapshot's facts into the canonical
+ * research record.
+ *
+ * A mission lane writes what it established onto the run snapshot, while the
+ * canonical research store is populated by the resolution lanes and carries
+ * little else. The checklist read only the second, so evidence that genuinely
+ * landed — Market Matrix and Market Pulse among it — was reported as never
+ * having been read, and the requirement stayed open forever with a capability
+ * that had in fact already answered it.
+ *
+ * The canonical record still wins wherever it holds a key: this only supplies
+ * what it never received, so a resolved fact is never overwritten by a run.
+ */
+function withSnapshotFacts(
+  dealCardId: number,
+  record: CanonicalPropertyResearchRecord | null,
+): CanonicalPropertyResearchRecord | null {
+  let snapshotFacts: { key?: unknown; value?: unknown; retrievedAt?: unknown }[] = [];
+  try {
+    const row = getLandosDb().prepare(
+      `SELECT snapshot_json FROM landos_property_intelligence_run
+         WHERE deal_card_id = ? AND snapshot_json IS NOT NULL
+         ORDER BY id DESC LIMIT 1`,
+    ).get(dealCardId) as { snapshot_json?: string } | undefined;
+    const parsed = JSON.parse(row?.snapshot_json ?? 'null') as { facts?: unknown } | null;
+    snapshotFacts = Array.isArray(parsed?.facts) ? parsed.facts as typeof snapshotFacts : [];
+  } catch { snapshotFacts = []; }
+  if (!snapshotFacts.length) return record;
+
+  const facts: Record<string, unknown> = { ...(record?.facts ?? {}) };
+  for (const fact of snapshotFacts) {
+    const key = typeof fact?.key === 'string' ? fact.key : null;
+    if (key == null || key === '' || facts[key] !== undefined) continue;
+    if (fact.value === undefined || fact.value === null) continue;
+    facts[key] = {
+      value: fact.value,
+      retrievedAt: typeof fact.retrievedAt === 'string' ? fact.retrievedAt : null,
+      providerId: 'property_intelligence_run',
+    };
+  }
+  // Retained property evidence is the third place a lane can leave an answer.
+  // The provider lanes write normalized facts here rather than onto the run
+  // snapshot, so frontage and the land-locked flag were retained, displayed to
+  // the operator, and still reported to the checklist as never read.
+  try {
+    const rows = getLandosDb().prepare(
+      `SELECT fact_key, normalized_value_json, retrieved_at FROM landos_property_evidence_item
+         WHERE deal_card_id = ? AND fact_key IS NOT NULL
+         ORDER BY id DESC`,
+    ).all(dealCardId) as { fact_key: string; normalized_value_json: string; retrieved_at: string }[];
+    for (const row of rows) {
+      const key = row.fact_key?.trim();
+      if (!key || facts[key] !== undefined) continue;
+      let value: unknown;
+      try { value = JSON.parse(row.normalized_value_json ?? 'null'); } catch { continue; }
+      if (value === null || value === undefined) continue;
+      // A land-locked flag is stored as a boolean and read as a word.
+      if (typeof value === 'boolean' && /land\s*lock/i.test(key)) value = value ? 'Yes' : 'No';
+      facts[key] = { value, retrievedAt: row.retrieved_at ?? null, providerId: 'property_evidence' };
+    }
+  } catch { /* the record stands on what it already had */ }
+
+  if (record) return { ...record, facts } as CanonicalPropertyResearchRecord;
+  return { facts } as unknown as CanonicalPropertyResearchRecord;
 }
 
 function propertyResolutionProbe(ctx: ReconcileContext): ResearchReadinessProbe {
@@ -258,8 +329,25 @@ function officialParcelRecordProbe(ctx: ReconcileContext): ResearchReadinessProb
   const gisMatched = !!row && /match|found|resolved/i.test(String(row.parcel_match_status ?? ''));
   // A parcel whose identity was confirmed FROM an official government record
   // already holds this item's evidence, whatever surface retrieved it.
+  //
+  // What that record calls itself varies by state, so matching on a list of
+  // words was always going to miss one: Florida's statewide cadastral layer
+  // says "property-appraiser" and "Cadastral" and names no county, so a parcel
+  // confirmed against an official state GIS layer reported that no official
+  // record had ever been retrieved. The identity version already states how the
+  // subject was established, and that basis is the authority here.
   const source = String(ctx.card.verification_source ?? '');
-  const officialSource = /official|assessor|county|government|gis/i.test(source);
+  const identityBasis = (() => {
+    try {
+      const row = getLandosDb().prepare(
+        `SELECT basis FROM landos_property_identity_version
+           WHERE deal_card_id = ? AND is_current = 1 ORDER BY id DESC LIMIT 1`,
+      ).get(ctx.dealCardId) as { basis?: string } | undefined;
+      return String(row?.basis ?? '');
+    } catch { return ''; }
+  })();
+  const OFFICIAL_RECORD = /official|assessor|appraiser|cadastral|county|government|gis|parcel layer|recorded/i;
+  const officialSource = OFFICIAL_RECORD.test(source) || OFFICIAL_RECORD.test(identityBasis);
   const usable = gisMatched || officialSource;
   return {
     itemId: 'official_parcel_record',
@@ -270,7 +358,7 @@ function officialParcelRecordProbe(ctx: ReconcileContext): ResearchReadinessProb
     lastAttemptAt: row?.retrieved_at ?? null,
     lastSuccessAt: usable ? row?.retrieved_at ?? isoFromEpoch(ctx.card.last_refreshed_at) : null,
     reason: usable
-      ? `Official government parcel record on file${officialSource ? `: ${source}` : `: ${String(row?.platform_family ?? 'county GIS')}`}.`
+      ? `Official government parcel record on file: ${source || identityBasis || String(row?.platform_family ?? 'county GIS')}.`
       : row
         ? `The Official Parcel & GIS lane ran and returned ${String(row.parcel_match_status ?? 'no match')}.`
         : 'No official parcel or GIS record has been retrieved for this parcel.',
@@ -431,8 +519,8 @@ function visualEvidenceProbe(ctx: ReconcileContext): ResearchReadinessProbe {
 }
 
 /** The retained keys each provider writes the same access fact under. */
-const LANDLOCKED_FACT_KEYS = ['landlocked_status', 'Land Locked'];
-const FRONTAGE_FACT_KEYS = ['road_frontage_ft', 'Road Frontage'];
+const LANDLOCKED_FACT_KEYS = ['landlocked_status', 'Land Locked', 'LandPortal land locked flag'];
+const FRONTAGE_FACT_KEYS = ['road_frontage_ft', 'Road Frontage', 'LandPortal road frontage'];
 
 /** Every retained frontage reading, with the provider that carried each one. */
 function retainedFrontageReadings(record: CanonicalPropertyResearchRecord | null): RetainedFrontageReading[] {
@@ -702,9 +790,39 @@ function compsAndValuationProbes(ctx: ReconcileContext): ResearchReadinessProbe[
   ];
 }
 
+
+/**
+ * The structured result a mission child handed back, for the latest mission on
+ * this Deal.
+ *
+ * A child lane's handback is the authoritative record of what that lane
+ * established. The run snapshot carries the operator-facing summary of the same
+ * work — a sentence, not a measurement — so a probe that needs the measurement
+ * has to read the handback. Reading the summary instead made a lane that had
+ * genuinely returned look like it had never run.
+ */
+function latestMissionChildResult(dealCardId: number, childKey: string): Record<string, unknown> | null {
+  try {
+    const row = getLandosDb().prepare(
+      `SELECT c.result_json FROM landos_mission_child c
+         JOIN landos_mission m ON m.mission_id = c.mission_id
+        WHERE m.scope_id = ? AND c.child_key = ? AND c.result_json IS NOT NULL
+        ORDER BY m.id DESC, c.id DESC LIMIT 1`,
+    ).get(dealCardId, childKey) as { result_json?: string } | undefined;
+    const parsed = JSON.parse(row?.result_json ?? 'null') as unknown;
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+  } catch { return null; }
+}
+
 function marketProbes(ctx: ReconcileContext): ResearchReadinessProbe[] {
-  const matrix = asObject(factValue(ctx.research, 'market_matrix') as JsonValue | undefined);
-  const pulse = asObject(factValue(ctx.research, 'market_pulse') as JsonValue | undefined);
+  // The market lane hands back the measured Matrix and Pulse; the run snapshot
+  // keeps only their summary sentence. Prefer the handback so a lane that
+  // returned is not reported as unread.
+  const handback = latestMissionChildResult(ctx.dealCardId, 'market_intelligence');
+  const matrix = asObject(handback?.marketMatrix as JsonValue | undefined)
+    ?? asObject(factValue(ctx.research, 'market_matrix') as JsonValue | undefined);
+  const pulse = asObject(handback?.marketPulse as JsonValue | undefined)
+    ?? asObject(factValue(ctx.research, 'market_pulse') as JsonValue | undefined);
   const matrixAt = factRetrievedAt(ctx.research, 'market_matrix');
   const pulseAt = factRetrievedAt(ctx.research, 'market_pulse');
 
@@ -799,7 +917,7 @@ export function reconcileResearchReadiness(
     dealCardId,
     propertyCardId: subject.cardId,
     card: subject.card,
-    research: new PropertyResearchStore().loadForProperty(subject.cardId),
+    research: withSnapshotFacts(dealCardId, new PropertyResearchStore().loadForProperty(subject.cardId)),
     capability: (capabilityId) => {
       const cached = readings.get(capabilityId);
       if (cached) return cached;

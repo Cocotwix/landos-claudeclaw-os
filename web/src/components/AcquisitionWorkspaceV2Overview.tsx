@@ -1148,6 +1148,17 @@ export function OverviewSection({
              conflict, visual observation, unknown and next action — is
              persisted and rendered whole on Property & Market. Printing all of
              it here is what buried the acquisition command center. ── */}
+      {show('overview') && researchReadiness && (
+        <ResearchReadinessStrip
+          manifest={researchReadiness.manifest}
+          loading={researchReadiness.loading}
+          error={researchReadiness.error}
+          running={researchReadiness.running}
+          onBackfill={researchReadiness.onBackfill}
+          compact
+        />
+      )}
+
       {show('overview') && acquisitionIntelligence && (
         <DealReadCard
           read={acquisitionIntelligence.read}
@@ -1479,17 +1490,6 @@ export function OverviewSection({
              usable answer, what is honestly unresolved, and what is simply
              missing. Compact by default; the full checklist is one control
              away. Rendering it never runs research. ── */}
-      {show('overview') && researchReadiness && (
-        <ResearchReadinessStrip
-          manifest={researchReadiness.manifest}
-          loading={researchReadiness.loading}
-          error={researchReadiness.error}
-          running={researchReadiness.running}
-          onBackfill={researchReadiness.onBackfill}
-          compact
-        />
-      )}
-
       {show('overview') && (methodology.length > 0 || askingPrice != null) && <details class="awv2-overview-methodology"><summary>Supporting assumptions and secondary details</summary>{askingPrice != null && <p>Seller-stated asking price: {formatUsd(askingPrice)}.</p>}<ul>{methodology.map((item) => <li>{item}</li>)}</ul></details>}
     </Root>
   );

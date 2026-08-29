@@ -612,7 +612,14 @@ export function buildResearchReadinessManifest(input: ResearchReadinessManifestI
     };
 
     const status = deriveResearchReadinessStatus(definition, probe, nowMs);
-    const machineBackfillAllowed = definition.machineBackfill && (status === 'red' || status === 'blue');
+    // Ownership, not colour. This flag answers "does a registered capability
+    // own this requirement", and the status gate that decides whether to start
+    // work lives in the backfill request itself, which already distinguishes
+    // red from blue-needs-stale from yellow-needs-unresolved. Folding colour in
+    // here made a PARTIAL item report that nothing owns it, so the coverage
+    // controller read every partial lane as unattemptable and its documented
+    // second-route retry could never fire.
+    const machineBackfillAllowed = definition.machineBackfill;
     const reason = probe.reason?.trim() || defaultReason(definition, status);
     const nextAction = probe.nextAction?.trim() || defaultNextAction(definition, status);
     return {
