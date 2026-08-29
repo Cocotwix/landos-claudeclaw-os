@@ -73,7 +73,7 @@ describe('valuation acreage band', () => {
   });
 
   it('uses the shared regime route instead of local class assumptions', () => {
-    expect(valuationAcreageBand(1)).toMatchObject({ min: 0.6, max: 1.75 });
+    expect(valuationAcreageBand(1)).toMatchObject({ min: 0.4, max: 1.75 });
     expect(valuationAcreageBand(3)).toMatchObject({ min: 1.5, max: 6 });
     expect(valuationAcreageBand(40)).toMatchObject({ min: 14, max: 100 });
     expect(valuationAcreageBand(null)).toBeNull();

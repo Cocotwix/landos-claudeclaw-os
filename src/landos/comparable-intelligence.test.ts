@@ -141,7 +141,7 @@ describe('comparable intelligence', () => {
       },
     });
     const ci = buildComparableIntelligence(r);
-    expect(ci.acreageBand).toBe('0.48–1.4 acres');
+    expect(ci.acreageBand).toBe('0.32–1.4 acres');
     expect(ci.selectedComparables.map((comp) => comp.sourceUrl)).toEqual(['nearby']);
     expect(ci.rejectedComparables[0].reason).toMatch(/acreage band/i);
   });

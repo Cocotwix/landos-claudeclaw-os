@@ -48,7 +48,7 @@ const ACCESS_DUPLICATES = [
   'Public right-of-way contact unresolved',
   'Physical / driveway access unresolved',
   'Legal access unresolved (recorded instruments control)',
-  'Mapped frontage unresolved (proximity method does not measure frontage)',
+  'Frontage not measured by this lane (25 m centerline proximity does not measure frontage; provider and surveyed frontage evidence are read separately)',
   'Road maintenance responsibility unresolved',
 ];
 

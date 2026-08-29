@@ -29,15 +29,31 @@ export function routeAcreage(subjectAcres: number | null | undefined): AcreageRo
   if (typeof subjectAcres !== 'number' || !Number.isFinite(subjectAcres) || subjectAcres <= 0) return null;
 
   if (subjectAcres < 2) {
+    // A rural homesite subject of about an acre and a half is the same PRODUCT
+    // as a well-located half-acre or three-quarter-acre residential lot: one
+    // house, one buyer, one use. At 0.6x the pool floor sat at 0.9 acres for a
+    // 1.5-acre subject, so that evidence could not participate at all and a
+    // thin 1-2 acre record had nothing beneath it to fall back on. The floor
+    // now reaches the sub-acre residential lots (0.4x, i.e. ~0.6 ac for a
+    // 1.5-acre subject) while `preferred` is unchanged, so same-size evidence
+    // still leads and the smaller lots enter only as the lower-weighted
+    // evidence they are. The ceiling is unchanged and still reaches into the
+    // 2-5 acre band, which stays available as directional context.
+    //
+    // Eligibility is not admission: routedAcreageSimilarity still decays with
+    // distance from the subject, and the geographic and product discipline in
+    // the comp selector is what keeps urban infill out of a rural homesite's
+    // valuation set. This widens which evidence may be considered; it does not
+    // change how any of it is weighted or ranked.
     return {
       subjectAcres,
       regime: 'micro',
       regimeLabel: 'Micro parcel (under 2 acres)',
-      pool: pool(subjectAcres, 0.6, 1.75),
+      pool: pool(subjectAcres, 0.4, 1.75),
       preferred: pool(subjectAcres, 0.8, 1.25),
       tightAcreageMatching: true,
       rankingEmphasis: ['acreage similarity', 'location', 'sale recency', 'vacant-land use'],
-      rationale: 'Micro-parcel dollars per acre change sharply with small size differences, so participation stays close to the subject before location and recency rank the survivors.',
+      rationale: 'Micro-parcel dollars per acre change sharply with small size differences, so participation stays close to the subject before location and recency rank the survivors. Smaller residential/homesite lots remain eligible at lower similarity weight when same-size evidence is thin, because they are the same product for the same buyer.',
     };
   }
   if (subjectAcres < 10) {
