@@ -290,6 +290,11 @@ export interface ResearchCoverageCycleDeps {
 const isManifest = (value: ResearchReadinessManifest | { error: string }): value is ResearchReadinessManifest =>
   !('error' in value);
 
+/** Passes one cycle will work the delta for. Dependency chains here are a few
+ *  links deep (identity → zoning → subdivision → valuation → strategy), so this
+ *  covers them with room to spare while keeping a cycle bounded. */
+const MAX_COVERAGE_PASSES = 5;
+
 /**
  * Close this Deal's research gaps, then let the specialists reevaluate.
  *
@@ -339,20 +344,67 @@ export async function runResearchCoverageCycle(
   const stillRequired = new Set(requirements.map((requirement) => requirement.itemId));
   const reopenUnresolved = input.trigger === 'operator_rerun'
     && plan.entries.some((entry) => entry.state === 'PARTIAL' && entry.machineResolvable && stillRequired.has(entry.id));
-  const attemptedItemIds = plan.entries
-    .filter((entry) => entry.action === 'run' && entry.machineResolvable)
-    .filter((entry) => entry.state !== 'PARTIAL' || (reopenUnresolved && stillRequired.has(entry.id)))
-    .map((entry) => entry.id);
+
+  // One fan-out is not the checklist. An item can only become runnable once the
+  // item it depended on has landed, so a single pass settles the first layer of
+  // gaps and then reports the ones it just unblocked as untouched. The cycle
+  // keeps working the remaining delta instead: re-plan after each retrieval and
+  // attempt whatever became runnable, until nothing new is or the ceiling is
+  // reached.
+  //
+  // The stop condition is progress, not attempts. An item that was attempted
+  // and came back in the same state is settled for this cycle and never asked
+  // again, so a lane no route can close costs one attempt rather than looping.
+  const attemptedItemIds: string[] = [];
+  const settledForCycle = new Set<string>();
   let manifest: ResearchReadinessManifest = before;
-  if (attemptedItemIds.length) {
+  let workingPlan = plan;
+
+  const stateById = (candidate: ResearchCoveragePlan): Map<string, ResearchCoverageState> =>
+    new Map(candidate.entries.map((entry) => [entry.id, entry.state]));
+
+  for (let pass = 0; pass < MAX_COVERAGE_PASSES; pass += 1) {
+    const runnable = workingPlan.entries
+      .filter((entry) => entry.action === 'run' && entry.machineResolvable)
+      .filter((entry) => !settledForCycle.has(entry.id))
+      .filter((entry) => entry.state !== 'PARTIAL' || (reopenUnresolved && stillRequired.has(entry.id)))
+      .map((entry) => entry.id);
+    if (!runnable.length) break;
+
+    const stateBefore = stateById(workingPlan);
+    let retrieved: ResearchReadinessManifest | null = null;
     try {
-      const after = await deps.backfill(input.dealCardId, input.entity, attemptedItemIds, {
+      retrieved = await deps.backfill(input.dealCardId, input.entity, runnable, {
         includeUnresolved: reopenUnresolved,
       });
-      if (after) manifest = after;
     } catch (error) {
       warnings.push(`Coverage retrieval did not complete: ${error instanceof Error ? error.message : String(error)}.`);
+      for (const id of runnable) settledForCycle.add(id);
+      attemptedItemIds.push(...runnable.filter((id) => !attemptedItemIds.includes(id)));
+      break;
     }
+    for (const id of runnable) if (!attemptedItemIds.includes(id)) attemptedItemIds.push(id);
+    if (retrieved) manifest = retrieved;
+
+    const reconciled = deps.reconcile(input.dealCardId);
+    if (!isManifest(reconciled)) {
+      warnings.push(`Coverage could not be re-reconciled between passes: ${reconciled.error}.`);
+      break;
+    }
+    manifest = reconciled;
+    workingPlan = planResearchCoverage(reconciled, { ranItemIds: attemptedItemIds, now: now() });
+    const stateAfter = stateById(workingPlan);
+    // An attempt that did not move the item is the item's answer.
+    for (const id of runnable) {
+      if (stateBefore.get(id) === stateAfter.get(id)) settledForCycle.add(id);
+    }
+    log('research_coverage_pass', {
+      dealCardId: input.dealCardId,
+      pass: pass + 1,
+      attempted: runnable,
+      settled: [...settledForCycle],
+      headline: workingPlan.headline,
+    });
   }
 
   // ── Cascade: the specialists reevaluate on whatever honestly landed ───────
