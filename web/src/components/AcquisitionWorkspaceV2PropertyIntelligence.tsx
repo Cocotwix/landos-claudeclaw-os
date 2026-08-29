@@ -82,6 +82,8 @@ export interface MarketContextView {
   geography: { county: string | null; fips: string | null; state: string | null; zip: string | null; acres: number | null; subjectBand: string | null };
   county: MarketContextRecordView; zip: MarketContextRecordView;
   subjectBand: MarketContextRecordView; fastestBand: MarketContextRecordView;
+  /** Native 0-1 acre county band, present only for small rural subjects. */
+  smallLotBand?: MarketContextRecordView | null;
   interpretation: string;
   read?: {
     headline?: string | null; summary?: string | null; resolvedVia?: string | null;

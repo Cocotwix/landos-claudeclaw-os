@@ -1087,6 +1087,29 @@ function diligenceQuestionResolved(item: SnapshotDueDiligenceItem): boolean {
     || item.grade === 'unavailable_public_record';
 }
 
+/**
+ * Read-time relabel of one lane diagnostic, applied where the outstanding items
+ * are PRESENTED. The stored evidence is append-only and is not touched.
+ *
+ * The road-proximity lane measures centerline length inside a 25 m buffer, so
+ * it genuinely cannot measure frontage - a true statement about the lane. Filed
+ * as "Mapped frontage unresolved" it read as a statement about the PARCEL, on a
+ * Deal whose retained evidence carries a provider road frontage and a surveyed
+ * road-facing boundary. The lane keeps its limitation; it stops implying the
+ * Deal has no frontage evidence.
+ */
+const LANE_DIAGNOSTIC_PRESENTATION: Array<[RegExp, string]> = [
+  [/^Mapped frontage unresolved \(proximity method does not measure frontage\)$/i,
+    'Frontage not measured by this lane (25 m centerline proximity does not measure frontage; provider and surveyed frontage evidence are read separately)'],
+];
+
+function presentLaneDiagnostic(text: string): string {
+  for (const [pattern, replacement] of LANE_DIAGNOSTIC_PRESENTATION) {
+    if (pattern.test(text)) return replacement;
+  }
+  return text;
+}
+
 function diligenceQuestions(items: SnapshotDueDiligenceItem[]): ResearchQuestionStatus[] {
   const seen = new Set<string>();
   const questions: ResearchQuestionStatus[] = [];
@@ -1098,7 +1121,7 @@ function diligenceQuestions(items: SnapshotDueDiligenceItem[]): ResearchQuestion
     const reason = resolved
       ? null
       : item.missing.length > 0
-        ? `Outstanding: ${item.missing.join('; ')}.`
+        ? `Outstanding: ${item.missing.map(presentLaneDiagnostic).join('; ')}.`
         : item.verdict === 'unknown'
           ? (item.headline || `${item.label} has not reached a determination.`)
           : item.grade === 'post_contract_verification'
@@ -1107,7 +1130,7 @@ function diligenceQuestions(items: SnapshotDueDiligenceItem[]): ResearchQuestion
     const nextAction = resolved
       ? null
       : item.missing.length > 0
-        ? item.missing[0]
+        ? presentLaneDiagnostic(item.missing[0])
         : item.grade === 'post_contract_verification'
           ? `Order the post-contract review that settles ${item.label.toLowerCase()}.`
           : `Retrieve parcel-specific evidence that answers ${item.label.toLowerCase()}.`;

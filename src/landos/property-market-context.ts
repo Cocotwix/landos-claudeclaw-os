@@ -66,7 +66,7 @@ export interface MarketContextMetrics {
 }
 
 export interface MarketContextRecord {
-  scope: 'county' | 'zip' | 'subject_band' | 'fastest_band';
+  scope: 'county' | 'zip' | 'subject_band' | 'fastest_band' | 'small_lot_band';
   label: string;
   available: boolean;
   acreageBand: AcreageBand | null;
@@ -155,6 +155,17 @@ export interface PropertyMarketContext {
   zip: MarketContextRecord;
   subjectBand: MarketContextRecord;
   fastestBand: MarketContextRecord;
+  /**
+   * The county's NATIVE 0-1 acre band, for small rural subjects.
+   *
+   * A 1.5-acre homesite sits in the 1-2 band, but the small-lot band beneath it
+   * is the nearest same-product market evidence the county actually publishes.
+   * It is read straight from the retained Market Research record under its own
+   * native label - no band is invented, no metric is computed here - and it is
+   * additional context beside the subject band, never a replacement for it.
+   * Null when the subject is large enough that a sub-acre read says nothing.
+   */
+  smallLotBand: MarketContextRecord | null;
   /** Property Intelligence market read (concise). */
   read: MarketReadProjection;
   /** Comps & Valuation liquidity/competition context (concise). */
@@ -589,6 +600,20 @@ export function propertyMarketContextFor(input: {
       (best, s) => (!best || (s.metrics.sellThroughRate as number) > (best.metrics.sellThroughRate as number) ? s : best),
       undefined,
     );
+  // Only offered where it is genuinely adjacent evidence: a small rural subject.
+  // The record itself is whatever the county filed under its own 0-1 band, and
+  // an absent record says so rather than borrowing another band's numbers.
+  const smallLotBand: MarketContextRecord | null = acres !== null && acres < 2 && subjectBandKey !== '0-1'
+    ? (() => {
+      const snapshot = bandSnapshot('0-1');
+      return snapshot
+        ? fromDrilldownSnapshot('small_lot_band', `${countyLabel} — small-lot band ${ACREAGE_BAND_LABEL['0-1']}`, snapshot)
+        : unavailable('small_lot_band', `${countyLabel} — small-lot band ${ACREAGE_BAND_LABEL['0-1']}`,
+          `No ${countyLabel} Market Research record exists for the ${ACREAGE_BAND_LABEL['0-1']} band; no other band was substituted for it.`,
+          '0-1');
+    })()
+    : null;
+
   const fastestBand: MarketContextRecord = fastestSnapshot
     ? fromDrilldownSnapshot('fastest_band', `${countyLabel} — fastest-selling band ${ACREAGE_BAND_LABEL[fastestSnapshot.acreageBand]}`, fastestSnapshot)
     : unavailable('fastest_band', `${countyLabel} — fastest-selling band`,
@@ -663,6 +688,7 @@ export function propertyMarketContextFor(input: {
     zip,
     subjectBand,
     fastestBand,
+    smallLotBand,
     read,
     liquidity,
     interpretation: '',

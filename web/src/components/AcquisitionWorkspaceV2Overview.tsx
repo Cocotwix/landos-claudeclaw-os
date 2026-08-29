@@ -559,6 +559,10 @@ export function OverviewSection({
   };
   const marketBandRows = [
     bandRow(market?.subjectBand, 'Subject band', true),
+    // The county's own 0-1 acre band, offered only for small rural subjects and
+    // only when the Market Research record actually carries it. Nearest
+    // same-product evidence beneath the subject band; it never replaces it.
+    bandRow(market?.smallLotBand, 'Small-lot band', false),
     bandRow(market?.fastestBand, 'Fastest-selling band', false),
     bandRow(market?.county, 'All acreage', false),
   ].filter((row): row is NonNullable<typeof row> => row != null);
