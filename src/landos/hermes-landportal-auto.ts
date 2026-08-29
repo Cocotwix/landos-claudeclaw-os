@@ -228,6 +228,20 @@ export function hermesLandPortalPrompt(
     comp_drilldown_requirement: specialist === 'comps'
       ? 'Open each sidebar comparable through its comp detail or Show on Map surface. Retain address, city/state/zip, acres, lat/lng or an honest unresolved location, detail_url, and the comparable image as image_url plus image_source. Set drilled_down only when that surface contributed a field; never invent a value.'
       : undefined,
+    // A subject visit that reads only the subject learns nothing about who owns
+    // what around it, so a seller holding several adjoining parcels, family land
+    // under a shared surname, and a wrong-neighbour record all read identically.
+    // Owner names are one layer toggle away, so every verified subject run turns
+    // them on and keeps the immediate ring. This collects context, never
+    // identity: Property Resolution is unaffected by anything seen here.
+    neighbor_owner_context_requirement: specialist === 'subject'
+      ? 'Mandatory after the subject is verified: open Base Maps / Layers, enable Show Owner Names, '
+        + 'and read the subject plus only the immediately adjoining/visible parcels. Retain per parcel: '
+        + 'apn, displayed_owner, spatial_relation to the subject, and improved|vacant only where LandPortal '
+        + 'evidence shows it. Never infer spouse, family, inheritance, or common ownership from a shared '
+        + 'surname; retain the name match as a clue. Do not crawl beyond the immediate ring, and never let '
+        + 'a neighbouring parcel change the verified subject.'
+      : undefined,
     handback_mode: 'independent_specialist',
     completed_categories: [specialist],
     // The importer accepts only these literal values; free-text camera notes
