@@ -81,7 +81,7 @@ function visibleEvidenceGaps(snapshot: PiSnapshot | null): string[] {
     .slice(0, 12);
 }
 
-interface ParcelScopeNeighbor {
+export interface ParcelScopeNeighbor {
   apn: string | null;
   displayedOwner: string | null;
   ownerRelationLabel: string;
@@ -91,7 +91,7 @@ interface ParcelScopeNeighbor {
   basis: string;
 }
 
-interface ParcelScopeView {
+export interface ParcelScopeView {
   subjectApn: string | null;
   subjectOwner: string | null;
   subjectAcres: number | null;
@@ -111,7 +111,7 @@ interface ParcelScopeView {
 // Parcel scope. A subject investigation retains whatever sat next to the subject
 // on the map, so the Deal has to say out loud which parcel is being bought,
 // which ones the sellers keep, and which belong to somebody else entirely.
-function ParcelScopePanel({ scope }: { scope: ParcelScopeView | null }) {
+export function ParcelScopePanel({ scope }: { scope: ParcelScopeView | null }) {
   if (!scope) return null;
   const sellerSide = scope.neighbors.filter((n) => n.scope === 'related_seller_parcel');
   const others = scope.neighbors.filter((n) => n.scope !== 'related_seller_parcel');

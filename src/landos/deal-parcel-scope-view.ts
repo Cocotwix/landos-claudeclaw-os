@@ -176,37 +176,81 @@ interface RetainedListing {
   price: number | null;
   mentionsManufacturedHome: boolean;
   apn: string | null;
+  buildingSqft: number | null;
+  beds: number | null;
+  baths: number | null;
   source: string | null;
+  sourceUrl: string | null;
 }
 
+/** One retained marketplace page, as the exact-address web lane stores it. */
+interface RetainedPage {
+  sourceUrl?: unknown;
+  sourceLabel?: unknown;
+  apn?: unknown;
+  acres?: unknown;
+  buildingSqft?: unknown;
+  beds?: unknown;
+  baths?: unknown;
+  currentPrice?: unknown;
+  structures?: unknown;
+  features?: unknown;
+  remarks?: unknown;
+}
+
+const MANUFACTURED_HOME = /mobile\s*manufactured|manufactured|mobile home/i;
+
+/**
+ * The retained listing the address lanes captured for this Deal.
+ *
+ * Listing pages are kept inside the research lane attempt payload rather than
+ * as individual evidence facts, so this reads the most recent attempt that
+ * retained a page carrying acreage, and takes the richest page from it. The
+ * page's own APN is what matters most: a marketplace page for a neighbouring
+ * address is exactly the kind of record that quietly becomes subject truth.
+ */
 export function retainedListingFacts(dealCardId: number): RetainedListing | null {
   const db = getLandosDb();
   const rows = db.prepare(
-    `SELECT fact_key, normalized_value_json, source_name FROM landos_property_evidence_item
-       WHERE deal_card_id=? AND domain IN ('listing','marketplace','market_listing')
-       ORDER BY id DESC`,
-  ).all(dealCardId) as
-    { fact_key: string | null; normalized_value_json: string; source_name: string }[];
-  if (rows.length === 0) return null;
-  const listing: RetainedListing = {
-    acres: null, price: null, mentionsManufacturedHome: false, apn: null, source: null,
-  };
+    `SELECT result_json FROM landos_property_research_lane_attempt
+       WHERE deal_card_id=? AND result_json LIKE '%exact_address%listing%'
+       ORDER BY id DESC LIMIT 12`,
+  ).all(dealCardId) as { result_json: string }[];
+
   for (const row of rows) {
-    const key = (row.fact_key ?? '').toLowerCase();
-    const value = readNormalized(row.normalized_value_json);
-    listing.source ??= row.source_name;
-    if (listing.acres === null && /acre/.test(key) && typeof value === 'number') listing.acres = value;
-    if (listing.price === null && /price/.test(key) && typeof value === 'number') listing.price = value;
-    if (listing.apn === null && /apn|parcel/.test(key) && typeof value === 'string' && value.trim() !== '') {
-      listing.apn = value.trim();
-    }
-    if (/manufactured|mobile|home type|property type/.test(key)
-      && typeof value === 'string'
-      && /manufactured|mobile/i.test(value)) {
-      listing.mentionsManufacturedHome = true;
-    }
+    let pages: RetainedPage[] = [];
+    try {
+      const parsed = JSON.parse(row.result_json) as {
+        evidence?: { field?: unknown; value?: unknown }[];
+      };
+      // The address lane files each retained page as one evidence entry keyed
+      // `discovery.exact_address.listing.N`, rather than as a page array.
+      pages = (Array.isArray(parsed.evidence) ? parsed.evidence : [])
+        .filter((e) => typeof e?.field === 'string' && /exact_address\.listing/.test(e.field))
+        .map((e) => e.value as RetainedPage)
+        .filter((v): v is RetainedPage => v != null && typeof v === 'object');
+    } catch { continue; }
+    // A lane retains several pages for one address and most come back empty, so
+    // the one that actually carried acreage is the listing worth scoping.
+    const page = pages.find((p) => typeof p.acres === 'number' && Number.isFinite(p.acres));
+    if (!page) continue;
+    const text = [page.structures, page.features, page.remarks]
+      .flatMap((v) => (Array.isArray(v) ? v : []))
+      .filter((v): v is string => typeof v === 'string')
+      .join(' ');
+    return {
+      acres: typeof page.acres === 'number' ? page.acres : null,
+      price: typeof page.currentPrice === 'number' ? page.currentPrice : null,
+      mentionsManufacturedHome: MANUFACTURED_HOME.test(text),
+      apn: typeof page.apn === 'string' && page.apn.trim() !== '' ? page.apn.trim() : null,
+      buildingSqft: typeof page.buildingSqft === 'number' ? page.buildingSqft : null,
+      beds: typeof page.beds === 'number' ? page.beds : null,
+      baths: typeof page.baths === 'number' ? page.baths : null,
+      source: typeof page.sourceLabel === 'string' ? page.sourceLabel : null,
+      sourceUrl: typeof page.sourceUrl === 'string' ? page.sourceUrl : null,
+    };
   }
-  return listing;
+  return null;
 }
 
 export interface DealParcelScopeView {
@@ -219,7 +263,12 @@ export interface DealParcelScopeView {
   listing: (ListingScopeAssessment & {
     acres: number | null;
     price: number | null;
+    apn: string | null;
+    buildingSqft: number | null;
+    beds: number | null;
+    baths: number | null;
     source: string | null;
+    sourceUrl: string | null;
   }) | null;
   landHome: LandHomeTrigger;
   /** Named so the Deal can state plainly what may not travel into subject facts. */
@@ -275,7 +324,12 @@ export function buildDealParcelScopeView(input: {
     }),
     acres: retainedListing.acres,
     price: retainedListing.price,
+    apn: retainedListing.apn,
+    buildingSqft: retainedListing.buildingSqft,
+    beds: retainedListing.beds,
+    baths: retainedListing.baths,
     source: retainedListing.source,
+    sourceUrl: retainedListing.sourceUrl,
   };
 
   // The trigger reads the operator's statement, never a neighbouring record: a

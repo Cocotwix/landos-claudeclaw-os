@@ -36,6 +36,7 @@ import {
   type ExactAddressListingsView,
   type VisualBuyerNarrativeView, type ResearchStatusView, type ParcelFactSheetView, type TaxStatusView,
 } from '../components/AcquisitionWorkspaceV2PropertyIntelligence';
+import { ParcelScopePanel, type ParcelScopeView } from '@/components/DealCard';
 import {
   CompsValuationSection, type CompsValuationViewData,
 } from '../components/AcquisitionWorkspaceV2CompsValuation';
@@ -184,6 +185,7 @@ interface SnapshotView extends OverviewSnapshotView {
   missingInformation?: unknown[];
 }
 interface DealResp {
+  parcelScope?: ParcelScopeView | null;
   dealCard?: {
     id: number; title?: string; asking_price?: number | null;
     people?: { name?: string; phone?: string; email?: string }[];
@@ -1087,6 +1089,9 @@ export function AcquisitionWorkspaceV2() {
         )}
         {page === 'property' && (
           <main class="awv2-main awv2-property-market" data-testid="property-page">
+            {/* Which parcel this Deal is actually buying, and which retained
+                parcels belong to the sellers or to somebody else entirely. */}
+            <ParcelScopePanel scope={deal?.parcelScope ?? null} />
             {/* The Property page owns the full Property Intelligence specialist
                 read, including the complete persisted expert review. Rendering
                 runs nothing — this is the same fetched product. */}
