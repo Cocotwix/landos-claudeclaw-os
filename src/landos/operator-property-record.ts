@@ -568,8 +568,14 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   // A material, unresolved acreage basis IS a reconciliation conflict — the same
   // signal the pricing gate and land score already consume, now with an explicit
   // basis record and a discrete Tyler decision.
-  const acreageConflict = acreageBasis.disputed
-    || (mappedAcres != null && assessedAcres != null && Math.abs(mappedAcres - assessedAcres) / Math.max(assessedAcres, 0.01) > 0.15);
+  // An UNSETTLED dispute is the conflict, not the raw disagreement. The
+  // assessor roll and the GIS polygon disagree on most rural parcels and always
+  // will; that stops mattering the moment a survey, plat or operator acceptance
+  // says which figure governs. Reading `disputed` here, and then recomputing a
+  // raw percentage difference that bypassed the basis record entirely, meant a
+  // surveyed parcel carried an acreage conflict through pricing, the land score
+  // and the operator's risk queue forever, with no action that could clear it.
+  const acreageConflict = acreageBasis.tylerDecisionRequired;
   const baseAcres = mappedAcres ?? assessedAcres ?? null;
 
   // Overlays are pinned to the queried GIS geometry: a flood zone's acreage is the

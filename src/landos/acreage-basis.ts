@@ -238,6 +238,15 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
   const acceptedEntry = present.find((r) => r.kind === 'operator_accepted') ?? null;
   const operatorAccepted = acceptedEntry != null;
 
+  // A recorded survey or plat settles the size, which is exactly what this
+  // module tells the operator when it explains the discrepancy. Requiring an
+  // operator decision anyway left a surveyed parcel reporting its size as
+  // disputed forever: the assessor roll and the GIS polygon still disagree with
+  // each other, and always will, but neither is authoritative once a survey
+  // exists. A survey governs here the same way an operator acceptance does.
+  const surveyedEntry = present.find((r) => r.kind === 'surveyed' && r.value != null) ?? null;
+  const settled = operatorAccepted || surveyedEntry != null;
+
   // Governing basis for a use = highest-confidence present basis permitted for it.
   // Overlays are ALWAYS bound to the GIS geometry that was actually queried, never
   // to the assessed number, so overlay percentages/areas reconcile with the map.
@@ -246,15 +255,19 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
   );
   const gis = present.find((r) => r.kind === 'gis_geometry') ?? null;
   const overlayBasis: AcreageBasisKind | null = gis ? 'gis_geometry' : (byConfidence[0]?.kind ?? null);
-  const displayBasis: AcreageBasisKind | null = operatorAccepted ? 'operator_accepted' : (byConfidence[0]?.kind ?? null);
+  const displayBasis: AcreageBasisKind | null = operatorAccepted
+    ? 'operator_accepted'
+    : surveyedEntry ? 'surveyed' : (byConfidence[0]?.kind ?? null);
 
   // Valuation basis: the operator-accepted value governs; otherwise the highest
   // confidence basis, BUT when the size is disputed and unaccepted the valuation
   // basis is only permitted for display context, never as a gated offer number,
   // until Tyler resolves the discrepancy.
-  const valuationBasis: AcreageBasisKind | null = operatorAccepted ? 'operator_accepted' : (byConfidence[0]?.kind ?? null);
+  const valuationBasis: AcreageBasisKind | null = operatorAccepted
+    ? 'operator_accepted'
+    : surveyedEntry ? 'surveyed' : (byConfidence[0]?.kind ?? null);
 
-  const tylerDecisionRequired = disputed && !operatorAccepted;
+  const tylerDecisionRequired = disputed && !settled;
 
   const assessed = present.find((r) => r.kind === 'assessed');
   const gisEntry = present.find((r) => r.kind === 'gis_geometry');
@@ -272,7 +285,7 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
     issues.push({
       code: 'material_discrepancy',
       severity: 'major',
-      message: `Acreage bases disagree materially (${disputePairs.join('; ')}) and none is operator-accepted. Do not price on a disputed size — confirm against a survey/plat.`,
+      message: `Acreage bases disagree materially (${disputePairs.join('; ')}) and no survey, plat or operator acceptance settles it. Do not price on a disputed size — confirm against a survey/plat.`,
     });
   }
 
@@ -286,7 +299,7 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
         return ['display', 'valuation'];
       case 'assessed':
         // A disputed, unaccepted assessed value may inform display but not a gated calc.
-        return disputed && !operatorAccepted ? ['display'] : ['display', 'valuation'];
+        return disputed && !settled ? ['display'] : ['display', 'valuation'];
       case 'gis_geometry':
         return ['display', 'overlay'];
       case 'provider':

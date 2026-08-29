@@ -311,7 +311,7 @@ import { readPropertyBackstory } from './property-backstory-store.js';
 import { readPreCallIntelligenceHandoff } from './pre-call-intelligence-handoff.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 import { readFanOutMission } from './mission-graph-runner.js';
-import { canonicalPropertyInputForDeal, governmentArtifactEvidence, makeLivePropertyIntelligenceCollectors, type ExactAddressWebResult } from './property-intelligence-live.js';
+import { canonicalPropertyInputForDeal, governmentArtifactEvidence, makeLivePropertyIntelligenceCollectors, retainedSurveyedAcres, type ExactAddressWebResult } from './property-intelligence-live.js';
 import { executePropertyProvider, type NormalizedPropertyEvidence, type PropertyProviderAdapter } from './property-intelligence-contract.js';
 import { gatherCardImages, loadCardVisionAnalysis } from './browser-vision.js';
 import { investigatePropertyWithGev, loadCardGevSpatialAnalysis } from './gev-property-investigation.js';
@@ -9156,6 +9156,38 @@ export function registerLandosRoutes(app: Hono): void {
     };
   };
 
+  // Once a survey settles the size, every retained sentence asserting that the
+  // acreage bases disagree describes a decision that has been made. Those
+  // sentences were written across ten places in a stored mission snapshot —
+  // deal killers, blockers, missing information, specialist summaries, the
+  // operator analysis — so correcting them one field at a time would leave the
+  // next one behind. This is the same read-time presentation correction the
+  // canonical acreage and current zoning already use: the stored run record is
+  // never touched, and only the presented copy stops repeating a resolved
+  // conflict as a live one.
+  const ACREAGE_CONFLICT_SENTENCE =
+    /[^.!?]*acreage bases disagree[^.!?]*[.!?]\s*/gi;
+  const withoutSettledAcreageConflict = <T,>(value: T): T => {
+    if (typeof value === 'string') {
+      if (!/acreage bases disagree/i.test(value)) return value;
+      const cleaned = value.replace(ACREAGE_CONFLICT_SENTENCE, '').trim();
+      return (cleaned === '' ? null : cleaned) as unknown as T;
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => withoutSettledAcreageConflict(entry))
+        .filter((entry) => entry != null) as unknown as T;
+    }
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        out[key] = withoutSettledAcreageConflict(entry);
+      }
+      return out as unknown as T;
+    }
+    return value;
+  };
+
   const propertyIntelligenceView = (dealCardId: number) => {
     propertyIntelligenceStore.reclaimStaleRuns();
     const primary = propertyIntelligenceStore.primaryRun(dealCardId);
@@ -9175,16 +9207,33 @@ export function registerLandosRoutes(app: Hono): void {
     const canonicalExtentAcres = readAcreageExtentRecord(dealCardId)?.decision.canonicalAcres ?? null;
     const currentLandUseAtRead = buildRetainedLandUseIntelligenceView(dealCardId);
     const currentZoningAtRead = currentLandUseAtRead?.currentZoning ?? null;
+    // A stored acreage-basis conflict is a read-time correction too. The
+    // assessor roll and the GIS polygon disagree on most rural parcels and
+    // always will; a recorded survey settles which figure governs, and from
+    // that moment the stored sentence describes a decision that has been made.
+    // Leaving it in the presented snapshot kept it in the dossier, so every
+    // downstream read repeated an acreage conflict on a surveyed parcel with no
+    // action left that could clear it. The stored run record stays untouched.
+    const acreageSettledBySurvey = retainedSurveyedAcres(dealCardId) != null;
     const presentedSource = storedSnapshot
       ? {
           ...storedSnapshot,
-          identity: canonicalExtentAcres != null && storedSnapshot.identity.acres !== canonicalExtentAcres
-            ? {
-                ...storedSnapshot.identity,
-                acres: canonicalExtentAcres,
-                acreageBasis: 'official_reported (canonical acreage reconciliation)',
-              }
-            : storedSnapshot.identity,
+          identity: (() => {
+            const base = canonicalExtentAcres != null && storedSnapshot.identity.acres !== canonicalExtentAcres
+              ? {
+                  ...storedSnapshot.identity,
+                  acres: canonicalExtentAcres,
+                  acreageBasis: 'official_reported (canonical acreage reconciliation)',
+                }
+              : storedSnapshot.identity;
+            if (!acreageSettledBySurvey) return base;
+            return {
+              ...base,
+              conflicts: (base.conflicts ?? []).filter(
+                (conflict: string) => !/acreage bases disagree/i.test(String(conflict)),
+              ),
+            };
+          })(),
           dueDiligence: normalizeDiscoveryAccessItems(
             storedSnapshot.dueDiligence,
             storedSnapshot.identity.normalizedAddress ?? storedSnapshot.identity.situs,
@@ -9202,6 +9251,7 @@ export function registerLandosRoutes(app: Hono): void {
         }
       : null;
     let snapshot = presentedSource ? presentPropertyIntelligenceSnapshot(presentedSource) : null;
+    if (snapshot && acreageSettledBySurvey) snapshot = withoutSettledAcreageConflict(snapshot);
     const dealForUtilities = getDealCard(dealCardId);
     const utilityPropertyCardId = dealForUtilities ? subjectCardId(dealForUtilities) : null;
     const utilityRecord = utilityPropertyCardId ? loadUtilityAvailabilityRecord(utilityPropertyCardId) : null;
@@ -10888,6 +10938,29 @@ export function registerLandosRoutes(app: Hono): void {
   // ONE coordinated pass over whichever layers are actually stale.
 
   const intelligenceStackRuns = new Map<number, { startedAt: string; error: string | null }>();
+  // A finalization run is bounded. The specialist executor talks to an external
+  // agent process, and when that process wedges the run neither resolves nor
+  // rejects: the in-flight entry is never cleared, every later request is
+  // refused as already-running, and the Deal keeps serving intelligence built
+  // from evidence it has since superseded. A run that has outlived this ceiling
+  // is treated as abandoned so the next request can rebuild.
+  const INTELLIGENCE_RUN_CEILING_MS = 20 * 60_000;
+  const intelligenceRunAbandoned = (startedAt: string): boolean => {
+    const started = Date.parse(startedAt);
+    return !Number.isFinite(started) || Date.now() - started > INTELLIGENCE_RUN_CEILING_MS;
+  };
+  /** Reject rather than hang: a wedged executor must not hold finalization. */
+  const withIntelligenceRunCeiling = <T,>(work: Promise<T>): Promise<T> => {
+    let timer: NodeJS.Timeout | null = null;
+    const ceiling = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Intelligence finalization exceeded ${INTELLIGENCE_RUN_CEILING_MS} ms.`)),
+        INTELLIGENCE_RUN_CEILING_MS,
+      );
+      timer.unref?.();
+    });
+    return Promise.race([work, ceiling]).finally(() => { if (timer) clearTimeout(timer); }) as Promise<T>;
+  };
   const dealBrainRuns = new Map<number, { startedAt: string; error: string | null }>();
   const intelligenceReconcileRuns = new Map<number, { startedAt: string; error: string | null }>();
   const acreageExtentRuns = new Map<number, { startedAt: string; error: string | null }>();
@@ -11149,8 +11222,12 @@ export function registerLandosRoutes(app: Hono): void {
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const inFlight = intelligenceStackRuns.get(id);
-    if (inFlight && !inFlight.error) {
+    if (inFlight && !inFlight.error && !intelligenceRunAbandoned(inFlight.startedAt)) {
       return c.json({ running: true, startedAt: inFlight.startedAt, runtime: intelligenceExecutorRuntimeStatus() }, 202);
+    }
+    if (inFlight && !inFlight.error) {
+      logger.warn({ dealCardId: id, startedAt: inFlight.startedAt }, 'intelligence_stack_run_abandoned');
+      intelligenceStackRuns.delete(id);
     }
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const layerNames: IntelligenceLayerId[] = ['property', 'market', 'seller', 'deal'];
@@ -11162,7 +11239,7 @@ export function registerLandosRoutes(app: Hono): void {
 
     void (async () => {
       try {
-        const result = await runIntelligenceStack({
+        const result = await withIntelligenceRunCeiling(runIntelligenceStack({
           dealCardId: id,
           layers: layers?.length ? layers : undefined,
           force: body.force === true,
@@ -11183,7 +11260,7 @@ export function registerLandosRoutes(app: Hono): void {
             );
             return 'error' in report ? null : report.after;
           },
-        });
+        }));
         const failure = result.outcome === 'produced' || result.outcome === 'reused' ? null : result.reason;
         intelligenceStackRuns.set(id, { startedAt, error: failure });
         if (!failure) intelligenceStackRuns.delete(id);

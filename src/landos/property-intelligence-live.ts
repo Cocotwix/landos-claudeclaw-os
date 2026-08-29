@@ -338,6 +338,51 @@ export function canonicalPropertyInputForDeal(dealCardId: number): CanonicalProp
   };
 }
 
+/**
+ * The acreage a recorded survey states for this Deal, when one has been
+ * retained.
+ *
+ * A survey arrives as an uploaded document, and Smart Intake extracts its
+ * acreage alongside every other fact it reads, with no record that a surveyor
+ * drew it. Nothing downstream could tell that reading apart from a marketplace
+ * blurb, so `surveyedAcres` was never populated by anything and the acreage
+ * basis record could not know a survey existed — leaving a surveyed parcel
+ * reporting its own size as disputed.
+ *
+ * The document says what it is. An artifact whose extracted text identifies it
+ * as a survey or plat makes the acreage from that same submission a surveyed
+ * basis.
+ */
+const SURVEY_DOCUMENT = /map of survey|boundary survey|plat of survey|survey map|surveyor'?s? (?:map|plat|certificate)/i;
+
+export function retainedSurveyedAcres(dealCardId: number): number | null {
+  try {
+    const db = getLandosDb();
+    const artifacts = db.prepare(`
+      SELECT submission_id AS sid, exact_extracted_text AS text
+        FROM landos_intake_artifact
+       WHERE deal_card_id = ?
+    `).all(dealCardId) as { sid: number; text: string | null }[];
+    const surveySubmissions = new Set(
+      artifacts.filter((row) => SURVEY_DOCUMENT.test(row.text ?? '')).map((row) => row.sid),
+    );
+    if (surveySubmissions.size === 0) return null;
+    const facts = db.prepare(`
+      SELECT value, submission_id FROM landos_intake_fact
+       WHERE deal_card_id = ? AND fact_key = 'acreage'
+       ORDER BY id DESC
+    `).all(dealCardId) as { value: string | null; submission_id: number }[];
+    for (const fact of facts) {
+      if (!surveySubmissions.has(fact.submission_id)) continue;
+      const parsed = Number.parseFloat(String(fact.value ?? '').replace(/[^0-9.]/g, ''));
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function persistProviderResult<TExecution>(
   deps: LiveCollectorDeps,
   result: PropertyProviderResult<TExecution>,
@@ -819,6 +864,8 @@ async function collectParcelIdentityUnlocked(
     },
   });
 
+
+
   // A retained public run may have been produced from the same unverified
   // neighbor/context geometry. Keep it in history, but do not let it feed the
   // current subject record until either the canonical LandPortal URL or an
@@ -833,6 +880,7 @@ async function collectParcelIdentityUnlocked(
     apn: str(discovery.patch.apn) ?? str(property.apn),
     owner: str(discovery.patch.owner) ?? str(property.owner),
     assessedAcres: num(discovery.patch.acres) ?? num(property.acres),
+    surveyedAcres: retainedSurveyedAcres(ctx.dealCardId),
     coordinates: discovery.patch.coordinates ?? (num(property.lat) != null && property.lng != null
       ? { lat: Number(property.lat), lng: Number(property.lng) }
       : null),

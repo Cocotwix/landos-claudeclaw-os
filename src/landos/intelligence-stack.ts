@@ -596,6 +596,33 @@ function describeChanges(input: {
 
 // ── The run ────────────────────────────────────────────────────────────────
 
+
+/** A spatial investigation that has not finished by now is not going to help
+ *  this read; the retained visual evidence carries it instead. */
+const SPATIAL_INVESTIGATION_CEILING_MS = 120_000;
+
+/**
+ * A full analyst pass runs six specialist calls in sequence, each against a
+ * large dossier, so minutes are normal and the ceiling exists only to catch a
+ * wedged agent process. Set it below the per-invocation timeout the executor
+ * already carries and a wedge would look identical to ordinary slow work.
+ */
+const ANALYST_CEILING_MS = 15 * 60_000;
+
+/** Reject a best-effort dependency rather than let it hold the caller open. */
+async function withDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms} ms.`)), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function runIntelligenceStack(
   input: IntelligenceStackRunInput,
   deps: IntelligenceStackDeps,
@@ -734,7 +761,16 @@ export async function runIntelligenceStack(
   // fingerprint, and the persisted product all see the same observations.
   if (refreshProperty && deps.investigateSpatial) {
     try {
-      const spatial = await deps.investigateSpatial(input.dealCardId, dossier);
+      // Best-effort means bounded. This opens a browser and grounds pixels
+      // through a vision lane; when that wedges, an await with no ceiling takes
+      // the whole finalization down with it and the Deal keeps serving
+      // intelligence built from superseded evidence. The catch below already
+      // treats failure as a warning — a timeout simply reaches it.
+      const spatial = await withDeadline(
+        deps.investigateSpatial(input.dealCardId, dossier),
+        SPATIAL_INVESTIGATION_CEILING_MS,
+        "God's Eye View spatial investigation",
+      );
       warnings.push(...spatial.warnings);
       if (spatial.observationCount > 0) {
         const refreshedSource = deps.readPropertyFile(input.dealCardId);
@@ -805,7 +841,12 @@ export async function runIntelligenceStack(
       ? readPropertyCompiledKnowledge(input.dealCardId)
       : null;
     try {
-      run = await deps.analyst.run({
+      // The specialist executor spawns an external agent process per layer.
+      // When one wedges the promise never settles, so finalization never
+      // persists and the Deal keeps serving a read built from evidence it has
+      // already superseded. The catch below turns a failure into an honest
+      // "could not complete this read"; a deadline simply reaches it.
+      run = await withDeadline(deps.analyst.run({
         dossier,
         requestedProvider: input.requestedProvider ?? null,
         requestedModel: input.requestedModel ?? null,
@@ -853,7 +894,7 @@ export async function runIntelligenceStack(
               },
             }),
         },
-      });
+      }), ANALYST_CEILING_MS, 'The Acquisition Analyst');
     } catch (error) {
       return failed(`The Acquisition Analyst could not complete this read: ${error instanceof Error ? error.message.split(/\r?\n/, 1)[0] : String(error)}`);
     }
