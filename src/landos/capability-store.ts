@@ -147,7 +147,22 @@ export class SharedCapabilityExecutionLock {
     }
   }
 
-  acquire(capabilityId: string, subjectRefValue: string, ownerId: string): { acquired: boolean; ownerId: string; reentrant?: boolean } {
+  /**
+   * Claim the execution lock for one subject.
+   *
+   * `isOwnerFinished` lets a caller that knows a run's lifecycle reclaim a lock
+   * whose owner has already finished. Liveness alone cannot decide this: a lock
+   * is released by the process that took it, so a process that dies mid-run
+   * leaves one behind, and the PID recorded in it is recycled by the operating
+   * system soon after. Once an unrelated process inherits that number the lock
+   * looks permanently alive and the subject can never be researched again.
+   */
+  acquire(
+    capabilityId: string,
+    subjectRefValue: string,
+    ownerId: string,
+    isOwnerFinished?: (ownerId: string) => boolean,
+  ): { acquired: boolean; ownerId: string; reentrant?: boolean } {
     const key = this.key(capabilityId, subjectRefValue);
     const local = this.held.get(key);
     if (local?.ownerId === ownerId) return { acquired: true, ownerId, reentrant: true };
@@ -180,6 +195,16 @@ export class SharedCapabilityExecutionLock {
           return { acquired: false, ownerId: 'unknown-owner' };
         }
         if (existing.ownerId === ownerId && existing.pid === this.pid()) return { acquired: true, ownerId, reentrant: true };
+        // A finished run holds nothing. This is checked before staleness and
+        // before liveness because it is the only signal that stays true: the
+        // owner's own lifecycle says the work is over, whatever process now
+        // answers to the recorded PID.
+        let finished = false;
+        try { finished = isOwnerFinished?.(existing.ownerId) === true; } catch { finished = false; }
+        if (finished) {
+          try { fs.unlinkSync(file); } catch { return { acquired: false, ownerId: existing.ownerId }; }
+          return attempt();
+        }
         const heartbeat = Date.parse(existing.heartbeatAt || existing.acquiredAt);
         const stale = Number.isFinite(heartbeat) && this.now() - heartbeat > (this.options.staleMs ?? 120_000);
         if (stale && !this.alive(existing.pid)) {
@@ -211,8 +236,13 @@ const SHARED_CAPABILITY_LOCK = new SharedCapabilityExecutionLock();
 export class CapabilityInvocationStore implements CapabilityInvocationPersistence {
   constructor(private readonly executionLock: SharedCapabilityExecutionLock = SHARED_CAPABILITY_LOCK) {}
 
-  acquireExecutionLock(capabilityId: string, subjectRefValue: string, ownerId: string): { acquired: boolean; ownerId: string; reentrant?: boolean } {
-    return this.executionLock.acquire(capabilityId, subjectRefValue, ownerId);
+  acquireExecutionLock(
+    capabilityId: string,
+    subjectRefValue: string,
+    ownerId: string,
+    isOwnerFinished?: (ownerId: string) => boolean,
+  ): { acquired: boolean; ownerId: string; reentrant?: boolean } {
+    return this.executionLock.acquire(capabilityId, subjectRefValue, ownerId, isOwnerFinished);
   }
 
   releaseExecutionLock(capabilityId: string, subjectRefValue: string, ownerId: string): void {

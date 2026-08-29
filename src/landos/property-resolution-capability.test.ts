@@ -35,6 +35,27 @@ function rawRequest(
 }
 
 describe('Slice 7 runtime capability contract', () => {
+  it('reclaims a lock whose run already finished, even while its recorded PID still answers', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'landos-capability-lock-'));
+    let now = 0;
+    // The owning process dies without releasing, and the OS hands its PID to
+    // something unrelated, so liveness alone would hold this lock forever.
+    const first = new SharedCapabilityExecutionLock({ root, now: () => now, currentPid: 101, pidAlive: () => true, heartbeatMs: 0 });
+    const second = new SharedCapabilityExecutionLock({ root, now: () => now, currentPid: 202, pidAlive: () => true, heartbeatMs: 0 });
+    try {
+      expect(first.acquire('property-resolution', 'deal:90', 'run-a')).toMatchObject({ acquired: true });
+      // Still running: the lock stands, however long it has been held.
+      now += 30 * 60_000;
+      expect(second.acquire('property-resolution', 'deal:90', 'run-b', () => false))
+        .toEqual({ acquired: false, ownerId: 'run-a' });
+      // Finished: the run holds nothing, so a fresh cycle is not refused.
+      expect(second.acquire('property-resolution', 'deal:90', 'run-b', (owner) => owner === 'run-a'))
+        .toMatchObject({ acquired: true, ownerId: 'run-b' });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a live renewable lock authoritative beyond fifteen minutes and across processes', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'landos-capability-lock-'));
     let now = 0;

@@ -12381,7 +12381,17 @@ export function registerLandosRoutes(app: Hono): void {
     const fullRunId = `deal-intelligence-${id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const fullRunCapabilityStore = new CapabilityInvocationStore();
     const fullRunLockSubject = `deal:${id}`;
-    const fullRunLock = fullRunCapabilityStore.acquireExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, fullRunLockSubject, fullRunId);
+    // A prior run that has already reached a terminal state is not competing
+    // for this subject, so its abandoned lock must not refuse a fresh cycle.
+    const runIsFinished = (ownerId: string): boolean => {
+      const row = getLandosDb().prepare(
+        `SELECT status FROM landos_mission WHERE mission_id = ? LIMIT 1`,
+      ).get(ownerId) as { status?: string } | undefined;
+      const status = String(row?.status ?? '').toLowerCase();
+      if (status === '') return false;
+      return !['running', 'queued', 'pending', 'in_progress', 'active'].includes(status);
+    };
+    const fullRunLock = fullRunCapabilityStore.acquireExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, fullRunLockSubject, fullRunId, runIsFinished);
     if (!fullRunLock.acquired) {
       return c.json({
         launch: { runId: fullRunLock.ownerId, missionId: fullRunLock.ownerId, dealCardId: id, alreadyRunning: true },
