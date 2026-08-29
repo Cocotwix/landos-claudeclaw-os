@@ -195,6 +195,61 @@ function writeReport(report: BrowserQaReport): void {
   fs.writeFileSync(report.reportMarkdownPath, renderReport(report), 'utf8');
 }
 
+/**
+ * Wait for the operator app to finish its FIRST MOUNT before anything is
+ * asserted or photographed.
+ *
+ * THE DEFECT THIS REPAIRS. `domcontentloaded` fires when the document is
+ * parsed, which on this dashboard is roughly a third of a second before the
+ * workspace has data. The acquisition workspace mounts its real content at
+ * about one second, so every capture landed on the "Loading the workspace…"
+ * gate and every run still reported PASS — the screenshot showed a loading
+ * placeholder while the evidence line claimed the route was verified. A fixed
+ * `sleep` cannot fix that: it is either shorter than the mount and lies, or
+ * longer than it needs to be on every route forever.
+ *
+ * So this waits for the thing that actually matters — the page is no longer
+ * showing a loading placeholder and its visible text has stopped changing —
+ * and it is bounded. If the app genuinely never settles, that is recorded as a
+ * step rather than swallowed, because a run that photographed a spinner must
+ * never read as a run that verified a surface.
+ */
+export const APP_LOADING_TEXT = /Loading the workspace|Loading…|Loading\.\.\./i;
+
+export async function settleAfterMount(
+  page: Pick<BrowserQaPuppeteerPage, 'evaluate'>,
+  sleep: (ms: number) => Promise<void>,
+  report?: { steps: BrowserQaStep[] },
+  timeoutMs = 20_000,
+): Promise<boolean> {
+  const started = Date.now();
+  let lastLength = -1;
+  let stableFor = 0;
+  while (Date.now() - started < timeoutMs) {
+    await sleep(150);
+    const snapshot = await page.evaluate<{ length: number; loading: boolean }>(() => {
+      const doc = (globalThis as any).document;
+      const text: string = doc?.body?.innerText ?? '';
+      return {
+        length: text.length,
+        loading: /Loading the workspace|Loading…|Loading\.\.\./i.test(text),
+      };
+    }).catch(() => null);
+    if (!snapshot) continue;
+    if (snapshot.loading) { lastLength = -1; stableFor = 0; continue; }
+    // Two consecutive identical samples means rendering has come to rest.
+    stableFor = snapshot.length === lastLength ? stableFor + 1 : 0;
+    lastLength = snapshot.length;
+    if (stableFor >= 1 && snapshot.length > 0) return true;
+  }
+  report?.steps.push({
+    name: 'app first mount settled',
+    outcome: 'FAIL',
+    detail: `The page still showed a loading placeholder or kept changing after ${timeoutMs}ms; any capture below is of an unsettled page.`,
+  });
+  return false;
+}
+
 export async function waitForLandosHealth(
   baseUrl: string,
   deps: { fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void>; maxAttempts?: number; token?: string } = {},
@@ -326,11 +381,11 @@ export async function runBrowserQa(options: RunBrowserQaOptions): Promise<Browse
         // heuristic. DOM readiness plus scenario-specific visible assertions
         // is both bounded and tied to the operator outcome being tested.
         await qaPage.goto(localUrl(baseUrl, route, options.token ?? '', runId), { waitUntil: 'domcontentloaded', timeout: 45_000 });
-        await sleep(500);
+        await settleAfterMount(qaPage, sleep, report);
       },
       async hardRefresh(expectedPath = options.scenario.route) {
         await qaPage.reload({ waitUntil: 'domcontentloaded', timeout: 45_000 });
-        await sleep(800);
+        await settleAfterMount(qaPage, sleep, report);
         const pathName = await qaPage.evaluate<string>(() => (globalThis as any).location.pathname);
         const ok = pathName === expectedPath;
         report.steps.push({ name: 'hard refresh route persistence', outcome: ok ? 'PASS' : 'FAIL', detail: `expected ${expectedPath}; found ${pathName}` });
