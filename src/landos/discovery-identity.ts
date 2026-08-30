@@ -6,6 +6,7 @@
 // answer. Official evidence remains stronger, every limitation stays visible,
 // and a genuine APN/jurisdiction disagreement is always a hard stop.
 
+import { apnIdentifiersCorroborate } from './apn-identity.js';
 import { addressVariantsCompatible } from './instruction-consistency.js';
 import { decodeLandPortalCanonicalIdentity } from './landportal-canonical-identity.js';
 import { operatorLandPortalEntryUrl } from './landportal-operating-rules.js';
@@ -85,6 +86,39 @@ function number(value: unknown): number | null {
 
 function compactApn(value: unknown): string {
   return String(value ?? '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+}
+
+/**
+ * Do two parcel identifiers name the same parcel?
+ *
+ * Raw compacted equality was asking a narrower question than the rest of LandOS:
+ * Iredell County files `4870-90-2087` and LandPortal prints the same parcel as
+ * `4870-90-2087.000`, so the discovery gate declared a conflict on a parcel the
+ * browser lane had already matched. Same shared answer as every other gate.
+ */
+function apnSameParcel(a: unknown, b: unknown): boolean {
+  const ca = compactApn(a);
+  const cb = compactApn(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  return apnIdentifiersCorroborate(String(a ?? ''), String(b ?? ''));
+}
+
+/**
+ * Does this text actually name a street address a research lane can work with?
+ *
+ * The Tools entry point falls back to the operator's whole raw string when it
+ * parses no address, so `APN 042-123.00-000, Williamson County, TN` arrives in
+ * the address field. Treating that as an address let an identifier-only lookup
+ * report a resolved subject with nothing to research. A street address starts
+ * with a house number followed by a name, and never simply restates the parcel
+ * identifier.
+ */
+function looksLikeStreetAddress(value: unknown, apn: unknown): boolean {
+  const address = text(value);
+  if (!address || !/^\d{1,6}[A-Za-z]?\s+\S*[A-Za-z]/.test(address.trim())) return false;
+  const apnCore = compactApn(apn);
+  return !apnCore || compactApn(address) !== apnCore;
 }
 
 function countyKey(value: unknown): string {
@@ -292,10 +326,21 @@ export function reconcileDiscoveryIdentity(input: {
       conflicts.push(`${source} ${label} does not match the supplied subject (${String(observed)} vs ${String(expected)}).`);
     }
   };
-  compare('APN', requestedApn, compactApn(lpPatch.apn), 'LandPortal');
+  // A jurisdiction FORMAT variant of one parcel is not a conflict; a different
+  // parcel still is. Only the APN comparison is loosened this way — county and
+  // state remain exact.
+  // A jurisdiction FORMAT variant of one parcel is not a conflict; a materially
+  // different parcel number still is, and stays a hard stop — a same-looking
+  // situs never launders a different parcel into the subject.
+  const compareApn = (expected: unknown, observed: unknown, source: string): void => {
+    if (compactApn(expected) && compactApn(observed) && !apnSameParcel(expected, observed)) {
+      conflicts.push(`${source} APN does not match the supplied subject (${String(observed)} vs ${String(expected)}).`);
+    }
+  };
+  compareApn(operatorPatch.apn, lpPatch.apn, 'LandPortal');
   compare('county', countyKey(operatorPatch.county), countyKey(lpPatch.county), 'LandPortal');
   compare('state', stateKey(operatorPatch.state), stateKey(lpPatch.state), 'LandPortal');
-  compare('APN', requestedApn, compactApn(officialPatch.apn), input.official?.source ?? 'Official parcel source');
+  compareApn(operatorPatch.apn, officialPatch.apn, input.official?.source ?? 'Official parcel source');
   compare('county', countyKey(operatorPatch.county), countyKey(officialPatch.county), input.official?.source ?? 'Official parcel source');
   compare('state', stateKey(operatorPatch.state), stateKey(officialPatch.state), input.official?.source ?? 'Official parcel source');
 
@@ -312,7 +357,7 @@ export function reconcileDiscoveryIdentity(input: {
 
   const officialExact = input.official?.status === 'matched'
     && !!officialPatch.apn
-    && (!requestedApn || compactApn(officialPatch.apn) === requestedApn)
+    && (!requestedApn || apnSameParcel(operatorPatch.apn, officialPatch.apn))
     && !!(officialPatch.county || officialPatch.state);
   // The subject's own retained county FIPS matching the provider's canonical
   // key is the strongest agreement available short of an official record: both
@@ -324,9 +369,9 @@ export function reconcileDiscoveryIdentity(input: {
     && !!lpCanonical
     && subjectFips.length === 5
     && lpCanonical.fips === subjectFips
-    && compactApn(lpCanonical.apn) === requestedApn;
+    && apnSameParcel(operatorPatch.apn, lpCanonical.apn);
   const landPortalApnMatch = landPortalFipsMatch || (!!requestedApn
-    && compactApn(lpPatch.apn) === requestedApn
+    && apnSameParcel(operatorPatch.apn, lpPatch.apn)
     && !!countyKey(operatorPatch.county)
     && countyKey(lpPatch.county) === countyKey(operatorPatch.county)
     && !!stateKey(operatorPatch.state)
@@ -339,7 +384,12 @@ export function reconcileDiscoveryIdentity(input: {
   // address, matching state, and the page's own APN + county is a practical,
   // unambiguous discovery match. Genuine address/APN/jurisdiction conflicts
   // are still rejected above.
-  const landPortalAddressMatch = !requestedApn
+  // A supplied APN no longer bars this path. It barred it because a supplied
+  // identifier was assumed to be the identity; when the identifier does not
+  // corroborate but the situs does, the address is the better-supported
+  // identity and the discrepancy above is already disclosed. A genuine
+  // address/APN/jurisdiction disagreement still conflicts out above.
+  const landPortalAddressMatch = (!requestedApn || apnSameParcel(operatorPatch.apn, lpPatch.apn))
     && !!operatorPatch.address
     && !!lpPatch.address
     && addressVariantsCompatible(operatorPatch.address, lpPatch.address)
@@ -431,17 +481,22 @@ export function reconcileDiscoveryIdentity(input: {
   // county-bearing inputs remain blocked unless an exact source agrees, while
   // Zillow/Redfin and other practical marketplace lanes may continue against
   // the operator-supplied address. No official parcel fact is promoted here.
-  const marketplaceDiscoveryFallback = !requestedApn
-    && !!operatorPatch.address
-    && !!stateKey(operatorPatch.state)
-    && !countyKey(operatorPatch.county);
+  // Reaching here means no source CONFLICTED with the subject — the parcel-level
+  // sources simply did not corroborate it. A complete street address plus a
+  // state is enough to keep discovery-stage research moving on the address the
+  // operator supplied. Requiring the absence of an APN and of a county made a
+  // richer lead less usable than a poorer one, which is how a full address with
+  // an unverified APN became a dead end. Nothing official is promoted here and
+  // parcel identity is still not claimed; the conflict gate above is unchanged.
+  const marketplaceDiscoveryFallback = looksLikeStreetAddress(operatorPatch.address, operatorPatch.apn)
+    && !!stateKey(operatorPatch.state);
   const named = !!(operatorPatch.apn || operatorPatch.address);
   return {
     state: named ? 'provisional' : 'unresolved',
     discoveryUsable: marketplaceDiscoveryFallback,
     discoveryBasis: named
       ? marketplaceDiscoveryFallback
-        ? 'Subject retained for discovery-stage market research from the operator-supplied address and state. LandPortal returned no exact parcel match; practical marketplace sources may continue, but no official parcel identity is claimed.'
+        ? `Subject retained for discovery-stage market research from the operator-supplied address ${operatorPatch.address}${operatorPatch.county ? ` in ${operatorPatch.county} County` : ''}${operatorPatch.state ? `, ${operatorPatch.state}` : ''}. No parcel-level source corroborated the supplied identifier and none contradicted it; address-driven market research continues, but no official parcel identity is claimed.`
         : 'A subject was supplied, but no exact parcel-level source agreed on its APN and jurisdiction.'
       : 'No subject parcel identifier is available.',
     discoverySources: [...sources, ...(marketplaceDiscoveryFallback ? ['Operator address/state discovery fallback'] : [])],

@@ -82,43 +82,11 @@ function compactParcelId(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-/** PURE: reduce an APN/parcel id to its identity-bearing DIGIT CORE — the ordered
- *  digit groups with a trailing 4-digit YEAR and, after that, a trailing all-zero
- *  INTEREST group removed. A Tennessee full PARCELID "015 027 04512 000 2026"
- *  reduces to its district+map+parcel core "01502704512" (the same digits the
- *  GISLINK form carries), while the short map-and-parcel "027 045.12" reduces to
- *  "02704512" — the full core with the county/district prefix. Stripping only
- *  ever removes NON-identifying trailing components and always leaves >= 2 groups,
- *  so the map/parcel digits that distinguish neighboring parcels are never lost. */
-function apnCoreDigits(raw: string): string {
-  let groups = (String(raw ?? '').match(/\d+/g) ?? []).filter(Boolean);
-  if (groups.length >= 3) {
-    const last = groups[groups.length - 1];
-    const year = Number(last);
-    if (last.length === 4 && year >= 1900 && year <= 2099) groups = groups.slice(0, -1);
-  }
-  if (groups.length >= 3 && /^0+$/.test(groups[groups.length - 1])) groups = groups.slice(0, -1);
-  return groups.join('');
-}
-
-/** PURE: do two parcel identifiers name the SAME parcel, allowing jurisdiction
- *  format variants? Mirrors the Tennessee parcel matcher's own identity guard:
- *  corroborates when the digit cores are equal, or when one core is the SUFFIX of
- *  the other (a county/district prefix present in one format and absent from a
- *  shorter map-and-parcel format), requiring >= 7 shared digits so a weak partial
- *  can never corroborate. Reordered digit groups, neighboring parcel numbers,
- *  differing suffixes (Beaufort ...0085 vs ...0084), and unrelated identifiers all
- *  return false. This is ordered structural equivalence, NOT substring matching —
- *  the county/state guard (detectJurisdictionConflict) still separates same-number
- *  parcels in different counties. */
-export function apnIdentifiersCorroborate(a: string, b: string): boolean {
-  const ca = apnCoreDigits(a);
-  const cb = apnCoreDigits(b);
-  if (ca.length < 4 || cb.length < 4) return false;
-  if (ca === cb) return true;
-  const [shorter, longer] = ca.length <= cb.length ? [ca, cb] : [cb, ca];
-  return shorter.length >= 7 && longer.endsWith(shorter);
-}
+// The digit-core reduction and the same-parcel comparison live in
+// `apn-identity.ts`. Three near-copies of this reduction had drifted apart and
+// disagreed about one parcel; this file now re-exports the single answer.
+import { apnCoreDigits, apnCoreVariants, apnIdentifiersCorroborate } from './apn-identity.js';
+export { apnCoreDigits, apnCoreVariants, apnIdentifiersCorroborate };
 
 /**
  * PURE: detect a hard APN conflict. Returns a conflict ONLY when the operator

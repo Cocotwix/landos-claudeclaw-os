@@ -24,6 +24,7 @@ import {
 } from './property-intelligence-specialists.js';
 import type { FailureCategory } from '../failure-classification.js';
 import type { DealOperatorAnalysis } from './deal-operator-analysis.js';
+import { apnIdentifiersCorroborate } from './apn-identity.js';
 
 /**
  * Snapshot format version. MONOTONIC — it may never go backwards.
@@ -563,7 +564,15 @@ export function apnEquivalent(a: string | null | undefined, b: string | null | u
   const leftCore = normalizeApn(apnCoreSegments(a).join(' '));
   const rightCore = normalizeApn(apnCoreSegments(b).join(' '));
   if (leftCore && leftCore === rightCore && leftCore.length >= MIN_SUB_PARCEL_CORE_CHARS) return true;
-  return jurisdictionPrefixBetween(a, b) != null;
+  if (jurisdictionPrefixBetween(a, b) != null) return true;
+  // The segment reduction above splits on separators but keeps a decimal point
+  // INSIDE a segment, so Iredell's `4870-90-2087.000` never exposes its `.000`
+  // card suffix as a trailing zero group and never reduced to `4870-90-2087`.
+  // The snapshot guard then read one parcel as two and refused to promote a
+  // completed run: "Incoming subject identity conflicts with the retained
+  // canonical property." The shared parcel-identity rule answers the same
+  // question the rest of LandOS asks, and answers it the same way.
+  return apnIdentifiersCorroborate(String(a ?? ''), String(b ?? ''));
 }
 
 /**

@@ -37,6 +37,7 @@ import { createHash } from 'node:crypto';
 import { getLandosDb, landosAudit } from './db.js';
 import { ownerNameTokens, roadNameTokens, scoreResultCandidate } from './website-intelligence.js';
 import type { ResultCandidate } from './website-intelligence.js';
+import { apnIdentifiersCorroborate } from './apn-identity.js';
 
 export const LANDPORTAL_CAPABILITY_BASE = 'https://landportal.com';
 
@@ -465,45 +466,15 @@ export function verifyParcelSelected(frame: ParcelDetailFrame, subject: LandPort
   return { kind: 'parcel_selected', passed: blockers.length === 0, confirmed, blockers, unverified, screenshotPath: frame.screenshotPath };
 }
 
-/** PURE: reduce an APN to its identity-bearing digit core (trailing year and
- *  trailing all-zero interest group removed). Mirrors the resolution engine so
- *  the browser lane and the resolution lane never disagree about one parcel. */
-function apnCoreDigits(raw: string): string {
-  let groups = (String(raw ?? '').match(/\d+/g) ?? []).filter(Boolean);
-  if (groups.length >= 3) {
-    const last = groups[groups.length - 1];
-    const year = Number(last);
-    if (last.length === 4 && year >= 1900 && year <= 2099) groups = groups.slice(0, -1);
-  }
-  // EVERY trailing all-zero group, not just the last one. Tennessee files the
-  // same parcel as `042 123.00` and `042-123.00-000`: one spelling carries one
-  // all-zero group, the other carries two. Stripping a single group reduced
-  // them to `042123` and `04212300` — two different cores for ONE parcel, so
-  // the live Fairview capture reached the correct LandPortal parcel and then
-  // rejected it as a different one. The rule itself is unchanged; it is simply
-  // applied until it no longer applies, so both spellings reduce alike.
-  // The `>= 3` guard still holds two groups back, so a parcel can never be
-  // reduced to its map number alone and `042-124.00-000` stays a different
-  // parcel from `042-123.00-000`.
-  while (groups.length >= 3 && /^0+$/.test(groups[groups.length - 1])) groups = groups.slice(0, -1);
-  return groups.join('');
-}
-
 /**
  * PURE: do a state-format APN and a county-local APN name the SAME parcel?
- * Tennessee files Roane parcel `073090 04200` (county prefix 073 + map 090 +
- * parcel 04200) while LandPortal shows the county-local `090 04200`. Ordered
- * structural equivalence: equal cores, or the shorter core is the SUFFIX of the
- * longer with >= 7 shared digits. Reordered groups, neighbouring parcels, and
- * unrelated identifiers all return false — jurisdiction is judged separately.
+ *
+ * The browser lane and the resolution lane must never disagree about one
+ * parcel, so both now ask `apn-identity.ts` — the single shared answer that
+ * replaced the near-copies which had drifted apart.
  */
 export function apnIdentifiersEquivalent(a: string, b: string): boolean {
-  const ca = apnCoreDigits(a);
-  const cb = apnCoreDigits(b);
-  if (ca.length < 4 || cb.length < 4) return false;
-  if (ca === cb) return true;
-  const [shorter, longer] = ca.length <= cb.length ? [ca, cb] : [cb, ca];
-  return shorter.length >= 7 && longer.endsWith(shorter);
+  return apnIdentifiersCorroborate(a, b);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

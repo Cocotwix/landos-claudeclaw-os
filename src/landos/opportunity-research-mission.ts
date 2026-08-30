@@ -4,6 +4,7 @@ import { getLandosDb } from './db.js';
 import type { OpportunityRecord } from './opportunity.js';
 import type { PendingPropertyInspectionRecord, PropertyInspectionRecord } from './property-card.js';
 import { parseConversationalLeadIntake } from './conversational-lead-intake.js';
+import { apnIdentifiersCorroborate } from './apn-identity.js';
 
 export type ResearchMissionStatus = 'queued' | 'running' | 'partial' | 'complete' | 'failed' | 'quarantined';
 
@@ -249,7 +250,10 @@ export function verifyInspectionIdentity(
   const addressMatches = !expected.address || !observed.address || addressesMatch(expected.address, observed.address);
   const expectedApn = apnValue(expected.apn);
   const observedApn = apnValue(observed.apn);
-  const apnMatchesExactly = !!expectedApn && !!observedApn && expectedApn === observedApn;
+  // Exact key equality, or the shared jurisdiction-format identity rule: one
+  // parcel filed as `4870-90-2087` and `4870-90-2087.000` is one parcel.
+  const apnMatchesExactly = !!expectedApn && !!observedApn
+    && (expectedApn === observedApn || apnIdentifiersCorroborate(String(expected.apn), String(observed.apn)));
   // Some official statewide parcel identifiers wrap the shorter county parcel
   // number shown by LandPortal. Accept that relationship only when a
   // meaningful shorter identifier is embedded intact and the street plus

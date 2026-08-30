@@ -155,8 +155,15 @@ describe('discovery-stage subject identity', () => {
     });
 
     expect(decision.state).toBe('provisional');
-    expect(decision.discoveryUsable).toBe(false);
+    // A search page promotes NO parcel-level evidence: no visual source, no
+    // parcel identity, no confidence. Discovery-stage research may still
+    // continue against the operator's own address — that is the address lane,
+    // not marketplace evidence, and it is what keeps a complete street address
+    // from dead-ending on an unverified identifier.
     expect(decision.visualSourceUrl).toBeNull();
+    expect(decision.confidence).toBe('low');
+    expect(decision.patch.apn).toBe(LIBERTY_SUBJECT.apn);
+    expect(decision.discoveryBasis).toMatch(/no official parcel identity is claimed/i);
   });
 
   it('continues marketplace discovery for an address/state lead after a LandPortal no-match', () => {

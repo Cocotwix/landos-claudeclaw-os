@@ -3,6 +3,7 @@ import path from 'path';
 
 import { PROJECT_ROOT } from '../config.js';
 import { readEnvFile } from '../env.js';
+import { apnIdentifiersCorroborate } from './apn-identity.js';
 
 // ── Token reader ─────────────────────────────────────────────────────────────
 // Reads a named token from the process environment or, as a fallback, the
@@ -1245,9 +1246,21 @@ function summaryFromV2(p: Record<string, unknown>): LpPropertySummary {
 export function apnMatchKey(apn: string | null | undefined): string {
   return (apn ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
+/**
+ * Do two parcel identifiers name the same parcel?
+ *
+ * Compacted-string equality was a FOURTH private answer to a question LandOS
+ * already had one answer for, and it disagreed with the others: Iredell County
+ * files `4870-90-2087` while LandPortal returns `4870-90-2087.000`, so this
+ * lane reported "APN mismatch ... Parcel not verified" for the record the
+ * browser lane had matched. Exact-key equality is kept as the fast path; the
+ * shared identity rule decides the format variants.
+ */
 function apnMatches(a: string | null | undefined, b: string | null | undefined): boolean {
   const ka = apnMatchKey(a);
-  return ka.length > 0 && ka === apnMatchKey(b);
+  if (!ka.length) return false;
+  if (ka === apnMatchKey(b)) return true;
+  return apnIdentifiersCorroborate(String(a ?? ''), String(b ?? ''));
 }
 
 function levenshtein(a: string, b: string): number {

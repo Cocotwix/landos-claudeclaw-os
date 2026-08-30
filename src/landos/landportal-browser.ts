@@ -37,6 +37,7 @@ import {
 } from './website-intelligence.js';
 import { getPlatformIntel, rememberPlatform, platformKey } from './platform-library.js';
 import { pickParcelRecordLink } from './browser-navigator.js';
+import { addressVariantsCompatible } from './instruction-consistency.js';
 import { withOwnedPages } from './browser-owned-pages.js';
 import { retrieveWithLearning } from './browser-learning.js';
 import { diagnoseFailure, attemptRecovery } from './browser-failure-diagnosis.js';
@@ -1518,9 +1519,25 @@ async function runLandPortalAgentic(
     // same jurisdiction-aware question. A genuinely different identifier still
     // conflicts, which is what this gate exists for.
     const providedApnForms = [checkApn, ...checkApnAlternates].filter((a): a is string => !!a);
-    const apnConflict = !!(checkApn && resolvedApn && providedApnIds.length > 0
+    const apnIdentifierMismatch = !!(checkApn && resolvedApn && providedApnIds.length > 0
       && !providedApnIds.includes(compactId(resolvedApn))
       && !providedApnForms.some((form) => apnIdentifiersEquivalent(form, resolvedApn)));
+    // A NON-MATCHING IDENTIFIER IS NOT AUTOMATICALLY THE WRONG PARCEL.
+    //
+    // The operator also supplied a street address, and the record this lane
+    // opened prints its own. When those addresses are the same situs, the
+    // identifier is the thing that disagrees, not the parcel: a county that
+    // files a card/extension suffix, an intake typo, or a stale identifier.
+    // Throwing the record away there stranded 333 Cranfill Rd with a complete
+    // address in hand and nothing wrong but an APN spelling. The identifier
+    // discrepancy is disclosed either way; only the hard STOP is conditioned on
+    // the address actually disagreeing too.
+    const resolvedSitus = facts.find((f) => f.key === 'address')?.value
+      ?? cleanedFields['Parcel Address'] ?? cleanedFields['Address'] ?? null;
+    const requestedSitus = key.operatorSuppliedSubject?.address ?? key.address ?? null;
+    const situsAgrees = !!(resolvedSitus && requestedSitus
+      && addressVariantsCompatible(String(requestedSitus), String(resolvedSitus)));
+    const apnConflict = apnIdentifierMismatch && !situsAgrees;
     // The card was carrying a DIFFERENT parcel, and the operator's own link has
     // just shown which parcel this actually is. That is decision-relevant and it
     // is stated plainly — it establishes no fact by itself; the resolver decides
@@ -1535,6 +1552,17 @@ async function runLandPortalAgentic(
         extractionMethod: 'identifier cross-check (operator entry link vs identifier retained on the card)',
       });
       trace.push(`SUPERSEDED-APN: card ${key.apn} ≠ operator-entry record ${resolvedApn}`);
+    }
+    if (apnIdentifierMismatch && situsAgrees) {
+      facts.push({
+        key: 'apnDiscrepancy',
+        label: 'Parcel identifier differs from the supplied APN',
+        value: `The supplied APN "${checkApn}" does not match the identifier this record prints, "${resolvedApn}", but the record's address "${resolvedSitus}" is the subject address that was supplied. The parcel is carried on the record's own identifier; the supplied APN is retained as operator-provided evidence and the discrepancy stays visible for reconciliation.`,
+        sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE,
+        confidence: 'high', origin: 'landportal', status: 'needs_verification',
+        extractionMethod: 'identifier cross-check (requested APN vs resolved parcel APN, reconciled on the situs address)',
+      });
+      trace.push(`APN-DISCREPANCY-RECONCILED-BY-ADDRESS: provided ${checkApn} ≠ resolved ${resolvedApn}; situs "${resolvedSitus}" matches the supplied address`);
     }
     if (apnConflict) {
       facts.push({ key: 'apnConflict', label: 'APN identifier mismatch — wrong parcel', value: `Requested APN "${checkApn}" does not match the resolved LandPortal parcel APN "${resolvedApn}". These are DIFFERENT parcels. The resolved parcel is NOT accepted as the subject — the parcel stays unconfirmed and no downstream intelligence runs until the correct parcel is identified.`, sourceName: 'LandPortal', sourceType: 'landportal', sourceUrl: obs.url || LANDPORTAL_BROWSER_BASE, confidence: 'high', origin: 'landportal', status: 'needs_verification', extractionMethod: 'identifier cross-check (requested APN vs resolved parcel APN)' });
