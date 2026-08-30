@@ -72,6 +72,7 @@ import {
   type PropertyIntelligenceProduct,
   type SellerIntelligenceProduct,
 } from './intelligence-stack-contract.js';
+import type { IntelligenceRunEvent } from './intelligence-run-progress.js';
 import type { ResearchReadinessManifest } from './research-readiness.js';
 import { activeOperatorGuidance } from './deal-brain-guidance.js';
 import { readPropertyCompiledKnowledge } from './property-compiled-knowledge.js';
@@ -297,6 +298,10 @@ export interface IntelligenceStackDeps {
    *  never because a product is old. When absent the outlook stays UNCHANGED:
    *  LandOS never asserts a changed opinion it did not verify. */
   compareOutlook?: (layer: IntelligenceLayerId, prompt: string) => Promise<string>;
+  /** Publish the transitions this run already makes, so a pass that takes
+   *  minutes can show the operator what it is working on. Observation only:
+   *  it selects nothing, gates nothing, and is swallowed if it throws. */
+  onProgress?: (event: IntelligenceRunEvent) => void;
   now?: () => Date;
 }
 
@@ -629,6 +634,12 @@ export async function runIntelligenceStack(
 ): Promise<IntelligenceStackRunResult> {
   const now = deps.now ?? (() => new Date());
   const warnings: string[] = [];
+  // Progress is a courtesy to the operator and never a participant in the
+  // read: a reporting fault can never fail an intelligence run.
+  const report = (event: IntelligenceRunEvent): void => {
+    try { deps.onProgress?.(event); } catch { /* progress never breaks a read */ }
+  };
+  report({ kind: 'stage', id: 'preparing', state: 'running' });
   const failed = (reason: string, outcome: 'insufficient' | 'failed' = 'failed'): IntelligenceStackRunResult => ({
     outcome,
     reason,
@@ -739,6 +750,10 @@ export async function runIntelligenceStack(
     ...(refreshDeal ? ['deal' as const] : []),
   ];
   const reusedLayers = (['property', 'market', 'seller', 'deal'] as const).filter((layer) => !refreshedLayers.includes(layer));
+  // The plan the operator waits on is exactly the layers this run will
+  // re-reason. A reused layer is not a stage: it is already current, and
+  // showing it pending would read as stuck.
+  report({ kind: 'plan', layers: [...refreshedLayers] });
 
   if (!refreshedLayers.length) {
     return {
@@ -804,9 +819,13 @@ export async function runIntelligenceStack(
   }
 
   // 5. The seller layer pre-contact is deterministic — honest and free.
+  report({ kind: 'stage', id: 'preparing', state: 'complete' });
   const generatedAt = now().toISOString();
   let sellerProduct = retained.seller;
   if (refreshSeller && !sellerEstablished) {
+    // Deterministic and free: the operator sees it settle immediately rather
+    // than watch a stage that will never call a specialist.
+    report({ kind: 'stage', id: 'seller', state: 'running' });
     sellerProduct = preContactSellerProduct({
       dealCardId: input.dealCardId,
       layerFingerprint: fingerprints.seller,
@@ -815,6 +834,7 @@ export async function runIntelligenceStack(
       phase,
       prior: retained.seller,
     });
+    report({ kind: 'stage', id: 'seller', state: 'complete', note: 'Recorded deterministically: pre-contact needs no specialist.' });
   }
 
   // 6. One coordinated reasoning pass for whatever model layers remain.
@@ -861,6 +881,9 @@ export async function runIntelligenceStack(
       // "could not complete this read"; a deadline simply reaches it.
       run = await withDeadline(deps.analyst.run({
         dossier,
+        // The executor knows which specialist is working; the stack does not.
+        // Forwarding the reporter is what lets the Deal Card name the layer.
+        onStage: (layer, state, note) => report({ kind: 'stage', id: layer, state, note }),
         requestedProvider: input.requestedProvider ?? null,
         requestedModel: input.requestedModel ?? null,
         judgmentPromptBuilder: (currentDossier, observations) => intelligenceStackPrompt(currentDossier, observations, passContext),
@@ -935,6 +958,7 @@ export async function runIntelligenceStack(
   );
 
   // 7. Build and persist each refreshed product.
+  report({ kind: 'stage', id: 'finalizing', state: 'running' });
   // Model-detected visual/record conflicts, rendered in the carried triple
   // shape. Composed from the structured fields so the operator sees the record
   // claim, the grounded observation, the plausible reading and the ONE bounded

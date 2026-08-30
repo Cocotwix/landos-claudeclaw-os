@@ -123,6 +123,27 @@ type DealIntelligenceView = AcquisitionIntelligenceView & {
   guidanceConsidered?: string[];
 };
 
+export interface IntelligenceRunStageView {
+  id: string;
+  label: string;
+  state: 'pending' | 'running' | 'complete' | 'failed' | 'skipped';
+  startedAt?: string | null;
+  completedAt?: string | null;
+  note?: string | null;
+}
+
+export interface IntelligenceRunProgressView {
+  runId: string;
+  status: 'running' | 'complete' | 'failed';
+  startedAt: string;
+  finishedAt?: string | null;
+  currentStage?: string | null;
+  stages: IntelligenceRunStageView[];
+  layersComplete: number;
+  layersPlanned: number;
+  error?: string | null;
+}
+
 interface IntelligenceStackResp {
   products?: {
     property?: PropertyIntelligenceReadView | null;
@@ -145,8 +166,9 @@ interface IntelligenceStackResp {
   sufficiency?: { ok?: boolean; reason?: string | null } | null;
   guidance?: DealBrainThreadEntry[];
   runtime?: AcquisitionIntelligenceRuntimeStatus | null;
-  /** Present while a coordinated intelligence run is in flight. */
-  run?: { startedAt?: string; error?: string | null } | null;
+  /** Present while a coordinated intelligence run is in flight, carrying the
+   *  live stage projection so the card can show what LandOS is working on. */
+  run?: { startedAt?: string; error?: string | null; progress?: IntelligenceRunProgressView | null } | null;
   dealBrainRun?: { startedAt?: string; error?: string | null } | null;
   /** The persisted bounded reconciliation record plus in-flight state and the
    *  conflicts the seam could act on. SELECT-only projection. */
@@ -396,6 +418,7 @@ export function AcquisitionWorkspaceV2() {
   const [aiRuntime, setAiRuntime] = useState<AcquisitionIntelligenceRuntimeStatus | null>(null);
   const [aiStale, setAiStale] = useState(false);
   const [aiRunning, setAiRunning] = useState(false);
+  const [aiProgress, setAiProgress] = useState<IntelligenceRunProgressView | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   // The rest of the Intelligence Stack: live quick-flip economics, seller
   // product, phase and the Deal Brain conversation. All fetched, never
@@ -515,6 +538,7 @@ export function AcquisitionWorkspaceV2() {
         // A run started before this page load is still the operator's run:
         // reopening the card rejoins it rather than showing an idle section.
         setAiRunning(!!ai?.run && !ai.run.error);
+        setAiProgress(ai?.run?.progress ?? null);
         setAiError(ai?.run?.error ?? null);
         setIntelQuickFlip(ai?.quickFlip ?? ai?.products?.deal?.quickFlip ?? null);
         setIntelPhase(ai?.phase ?? ai?.products?.deal?.phase ?? null);
@@ -551,6 +575,10 @@ export function AcquisitionWorkspaceV2() {
       if (dead || !ai) return;
       setAiReadiness(ai.sufficiency ? { ok: ai.sufficiency.ok, reason: ai.sufficiency.reason } : null);
       setAiRuntime(ai.runtime ?? null);
+      // Publish the live stage projection before deciding whether the run is
+      // still in flight, so the card advances through the layers instead of
+      // only changing at the end.
+      setAiProgress(ai.run?.progress ?? null);
       if (ai.run && !ai.run.error) return;
       setAiRunning(false);
       setAiRead(ai.products?.deal ?? null);
@@ -652,10 +680,17 @@ export function AcquisitionWorkspaceV2() {
     if (dealId == null || aiRunning) return;
     setAiRunning(true);
     setAiError(null);
+    setAiProgress(null);
     try {
-      await apiPost(`/api/landos/deal-cards/${dealId}/intelligence/run`, {});
+      // The POST returns the freshly opened run record, so the card shows the
+      // run as alive on the click rather than waiting for the first poll.
+      const started = await apiPost<{ progress?: IntelligenceRunProgressView | null }>(
+        `/api/landos/deal-cards/${dealId}/intelligence/run`, {},
+      );
+      setAiProgress(started?.progress ?? null);
     } catch (e) {
       setAiRunning(false);
+      setAiProgress(null);
       setAiError(e instanceof Error ? e.message : String(e));
     }
   };
@@ -1033,6 +1068,7 @@ export function AcquisitionWorkspaceV2() {
               runtime: aiRuntime,
               stale: aiStale,
               running: aiRunning,
+              progress: aiProgress,
               error: aiError,
               onRun: runAcquisitionIntelligence,
             }}

@@ -19,6 +19,7 @@
 //   • Rendering NEVER runs the model. The refresh control is the only thing
 //     that produces a new read, and it says so.
 
+import { useEffect, useState } from 'preact/hooks';
 import { Brain, RefreshCw, AlertTriangle, Clock, Lightbulb, HelpCircle, ArrowUpRight } from 'lucide-preact';
 
 import type {
@@ -31,6 +32,93 @@ import { UpdatedOutlookBadge, leadThesis, outlookIsUpdated } from './Acquisition
 import '../styles/workspace-v2-acquisition-intelligence.css';
 import '../styles/workspace-v2-deal-read.css';
 
+export interface IntelligenceRunStageView {
+  id: string;
+  label: string;
+  state: 'pending' | 'running' | 'complete' | 'failed' | 'skipped';
+  startedAt?: string | null;
+  completedAt?: string | null;
+  note?: string | null;
+}
+
+export interface IntelligenceRunProgressView {
+  runId: string;
+  status: 'running' | 'complete' | 'failed';
+  startedAt: string;
+  finishedAt?: string | null;
+  currentStage?: string | null;
+  stages: IntelligenceRunStageView[];
+  layersComplete: number;
+  layersPlanned: number;
+  error?: string | null;
+}
+
+/** Elapsed, in the operator's terms. Never an estimate of what remains: LandOS
+ *  does not know how long a specialist will reason, and must not imply it. */
+export function elapsedLabel(fromIso: string, nowMs: number): string {
+  const started = Date.parse(fromIso);
+  if (!Number.isFinite(started)) return '';
+  const seconds = Math.max(0, Math.round((nowMs - started) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}m ${String(seconds % 60).padStart(2, '0')}s elapsed` : `${seconds}s elapsed`;
+}
+
+const STAGE_GLYPH: Record<IntelligenceRunStageView['state'], string> = {
+  pending: '○', running: '●', complete: '✓', failed: '×', skipped: '–',
+};
+
+/**
+ * What LandOS is doing, while it is doing it.
+ *
+ * A finalization run legitimately takes minutes, and until the run published
+ * its stages the section showed one static sentence for the whole pass — which
+ * is how a healthy run came to be read as a hang. This is a cockpit strip, not
+ * a log: the planned layers, which one is working, which have settled, and how
+ * long it has been going. No percentage and no ETA, because the run does not
+ * know either.
+ */
+export function IntelligenceRunProgressStrip({ progress }: { progress: IntelligenceRunProgressView }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const live = progress.status === 'running';
+  useEffect(() => {
+    if (!live) return undefined;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [live]);
+
+  const layers = progress.stages.filter((stage) => stage.id !== 'preparing' && stage.id !== 'finalizing');
+  const current = progress.stages.find((stage) => stage.id === progress.currentStage) ?? null;
+  const failed = progress.stages.find((stage) => stage.state === 'failed') ?? null;
+
+  return (
+    <div class="awv2-ai-progress" role="status" aria-live="polite">
+      <div class="awv2-ai-progress-head">
+        <Clock size={14} class={live ? 'spin-slow' : undefined} />
+        <strong>{live ? 'Building Deal Intelligence' : progress.status === 'failed' ? 'Intelligence run stopped' : 'Intelligence run complete'}</strong>
+      </div>
+      {layers.length > 0 && (
+        <ol class="awv2-ai-progress-stages">
+          {layers.map((stage) => (
+            <li key={stage.id} class="awv2-ai-progress-stage" data-state={stage.state} title={stage.note ?? undefined}>
+              <span class="awv2-ai-progress-glyph" aria-hidden="true">{STAGE_GLYPH[stage.state]}</span>
+              <span>{stage.label.replace(/ Intelligence$/, '')}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      <p class="awv2-ai-progress-line">
+        {failed
+          ? <>{failed.label} — failed{failed.note ? `. ${failed.note}` : ''}</>
+          : current
+            ? <>{current.label} running</>
+            : <>{progress.status === 'running' ? 'Starting' : 'Finished'}</>}
+        {' · '}{elapsedLabel(progress.startedAt, live ? nowMs : Date.parse(progress.finishedAt ?? progress.startedAt))}
+        {progress.layersPlanned > 0 && <> · {progress.layersComplete} of {progress.layersPlanned} intelligence {progress.layersPlanned === 1 ? 'layer' : 'layers'} complete</>}
+      </p>
+    </div>
+  );
+}
+
 interface Props {
   read: AcquisitionIntelligenceView | null;
   readiness: AcquisitionIntelligenceReadiness | null;
@@ -38,6 +126,9 @@ interface Props {
   /** True when evidence has landed since this read was produced. */
   stale: boolean;
   running: boolean;
+  /** Live stage projection for the run in flight. Server-held, so refreshing
+   *  or leaving and returning rejoins the same run. */
+  progress: IntelligenceRunProgressView | null;
   error: string | null;
   onRun: () => void;
   /** Opens the full read, which lives on Property & Market. */
@@ -54,7 +145,7 @@ function runtimeLine(
 }
 
 export function DealReadCard({
-  read, readiness, runtime, stale, running, error, onRun, onOpenFullIntelligence,
+  read, readiness, runtime, stale, running, progress, error, onRun, onOpenFullIntelligence,
 }: Props) {
   const digest = digestDealRead(read);
 
@@ -80,11 +171,13 @@ export function DealReadCard({
       </header>
 
       {error && <div class="awv2-ai-note bad"><AlertTriangle size={14} /> {error}</div>}
-      {running && (
-        <div class="awv2-ai-note">
-          <Clock size={14} /> The analyst is inspecting the retained imagery and reasoning across the property file. This runs locally and takes a few minutes.
-        </div>
-      )}
+      {running && (progress
+        ? <IntelligenceRunProgressStrip progress={progress} />
+        : (
+          <div class="awv2-ai-note">
+            <Clock size={14} /> The analyst is inspecting the retained imagery and reasoning across the property file. This runs locally and takes a few minutes.
+          </div>
+        ))}
       {!read && !running && readiness && readiness.ok === false && (
         <div class="awv2-ai-note bad"><AlertTriangle size={14} /> {readiness.reason}</div>
       )}

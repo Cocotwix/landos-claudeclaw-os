@@ -190,6 +190,12 @@ import {
   specialistEvidenceRequirements,
   type ResearchCoverageCycleResult,
 } from './research-coverage-cycle.js';
+import {
+  applyRunEvent,
+  finishRunProgress,
+  startRunProgress,
+  type IntelligenceRunProgress,
+} from './intelligence-run-progress.js';
 import { readIntelligenceStackState, runIntelligenceStack } from './intelligence-stack.js';
 import {
   DEAL_INTELLIGENCE_PRODUCT_TYPE,
@@ -10939,7 +10945,15 @@ export function registerLandosRoutes(app: Hono): void {
   // SELECT plus fingerprint staleness; only the POST engages the analyst, in
   // ONE coordinated pass over whichever layers are actually stale.
 
-  const intelligenceStackRuns = new Map<number, { startedAt: string; error: string | null }>();
+  // The one in-flight record for a finalization run, now carrying the live
+  // stage projection as well as the start time. Server-side on purpose: the
+  // operator can refresh, navigate away and come back, and the SELECT-only GET
+  // still answers "a run is in progress and it is on Market Intelligence".
+  const intelligenceStackRuns = new Map<number, {
+    startedAt: string;
+    error: string | null;
+    progress: IntelligenceRunProgress;
+  }>();
   // A finalization run is bounded. The specialist executor talks to an external
   // agent process, and when that process wedges the run neither resolves nor
   // rejects: the in-flight entry is never cleared, every later request is
@@ -11225,7 +11239,7 @@ export function registerLandosRoutes(app: Hono): void {
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
     const inFlight = intelligenceStackRuns.get(id);
     if (inFlight && !inFlight.error && !intelligenceRunAbandoned(inFlight.startedAt)) {
-      return c.json({ running: true, startedAt: inFlight.startedAt, runtime: intelligenceExecutorRuntimeStatus() }, 202);
+      return c.json({ running: true, startedAt: inFlight.startedAt, progress: inFlight.progress, runtime: intelligenceExecutorRuntimeStatus() }, 202);
     }
     if (inFlight && !inFlight.error) {
       logger.warn({ dealCardId: id, startedAt: inFlight.startedAt }, 'intelligence_stack_run_abandoned');
@@ -11237,7 +11251,30 @@ export function registerLandosRoutes(app: Hono): void {
       ? body.layers.filter((value): value is IntelligenceLayerId => layerNames.includes(value as IntelligenceLayerId))
       : undefined;
     const startedAt = new Date().toISOString();
-    intelligenceStackRuns.set(id, { startedAt, error: null });
+    const runId = `intel_${id}_${Date.now().toString(36)}`;
+    intelligenceStackRuns.set(id, { startedAt, error: null, progress: startRunProgress(runId, startedAt) });
+    // Fold each reported transition into the ONE in-flight record the GET
+    // already serves. A run that has since been superseded or abandoned never
+    // writes back over its replacement.
+    const onProgress = (event: Parameters<typeof applyRunEvent>[1]): void => {
+      const entry = intelligenceStackRuns.get(id);
+      if (!entry || entry.progress.runId !== runId) return;
+      intelligenceStackRuns.set(id, {
+        ...entry,
+        progress: applyRunEvent(entry.progress, event, new Date().toISOString()),
+      });
+    };
+    const settle = (failure: string | null): void => {
+      const entry = intelligenceStackRuns.get(id);
+      if (!entry || entry.progress.runId !== runId) return;
+      const progress = finishRunProgress(entry.progress, { error: failure }, new Date().toISOString());
+      // A finished run must not keep reading "running" anywhere. On success the
+      // record is dropped so the Deal Card falls through to the reads the run
+      // just produced; a failure is retained so the operator can see which
+      // stage stopped and retry from the existing control.
+      if (failure) intelligenceStackRuns.set(id, { startedAt, error: failure, progress });
+      else intelligenceStackRuns.delete(id);
+    };
 
     void (async () => {
       try {
@@ -11250,6 +11287,7 @@ export function registerLandosRoutes(app: Hono): void {
         }, {
           ...intelligenceStackReadDeps,
           analyst: createIntelligenceExecutor(),
+          onProgress,
           // Bounded God's Eye View spatial investigation before the Property
           // specialist reasons — best-effort; failures degrade to warnings.
           investigateSpatial: (dealCardId, dossier) => investigatePropertyWithGev(dealCardId, dossier),
@@ -11263,17 +11301,20 @@ export function registerLandosRoutes(app: Hono): void {
             return 'error' in report ? null : report.after;
           },
         }));
-        const failure = result.outcome === 'produced' || result.outcome === 'reused' ? null : result.reason;
-        intelligenceStackRuns.set(id, { startedAt, error: failure });
-        if (!failure) intelligenceStackRuns.delete(id);
+        settle(result.outcome === 'produced' || result.outcome === 'reused' ? null : result.reason);
       } catch (error) {
         const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
         logger.error({ event: 'intelligence_stack_run_failed', dealCardId: id, msg: detail }, 'intelligence_stack_run_failed');
-        intelligenceStackRuns.set(id, { startedAt, error: `Intelligence run failed: ${detail}` });
+        settle(`Intelligence run failed: ${detail}`);
       }
     })();
 
-    return c.json({ running: true, startedAt, runtime: intelligenceExecutorRuntimeStatus() }, 202);
+    return c.json({
+      running: true,
+      startedAt,
+      progress: intelligenceStackRuns.get(id)?.progress ?? null,
+      runtime: intelligenceExecutorRuntimeStatus(),
+    }, 202);
   });
 
   // ── Bounded intelligence → capability → reconciliation (explicit only) ──

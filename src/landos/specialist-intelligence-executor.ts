@@ -203,6 +203,15 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         warnings.push('Retained imagery exists but no pixel-grounded visual observation has been produced for it yet; the read reasons without visual evidence.');
       }
 
+      // Observation only. A reporting fault must never fail a specialist pass,
+      // so every call is swallowed: progress is a courtesy to the operator,
+      // never a participant in the read.
+      const stage = (
+        layer: SpecialistModelLayer,
+        state: 'running' | 'complete' | 'failed',
+        note?: string | null,
+      ): void => { try { input.onStage?.(layer, state, note ?? null); } catch { /* progress never breaks a read */ } };
+
       const plan = input.specialistPlan;
       if (!plan) {
         // The single-question path (the Deal Brain conversation): the chair
@@ -227,6 +236,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
       const runStructuredLayer = async (layer: Exclude<SpecialistModelLayer, 'deal'>) => {
         const profile = SPECIALIST_PROFILES[layer];
         const t0 = now();
+        stage(layer, 'running');
         const raw = await invoke(
           specialistInvocationArgs({ profile, prompt: plan.layerPrompt(layer, input.dossier, observations), model }),
           timeoutMs,
@@ -245,6 +255,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
       const runTwoStageProperty = async () => {
         const profile = SPECIALIST_PROFILES.property;
         const t0 = now();
+        stage('property', 'running');
         const review = await invoke(
           specialistInvocationArgs({
             profile,
@@ -284,6 +295,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
       const runTwoStageSeller = async () => {
         const profile = SPECIALIST_PROFILES.seller;
         const t0 = now();
+        stage('seller', 'running');
         const review = await invoke(
           specialistInvocationArgs({
             profile,
@@ -337,16 +349,21 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
       let sellerExpertReview: string | undefined;
 
       if (propertyTask) {
-        const result = await propertyTask;
+        const result = await propertyTask.catch((error: unknown) => {
+          stage('property', 'failed', 'The Property specialist did not return a usable read.');
+          throw error;
+        });
         merged.property = result.value;
         layerRuntimes.property = result.runtime;
         if ('review' in result) propertyExpertReview = result.review;
+        stage('property', 'complete');
       }
 
       if (plan.layers.includes('market')) {
         const profile = SPECIALIST_PROFILES.market;
         const marketStartedAt = now();
         if (plan.marketReviewPrompt && plan.marketExtractionPrompt) {
+          stage('market', 'running');
           const review = await invoke(
             specialistInvocationArgs({
               profile,
@@ -381,15 +398,20 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
           merged.market = result.value;
           layerRuntimes.market = result.runtime;
         }
+        stage('market', 'complete');
       }
 
       if (sellerTask) {
         const outcome = await sellerTask;
-        if (!outcome.ok) throw outcome.error;
+        if (!outcome.ok) {
+          stage('seller', 'failed', 'The Seller specialist did not return a usable read.');
+          throw outcome.error;
+        }
         merged.seller = outcome.result.value;
         layerRuntimes.seller = outcome.result.runtime;
         const sellerReview = (outcome.result as { review?: unknown }).review;
         if (typeof sellerReview === 'string') sellerExpertReview = sellerReview;
+        stage('seller', 'complete');
       }
 
       if (plan.layers.includes('deal')) {
@@ -397,6 +419,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         // products, not a guess at them.
         const profile = SPECIALIST_PROFILES.deal;
         const t0 = now();
+        stage('deal', 'running');
         const freshLayers = {
           ...(merged.property !== undefined ? { property: merged.property } : {}),
           ...(merged.market !== undefined ? { market: merged.market } : {}),
@@ -410,6 +433,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         if (!value) throw new Error(`${profile} returned no parsable deal layer`);
         merged.deal = value;
         layerRuntimes.deal = runtimeFor(profile, model, now() - t0);
+        stage('deal', 'complete');
       }
 
       const primary = layerRuntimes.deal

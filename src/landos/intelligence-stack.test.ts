@@ -371,6 +371,36 @@ describe('pre-call intelligence run', () => {
     expect(state.stale).toEqual({ property: false, market: false, seller: false, deal: false });
   });
 
+  it('publishes the stage transitions an operator waits on, in execution order', async () => {
+    // A finalization run legitimately takes minutes. Until it published these,
+    // the Deal Card showed one static sentence for the whole pass and a healthy
+    // run was indistinguishable from a wedged one.
+    const events: string[] = [];
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({
+      onProgress: (event) => {
+        events.push(event.kind === 'plan' ? `plan:${event.layers.join('+')}` : `${event.id}:${event.state}`);
+      },
+    }));
+    expect(result.outcome).toBe('produced');
+    expect(events[0]).toBe('preparing:running');
+    expect(events).toContain('plan:property+market+seller+deal');
+    expect(events).toContain('preparing:complete');
+    expect(events).toContain('finalizing:running');
+    // Pre-contact Seller is deterministic: it settles without a specialist
+    // rather than sitting as a stage that will never call one.
+    expect(events).toContain('seller:running');
+    expect(events).toContain('seller:complete');
+    expect(events.indexOf('preparing:complete')).toBeLessThan(events.indexOf('finalizing:running'));
+  });
+
+  it('never lets a progress reporting fault break the read', async () => {
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({
+      onProgress: () => { throw new Error('the operator surface went away'); },
+    }));
+    expect(result.outcome).toBe('produced');
+    expect(result.products.property).not.toBeNull();
+  });
+
   it('fingerprints the persisted post-search Market file so Stage A evidence cannot make the new read immediately stale', async () => {
     dossierAfterEvidence = {
       ...baseDossier(),

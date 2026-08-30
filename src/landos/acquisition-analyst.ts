@@ -272,6 +272,10 @@ export interface AnalystRunInput {
   /** Per-layer routing for the persistent-specialist executor. Optional and
    *  ignored by the legacy analyst. */
   specialistPlan?: SpecialistExecutionPlan;
+  /** Report a layer entering or leaving execution, so a run that legitimately
+   *  takes minutes can show the operator which specialist is working. Purely
+   *  observational: it decides nothing and must never throw into the run. */
+  onStage?: (layer: SpecialistModelLayer, state: 'running' | 'complete' | 'failed', note?: string | null) => void;
 }
 
 export interface AnalystRunOutput {

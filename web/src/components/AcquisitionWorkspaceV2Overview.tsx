@@ -29,7 +29,7 @@ import type {
   AcquisitionIntelligenceReadiness,
   AcquisitionIntelligenceRuntimeStatus,
 } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
-import { DealReadCard } from './AcquisitionWorkspaceV2DealRead';
+import { DealReadCard, type IntelligenceRunProgressView } from './AcquisitionWorkspaceV2DealRead';
 import {
   DealBrainAsk,
   IntelligenceScoreStrip,
@@ -243,6 +243,9 @@ interface OverviewSectionProps {
     runtime: AcquisitionIntelligenceRuntimeStatus | null;
     stale: boolean;
     running: boolean;
+    /** Live stage projection for the run in flight, served by the SELECT-only
+     *  intelligence GET so it survives a refresh. */
+    progress: IntelligenceRunProgressView | null;
     error: string | null;
     onRun: () => void;
   } | null;
@@ -1171,6 +1174,7 @@ export function OverviewSection({
           runtime={acquisitionIntelligence.runtime}
           stale={acquisitionIntelligence.stale}
           running={acquisitionIntelligence.running}
+          progress={acquisitionIntelligence.progress}
           error={acquisitionIntelligence.error}
           onRun={acquisitionIntelligence.onRun}
           onOpenFullIntelligence={() => {
