@@ -62,10 +62,11 @@ export function compareParcelIdentifier(
   const left = normalizeApn(expected);
   const right = normalizeApn(observed);
   if (!left || !right) return { outcome: 'not_comparable', note: 'One side has no parcel identifier.' };
-  if (apnEquivalent(expected, observed)) {
-    return { outcome: 'match', note: 'Parcel identifiers are equivalent once formatting is normalized.' };
-  }
-
+  // The jurisdiction-code explanation is checked FIRST because it is the more
+  // specific account of the same agreement. A bare local key and its prefixed
+  // form can also read as equivalent under plain format normalization, and
+  // answering "formatting" there loses the fact the operator actually needs:
+  // which half came from the source's own record.
   const code = (options.observedJurisdictionCode ?? '').trim();
   if (code) {
     const composed = `${code} ${String(observed ?? '')}`;
@@ -75,6 +76,10 @@ export function compareParcelIdentifier(
         note: `Source publishes the local key "${observed}" together with jurisdiction code "${code}"; combined they equal the identifier LandOS holds.`,
       };
     }
+  }
+
+  if (apnEquivalent(expected, observed)) {
+    return { outcome: 'match', note: 'Parcel identifiers are equivalent once formatting is normalized.' };
   }
 
   // Other identifiers the same record publishes for the same parcel.

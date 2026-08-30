@@ -70,3 +70,48 @@ export function safeJsonArray<T = unknown>(s: string | null | undefined): T[] {
     return [];
   }
 }
+
+/**
+ * Render a county the way an operator writes it, exactly once.
+ *
+ * Two spellings reach the UI for one county. Some records carry the bare name
+ * ("Iredell"), some already carry the suffix ("Iredell County"), and appending
+ * unconditionally produced the header "IREDELL COUNTY COUNTY, NC". A county
+ * whose name was never resolved arrives as its 5-digit FIPS instead, and
+ * "37097 County, NC" is not a place — it is a code wearing a county's clothes,
+ * so it is labelled as the code it is unless a known name is supplied.
+ */
+const COUNTY_FIPS = /^\d{5}$/;
+const COUNTY_SUFFIX = /\s*\b(county|parish|borough)\b\s*$/i;
+const PARISH_OR_BOROUGH = /\b(parish|borough)\b\s*$/i;
+
+/**
+ * Render a county the way an operator writes it, exactly once.
+ *
+ * Two spellings reach the UI for one county. Some records carry the bare name
+ * ("Iredell"), some already carry the suffix ("Iredell County"), and appending
+ * unconditionally produced the header "IREDELL COUNTY COUNTY, NC". A county
+ * whose name was never resolved arrives as its 5-digit FIPS instead, and
+ * "37097 County, NC" is not a place, so it is labelled as the code it is
+ * unless a known name is supplied to stand in for it.
+ */
+export function countyLabel(
+  county: string | null | undefined,
+  fallbackName?: string | null,
+): string | null {
+  const raw = String(county ?? '').trim();
+  const fallback = String(fallbackName ?? '').trim();
+  if (COUNTY_FIPS.test(raw)) return fallback ? countyLabel(fallback) : `FIPS ${raw}`;
+  const name = raw || fallback;
+  if (!name) return null;
+  // Strip EVERY trailing suffix, not one: a value that already reached the UI
+  // doubled ("Iredell County County") must still reduce to its bare name.
+  let bare = name;
+  while (COUNTY_SUFFIX.test(bare)) {
+    const stripped = bare.replace(COUNTY_SUFFIX, '').trim();
+    if (!stripped) break;
+    bare = stripped;
+  }
+  if (!bare) return name;
+  return PARISH_OR_BOROUGH.test(name) ? name.replace(/\s+/g, ' ') : `${bare} County`;
+}

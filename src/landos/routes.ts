@@ -10807,6 +10807,8 @@ export function registerLandosRoutes(app: Hono): void {
       marketPulse: retainedMarketPulseForSpecialist(dealCardId, cardId),
       documentRegistry: documentRegistryForCard(cardId, { dealCardId }) as unknown,
       dealCard: deal as unknown,
+      // The one identity verdict every consumer evaluates from. A SELECT.
+      canonicalIdentity: resolveCanonicalIdentity(dealCardId) as unknown,
       // The persisted seller evidence: Acquisitions CRM state (profile, comm
       // log, discovery) plus seller-stated fact rows. SELECTs over existing
       // stores — no new CRM, no research.

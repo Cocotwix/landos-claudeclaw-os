@@ -52,6 +52,7 @@ import {
 } from './AcquisitionWorkspaceV2ResearchReadiness';
 import type { CompsValuationViewData } from './AcquisitionWorkspaceV2CompsValuation';
 import '../styles/workspace-v2-overview.css';
+import { countyLabel } from '@/lib/format';
 
 export interface OverviewScoreView {
   score: number | null;
@@ -828,8 +829,12 @@ export function OverviewSection({
     bandRow(market?.zip, 'ZIP, all acreage', false),
     bandRow(market?.county, 'County, all acreage', false),
   ].filter((row): row is NonNullable<typeof row> => row != null && row.sold !== '—' && row.sold !== '0');
-  const marketGeographyLabel = market?.geography?.county
-    ? `${market.geography.county} County${market.geography.state ? `, ${market.geography.state}` : ''}`
+  // The market payload names its county by FIPS when the provider never gave a
+  // name. The subject's own identity knows the name for the same county, so it
+  // is offered as the fallback rather than printing "37097 County, NC".
+  const marketCounty = countyLabel(market?.geography?.county, identity.county);
+  const marketGeographyLabel = marketCounty
+    ? `${marketCounty}${market?.geography?.state ? `, ${market.geography.state}` : ''}`
     : market?.geography?.zip ? `ZIP ${market.geography.zip}` : 'Local market';
   // A TARGET / SELL band is only claimed when the supported value-add strategy
   // actually states a product size. A two-lot partition that never establishes

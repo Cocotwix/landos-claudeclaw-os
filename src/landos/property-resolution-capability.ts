@@ -10,6 +10,8 @@ import { getLandosDb, type LandosEntity } from './db.js';
 import { getDealCardIdForPropertyCard } from './deal-card.js';
 import { classifySmartIntake } from './intake-router.js';
 import { extractParcelNotations } from './parcel-notation.js';
+import { readParcelIdentity, writeParcelIdentity } from './parcel-identity.js';
+import { hasStrongParcelIdentity } from './property-card.js';
 import { apnIdentifiersCorroborate } from './property-resolution-engine.js';
 import {
   applyLaneEvidence,
@@ -179,6 +181,57 @@ function factsOf(result: UniversalResolutionResult, resolutionStatus: SubjectRes
   };
 }
 
+/**
+ * Publish the resolution verdict into the shared parcel-identity spine.
+ *
+ * Property Resolution is the one place LandOS decides which parcel a Deal Card
+ * is about, and it was the one place that never said so out loud. The spine row
+ * stayed empty, so every downstream consumer fell back to the subject card's
+ * `verified_property` flag and independently concluded there was no established
+ * subject — while the resolution panel on the same screen read RESOLVED. That
+ * contradiction is what stopped the property-file reader, Property and Market
+ * Intelligence, the risk scan and the strategy read on 333 Cranfill Rd.
+ *
+ * RESOLVED means the research subject is established. It is deliberately NOT a
+ * claim of official or legal-grade verification: a county assessor with no
+ * tested adapter stays an open diligence item, and field-level `Verified` flags
+ * still require the card's own verified_property record. What this ends is a
+ * resolved subject being treated as no subject at all.
+ *
+ * The safeguard is unchanged and explicit: a real parcel key must be present
+ * (APN plus county/state/FIPS, or a LandPortal property id plus FIPS). An
+ * address-only lead satisfies neither and can never reach the spine this way.
+ * An already-confirmed verdict is accepted operator information and is never
+ * rewritten here.
+ */
+function publishResolvedSubjectIdentity(
+  dealCardId: number,
+  propertyCardId: number | null,
+  universal: UniversalResolutionResult,
+  invocationId: string,
+): void {
+  const subject = universal.subject;
+  if (!hasStrongParcelIdentity({
+    apn: subject.apn ?? undefined,
+    lpPropertyId: subject.lpPropertyId ?? undefined,
+    fips: subject.fips ?? undefined,
+    county: subject.county ?? undefined,
+    state: subject.state ?? undefined,
+  })) return;
+  if (readParcelIdentity(dealCardId)?.state === 'confirmed') return;
+  const refs = new Set<string>();
+  for (const source of subject.sourceEvidence ?? []) if (source.label) refs.add(source.label);
+  if (universal.winner) refs.add(`resolution lane: ${universal.winner}`);
+  writeParcelIdentity(dealCardId, {
+    subjectCardId: propertyCardId,
+    state: 'confirmed',
+    basis: universal.discoveryBasis
+      || 'Property Resolution established this subject from a parcel-level identifier and its jurisdiction.',
+    confidence: universal.identityState === 'confirmed' ? 0.95 : 0.8,
+    evidenceRefs: [...refs],
+  }, `capability:property-resolution:${invocationId}`);
+}
+
 export const PROPERTY_RESOLUTION_CAPABILITY: LandosCapability<PropertyResolutionFacts, PropertyResolutionRuntime> = {
   metadata: {
     id: PROPERTY_RESOLUTION_CAPABILITY_ID,
@@ -271,6 +324,9 @@ export const PROPERTY_RESOLUTION_CAPABILITY: LandosCapability<PropertyResolution
     runtime.onUniversalResult?.(universal);
 
     const subjectResolution = statusOf(universal);
+    if (subjectResolution === 'RESOLVED' && dealCardId) {
+      publishResolvedSubjectIdentity(dealCardId, propertyCardId ?? null, universal, environment.invocationId);
+    }
     const existingPropertyId = request.subject.kind === 'raw_property'
       ? request.subject.target?.propertyCardId ?? resolveExistingProperty(universal.subject, request.subject.entity)
       : propertyCardId ?? null;

@@ -53,6 +53,8 @@ import {
   type ResearchReadinessProbe,
 } from './research-readiness.js';
 import { planJurisdictionKnowledgeForDeal } from './jurisdiction-knowledge.js';
+import { resolveCanonicalIdentity } from './canonical-identity.js';
+import { formatCountyLabel } from './fact-format.js';
 
 /** Visual sources that actually show the parcel. A fallback map is not one. */
 const PARCEL_GRADE_VISUAL_SERVICES = [
@@ -224,9 +226,18 @@ function withSnapshotFacts(
 function propertyResolutionProbe(ctx: ReconcileContext): ResearchReadinessProbe {
   const reading = ctx.capability('property-resolution');
   const verification = String(ctx.card.verification_status ?? '');
-  const verified = verification.startsWith('verified');
   const apn = String(ctx.card.apn ?? '').trim();
+  // The checklist asks the same question the rest of the workspace asks, and
+  // takes the same answer. It used to read only the subject card's
+  // `verified_property` flag, so a Deal Card whose resolution had reached
+  // RESOLVED was still listed as "the parcel identity is still
+  // unverified_lead" on the very screen that displayed the resolved parcel.
+  // The canonical verdict is what establishes the subject; the card flag is
+  // the fallback for a Deal Card that predates one.
+  const canonicalConfirmed = resolveCanonicalIdentity(ctx.dealCardId).confirmed;
+  const verified = canonicalConfirmed || verification.startsWith('verified');
   const attempted = !!reading.result || !!verification;
+  const jurisdiction = `${ctx.card.county ? `, ${formatCountyLabel(String(ctx.card.county))}` : ''}${ctx.card.state ? `, ${String(ctx.card.state)}` : ''}`;
   return {
     itemId: 'property_resolution',
     attempted,
@@ -236,7 +247,9 @@ function propertyResolutionProbe(ctx: ReconcileContext): ResearchReadinessProbe 
     lastAttemptAt: reading.completedAt,
     lastSuccessAt: verified ? reading.completedAt ?? isoFromEpoch(ctx.card.last_refreshed_at) : null,
     reason: verified && apn
-      ? `Parcel identity confirmed: APN ${apn}${ctx.card.county ? `, ${String(ctx.card.county)} County` : ''}${ctx.card.state ? `, ${String(ctx.card.state)}` : ''}.`
+      // Naming what is still open keeps the honest gap visible without
+      // reporting the established subject as no subject.
+      ? `Parcel identity established: APN ${apn}${jurisdiction}.${verification.startsWith('verified') ? '' : ' Official assessor confirmation is still outstanding.'}`
       : attempted
         ? `Resolution ran and the parcel identity is still ${verification || 'unconfirmed'}.`
         : 'No property resolution has run for this Deal Card.',

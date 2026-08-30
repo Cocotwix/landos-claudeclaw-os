@@ -12,6 +12,7 @@ import type {
   ValuationScopeState,
 } from './property-intelligence-snapshot.js';
 import type { CanonicalDealState } from './deal-card-reconciliation.js';
+import { formatCountyLabel } from './fact-format.js';
 
 export type OperatorRating = 'Excellent' | 'Strong' | 'Moderate' | 'Weak' | 'Very weak' | 'Pending';
 
@@ -1413,7 +1414,12 @@ function subdivisionAnalysis(
 ): OperatorSubdivisionAnalysis {
   const acres = pkg.identity.acres;
   const jurisdiction = firstText([
-    pkg.identity.county && pkg.identity.state_ ? `${pkg.identity.county} County, ${pkg.identity.state_}` : null,
+    // The stored county name may already carry its suffix ("Iredell County"),
+    // so the shared formatter appends one exactly once rather than producing
+    // "Iredell County County, NC".
+    pkg.identity.county && pkg.identity.state_
+      ? `${formatCountyLabel(pkg.identity.county)}, ${pkg.identity.state_}`
+      : null,
     parseRule(pkg.dueDiligence, pkg.facts, /jurisdiction|planning authority/i),
   ]);
   const minLot = parseRule(pkg.dueDiligence, pkg.facts, /minimum lot|min\.? lot|lot size/i);

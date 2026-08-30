@@ -408,6 +408,16 @@ export interface PropertyFileSource {
   documentRegistry?: Unknown;
   /** Deal-level operator record: title, asking price, people. */
   dealCard?: Unknown;
+  /**
+   * The canonical identity verdict for this Deal Card (`resolveCanonicalIdentity`).
+   *
+   * The dossier used to decide "is there a subject?" from the mission
+   * snapshot's own identity state, which is a THIRD derivation of a question
+   * Property Resolution had already answered. On 333 Cranfill Rd the
+   * resolution panel read RESOLVED while the reader on the same screen said
+   * there was no established subject to read. One answer, read here.
+   */
+  canonicalIdentity?: Unknown;
   /** The Acquisitions CRM state for this deal — seller profile, manual
    *  communication log and discovery extractions — verbatim. */
   acquisition?: Unknown;
@@ -595,9 +605,16 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
   const sellerName = text(at(source.acquisition, 'profile.name'), 120) ?? dealPeople
     .map((person) => ({ name: text(at(person, 'name'), 120), role: text(at(person, 'role'), 80) }))
     .find((person) => person.name && /seller|contact/i.test(person.role ?? ''))?.name ?? null;
+  // The canonical verdict is authoritative when one exists; the snapshot's own
+  // identity state is the fallback for a file built before it was available.
+  // Official/legal-grade verification remains a separate, still-open diligence
+  // question — it is not what decides whether there is a subject to read.
+  const canonicalState = text(at(source.canonicalIdentity, 'status'), 40);
+  const canonicalConfirmed = bool(at(source.canonicalIdentity, 'confirmed')) === true
+    || canonicalState === 'confirmed';
   const identity: AcquisitionDossier['identity'] = {
-    state: text(at(snapshot, 'identity.state'), 40),
-    confirmed: text(at(snapshot, 'identity.state'), 40) === 'confirmed',
+    state: canonicalState ?? text(at(snapshot, 'identity.state'), 40),
+    confirmed: canonicalConfirmed || text(at(snapshot, 'identity.state'), 40) === 'confirmed',
     displayAddress: text(at(snapshot, 'identity.displayAddress'), 200)
       ?? text(at(snapshot, 'identity.normalizedAddress'), 200)
       ?? text(at(lpf, 'parcelAddress'), 200),

@@ -20,6 +20,7 @@ import {
   LineChart, Scale, Target, FolderOpen,
 } from 'lucide-preact';
 import { apiGet, apiPost, chatId, legacyUrl } from '@/lib/api';
+import { countyLabel } from '@/lib/format';
 import {
   readPage, pageHref, rememberWorkspaceDeal, lastWorkspaceDealId,
   DEAL_PAGES, type WorkspaceV2Page,
@@ -913,7 +914,7 @@ export function AcquisitionWorkspaceV2() {
           <span>Owner of record <b>{owner || 'Unknown'}</b></span>
           {(id.apn || card0?.apn) && <span class="mono">APN {id.apn || card0?.apn}</span>}
           {acres != null && <span class="mono">{acres} AC</span>}
-          {id.county && <span class="mono">{id.county.toUpperCase()} COUNTY, {id.state_ || ''}</span>}
+          {countyLabel(id.county, card0?.county) && <span class="mono">{(countyLabel(id.county, card0?.county) as string).toUpperCase()}, {id.state_ || ''}</span>}
         </div>
 
         {pendingResolution && (

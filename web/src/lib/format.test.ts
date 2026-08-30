@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatRelativeTime, sectionCitationLabel } from './format.js';
+import { formatRelativeTime, sectionCitationLabel, countyLabel } from './format.js';
 
 describe('formatRelativeTime — never emits NaN', () => {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -55,5 +55,29 @@ describe('sectionCitationLabel — the marker is added once, never twice', () =>
 
   it('does not mistake a number that merely starts with a marker letter', () => {
     expect(sectionCitationLabel('4-110.2 Lot Dimensions')).toBe('§ 4-110.2 Lot Dimensions');
+  });
+});
+
+describe('countyLabel', () => {
+  it('appends the county suffix exactly once', () => {
+    expect(countyLabel('Iredell')).toBe('Iredell County');
+    expect(countyLabel('Iredell County')).toBe('Iredell County');
+    expect(countyLabel('Iredell County County')).toBe('Iredell County');
+  });
+
+  it('keeps a parish or borough as filed', () => {
+    expect(countyLabel('Orleans Parish')).toBe('Orleans Parish');
+    expect(countyLabel('Kenai Peninsula Borough')).toBe('Kenai Peninsula Borough');
+  });
+
+  it('never dresses a bare FIPS code as a county name', () => {
+    expect(countyLabel('37097')).toBe('FIPS 37097');
+    expect(countyLabel('37097', 'Iredell')).toBe('Iredell County');
+    expect(countyLabel('37097', 'Iredell County')).toBe('Iredell County');
+  });
+
+  it('returns nothing when there is nothing to name', () => {
+    expect(countyLabel(null)).toBeNull();
+    expect(countyLabel('   ')).toBeNull();
   });
 });
