@@ -772,21 +772,34 @@ export async function runIntelligenceStack(
         "God's Eye View spatial investigation",
       );
       warnings.push(...spatial.warnings);
-      if (spatial.observationCount > 0) {
-        const refreshedSource = deps.readPropertyFile(input.dealCardId);
-        if (refreshedSource) {
-          dossier = buildAcquisitionDossier({ ...refreshedSource, dealCardId: input.dealCardId, now: deps.now });
-          dossierFp = dossierFingerprint(dossier);
-          fingerprints.property = propertyLayerFingerprint(dossier);
-          marketInputFingerprint = marketLayerInputFingerprint(dossier, fingerprints.property, retained.property);
-          fingerprints.market = marketCurrent
-            ? retained.market!.layerFingerprint
-            : marketLayerFingerprint(dossier, fingerprints.property, retained.market?.webEvidence ?? []);
-          dealFp = dealLayerFingerprint(fingerprints, quickFlip, phase, input.dealCardId);
-        }
-      }
     } catch (error) {
       warnings.push(`God's Eye View spatial investigation did not complete: ${error instanceof Error ? error.message.split(/\r?\n/, 1)[0] : String(error)}. The read proceeds on retained visual evidence.`);
+    }
+    // The investigation persists its result whichever way it lands, so the
+    // evidence package must be re-read whenever it RAN — not only when it
+    // returned observations. A pass that grounds none REPLACES the retained
+    // observations with an empty set, which moves the Property inputs exactly
+    // as adding them does. Gating this rebuild on a positive count left the
+    // run stamping its products with a fingerprint taken over observations the
+    // run had itself just removed: Property read stale on the very next
+    // SELECT, Market and Deal cascaded off it, the operator saw no read at
+    // all, and re-running only repeated the same expensive pass without ever
+    // converging. Re-reading whenever the lane ran also bounds a late or
+    // deadline-exceeded investigation to one stale read instead of a
+    // permanent one.
+    const refreshedSource = deps.readPropertyFile(input.dealCardId);
+    if (refreshedSource) {
+      dossier = buildAcquisitionDossier({ ...refreshedSource, dealCardId: input.dealCardId, now: deps.now });
+      dossierFp = dossierFingerprint(dossier);
+      fingerprints.property = propertyLayerFingerprint(dossier);
+      fingerprints.seller = sellerCurrent
+        ? retained.seller!.layerFingerprint
+        : sellerLayerFingerprint(dossier, sellerEstablished, phase);
+      marketInputFingerprint = marketLayerInputFingerprint(dossier, fingerprints.property, retained.property);
+      fingerprints.market = marketCurrent
+        ? retained.market!.layerFingerprint
+        : marketLayerFingerprint(dossier, fingerprints.property, retained.market?.webEvidence ?? []);
+      dealFp = dealLayerFingerprint(fingerprints, quickFlip, phase, input.dealCardId);
     }
   }
 

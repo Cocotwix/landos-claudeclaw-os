@@ -40,7 +40,7 @@ vi.mock('./acquisition-intelligence-dossier.js', () => ({
   buildAcquisitionDossier: () => dossier,
 }));
 
-const { runIntelligenceStack } = await import('./intelligence-stack.js');
+const { runIntelligenceStack, readIntelligenceStackState } = await import('./intelligence-stack.js');
 
 function emptySeller(): AcquisitionDossier['seller'] {
   return {
@@ -344,6 +344,31 @@ describe('pre-call intelligence run', () => {
     expect(result.outcome).toBe('produced');
     expect(result.warnings.some((warning) => warning.includes('spatial investigation did not complete'))).toBe(true);
     expect(result.products.property?.expertReview).toContain('complete free expert property review');
+  });
+
+  it('leaves the layers it just produced CURRENT when the spatial investigation grounds no observation', async () => {
+    // The lane persists either way: a pass that grounds nothing replaces the
+    // retained observations with an empty set. The run must fingerprint the
+    // package as the next SELECT will see it, or Property reads stale the
+    // instant it is written and Market and Deal cascade off it — the operator
+    // sees no read at all and no re-run can ever converge.
+    dossier = { ...baseDossier(), visualObservations: [{
+      key: 'close-parcel-aerial', observation: 'Retained grounded read.', signal: 'neutral',
+      confidence: 'medium', sourceImage: 'close-parcel-aerial', model: 'gemini', capturedAt: null,
+    }] } as unknown as AcquisitionDossier;
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({
+      investigateSpatial: async () => {
+        dossier = { ...dossier, visualObservations: [] } as unknown as AcquisitionDossier;
+        return { observationCount: 0, warnings: [] };
+      },
+    }));
+    expect(result.outcome).toBe('produced');
+    const state = readIntelligenceStackState(89, {
+      readPropertyFile: deps().readPropertyFile,
+      reconcileReadiness: deps().reconcileReadiness,
+      readPipelineStage: deps().readPipelineStage,
+    } as unknown as Parameters<typeof readIntelligenceStackState>[1]);
+    expect(state.stale).toEqual({ property: false, market: false, seller: false, deal: false });
   });
 
   it('fingerprints the persisted post-search Market file so Stage A evidence cannot make the new read immediately stale', async () => {
