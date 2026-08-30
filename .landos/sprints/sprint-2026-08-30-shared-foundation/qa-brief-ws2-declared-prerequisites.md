@@ -1,0 +1,78 @@
+# Independent Browser-QA Brief — ws2-declared-prerequisites: Contract 2: Declared Capability Prerequisites
+
+- Sprint: sprint-2026-08-30-shared-foundation
+- Live URL: http://localhost:3141/dept/acquisitions/v2?deal=93
+- Ledger: C:\Users\tbutt\claudeclaw-os\.landos\sprints\sprint-2026-08-30-shared-foundation\ledger.json
+- Persistence checks: refresh=true restart=false
+
+Operator outcome under test: Capabilities and readiness items declare the minimum context they need (county, ZIP, owner, parcel, seller communications); the readiness manifest computes for a deal without parcel identity, county/ZIP market work and seller work proceed while parcel-specific research waits on its own prerequisite, and the mission graph no longer skips county-scoped market intelligence for lack of a parcel.
+
+## Requirements to disprove
+- ws2-r1: Capability metadata declares minimum required context; orchestrator/readiness use declarations to decide what can run now.
+- ws2-r2: Research Readiness computes per-item without parcel identity; county/ZIP/seller items no longer invalidated by a missing parcel.
+- ws2-r3: Mission graph runs county-scoped market intelligence when county is known while parcel lanes wait on their own prerequisite.
+- ws2-r4: Parcel-specific capabilities still gate correctly on established subject.
+
+## Required operator journey
+1. Create/open the disposable county-known lead in Acquisition Workspace V2
+2. Confirm the research readiness checklist renders a real manifest (not an error) with market/seller items evaluable and parcel-specific items honestly waiting on subject establishment
+3. Confirm a county-scoped market item is actionable/attemptable without parcel identity
+4. Open the resolved contrast deal and confirm parcel-specific items remain properly gated and unchanged
+5. Hard refresh both and confirm persistence; console clean; no unintended research reruns
+
+## Prohibited outcomes
+- Must NOT occur: Manifest still 409s wholesale without a subject card
+- Must NOT occur: Parcel-specific research runs without an established subject
+- Must NOT occur: Market intelligence still skipped by parcel_identity dependency
+- Must NOT occur: Existing resolved-deal readiness behavior regresses
+
+## Accepted operator facts (must not be contradicted)
+- none supplied
+
+## Known historical failure patterns
+- frontend-missing-value: 3 occurrence(s) (reviewed)
+- overlay-uses-wrong-acreage-basis: 3 occurrence(s) (reviewed)
+- reconciliation-ignores-acreage-conflict: 3 occurrence(s) (reviewed)
+- access-unknown-road-called-private: 2 occurrence(s) (reviewed)
+- report-download-bypasses-unified-readiness: 1 occurrence(s) (single occurrence)
+- market-pulse-favorable-valuation-language: 1 occurrence(s) (single occurrence)
+- operator-gap-label-empty-subject: 1 occurrence(s) (single occurrence)
+- duplicate-blocker-lines: 1 occurrence(s) (single occurrence)
+- report-comps-bypass-unique-registry: 1 occurrence(s) (single occurrence)
+- legacy-deal-card-silent-fallback: 2 occurrence(s) (reviewed)
+- ui-text-double-encoded-utf8: 2 occurrence(s) (reviewed)
+- resolution-state-label-not-run-after-attempt: 1 occurrence(s) (single occurrence)
+- apn-conflict-hard-stop-not-triggered: 1 occurrence(s) (single occurrence)
+- intake-dedupe-overwrites-accepted-identity: 1 occurrence(s) (single occurrence)
+- stale-resolution-provenance-contradicts-verified-chip: 1 occurrence(s) (single occurrence)
+- comps-table-hides-validated-actives: 1 occurrence(s) (single occurrence)
+- functional-role-label-mismatch: 1 occurrence(s) (single occurrence)
+- refresh-data-loss: 1 occurrence(s) (single occurrence)
+- restart-assertion-races-async-render: 1 occurrence(s) (single occurrence)
+- restart-permission-boundary: 1 occurrence(s) (single occurrence)
+- ws1-qa-card-count-contract: 1 occurrence(s) (single occurrence)
+- ws1-qa-lane-selector-contract: 1 occurrence(s) (single occurrence)
+- managed-restart-access-denied: 1 occurrence(s) (single occurrence)
+- cdp-attach-foreign-browser-endpoint: 1 occurrence(s) (single occurrence)
+- browser-pages-leak-across-runs: 1 occurrence(s) (single occurrence)
+- artifact-metadata-page-count-wrong: 1 occurrence(s) (single occurrence)
+- overlay-empty-state-not-affirmed: 1 occurrence(s) (single occurrence)
+- journey-expect-text-css-transform-mismatch: 1 occurrence(s) (single occurrence)
+- foreign-browser-token-tab-residue: 1 occurrence(s) (single occurrence)
+- canonical-state-partial-propagation: 6 occurrence(s) (reviewed)
+- same-label-different-basis: 5 occurrence(s) (reviewed)
+- ws1-legend-soon-swatch-contract: 1 occurrence(s) (single occurrence)
+- legacy-css-collides-with-redesigned-markup: 1 occurrence(s) (single occurrence)
+
+## Mandate
+- Actively attempt to prove the implementation wrong; never repeat the builder's conclusions.
+- Open the actual running localhost dashboard in a real browser.
+- Navigate the full affected workflow; click every relevant control and open every affected tab.
+- Exercise relevant forms, maps, filters, tables, links, and actions.
+- Compare visible frontend output with API responses and, when appropriate, database records.
+- Compare visible output with accepted operator facts.
+- Refresh the browser and verify persistence; when restart persistence is required, restart via npm run landos:restart and reopen the workflow.
+- Capture fresh screenshots and exact reproduction steps for every failure.
+- Judge business meaning and operator usability, not merely whether pages load.
+- Return a non-passing result whenever an internally fixable issue remains.
+- After repairs, run the exact same journey again.

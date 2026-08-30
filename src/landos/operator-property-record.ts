@@ -11,7 +11,7 @@ import { sanitizeAccessLanguage } from './evidence-language.js';
 import { formatCountyLabel } from './fact-format.js';
 import { streetReferenceFrom } from './lead-identity.js';
 import { computePricingGate, type PricingGate } from './strategy-readiness.js';
-import { buildAcreageBasis, checkOverlayConsistency, pinOverlayAcresToGeometry, type AcreageReconciliation } from './acreage-basis.js';
+import { buildAcreageBasis, checkOverlayConsistency, governingAcreageOf, pinOverlayAcresToGeometry, type AcreageReconciliation, type GoverningAcreage } from './acreage-basis.js';
 import { computeResearchCompleteness, type LaneSignal, type ResearchCompleteness } from './research-completeness.js';
 import type {
   CountyRecordsFinding,
@@ -139,6 +139,9 @@ export interface OperatorPropertyRecord {
     acreageConflict: boolean;
     /** Shared canonical acreage & spatial basis — every consumer reads this. */
     acreageBasis: AcreageReconciliation;
+    /** THE governing acreage conclusion. Surfaces that print one number print
+     *  this one; assessed/mapped/provider values remain reference evidence. */
+    governingAcreage: GoverningAcreage;
     coordinates: { lat: number; lng: number } | null;
     parcelConfidence: string;
     landUseClass: string | null;
@@ -983,6 +986,7 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
       mappedAcres,
       acreageConflict,
       acreageBasis,
+      governingAcreage: governingAcreageOf(acreageBasis),
       coordinates: context.coordinates ?? null,
       parcelConfidence: verificationNote,
       landUseClass,

@@ -28,6 +28,7 @@
 import { createHash } from 'node:crypto';
 
 import { getLandosDb, landosAudit } from './db.js';
+import { IntelligenceStackRunStore } from './intelligence-stack-run-store.js';
 import { readCurrentPropertyIdentity } from './property-summary-slice.js';
 
 export const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -58,6 +59,31 @@ export interface DerivedEvidenceResult {
   skippedReason: string | null;
 }
 
+export type EvidenceWeight = 'confirmed' | 'well_supported' | 'likely' | 'unresolved';
+export type EvidenceVerificationStatus = EvidenceWeight | 'retained_not_identity_verifying';
+
+/** One vocabulary at the admission boundary, including older collector terms. */
+export function normalizeEvidenceWeight(value: unknown): EvidenceWeight {
+  const key = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (['confirmed', 'verified', 'official', 'high'].includes(key)) return 'confirmed';
+  if (['well_supported', 'supported', 'medium_high'].includes(key)) return 'well_supported';
+  if (['likely', 'medium', 'probable'].includes(key)) return 'likely';
+  return 'unresolved';
+}
+
+export interface EvidenceAdmissionInput {
+  dealCardId: number;
+  capabilityId: string;
+  collectorKey: string;
+  rows: readonly DerivedEvidenceInput[];
+  runId?: string | null;
+  actor?: string;
+}
+
+function runStillAuthoritative(runId: string | null | undefined, dealCardId: number): boolean {
+  return !runId || new IntelligenceStackRunStore().isAuthoritative(runId, dealCardId);
+}
+
 /**
  * Append evidence rows for an identified property.
  *
@@ -66,12 +92,7 @@ export interface DerivedEvidenceResult {
  * floating free of the property it describes. Without one nothing is written
  * and the reason is returned rather than swallowed.
  */
-export function appendDerivedEvidence(input: {
-  dealCardId: number;
-  collectorKey: string;
-  rows: readonly DerivedEvidenceInput[];
-  actor?: string;
-}): DerivedEvidenceResult {
+export function writeEvidence(input: EvidenceAdmissionInput): DerivedEvidenceResult {
   const identity = readCurrentPropertyIdentity(input.dealCardId);
   if (!identity) {
     return {
@@ -84,6 +105,12 @@ export function appendDerivedEvidence(input: {
   if (!input.rows.length) {
     return { evidenceIds: [], duplicates: 0, propertyIdentityVersionId: identity.id, skippedReason: null };
   }
+  if (!runStillAuthoritative(input.runId, input.dealCardId)) {
+    return {
+      evidenceIds: [], duplicates: 0, propertyIdentityVersionId: identity.id,
+      skippedReason: 'The originating run is no longer authoritative; late evidence was rejected.',
+    };
+  }
 
   const db = getLandosDb();
   const insert = db.prepare(`
@@ -91,16 +118,17 @@ export function appendDerivedEvidence(input: {
       deal_card_id, property_identity_version_id, domain, evidence_kind, fact_key,
       raw_value_json, normalized_value_json, source_name, source_url, source_tier,
       verification_status, confidence, collector_key, retrieved_at, effective_at,
-      artifact_ref, idempotency_key
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      artifact_ref, originating_capability, originating_run_id, claim, idempotency_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const findExisting = db.prepare('SELECT id FROM landos_property_evidence_item WHERE idempotency_key=?');
 
   const evidenceIds: number[] = [];
   let duplicates = 0;
   const write = db.transaction((rows: readonly DerivedEvidenceInput[]) => {
+    if (!runStillAuthoritative(input.runId, input.dealCardId)) return false;
     for (const row of rows) {
-      const idempotencyKey = `${row.domain}:${identity.id}:${row.factKey}:${sha256(row.dedupeOn).slice(0, 24)}`;
+      const idempotencyKey = `${row.domain}:${identity.id}:${row.factKey}:${input.runId ?? 'retained'}:${sha256(row.dedupeOn).slice(0, 24)}`;
       const outcome = insert.run(
         input.dealCardId,
         identity.id,
@@ -115,11 +143,14 @@ export function appendDerivedEvidence(input: {
         // Derived intelligence is retained evidence ABOUT an identified
         // property. It never verifies which property this is.
         'retained_not_identity_verifying',
-        row.confidence,
+        normalizeEvidenceWeight(row.confidence),
         input.collectorKey,
         row.retrievedAt,
         row.retrievedAt,
         null,
+        input.capabilityId,
+        input.runId ?? null,
+        typeof row.normalized === 'string' ? row.normalized : stableJson(row.normalized),
         idempotencyKey,
       );
       if (outcome.changes > 0) evidenceIds.push(outcome.lastInsertRowid as number);
@@ -129,9 +160,32 @@ export function appendDerivedEvidence(input: {
         if (existing) evidenceIds.push(existing.id);
       }
     }
+    return true;
   });
-  write(input.rows);
+  const accepted = write(input.rows);
+  if (!accepted) {
+    return {
+      evidenceIds: [], duplicates: 0, propertyIdentityVersionId: identity.id,
+      skippedReason: 'The originating run lost authority before evidence admission; late evidence was rejected.',
+    };
+  }
   return { evidenceIds, duplicates, propertyIdentityVersionId: identity.id, skippedReason: null };
+}
+
+/** Compatibility seam for established collectors; all rows still enter the
+ * same authoritative admission function. */
+export function appendDerivedEvidence(input: {
+  dealCardId: number;
+  collectorKey: string;
+  rows: readonly DerivedEvidenceInput[];
+  capabilityId?: string;
+  runId?: string | null;
+  actor?: string;
+}): DerivedEvidenceResult {
+  return writeEvidence({
+    ...input,
+    capabilityId: input.capabilityId ?? input.collectorKey,
+  });
 }
 
 export interface DerivedSnapshotResult {
@@ -158,6 +212,8 @@ export function writeDerivedSnapshot(input: {
   changeReason: string;
   actor: string;
   auditEvent?: string;
+  capabilityId?: string;
+  runId?: string | null;
 }): DerivedSnapshotResult {
   const identity = readCurrentPropertyIdentity(input.dealCardId);
   if (!identity) {
@@ -169,6 +225,12 @@ export function writeDerivedSnapshot(input: {
     };
   }
   const db = getLandosDb();
+  if (!runStillAuthoritative(input.runId, input.dealCardId)) {
+    return {
+      snapshotId: null, reused: false, propertyIdentityVersionId: identity.id,
+      skippedReason: 'The originating run is no longer authoritative; the late current read was rejected.',
+    };
+  }
   const inputHash = sha256(stableJson({
     identityVersionId: identity.id,
     snapshotType: input.snapshotType,
@@ -183,6 +245,7 @@ export function writeDerivedSnapshot(input: {
   }
 
   const snapshotId = db.transaction(() => {
+    if (!runStillAuthoritative(input.runId, input.dealCardId)) return null;
     const prior = db.prepare(`
       SELECT id FROM landos_deal_intelligence_snapshot
       WHERE deal_card_id=? AND snapshot_type=? AND status='current' LIMIT 1
@@ -196,8 +259,8 @@ export function writeDerivedSnapshot(input: {
       INSERT INTO landos_deal_intelligence_snapshot (
         deal_card_id, version, property_identity_version_id, prior_snapshot_id,
         snapshot_type, status, input_hash, evidence_max_id, completeness_json,
-        summary_json, change_reason, generated_by
-      ) VALUES (?, ?, ?, ?, ?, 'current', ?, ?, ?, ?, ?, ?)
+        summary_json, change_reason, generated_by, originating_capability, originating_run_id
+      ) VALUES (?, ?, ?, ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.dealCardId,
       nextVersion,
@@ -210,9 +273,18 @@ export function writeDerivedSnapshot(input: {
       stableJson(input.payload),
       input.changeReason,
       input.actor,
+      input.capabilityId ?? input.snapshotType,
+      input.runId ?? null,
     );
     return result.lastInsertRowid as number;
   })();
+
+  if (snapshotId == null) {
+    return {
+      snapshotId: null, reused: false, propertyIdentityVersionId: identity.id,
+      skippedReason: 'The originating run lost authority before current-read admission; the late write was rejected.',
+    };
+  }
 
   if (input.auditEvent) {
     landosAudit(input.actor, input.auditEvent, `deal ${input.dealCardId}: ${input.snapshotType}`, {

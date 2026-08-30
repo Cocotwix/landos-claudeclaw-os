@@ -192,10 +192,11 @@ import {
 } from './research-coverage-cycle.js';
 import {
   applyRunEvent,
+  cancelRunProgress,
   finishRunProgress,
   startRunProgress,
-  type IntelligenceRunProgress,
 } from './intelligence-run-progress.js';
+import { IntelligenceStackRunStore } from './intelligence-stack-run-store.js';
 import { readIntelligenceStackState, runIntelligenceStack } from './intelligence-stack.js';
 import {
   DEAL_INTELLIGENCE_PRODUCT_TYPE,
@@ -327,7 +328,7 @@ import { buildDealOperatorAnalysis, emptyDealOperatorContext, runWholeCardOperat
 import { ManagedIdentityRepository, EnvironmentManagedEmailProvider, managedIdentityStatus } from './managed-identity.js';
 import { WindowsCredentialVault } from './windows-credential-vault.js';
 import { SqliteGovernmentAccountRepository } from './government-account-manager.js';
-import { writeBrowserFact, listBrowserFacts, requestCancel, isCancelled, clearCancel, markStoppedByOperator } from './browser-fact-store.js';
+import { writeBrowserFact, listBrowserFacts, promoteBrowserFactsToEvidence, requestCancel, isCancelled, clearCancel, markStoppedByOperator } from './browser-fact-store.js';
 import { assessSellerAuthority } from './seller-authority.js';
 import type { BrowserFact, BrowserSearchMode } from './browser-intelligence.js';
 import { deriveCounty } from './providers/county-geocode.js';
@@ -399,7 +400,7 @@ import {
   buildRetainedLocationIndex, compAddressKey, reconcileCompAddress,
   type RetainedLocationRecord,
 } from './comp-location-reconciliation.js';
-import { buildResolutionSnapshot, writeResolutionSnapshot, readResolutionSnapshot } from './resolution-snapshot.js';
+import { readResolutionSnapshot } from './resolution-snapshot.js';
 import { getDealCardDd } from './deal-card-dd.js';
 import { getDealCardMarket } from './deal-card-market.js';
 import { getDealCardReport, runDealCardReport, buildPersistedResolver, buildIdentityText, landFactsForScore, projectPropertyInspectionForReport, projectPropertyIntelligenceSnapshotForReport } from './deal-card-report.js';
@@ -565,6 +566,7 @@ import {
 } from './exact-address-web-discovery.js';
 import { loadSubjectListingDetail, reprojectSubjectListingDetail } from './subject-listing-store.js';
 import { resolveCanonicalIdentity, supersessionLabel } from './canonical-identity.js';
+import { resolveCanonicalSubjectState } from './canonical-subject-state.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -4311,12 +4313,21 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'not found' }, 404);
-    const subject = (deal.propertyCards?.[0] ?? {}) as { verification_status?: string | null };
     const identity = readParcelIdentity(id);
     const snapshot = readResolutionSnapshot(id);
-    const confirmed = subject.verification_status === 'verified_property'
-      && ((identity?.state === 'confirmed') || (assembleBusinessObjects(id)?.confirmedParcel != null));
-    return c.json({ parcelIdentity: identity, snapshot, confirmed });
+    // The canonical subject state is the shared answer. This endpoint used to
+    // AND the card's official-verification flag with the spine verdict, so a
+    // research-grade established subject reported confirmed:false here while
+    // every other surface showed the resolved parcel. Official verification is
+    // reported separately; it never erases an established working subject.
+    const subjectState = resolveCanonicalSubjectState(id);
+    return c.json({
+      parcelIdentity: identity,
+      snapshot,
+      confirmed: subjectState.subjectResolved,
+      officiallyVerified: subjectState.officiallyVerified,
+      subject: subjectState,
+    });
   });
 
   // Pre-Call Intelligence handoff — the backend read model for the seller call.
@@ -7319,6 +7330,7 @@ export function registerLandosRoutes(app: Hono): void {
       const cardCoordinates = Number.isFinite(cardLat) && Number.isFinite(cardLng)
         ? { lat: cardLat, lng: cardLng }
         : undefined;
+      const canonicalSubject = resolveCanonicalIdentity(id);
       const subject: PublicIntelligenceSubject = {
         rawInput,
         normalizedAddress: str(discovery.patch.address) ?? retainedVerification?.identity?.situsAddress ?? str(property.address),
@@ -7329,9 +7341,18 @@ export function registerLandosRoutes(app: Hono): void {
         resolvedApn: discovery.discoveryUsable
           ? str(discovery.patch.apn) ?? retainedVerification?.identity?.apn ?? requestedApn
           : retainedVerification?.identity?.apn ?? undefined,
-        resolutionStatus: discovery.state,
-        discoveryUsable: discovery.discoveryUsable,
-        resolutionExplanation: discovery.discoveryBasis,
+        // The spine-established canonical identity is a parcel source (it is
+        // minted only from APN+jurisdiction / LandPortal id+FIPS / an official
+        // record), so a subject it establishes never re-enters screening as
+        // "unresolved" merely because this discovery re-derivation found less.
+        resolutionStatus: canonicalSubject.confirmed && discovery.state === 'unresolved'
+          ? 'provisional'
+          : discovery.state,
+        discoveryUsable: discovery.discoveryUsable
+          || (canonicalSubject.confirmed && discovery.state !== 'conflicted'),
+        resolutionExplanation: canonicalSubject.confirmed && discovery.state === 'unresolved'
+          ? canonicalSubject.basis
+          : discovery.discoveryBasis,
         coordinates: discovery.patch.coordinates ?? cardCoordinates,
         assessedAcres: Number(discovery.patch.acres) > 0
           ? Number(discovery.patch.acres)
@@ -10945,34 +10966,20 @@ export function registerLandosRoutes(app: Hono): void {
   // SELECT plus fingerprint staleness; only the POST engages the analyst, in
   // ONE coordinated pass over whichever layers are actually stale.
 
-  // The one in-flight record for a finalization run, now carrying the live
-  // stage projection as well as the start time. Server-side on purpose: the
-  // operator can refresh, navigate away and come back, and the SELECT-only GET
-  // still answers "a run is in progress and it is on Market Intelligence".
-  const intelligenceStackRuns = new Map<number, {
-    startedAt: string;
-    error: string | null;
-    progress: IntelligenceRunProgress;
-  }>();
-  // A finalization run is bounded. The specialist executor talks to an external
-  // agent process, and when that process wedges the run neither resolves nor
-  // rejects: the in-flight entry is never cleared, every later request is
-  // refused as already-running, and the Deal keeps serving intelligence built
-  // from evidence it has since superseded. A run that has outlived this ceiling
-  // is treated as abandoned so the next request can rebuild.
+  // SQLite owns run identity and publication authority. AbortControllers are
+  // process-local transport handles only; refresh/rejoin reads the durable row.
+  const intelligenceStackRunStore = new IntelligenceStackRunStore();
+  const intelligenceStackControllers = new Map<string, AbortController>();
   const INTELLIGENCE_RUN_CEILING_MS = 20 * 60_000;
-  const intelligenceRunAbandoned = (startedAt: string): boolean => {
-    const started = Date.parse(startedAt);
-    return !Number.isFinite(started) || Date.now() - started > INTELLIGENCE_RUN_CEILING_MS;
-  };
-  /** Reject rather than hang: a wedged executor must not hold finalization. */
-  const withIntelligenceRunCeiling = <T,>(work: Promise<T>): Promise<T> => {
+  intelligenceStackRunStore.reclaimAbandoned(INTELLIGENCE_RUN_CEILING_MS);
+  /** Reject and abort transport rather than let a wedged executor retain authority. */
+  const withIntelligenceRunCeiling = <T,>(work: Promise<T>, onTimeout: () => void): Promise<T> => {
     let timer: NodeJS.Timeout | null = null;
     const ceiling = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`Intelligence finalization exceeded ${INTELLIGENCE_RUN_CEILING_MS} ms.`)),
-        INTELLIGENCE_RUN_CEILING_MS,
-      );
+      timer = setTimeout(() => {
+        onTimeout();
+        reject(new Error(`Intelligence finalization exceeded ${INTELLIGENCE_RUN_CEILING_MS} ms.`));
+      }, INTELLIGENCE_RUN_CEILING_MS);
       timer.unref?.();
     });
     return Promise.race([work, ceiling]).finally(() => { if (timer) clearTimeout(timer); }) as Promise<T>;
@@ -11220,7 +11227,13 @@ export function registerLandosRoutes(app: Hono): void {
         staleReplyCount: dealBrain.staleReplies.length,
         staleReasons: dealBrain.staleReplies.map((entry) => entry.staleReason),
       },
-      run: intelligenceStackRuns.get(id) ?? null,
+      run: (() => {
+        intelligenceStackRunStore.reclaimAbandoned(INTELLIGENCE_RUN_CEILING_MS);
+        const latest = intelligenceStackRunStore.latest(id);
+        return !latest || latest.status === 'complete' || latest.status === 'superseded'
+          ? null
+          : { runId: latest.runId, status: latest.status, startedAt: latest.startedAt, error: latest.error, progress: latest.progress };
+      })(),
       dealBrainRun: dealBrainRuns.get(id) ?? null,
       reconciliation: projectCurrentIntelligenceReconciliation(retainedReconciliation, operatorProducts.property),
       reconcileRun: intelligenceReconcileRuns.get(id) ?? null,
@@ -11237,13 +11250,10 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
-    const inFlight = intelligenceStackRuns.get(id);
-    if (inFlight && !inFlight.error && !intelligenceRunAbandoned(inFlight.startedAt)) {
+    intelligenceStackRunStore.reclaimAbandoned(INTELLIGENCE_RUN_CEILING_MS);
+    const inFlight = intelligenceStackRunStore.active(id);
+    if (inFlight) {
       return c.json({ running: true, startedAt: inFlight.startedAt, progress: inFlight.progress, runtime: intelligenceExecutorRuntimeStatus() }, 202);
-    }
-    if (inFlight && !inFlight.error) {
-      logger.warn({ dealCardId: id, startedAt: inFlight.startedAt }, 'intelligence_stack_run_abandoned');
-      intelligenceStackRuns.delete(id);
     }
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const layerNames: IntelligenceLayerId[] = ['property', 'market', 'seller', 'deal'];
@@ -11252,45 +11262,52 @@ export function registerLandosRoutes(app: Hono): void {
       : undefined;
     const startedAt = new Date().toISOString();
     const runId = `intel_${id}_${Date.now().toString(36)}`;
-    intelligenceStackRuns.set(id, { startedAt, error: null, progress: startRunProgress(runId, startedAt) });
+    const controller = new AbortController();
+    intelligenceStackControllers.set(runId, controller);
+    intelligenceStackRunStore.create({ runId, dealCardId: id, startedAt, progress: startRunProgress(runId, startedAt) });
     // Fold each reported transition into the ONE in-flight record the GET
     // already serves. A run that has since been superseded or abandoned never
     // writes back over its replacement.
     const onProgress = (event: Parameters<typeof applyRunEvent>[1]): void => {
-      const entry = intelligenceStackRuns.get(id);
-      if (!entry || entry.progress.runId !== runId) return;
-      intelligenceStackRuns.set(id, {
-        ...entry,
-        progress: applyRunEvent(entry.progress, event, new Date().toISOString()),
-      });
+      const entry = intelligenceStackRunStore.get(runId);
+      if (!entry || !entry.authoritative) return;
+      intelligenceStackRunStore.updateProgress(
+        runId,
+        id,
+        applyRunEvent(entry.progress, event, new Date().toISOString()),
+      );
     };
     const settle = (failure: string | null): void => {
-      const entry = intelligenceStackRuns.get(id);
-      if (!entry || entry.progress.runId !== runId) return;
+      const entry = intelligenceStackRunStore.get(runId);
+      if (!entry || !entry.authoritative) return;
       const progress = finishRunProgress(entry.progress, { error: failure }, new Date().toISOString());
-      // A finished run must not keep reading "running" anywhere. On success the
-      // record is dropped so the Deal Card falls through to the reads the run
-      // just produced; a failure is retained so the operator can see which
-      // stage stopped and retry from the existing control.
-      if (failure) intelligenceStackRuns.set(id, { startedAt, error: failure, progress });
-      else intelligenceStackRuns.delete(id);
+      intelligenceStackRunStore.finish({
+        runId, dealCardId: id, status: failure ? 'failed' : 'complete', progress, error: failure,
+      });
     };
 
     void (async () => {
       try {
-        const result = await withIntelligenceRunCeiling(runIntelligenceStack({
+        const work = runIntelligenceStack({
           dealCardId: id,
           layers: layers?.length ? layers : undefined,
           force: body.force === true,
           requestedProvider: str(body.provider) ?? null,
           requestedModel: str(body.model) ?? null,
+          runId,
+          signal: controller.signal,
         }, {
           ...intelligenceStackReadDeps,
           analyst: createIntelligenceExecutor(),
           onProgress,
+          isRunAuthoritative: (candidateRunId) => intelligenceStackRunStore.isAuthoritative(candidateRunId, id),
           // Bounded God's Eye View spatial investigation before the Property
           // specialist reasons — best-effort; failures degrade to warnings.
-          investigateSpatial: (dealCardId, dossier) => investigatePropertyWithGev(dealCardId, dossier),
+          investigateSpatial: (dealCardId, dossier) => investigatePropertyWithGev(dealCardId, dossier, {
+            runId,
+            signal: controller.signal,
+            isRunAuthoritative: (candidateRunId) => intelligenceStackRunStore.isAuthoritative(candidateRunId, id),
+          }),
           runBackfill: async (itemIds: string[]) => {
             const report = await runResearchReadinessBackfill(
               id,
@@ -11300,21 +11317,53 @@ export function registerLandosRoutes(app: Hono): void {
             );
             return 'error' in report ? null : report.after;
           },
-        }));
+        });
+        const result = await withIntelligenceRunCeiling(work, () => {
+          const entry = intelligenceStackRunStore.get(runId);
+          if (!entry?.authoritative) return;
+          controller.abort();
+          const failure = `Intelligence finalization exceeded ${INTELLIGENCE_RUN_CEILING_MS} ms.`;
+          intelligenceStackRunStore.finish({
+            runId,
+            dealCardId: id,
+            status: 'failed',
+            progress: finishRunProgress(entry.progress, { error: failure }, new Date().toISOString()),
+            error: failure,
+          });
+        });
         settle(result.outcome === 'produced' || result.outcome === 'reused' ? null : result.reason);
       } catch (error) {
         const detail = (error as Error)?.message?.split(/\r?\n/, 1)[0] ?? 'unknown';
         logger.error({ event: 'intelligence_stack_run_failed', dealCardId: id, msg: detail }, 'intelligence_stack_run_failed');
         settle(`Intelligence run failed: ${detail}`);
+      } finally {
+        intelligenceStackControllers.delete(runId);
       }
     })();
 
     return c.json({
       running: true,
       startedAt,
-      progress: intelligenceStackRuns.get(id)?.progress ?? null,
+      progress: intelligenceStackRunStore.get(runId)?.progress ?? null,
       runtime: intelligenceExecutorRuntimeStatus(),
     }, 202);
+  });
+
+  app.post('/api/landos/deal-cards/:id/intelligence/cancel', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const active = intelligenceStackRunStore.active(id);
+    if (!active) return c.json({ cancelled: false, run: null });
+    // Revoke durable authority before signalling transport. Even if an external
+    // process ignores cancellation and settles late, guarded evidence/read
+    // writers can no longer publish on behalf of this run.
+    const progress = cancelRunProgress(active.progress, new Date().toISOString());
+    const cancelled = intelligenceStackRunStore.cancel(active.runId, id, progress);
+    intelligenceStackControllers.get(active.runId)?.abort();
+    return c.json({
+      cancelled,
+      run: { runId: active.runId, status: 'cancelled', startedAt: active.startedAt, error: progress.error, progress },
+    });
   });
 
   // ── Bounded intelligence → capability → reconciliation (explicit only) ──
@@ -11330,8 +11379,8 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
-    const stackInFlight = intelligenceStackRuns.get(id);
-    if (stackInFlight && !stackInFlight.error) {
+    const stackInFlight = intelligenceStackRunStore.active(id);
+    if (stackInFlight) {
       return c.json({ error: 'An intelligence run is already in flight for this deal.' }, 409);
     }
     const inFlight = intelligenceReconcileRuns.get(id);
@@ -12890,6 +12939,10 @@ export function registerLandosRoutes(app: Hono): void {
     const sellerAuthority = assessSellerAuthority({ sellerName, ownerOfRecord, parcelVerified: ownerVerified, ownerFromOfficialSource: countyRecords.facts.some((f) => f.key === 'owner' && f.status === 'extracted') });
 
     const session = await browserSessionHealth();
+    const evidenceAdmission = promoteBrowserFactsToEvidence(id);
+    const readiness = evidenceAdmission.evidenceIds.length
+      ? reconcileResearchReadiness(id)
+      : null;
     return c.json({
       dealCardId: id, mode,
       landportal: redactEvidence(landportal),
@@ -12897,6 +12950,8 @@ export function registerLandosRoutes(app: Hono): void {
       recordedGovernmentOutcome,
       sellerAuthority,
       facts: listBrowserFacts(id),
+      evidenceAdmission,
+      readiness,
       countySourceMap: searchKey.state && searchKey.county ? getCountySources(searchKey.state, searchKey.county) : null,
       session,
     });

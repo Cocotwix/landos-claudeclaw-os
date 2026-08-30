@@ -38,6 +38,8 @@ function item(
     lastSuccessAt: null,
     reason: `${id} reason`,
     nextAction: null,
+    prerequisites: [],
+    unmetPrerequisites: [],
     blocksIntelligence: false,
     knowledgePlan: null,
     ...overrides,
@@ -56,7 +58,7 @@ function manifestOf(items: ResearchReadinessManifestItem[]): ResearchReadinessMa
     groups: {} as ResearchReadinessManifest['groups'],
     backfillCandidates: [],
     operatorCompleteness: {
-      returned: 0, denominator: items.length, partial: 0, unresolved: 0, blocked: 0, notRequired: 0,
+      returned: 0, denominator: items.length, partial: 0, unresolved: 0, blocked: 0, waiting: 0, notRequired: 0,
       headline: 'test', items: [],
     },
   };

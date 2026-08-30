@@ -42,6 +42,7 @@ import {
   DEAL_INTELLIGENCE_SCOPE,
   dealIntelligenceMissionDefinition,
   type DealIntelligenceCapabilities,
+  type LanePrerequisiteEvaluator,
 } from './deal-intelligence-mission.js';
 import { assembleProgressiveDealIntelligence, isSettledChildStatus } from './deal-intelligence-progressive.js';
 import { MissionGraphStore } from './mission-graph-store.js';
@@ -52,6 +53,7 @@ import {
   type MissionChildState,
   type MissionJoin,
 } from './mission-graph.js';
+import { resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
 import { PropertyIntelligenceStore } from './property-intelligence-store.js';
 import { reconcilePropertyIntelligenceSnapshot, type PropertyIntelligenceSnapshot, type SnapshotSpecialistRecord } from './property-intelligence-snapshot.js';
 import type { SpecialistId } from './property-intelligence-specialists.js';
@@ -227,7 +229,16 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
       startedAt,
       specialists: initialDealIntelligenceSpecialists(),
     });
-    const definition = dealIntelligenceMissionDefinition(options.capabilities);
+    // Declared lane prerequisites are evaluated against the canonical subject
+    // once, at launch: a county-known lead runs its market lane immediately
+    // instead of waiting behind (or being skipped by) parcel resolution. A
+    // failed subject read changes nothing — lanes keep their conservative edges.
+    let subjectEvaluator: LanePrerequisiteEvaluator | undefined;
+    try {
+      const subjectState = resolveCanonicalSubjectState(dealCardId);
+      subjectEvaluator = (clauses) => unmetPrerequisites(subjectState, clauses);
+    } catch { subjectEvaluator = undefined; }
+    const definition = dealIntelligenceMissionDefinition(options.capabilities, { unmetPrerequisitesFor: subjectEvaluator });
     launched = runInBrowserWorkflowScope(browserScope, () => launchFanOutMission({
         definition,
         scopeId: dealCardId,

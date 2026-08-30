@@ -104,6 +104,14 @@ describe('PropertyIntelligenceStore snapshot precedence', () => {
 });
 
 describe('PropertyIntelligenceStore run lifecycle', () => {
+  it('refuses a late specialist update after the parent run has settled', () => {
+    const store = new PropertyIntelligenceStore();
+    store.createRun({ runId: 'pi_settled', dealCardId: 32, trigger: 'operator', startedAt: '2026-07-25T00:00:00.000Z', specialists: initialSpecialistRecords() });
+    expect(store.completeRun({ runId: 'pi_settled', dealCardId: 32, status: 'complete', completedAt: '2026-07-25T00:05:00.000Z', snapshot: snapshot({ runId: 'pi_settled', sequence: 1 }) })).toBe(true);
+    expect(store.updateSpecialist({ runId: 'pi_settled', specialistId: 'parcel_identity', status: 'failed', summary: 'late write' })).toBe(false);
+    expect(store.listSpecialists('pi_settled').find((row) => row.id === 'parcel_identity')?.summary).not.toBe('late write');
+  });
+
   it('settles a run exactly once and rejects a mismatched snapshot payload', () => {
     const store = new PropertyIntelligenceStore();
     store.createRun({ runId: 'pi_once', dealCardId: 32, trigger: 'operator', startedAt: 'now', specialists: initialSpecialistRecords() });

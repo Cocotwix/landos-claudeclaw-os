@@ -28,6 +28,7 @@ import { distinctApnIdentities, type SnapshotDueDiligenceItem, type SnapshotEvid
 import { officialParcelSourceCoverage } from './public-property-intelligence-live.js';
 import type { GovernmentRecordArtifactView } from './government-records-types.js';
 import { reconcileDiscoveryIdentity } from './discovery-identity.js';
+import { resolveCanonicalIdentity } from './canonical-identity.js';
 import { invokeRuntimeCapability } from './capability-registry.js';
 import { ASSESSOR_TAX_CAPABILITY_ID, assessorTaxSnapshotFacts } from './assessor-tax-capability.js';
 import { CapabilityInvocationStore } from './capability-store.js';
@@ -908,12 +909,23 @@ async function collectParcelIdentityUnlocked(
     : [];
 
   const apn = record.identity.apn ?? str(property.apn);
-  const state = apnConflicts.length > 0 ? 'conflicted' : discovery.state;
+  // The accepted canonical identity is the shared answer; this snapshot never
+  // re-decides it downward. A spine-established subject with no APN conflict
+  // reads at least provisional here (confirmed stays reserved for an official
+  // parcel record), so a property resolved upstream can never render as "no
+  // subject" inside its own intelligence run.
+  const canonical = resolveCanonicalIdentity(ctx.dealCardId);
+  const canonicalLift = canonical.confirmed
+    && apnConflicts.length === 0
+    && (discovery.state === 'unresolved' || !discovery.discoveryUsable);
+  const state = apnConflicts.length > 0
+    ? 'conflicted'
+    : canonicalLift && discovery.state === 'unresolved' ? 'provisional' : discovery.state;
 
   const identity: SnapshotIdentity = {
     state,
-    discoveryUsable: discovery.discoveryUsable && apnConflicts.length === 0,
-    discoveryBasis: discovery.discoveryBasis,
+    discoveryUsable: (discovery.discoveryUsable || canonicalLift) && apnConflicts.length === 0,
+    discoveryBasis: canonicalLift && discovery.state === 'unresolved' ? canonical.basis : discovery.discoveryBasis,
     discoverySources: discovery.discoverySources,
     normalizedAddress: record.identity.situsAddress || str(property.address),
     county: record.identity.county,
@@ -923,8 +935,8 @@ async function collectParcelIdentityUnlocked(
     owner: record.identity.owner,
     ownerMailing: record.identity.ownerMailing,
     situs: record.identity.situsAddress || null,
-    acres: record.identity.mappedAcres ?? record.identity.assessedAcres,
-    acreageBasis: record.identity.acreageBasis?.valuationBasis ?? record.identity.acreageBasis?.displayBasis ?? null,
+    acres: record.identity.governingAcreage.value ?? record.identity.mappedAcres ?? record.identity.assessedAcres,
+    acreageBasis: record.identity.governingAcreage.kind ?? record.identity.acreageBasis?.valuationBasis ?? record.identity.acreageBasis?.displayBasis ?? null,
     coordinates: record.identity.coordinates,
     hasParcelGeometry: !!record.identity.coordinates,
     sourceConfidence: discovery.confidence,
@@ -941,7 +953,7 @@ async function collectParcelIdentityUnlocked(
       : state === 'conflicted'
         ? `Conflicting parcel evidence is attached to this Deal Card.${liveNote}`
         : state === 'provisional'
-          ? `${discovery.discoveryBasis}${liveNote}${inspectionNote}`
+          ? `${canonicalLift && discovery.state === 'unresolved' ? canonical.basis : discovery.discoveryBasis}${liveNote}${inspectionNote}`
           // An unresolved identity must say WHY it is unresolved. "No record
           // matched" reads as an answer about the parcel; a missing county or a
           // jurisdiction with no configured source is a LandOS coverage gap and
@@ -1382,7 +1394,7 @@ export async function collectZoningLandUse(ctx: MissionContext): Promise<Special
 
 // ── Environmental, terrain and access from the reconciled operator record ────
 
-function operatorRecordFor(dealCardId: number): OperatorPropertyRecord | null {
+export function operatorRecordFor(dealCardId: number): OperatorPropertyRecord | null {
   const deal = getDealCard(dealCardId);
   if (!deal) return null;
   const property = resolveSubjectPropertyCard(deal).card ?? {};

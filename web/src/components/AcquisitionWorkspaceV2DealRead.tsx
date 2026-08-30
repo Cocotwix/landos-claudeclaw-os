@@ -20,7 +20,7 @@
 //     that produces a new read, and it says so.
 
 import { useEffect, useState } from 'preact/hooks';
-import { Brain, RefreshCw, AlertTriangle, Clock, Lightbulb, HelpCircle, ArrowUpRight } from 'lucide-preact';
+import { Brain, RefreshCw, AlertTriangle, Clock, Lightbulb, HelpCircle, ArrowUpRight, Square } from 'lucide-preact';
 
 import type {
   AcquisitionIntelligenceView,
@@ -43,7 +43,7 @@ export interface IntelligenceRunStageView {
 
 export interface IntelligenceRunProgressView {
   runId: string;
-  status: 'running' | 'complete' | 'failed';
+  status: 'running' | 'complete' | 'failed' | 'cancelled';
   startedAt: string;
   finishedAt?: string | null;
   currentStage?: string | null;
@@ -94,7 +94,7 @@ export function IntelligenceRunProgressStrip({ progress }: { progress: Intellige
     <div class="awv2-ai-progress" role="status" aria-live="polite">
       <div class="awv2-ai-progress-head">
         <Clock size={14} class={live ? 'spin-slow' : undefined} />
-        <strong>{live ? 'Building Deal Intelligence' : progress.status === 'failed' ? 'Intelligence run stopped' : 'Intelligence run complete'}</strong>
+        <strong>{live ? 'Building Deal Intelligence' : progress.status === 'complete' ? 'Intelligence run complete' : 'Intelligence run stopped'}</strong>
       </div>
       {layers.length > 0 && (
         <ol class="awv2-ai-progress-stages">
@@ -131,6 +131,7 @@ interface Props {
   progress: IntelligenceRunProgressView | null;
   error: string | null;
   onRun: () => void;
+  onCancel: () => void;
   /** Opens the full read, which lives on Property & Market. */
   onOpenFullIntelligence: () => void;
 }
@@ -145,7 +146,7 @@ function runtimeLine(
 }
 
 export function DealReadCard({
-  read, readiness, runtime, stale, running, progress, error, onRun, onOpenFullIntelligence,
+  read, readiness, runtime, stale, running, progress, error, onRun, onCancel, onOpenFullIntelligence,
 }: Props) {
   const digest = digestDealRead(read);
 
@@ -167,6 +168,11 @@ export function DealReadCard({
             <RefreshCw size={14} class={running ? 'spin' : undefined} />
             {running ? 'Reading the property file…' : read ? 'Re-read the property file' : 'Read the property file'}
           </button>
+          {running && (
+            <button type="button" class="awv2-ai-run" onClick={onCancel} aria-label="Stop Intelligence run">
+              <Square size={13} /> Stop run
+            </button>
+          )}
         </div>
       </header>
 

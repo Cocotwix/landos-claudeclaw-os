@@ -19,7 +19,7 @@ export type IntelligenceRunStageId = 'preparing' | 'property' | 'market' | 'sell
  *  moved is reused rather than re-reasoned, and must not look stuck. */
 export type IntelligenceRunStageState = 'pending' | 'running' | 'complete' | 'failed' | 'skipped';
 
-export type IntelligenceRunStatus = 'running' | 'complete' | 'failed';
+export type IntelligenceRunStatus = 'running' | 'complete' | 'failed' | 'cancelled';
 
 export interface IntelligenceRunStage {
   id: IntelligenceRunStageId;
@@ -150,5 +150,31 @@ export function finishRunProgress(
     finishedAt: at,
     stages,
     error: outcome.error,
+  });
+}
+
+/** Cancellation is a terminal, operator-intended outcome. It must settle every
+ * open stage without misreporting a product failure or leaving a stage alive. */
+export function cancelRunProgress(
+  progress: IntelligenceRunProgress,
+  at: string,
+  note = 'Stopped by Operator.',
+): IntelligenceRunProgress {
+  const stages = progress.stages.map((entry) => {
+    if (entry.state !== 'running' && entry.state !== 'pending') return entry;
+    return {
+      ...entry,
+      state: 'skipped' as const,
+      completedAt: at,
+      note: entry.state === 'running' ? note : 'The run was stopped before this stage began.',
+    };
+  });
+  return recount({
+    ...progress,
+    status: 'cancelled',
+    updatedAt: at,
+    finishedAt: at,
+    stages,
+    error: note,
   });
 }

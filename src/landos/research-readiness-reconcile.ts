@@ -17,6 +17,7 @@
 
 import { getLandosDb } from './db.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
+import { resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { PropertyResearchStore, type CanonicalPropertyResearchRecord } from './property-research-store.js';
 import { loadEligibleCardVisualCapture, loadPropertyInspection } from './property-card.js';
@@ -184,8 +185,6 @@ function withSnapshotFacts(
     const parsed = JSON.parse(row?.snapshot_json ?? 'null') as { facts?: unknown } | null;
     snapshotFacts = Array.isArray(parsed?.facts) ? parsed.facts as typeof snapshotFacts : [];
   } catch { snapshotFacts = []; }
-  if (!snapshotFacts.length) return record;
-
   const facts: Record<string, unknown> = { ...(record?.facts ?? {}) };
   for (const fact of snapshotFacts) {
     const key = typeof fact?.key === 'string' ? fact.key : null;
@@ -956,11 +955,16 @@ export function reconcileResearchReadiness(
     sellerProbe(ctx),
   ];
 
+  // Per-item prerequisite planning: each item is evaluated against the shared
+  // canonical subject state, so a missing exact parcel never invalidates
+  // county/ZIP market items or seller items that do not need one.
+  const subjectState = resolveCanonicalSubjectState(dealCardId);
   return buildResearchReadinessManifest({
     dealCardId,
     propertyCardId: subject.cardId,
     probes,
     now,
+    unmetPrerequisitesFor: (clauses) => unmetPrerequisites(subjectState, clauses),
   });
 }
 

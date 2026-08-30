@@ -172,11 +172,11 @@ const layerRecord = (value: Record<string, unknown> | null, layer: SpecialistMod
 export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {}): AcquisitionAnalyst {
   const timeoutMs = deps.judgmentTimeoutMs ?? ANALYST_JUDGMENT_TIMEOUT_MS;
   const now = deps.now ?? (() => Date.now());
-  const invoke = deps.invoke ?? (async (args: string[], invokeTimeoutMs: number): Promise<string> => {
+  const invoke = deps.invoke ?? (async (args: string[], invokeTimeoutMs: number, signal?: AbortSignal): Promise<string> => {
     hermesRuntimePaths();
     const profile = args[args.indexOf('--profile') + 1];
     if (profile) assertSpecialistProvisioned(profile);
-    return invokeHermesCli(args, invokeTimeoutMs);
+    return invokeHermesCli(args, invokeTimeoutMs, signal);
   });
 
   const runtimeFor = (profile: string, model: AnalystModelSelection, durationMs: number): AcquisitionIntelligenceRuntime => ({
@@ -224,6 +224,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
             model,
           }),
           timeoutMs,
+          input.signal,
         );
         return { raw, observations, warnings, runtime: runtimeFor(SPECIALIST_PROFILES.deal, model, now() - t0) };
       }
@@ -240,6 +241,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         const raw = await invoke(
           specialistInvocationArgs({ profile, prompt: plan.layerPrompt(layer, input.dossier, observations), model }),
           timeoutMs,
+          input.signal,
         );
         const value = layerRecord(extractJsonObject(raw), layer);
         if (!value) throw new Error(`${profile} returned no parsable ${layer} layer`);
@@ -264,6 +266,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
             toolsets: ANALYST_TOOLSETS,
           }),
           timeoutMs,
+          input.signal,
         );
         if (!review.trim() || review.trim().length < 200) {
           throw new Error(`${profile} returned no substantive free expert review`);
@@ -276,6 +279,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
             toolsets: ANALYST_TOOLSETS,
           }),
           timeoutMs,
+          input.signal,
         );
         const value = layerRecord(extractJsonObject(raw), 'property');
         if (!value) throw new Error(`${profile} returned no parsable property extraction`);
@@ -304,6 +308,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
             toolsets: ANALYST_TOOLSETS,
           }),
           timeoutMs,
+          input.signal,
         );
         if (!review.trim() || review.trim().length < 200) {
           throw new Error(`${profile} returned no substantive free expert review`);
@@ -316,6 +321,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
             toolsets: ANALYST_TOOLSETS,
           }),
           timeoutMs,
+          input.signal,
         );
         const value = layerRecord(extractJsonObject(raw), 'seller');
         if (!value) throw new Error(`${profile} returned no parsable seller extraction`);
@@ -372,6 +378,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
               toolsets: 'search',
             }),
             timeoutMs,
+            input.signal,
           );
           if (!review.trim() || review.trim().length < 200) {
             throw new Error(`${profile} returned no substantive free expert review`);
@@ -388,6 +395,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
               toolsets: ANALYST_TOOLSETS,
             }),
             timeoutMs,
+            input.signal,
           );
           const value = layerRecord(extractJsonObject(raw), 'market');
           if (!value) throw new Error(`${profile} returned no parsable market extraction`);
@@ -428,6 +436,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         const raw = await invoke(
           specialistInvocationArgs({ profile, prompt: plan.dealPrompt(freshLayers, input.dossier, observations), model }),
           timeoutMs,
+          input.signal,
         );
         const value = layerRecord(extractJsonObject(raw), 'deal');
         if (!value) throw new Error(`${profile} returned no parsable deal layer`);

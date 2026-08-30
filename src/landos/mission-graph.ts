@@ -79,6 +79,15 @@ export interface MissionChildSpec {
    * through `upstream`, so a lane can use whatever actually arrived.
    */
   awaits?: string[];
+  /**
+   * Declared minimum SUBJECT context this lane itself requires (see
+   * CapabilityPrerequisite). Used at mission-definition build time: when the
+   * canonical subject already satisfies a lane's declared prerequisites, its
+   * identity-establishment dependency edges are dropped so the lane starts
+   * immediately instead of waiting behind slow parcel resolution. Purely
+   * declarative — the runner's dependency mechanics are unchanged.
+   */
+  prerequisites?: import('./capability-contract.js').CapabilityPrerequisiteClause[];
   timeoutMs: number;
 
   // ── Identity, role and relationship (declared) ─────────────────────────────

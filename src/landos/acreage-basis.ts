@@ -204,6 +204,29 @@ export function pinOverlayAcresToGeometry<T extends { parcelPercentage: number; 
 }
 
 /** Build the shared acreage-basis reconciliation from the available signals. */
+/** The single governing acreage conclusion selected from a reconciliation.
+ *  Alternate measurements stay in `entries` as reference evidence; every
+ *  surface that prints "the acreage" prints THIS value with THIS basis. */
+export interface GoverningAcreage {
+  value: number | null;
+  kind: AcreageBasisKind | null;
+  source: string | null;
+  /** The governing value materially disagrees with another trusted basis and
+   *  no survey/plat/operator acceptance has settled it. */
+  disputed: boolean;
+}
+
+export function governingAcreageOf(basis: AcreageReconciliation | null | undefined): GoverningAcreage {
+  const kind = basis?.displayBasis ?? null;
+  const entry = kind ? basis?.entries.find((e) => e.kind === kind) ?? null : null;
+  return {
+    value: entry?.value ?? null,
+    kind,
+    source: entry?.source ?? null,
+    disputed: basis?.tylerDecisionRequired ?? false,
+  };
+}
+
 export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliation {
   const relTol = input.materialRelTolerance ?? DEFAULT_REL_TOL;
   const absTol = input.materialAbsTolerance ?? DEFAULT_ABS_TOL;

@@ -69,8 +69,8 @@ export interface ResearchReadinessManifestView {
   backfillCandidates: string[];
   operatorCompleteness?: {
     returned: number; denominator: number; partial: number; unresolved: number;
-    blocked: number; notRequired: number; headline: string;
-    items: Array<{ id: string; label: string; outcome: 'returned' | 'partial' | 'unresolved' | 'blocked' | 'not_required'; reason: string }>;
+    blocked: number; waiting?: number; notRequired: number; headline: string;
+    items: Array<{ id: string; label: string; outcome: 'returned' | 'partial' | 'unresolved' | 'blocked' | 'waiting' | 'not_required'; reason: string }>;
   };
 }
 
@@ -121,6 +121,7 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
     partial: counts.stale,
     unresolved: counts.unresolved,
     blocked: counts.needsMachineAttention,
+    waiting: 0,
     notRequired: counts.expectedUnknown,
     headline: `${counts.ready} / ${counts.total - counts.expectedUnknown} Returned`,
     items: [],
@@ -132,6 +133,8 @@ export function ResearchReadinessStrip({ manifest, loading, error, running, onBa
     { key: 'blue', label: `${operator.partial} partial` },
     { key: 'yellow', label: `${operator.unresolved} unresolved` },
     { key: 'red', label: `${operator.blocked} blocked` },
+    // Waiting on the subject is not blocked: nothing refused an answer yet.
+    ...((operator.waiting ?? 0) > 0 ? [{ key: 'waiting', label: `${operator.waiting} waiting on subject` }] : []),
     { key: 'gray', label: `${operator.notRequired} not required` },
   ].filter((tally): tally is { key: string; label: string } => tally != null);
 

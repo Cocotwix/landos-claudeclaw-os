@@ -2102,6 +2102,9 @@ function createLandosSchema(db: Database.Database): void {
       effective_at          TEXT,
       fresh_until           TEXT,
       artifact_ref          TEXT,
+      originating_capability TEXT,
+      originating_run_id    TEXT,
+      claim                 TEXT,
       supersedes_evidence_id INTEGER REFERENCES landos_property_evidence_item(id) ON DELETE SET NULL,
       dispute_group         TEXT,
       idempotency_key       TEXT NOT NULL UNIQUE,
@@ -2182,6 +2185,8 @@ function createLandosSchema(db: Database.Database): void {
       summary_json          TEXT NOT NULL,
       change_reason         TEXT NOT NULL,
       generated_by          TEXT NOT NULL,
+      originating_capability TEXT,
+      originating_run_id    TEXT,
       created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       UNIQUE(deal_card_id, version),
       UNIQUE(deal_card_id, input_hash)
@@ -2611,6 +2616,13 @@ function createLandosSchema(db: Database.Database): void {
   addColumn('landos_property_collector_attempt', 'open_resource_count_after', `open_resource_count_after INTEGER NOT NULL DEFAULT 0`);
   addColumn('landos_property_collector_attempt', 'memory_before_bytes', `memory_before_bytes INTEGER`);
   addColumn('landos_property_collector_attempt', 'memory_after_bytes', `memory_after_bytes INTEGER`);
+  // Shared Foundation: every evidence/read writer can retain capability + run
+  // provenance. Null is intentional for historical and non-run-derived rows.
+  addColumn('landos_property_evidence_item', 'originating_capability', `originating_capability TEXT`);
+  addColumn('landos_property_evidence_item', 'originating_run_id', `originating_run_id TEXT`);
+  addColumn('landos_property_evidence_item', 'claim', `claim TEXT`);
+  addColumn('landos_deal_intelligence_snapshot', 'originating_capability', `originating_capability TEXT`);
+  addColumn('landos_deal_intelligence_snapshot', 'originating_run_id', `originating_run_id TEXT`);
   addColumn('landos_opportunity', 'pipeline_stage', `pipeline_stage TEXT NOT NULL DEFAULT 'new_lead'`);
 
   // ── Jurisdiction / Zoning / Land-Use slice ─────────────────────────────

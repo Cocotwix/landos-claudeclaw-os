@@ -24,6 +24,7 @@
 // requirement that cannot be satisfied ends BLOCKED with the real reason.
 
 import type { CapabilityEntity } from './capability-contract.js';
+import type { ResearchResultState } from './research-lane-outcome.js';
 import type {
   ResearchReadinessManifest,
   ResearchReadinessManifestItem,
@@ -48,8 +49,11 @@ export type ResearchCoverageState =
   | 'NEEDS_REFRESH'
   | 'NOT_APPLICABLE';
 
-/** What this cycle intends to do about the requirement. */
-export type ResearchCoverageAction = 'reuse' | 'run' | 'blocked' | 'not_applicable';
+/** What this cycle intends to do about the requirement. `waiting_prerequisite`
+ *  is neither blocked nor failed: the item's own declared subject context
+ *  (parcel, county, ZIP, owner, seller communications) is not available yet,
+ *  and the cycle will schedule it as soon as it is. */
+export type ResearchCoverageAction = 'reuse' | 'run' | 'blocked' | 'not_applicable' | 'waiting_prerequisite';
 
 export interface ResearchCoverageEntry {
   id: string;
@@ -57,6 +61,9 @@ export interface ResearchCoverageEntry {
   group: ResearchReadinessGroup;
   question: string;
   state: ResearchCoverageState;
+  /** Canonical cross-subsystem result vocabulary. `state` remains the richer
+   * coverage-planning detail (for example REUSED vs RETURNED). */
+  resultState: ResearchResultState;
   action: ResearchCoverageAction;
   /** The capability or surface that owns the answer. */
   owner: string;
@@ -139,14 +146,30 @@ export function coverageStateFor(
   // A proper attempt that established no firm answer. Partial when it left
   // usable-but-incomplete evidence behind, unresolved-but-attempted otherwise.
   if (item.status === 'yellow') return 'PARTIAL';
+  // An item waiting on its own declared subject context has not been refused
+  // by any source — it simply cannot be attempted yet. NOT_RUN, never BLOCKED.
+  if ((item.unmetPrerequisites?.length ?? 0) > 0) return 'NOT_RUN';
   // Red. Never attempted is NOT_RUN; attempted and still empty is BLOCKED,
   // because something outside LandOS refused the answer.
   return item.attempted ? 'BLOCKED' : 'NOT_RUN';
 }
 
+export function coverageResultState(
+  state: ResearchCoverageState,
+  item: ResearchReadinessManifestItem,
+): ResearchResultState {
+  if (state === 'RETURNED' || state === 'REUSED') return 'RETURNED';
+  if (state === 'NOT_APPLICABLE') return 'NOT_APPLICABLE';
+  if (state === 'NOT_RUN') return 'NOT_RUN';
+  if (state === 'PARTIAL' || state === 'NEEDS_REFRESH') return 'PARTIAL';
+  if (state === 'BLOCKED' && item.attempted && !item.machineBackfillAllowed) return 'NEEDS_OPERATOR_ACTION';
+  return 'BLOCKED';
+}
+
 function actionFor(state: ResearchCoverageState, item: ResearchReadinessManifestItem): ResearchCoverageAction {
   if (state === 'NOT_APPLICABLE') return 'not_applicable';
   if (state === 'RETURNED' || state === 'REUSED') return 'reuse';
+  if ((item.unmetPrerequisites?.length ?? 0) > 0) return 'waiting_prerequisite';
   if (!item.machineBackfillAllowed) return 'blocked';
   // PARTIAL, BLOCKED, NOT_RUN and NEEDS_REFRESH are all attemptable when a
   // registered capability owns them. A PARTIAL lane is re-attempted exactly
@@ -200,6 +223,7 @@ export function planResearchCoverage(
       group: item.group,
       question: item.question,
       state,
+      resultState: coverageResultState(state, item),
       action: actionFor(state, item),
       owner: item.owner.label,
       ownerCapabilityId: item.owner.capabilityId,

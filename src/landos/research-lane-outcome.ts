@@ -27,6 +27,33 @@
 
 import type { SpecialistStatus } from './property-intelligence-specialists.js';
 
+/** Shared Foundation result vocabulary. Invocation, answer, applicability,
+ * operator intervention, and execution failure stay separate facts. */
+export type ResearchResultState =
+  | 'RETURNED'
+  | 'PARTIAL'
+  | 'NOT_RUN'
+  | 'BLOCKED'
+  | 'NOT_APPLICABLE'
+  | 'NEEDS_OPERATOR_ACTION'
+  | 'FAILED';
+
+export interface ResearchResultInput extends LaneOutcomeInput {
+  attempted?: boolean;
+  applicable?: boolean;
+  needsOperatorAction?: boolean;
+}
+
+export function researchResultState(input: ResearchResultInput): ResearchResultState {
+  if (input.applicable === false || input.status === 'skipped') return 'NOT_APPLICABLE';
+  if (input.needsOperatorAction) return 'NEEDS_OPERATOR_ACTION';
+  if (input.status === 'queued' || input.status === 'running' || input.attempted === false) return 'NOT_RUN';
+  if (input.status === 'blocked') return 'BLOCKED';
+  if (input.status === 'failed') return 'FAILED';
+  if (input.status === 'partial' || input.answered === false || input.failureCategory) return 'PARTIAL';
+  return 'RETURNED';
+}
+
 /** The five terminal meanings a research lane can carry. */
 export type ResearchLaneOutcome =
   | 'RETURNED'

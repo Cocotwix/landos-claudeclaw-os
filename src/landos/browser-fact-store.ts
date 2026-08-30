@@ -7,6 +7,7 @@
 // Unknown). Verified Realie data is never overwritten by weaker browser text.
 
 import { getLandosDb, landosAudit } from './db.js';
+import { writeEvidence, type DerivedEvidenceResult } from './derived-intelligence-store.js';
 import type { BrowserFact } from './browser-intelligence.js';
 
 export interface StoredBrowserFact extends BrowserFact { id: number; dealCardId: number; createdAt: number }
@@ -37,6 +38,36 @@ export function writeBrowserFact(dealCardId: number, fact: BrowserFact, actor = 
 export function listBrowserFacts(dealCardId: number): StoredBrowserFact[] {
   const rows = getLandosDb().prepare('SELECT * FROM landos_browser_fact WHERE deal_card_id = ? ORDER BY created_at ASC, id ASC').all(dealCardId) as Row[];
   return rows.map(toFact);
+}
+
+/** Promote confidently extracted adaptive/browser facts through the same
+ * authoritative evidence admission path as deterministic collectors. Staging
+ * rows remain intact; unresolved/stopped facts never become answered evidence. */
+export function promoteBrowserFactsToEvidence(
+  dealCardId: number,
+  options: { runId?: string | null; actor?: string } = {},
+): DerivedEvidenceResult {
+  const facts = listBrowserFacts(dealCardId).filter((fact) => fact.status === 'extracted' && fact.value.trim());
+  return writeEvidence({
+    dealCardId,
+    capabilityId: 'browser-intelligence',
+    collectorKey: 'browser-intelligence',
+    runId: options.runId,
+    actor: options.actor ?? 'browser-intelligence',
+    rows: facts.map((fact) => ({
+      domain: 'browser_public_record',
+      evidenceKind: fact.sourceType || 'browser_fact',
+      factKey: fact.key,
+      raw: { label: fact.label, value: fact.value, origin: fact.origin, extractionMethod: fact.extractionMethod ?? null },
+      normalized: fact.value,
+      sourceName: fact.sourceName || 'Browser Intelligence',
+      sourceUrl: fact.sourceUrl || null,
+      sourceTier: fact.sourceType || 'public_web',
+      confidence: fact.confidence,
+      retrievedAt: new Date(fact.createdAt * 1000).toISOString(),
+      dedupeOn: `${fact.key}|${fact.value}|${fact.sourceUrl}`,
+    })),
+  });
 }
 
 /** Record still-requested items the operator stopped before they were searched. */

@@ -263,6 +263,9 @@ export interface SpecialistExecutionPlan {
 
 export interface AnalystRunInput {
   dossier: AcquisitionDossier;
+  /** Cancels the external specialist process when the durable parent run loses
+   * authority. */
+  signal?: AbortSignal;
   requestedProvider?: string | null;
   requestedModel?: string | null;
   /** Build the judgment-pass prompt. Defaults to the V1 acquisition prompt, so
@@ -302,7 +305,7 @@ export interface AcquisitionAnalyst {
 
 export interface HermesAnalystDeps {
   /** Invoke the installed Hermes one-shot. Injected so tests never spawn. */
-  invoke?: (args: string[], timeoutMs: number) => Promise<string>;
+  invoke?: (args: string[], timeoutMs: number, signal?: AbortSignal) => Promise<string>;
   settings?: SettingsReader;
   now?: () => number;
   judgmentTimeoutMs?: number;
@@ -456,9 +459,9 @@ export function createHermesAcquisitionAnalyst(deps: HermesAnalystDeps = {}): Ac
   const judgmentTimeoutMs = deps.judgmentTimeoutMs ?? ANALYST_JUDGMENT_TIMEOUT_MS;
   const now = deps.now ?? (() => Date.now());
 
-  const invoke = deps.invoke ?? (async (args: string[], timeoutMs: number): Promise<string> => {
+  const invoke = deps.invoke ?? (async (args: string[], timeoutMs: number, signal?: AbortSignal): Promise<string> => {
     installedHermes();
-    return invokeHermesCli(args, timeoutMs);
+    return invokeHermesCli(args, timeoutMs, signal);
   });
 
   return {
@@ -488,6 +491,7 @@ export function createHermesAcquisitionAnalyst(deps: HermesAnalystDeps = {}): Ac
           withSkill: true,
         }),
         judgmentTimeoutMs,
+        input.signal,
       );
 
       return {

@@ -1,0 +1,231 @@
+{
+  "sprintId": "sprint-2026-08-30-shared-foundation",
+  "title": "Shared Foundation Consolidation: four authoritative cross-LandOS contracts",
+  "originalPromptPath": "shared-foundation-prompt.md",
+  "workstreams": [
+    {
+      "id": "ws1-canonical-subject-state",
+      "name": "Contract 1: Canonical Subject State",
+      "operatorOutcome": "One typed authoritative Subject State (subjectResolved distinct from officiallyVerified, APN, situs, county, state, FIPS, ZIP, owner, governing acreage, provenance/confidence) is consumed by the readiness checklist, dossier, resolution endpoint, intelligence-run identity, and UI, so a research-grade established subject never reads as no subject downstream, and one governing acreage number appears consistently across surfaces.",
+      "inScope": [
+        "Evolve canonical-identity.ts into the single authoritative CanonicalSubjectState (add fips, subjectResolved, officiallyVerified, governingAcreage from the shared acreage basis, seller-communications availability signal)",
+        "Migrate the remaining independent identity deciders to consume it: routes.ts resolution endpoint (verified_property AND spine contradiction), property-intelligence-live.ts snapshot identity, public-property-intelligence subject gate inputs, opportunity-discovery-package resolutionStatus",
+        "Make the governing acreage number (not just the basis label) flow from acreage-basis into canonical state so header/spine/snapshot/valuation read the same number; survey governs per doctrine without GIS-mismatch blockers",
+        "Verify then remove dead resolution infrastructure: parallel-resolution-lanes.ts, dead resolver core of parallel-resolution.ts (retain haversineMeters), dead core of property-resolution-engine.ts (retain live re-exports/types), resolution-snapshot dead write path",
+        "Focused regression tests: subject resolved while officiallyVerified=false; migrated consumers agree; governing acreage consistent; fresh survey governs without blocker"
+      ],
+      "backendServices": [
+        "src/landos/canonical-identity.ts",
+        "src/landos/parcel-identity.ts",
+        "src/landos/property-intelligence-live.ts",
+        "src/landos/acreage-basis.ts",
+        "src/landos/operator-property-record.ts",
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [
+        "Acquisition Workspace V2 Overview (http://localhost:3141/dept/acquisitions/v2?deal=<current>)",
+        "Acquisition Workspace V2 Research Readiness checklist"
+      ],
+      "requiredDataState": "A current representative deal with resolved subject identity (research-grade, official verification may be outstanding); existing accepted operator data untouched.",
+      "browserJourney": {
+        "steps": [
+          "Open Acquisition Workspace V2 for a deal whose subject resolved via Property Resolution without official assessor confirmation",
+          "Confirm the subject panel, research readiness checklist, and resolution state all present the same established subject (no 'no canonical subject' anywhere)",
+          "Confirm acreage shown in the header, overview, and property intelligence surfaces is the same governing number with its basis",
+          "Hard refresh and confirm identical subject and acreage",
+          "Check console for new errors and confirm no research reruns triggered by these reads"
+        ]
+      },
+      "testRequirements": [
+        "Test: resolveCanonicalIdentity/subject state reports subjectResolved=true with officiallyVerified=false for a spine-confirmed, non-verified_property card",
+        "Test: resolution endpoint and readiness reconcile agree with canonical subject state (no verified_property AND-gate contradiction)",
+        "Test: governing acreage from a subject-matching recorded survey wins over GIS/assessor without raising an operator blocker",
+        "Test: removed dead modules have no remaining imports (compile + suite green after removal)"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Any migrated consumer still reports no subject for a resolved research-grade subject",
+        "subjectResolved implies officiallyVerified anywhere",
+        "Different acreage numbers on different surfaces for the same deal",
+        "A live import is deleted or accepted operator data changes"
+      ],
+      "requiredProofs": ["test_result", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": [],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws1-r1", "text": "One typed CanonicalSubjectState with subjectResolved distinct from officiallyVerified is the shared identity answer." },
+        { "id": "ws1-r2", "text": "Readiness, resolution endpoint, dossier, snapshot identity, and discovery-package consumers consume it instead of re-deciding identity." },
+        { "id": "ws1-r3", "text": "Governing acreage is a single consistent conclusion across surfaces; survey governs per doctrine." },
+        { "id": "ws1-r4", "text": "Verified-dead resolution engines/snapshot write paths are removed with proof of no live references." }
+      ]
+    },
+    {
+      "id": "ws2-declared-prerequisites",
+      "name": "Contract 2: Declared Capability Prerequisites",
+      "operatorOutcome": "Capabilities and readiness items declare the minimum context they need (county, ZIP, owner, parcel, seller communications); the readiness manifest computes for a deal without parcel identity, county/ZIP market work and seller work proceed while parcel-specific research waits on its own prerequisite, and the mission graph no longer skips county-scoped market intelligence for lack of a parcel.",
+      "inScope": [
+        "Add a declared prerequisites field to capability metadata (capability-contract.ts) and populate it for the 11 registered capabilities",
+        "Add per-item prerequisites to ResearchReadinessItemDefinition; reconcileResearchReadiness stops 409ing the whole manifest without a subject card and instead evaluates each item against CanonicalSubjectState",
+        "Relax the route-level dealCardAssessorTaxSubject gate only where the target capability's declared prerequisites are met without a subject card (parcel-specific routes keep waiting)",
+        "Mission graph: market_intelligence child stops hard-depending on parcel_identity (county-known prerequisite; awaits ordering only); parcel-scoped children keep their dependency",
+        "Coverage cycle stops aborting wholesale on a missing manifest subject",
+        "Regression tests for prerequisite planning; preserve phase5-parallel-dispatch behavior"
+      ],
+      "backendServices": [
+        "src/landos/capability-contract.ts",
+        "src/landos/capability-registry.ts",
+        "src/landos/research-readiness.ts",
+        "src/landos/research-readiness-reconcile.ts",
+        "src/landos/research-coverage-cycle.ts",
+        "src/landos/deal-intelligence-mission.ts",
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [
+        "Acquisition Workspace V2 Research Readiness checklist for a fresh county-known lead without parcel resolution"
+      ],
+      "requiredDataState": "A fresh disposable test lead with county+state known but no resolved parcel identity (created for this sprint; clearly marked as test data), plus an existing resolved deal for the parcel-gated contrast.",
+      "browserJourney": {
+        "steps": [
+          "Create/open the disposable county-known lead in Acquisition Workspace V2",
+          "Confirm the research readiness checklist renders a real manifest (not an error) with market/seller items evaluable and parcel-specific items honestly waiting on subject establishment",
+          "Confirm a county-scoped market item is actionable/attemptable without parcel identity",
+          "Open the resolved contrast deal and confirm parcel-specific items remain properly gated and unchanged",
+          "Hard refresh both and confirm persistence; console clean; no unintended research reruns"
+        ]
+      },
+      "testRequirements": [
+        "Test: county-only readiness items compute and are attemptable with county known and no parcel",
+        "Test: ZIP-scoped market prerequisite satisfied by ZIP alone",
+        "Test: parcel-specific capability prerequisites unmet without established subject; met once established",
+        "Test: seller item does not require parcel",
+        "Test: mission graph plan does not skip market_intelligence when parcel_identity is unresolved but county is known"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Manifest still 409s wholesale without a subject card",
+        "Parcel-specific research runs without an established subject",
+        "Market intelligence still skipped by parcel_identity dependency",
+        "Existing resolved-deal readiness behavior regresses"
+      ],
+      "requiredProofs": ["test_result", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws1-canonical-subject-state"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws2-r1", "text": "Capability metadata declares minimum required context; orchestrator/readiness use declarations to decide what can run now." },
+        { "id": "ws2-r2", "text": "Research Readiness computes per-item without parcel identity; county/ZIP/seller items no longer invalidated by a missing parcel." },
+        { "id": "ws2-r3", "text": "Mission graph runs county-scoped market intelligence when county is known while parcel lanes wait on their own prerequisite." },
+        { "id": "ws2-r4", "text": "Parcel-specific capabilities still gate correctly on established subject." }
+      ]
+    },
+    {
+      "id": "ws3-durable-run-identity",
+      "name": "Contract 3: Durable run identity and real cancellation",
+      "operatorOutcome": "Intelligence runs have durable authoritative identity: refresh rejoins the live run, restart does not leave a phantom forever-running run, the operator can genuinely cancel a run, and no superseded/timed-out/cancelled run can overwrite newer derived intelligence or evidence.",
+      "inScope": [
+        "Make the intelligence-stack finalization run durable (reuse the landos_property_intelligence_run pattern/store rather than inventing a new one) with runId, status lifecycle, abandonment ceiling, and cancellation state",
+        "Add run attribution + authority guard to the unguarded shared write paths: writeDerivedSnapshot, appendDerivedEvidence, persistAcquisitionIntelligence, GEV investigation writes; reject writes from non-authoritative runs",
+        "Close the updateSpecialist late-write gap (status check)",
+        "Genuine cancellation endpoint for the intelligence run; AbortSignal propagation where supported (Hermes CLI invoke signal); timeout paths mark supersession so orphaned work cannot write later",
+        "Preserve current progress behavior exactly: pending/running/complete/failed/skipped, elapsed time, refresh-safe rejoin, side-effect-free polling, honest completion clearing"
+      ],
+      "backendServices": [
+        "src/landos/routes.ts",
+        "src/landos/intelligence-stack.ts",
+        "src/landos/derived-intelligence-store.ts",
+        "src/landos/property-intelligence-store.ts",
+        "src/landos/deal-intelligence-run.ts",
+        "src/landos/acquisition-analyst.ts"
+      ],
+      "frontendScreens": [
+        "Acquisition Workspace V2 Deal read/run status (http://localhost:3141/dept/acquisitions/v2?deal=<current>)"
+      ],
+      "requiredDataState": "A current representative deal able to run the intelligence stack; the disposable test lead may be used for cancellation without touching accepted intelligence.",
+      "browserJourney": {
+        "steps": [
+          "Start an intelligence run; confirm stage progress and elapsed time render as today",
+          "Hard refresh mid-run and confirm rejoin to the same run with correct progress and no duplicate run started",
+          "Cancel the run from the operator surface; confirm it reports cancelled promptly and derived intelligence/evidence show no writes from the cancelled run afterward",
+          "Run again to completion; confirm completed intelligence is current immediately and after refresh",
+          "Confirm no run row appears to run forever after the cancel/timeout scenarios; console clean"
+        ]
+      },
+      "testRequirements": [
+        "Test: write from a superseded runId into derived snapshots is rejected while the authoritative run's write lands",
+        "Test: cancelled run cannot perform an authoritative late write",
+        "Test: abandonment ceiling supersedes a wedged run so a new run can start and the old one cannot write",
+        "Test: progress reducer behavior unchanged (existing intelligence-run-progress tests stay green)",
+        "Test: updateSpecialist refuses writes to a non-running run"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "A superseded or cancelled run's write lands in derived intelligence/evidence",
+        "Cancellation only stops polling while work keeps writing",
+        "Refresh rejoin or progress states regress",
+        "A run wedges as running forever after restart"
+      ],
+      "requiredProofs": ["test_result", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws1-canonical-subject-state"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws3-r1", "text": "Intelligence runs have durable run identity with lifecycle, abandonment ceiling, and cancellation state." },
+        { "id": "ws3-r2", "text": "All shared derived-intelligence/evidence write paths are run-authority guarded; superseded/cancelled/late writes are rejected." },
+        { "id": "ws3-r3", "text": "A genuine cancellation endpoint exists and AbortSignal reaches interruptible layers." },
+        { "id": "ws3-r4", "text": "Existing progress UX (states, elapsed, rejoin, honest clearing) is preserved." }
+      ]
+    },
+    {
+      "id": "ws4-unified-evidence-contract",
+      "name": "Contract 4: Unified evidence admission and one result vocabulary",
+      "operatorOutcome": "All Deal research facts enter through one admission contract over the canonical evidence table with run/capability attribution and shared verification/confidence semantics; Research Readiness reports RETURNED only when required evidence actually landed; valid browser/adaptive findings are promotable into canonical evidence instead of dying as conversation.",
+      "inScope": [
+        "Create writeEvidence admission contract evolving landos_property_evidence_item: add originating capability + runId attribution, shared verification-status and confidence enums (normalizing the two ladder spellings), optional claim wording; migrate the existing seven writers through it",
+        "Wire the existing answered concept at the production call site so a completed lane with no usable evidence is PARTIAL, not RETURNED",
+        "Unified result vocabulary mapping (RETURNED/PARTIAL/NOT_RUN/BLOCKED/NOT_APPLICABLE/NEEDS_OPERATOR_ACTION/FAILED) over existing subsystem statuses, consumed by readiness and the operator projection",
+        "Promotion bridge: valid browser facts (landos_browser_fact) admitted into canonical evidence with provenance, then readiness reconciled",
+        "Connect the existing adaptive-research-recovery outcome/eligibility types into the shared result contract to the extent needed for readiness honesty (no new recovery framework, no new specialist agents)"
+      ],
+      "backendServices": [
+        "src/landos/derived-intelligence-store.ts",
+        "src/landos/db.ts",
+        "src/landos/research-lane-outcome.ts",
+        "src/landos/research-readiness-reconcile.ts",
+        "src/landos/browser-fact-store.ts",
+        "src/landos/routes.ts"
+      ],
+      "frontendScreens": [
+        "Acquisition Workspace V2 Research Readiness checklist and evidence surfaces for a current deal"
+      ],
+      "requiredDataState": "A current representative deal with mixed lane outcomes (some evidence-backed, at least one attempted-without-evidence scenario reproducible via the disposable test lead).",
+      "browserJourney": {
+        "steps": [
+          "Open the readiness checklist for a deal where a lane completed without landing usable evidence; confirm it reads as partial/unresolved, not returned",
+          "Confirm an evidence-backed item reads returned with its source and confidence visible",
+          "Promote/produce a browser-derived fact and confirm it appears in canonical evidence surfaces with provenance and the readiness item reconciles",
+          "Hard refresh and confirm all statuses persist; console clean; no research reruns from reads"
+        ]
+      },
+      "testRequirements": [
+        "Test: deterministic and adaptive/browser evidence both enter through writeEvidence with subject scope, capability, and runId retained",
+        "Test: completed-with-no-evidence lane maps to PARTIAL and does not satisfy readiness",
+        "Test: BLOCKED, NOT_APPLICABLE, NEEDS_OPERATOR_ACTION, PARTIAL remain distinguishable end-to-end into the operator projection",
+        "Test: confidence/verification enums normalize both existing ladder spellings without data loss"
+      ],
+      "persistence": { "refresh": true, "restart": false },
+      "failureConditions": [
+        "Any production lane still counts as RETURNED without recognized evidence",
+        "Evidence rows lose run/capability attribution or subject scope",
+        "Browser facts remain unreachable from canonical evidence",
+        "Existing evidence rows corrupted or accepted operator facts changed"
+      ],
+      "requiredProofs": ["test_result", "browser_journey", "screenshot", "refresh_persistence", "independent_browser_qa"],
+      "dependsOn": ["ws1-canonical-subject-state", "ws3-durable-run-identity"],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true },
+      "requirements": [
+        { "id": "ws4-r1", "text": "One writeEvidence admission contract over the canonical evidence table carries scope, source, provenance, confidence, verification, tier, claim, supersession, capability, and runId." },
+        { "id": "ws4-r2", "text": "Worker-ran is not returned: readiness requires recognized landed evidence via the wired answered concept." },
+        { "id": "ws4-r3", "text": "One result vocabulary distinguishes RETURNED/PARTIAL/NOT_RUN/BLOCKED/NOT_APPLICABLE/NEEDS_OPERATOR_ACTION/FAILED across subsystems." },
+        { "id": "ws4-r4", "text": "Valid browser/adaptive findings are admitted into canonical evidence and reconcile readiness." }
+      ]
+    }
+  ]
+}

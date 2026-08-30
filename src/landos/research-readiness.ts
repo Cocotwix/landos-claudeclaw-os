@@ -31,6 +31,8 @@
  *   gray   — expected unknown, human follow-up, or not applicable to this property
  */
 import type { KnowledgeResearchPlanCounts } from './knowledge-contract.js';
+import type { CapabilityPrerequisite, CapabilityPrerequisiteClause } from './capability-contract.js';
+import type { ResearchResultState } from './research-lane-outcome.js';
 
 export type ResearchReadinessStatus = 'green' | 'yellow' | 'red' | 'blue' | 'gray';
 
@@ -78,6 +80,19 @@ export interface ResearchReadinessItemDefinition {
    * to reason with honest unknowns.
    */
   intelligenceCritical: boolean;
+  /**
+   * Minimum subject context THIS item requires (see CapabilityPrerequisite).
+   * Absent means the item is parcel-scoped (the historical default); an item
+   * that needs only county/ZIP or nothing declares so and is never invalidated
+   * by a missing exact parcel.
+   */
+  prerequisites?: CapabilityPrerequisiteClause[];
+}
+
+/** The declared prerequisites of one checklist item, defaulted honestly:
+ *  undeclared items are parcel-scoped research. */
+export function researchItemPrerequisites(definition: ResearchReadinessItemDefinition): CapabilityPrerequisiteClause[] {
+  return definition.prerequisites ?? ['parcel'];
 }
 
 /**
@@ -98,6 +113,8 @@ export const RESEARCH_READINESS_ITEMS: readonly ResearchReadinessItemDefinition[
     humanExpected: false,
     freshnessDays: null,
     intelligenceCritical: true,
+    // Resolution ESTABLISHES the subject; it requires nothing but raw input.
+    prerequisites: [],
   },
   {
     id: 'landportal_research',
@@ -290,6 +307,9 @@ export const RESEARCH_READINESS_ITEMS: readonly ResearchReadinessItemDefinition[
     humanExpected: false,
     freshnessDays: 120,
     intelligenceCritical: true,
+    // Market geography: county (macro) OR ZIP (local pocket) suffices; never
+    // frozen by exact-parcel resolution.
+    prerequisites: [['county', 'zip']],
   },
   {
     id: 'area_market_context',
@@ -301,6 +321,7 @@ export const RESEARCH_READINESS_ITEMS: readonly ResearchReadinessItemDefinition[
     humanExpected: false,
     freshnessDays: 120,
     intelligenceCritical: false,
+    prerequisites: [['county', 'zip']],
   },
 
   // ── Deal / seller ────────────────────────────────────────────────────────
@@ -314,6 +335,8 @@ export const RESEARCH_READINESS_ITEMS: readonly ResearchReadinessItemDefinition[
     humanExpected: true,
     freshnessDays: null,
     intelligenceCritical: false,
+    // Seller work depends on the seller, not the parcel.
+    prerequisites: [],
   },
 ];
 
@@ -380,6 +403,13 @@ export interface ResearchReadinessManifestItem {
   /** A red machine gap on an intelligence-critical item. */
   blocksIntelligence: boolean;
   knowledgePlan: KnowledgeResearchPlanCounts | null;
+  /** The item's declared minimum context (defaulted: parcel-scoped). */
+  prerequisites: CapabilityPrerequisiteClause[];
+  /** Declared prerequisites the current subject does not yet satisfy. A
+   *  non-empty list means "waiting on subject context", which is neither
+   *  BLOCKED (source exhausted) nor a failure — the item simply cannot be
+   *  attempted yet, and it must never invalidate items that CAN. */
+  unmetPrerequisites: CapabilityPrerequisite[];
 }
 
 export interface ResearchReadinessGroupState {
@@ -429,7 +459,7 @@ export interface ResearchReadinessManifest {
   operatorCompleteness: OperatorResearchCompleteness;
 }
 
-export type OperatorResearchOutcome = 'returned' | 'partial' | 'unresolved' | 'blocked' | 'not_required';
+export type OperatorResearchOutcome = 'returned' | 'partial' | 'unresolved' | 'blocked' | 'waiting' | 'not_required';
 
 export interface OperatorResearchCompleteness {
   returned: number;
@@ -437,19 +467,31 @@ export interface OperatorResearchCompleteness {
   partial: number;
   unresolved: number;
   blocked: number;
+  /** Items whose own declared subject context (parcel, county, …) is not
+   *  available yet. Waiting is not blocked: no source refused anything. */
+  waiting: number;
   notRequired: number;
   headline: string;
-  items: Array<{ id: string; label: string; outcome: OperatorResearchOutcome; reason: string }>;
+  items: Array<{ id: string; label: string; outcome: OperatorResearchOutcome; resultState: ResearchResultState; reason: string }>;
 }
 
 export function projectOperatorResearchCompleteness(items: ResearchReadinessManifestItem[]): OperatorResearchCompleteness {
   const projected = items.map((item) => {
     const outcome: OperatorResearchOutcome = item.status === 'gray' ? 'not_required'
-      : item.status === 'red' ? 'blocked'
+      // A red item whose only impediment is its own unmet subject prerequisite
+      // is WAITING, not blocked: nothing external refused an answer, and the
+      // aggregate the operator reads must not claim it did.
+      : item.status === 'red' ? (item.unmetPrerequisites.length > 0 ? 'waiting' : 'blocked')
         : item.status === 'blue' || item.partial ? 'partial'
           : item.status === 'yellow' ? 'unresolved'
             : 'returned';
-    return { id: item.id, label: item.label, outcome, reason: item.reason };
+    const resultState: ResearchResultState = outcome === 'returned' ? 'RETURNED'
+      : outcome === 'not_required' ? 'NOT_APPLICABLE'
+        : outcome === 'waiting' ? 'NOT_RUN'
+          : outcome === 'partial' || outcome === 'unresolved' ? 'PARTIAL'
+            : item.attempted && !item.machineBackfillAllowed ? 'NEEDS_OPERATOR_ACTION'
+              : 'BLOCKED';
+    return { id: item.id, label: item.label, outcome, resultState, reason: item.reason };
   });
   const count = (outcome: OperatorResearchOutcome) => projected.filter((item) => item.outcome === outcome).length;
   const returned = count('returned');
@@ -461,6 +503,7 @@ export function projectOperatorResearchCompleteness(items: ResearchReadinessMani
     partial: count('partial'),
     unresolved: count('unresolved'),
     blocked: count('blocked'),
+    waiting: count('waiting'),
     notRequired,
     headline: `${returned} / ${denominator} Returned`,
     items: projected,
@@ -591,6 +634,12 @@ export interface ResearchReadinessManifestInput {
   probes: ResearchReadinessProbe[];
   /** ISO timestamp the manifest is generated at. */
   now: string;
+  /**
+   * Evaluates an item's declared prerequisite clauses against the current
+   * canonical subject state (supplied by the reconciler, which owns I/O).
+   * Absent = every prerequisite treated as met (legacy callers/tests).
+   */
+  unmetPrerequisitesFor?: (clauses: readonly CapabilityPrerequisiteClause[]) => CapabilityPrerequisite[];
 }
 
 /**
@@ -619,9 +668,18 @@ export function buildResearchReadinessManifest(input: ResearchReadinessManifestI
     // here made a PARTIAL item report that nothing owns it, so the coverage
     // controller read every partial lane as unattemptable and its documented
     // second-route retry could never fire.
-    const machineBackfillAllowed = definition.machineBackfill;
+    const prerequisites = researchItemPrerequisites(definition);
+    const unmetPrerequisites = input.unmetPrerequisitesFor?.(prerequisites) ?? [];
+    // An item whose declared subject context is not yet available genuinely
+    // cannot be attempted — that is a prerequisite fact, not a status colour,
+    // so folding it here does not repeat the 375dd73 ownership/colour mistake.
+    const machineBackfillAllowed = definition.machineBackfill && unmetPrerequisites.length === 0;
     const reason = probe.reason?.trim() || defaultReason(definition, status);
-    const nextAction = probe.nextAction?.trim() || defaultNextAction(definition, status);
+    // An unattemptable item must not carry an actionable instruction ("Run
+    // Assessor & Tax.") it cannot honor yet — say what it is waiting for.
+    const nextAction = status !== 'green' && unmetPrerequisites.length > 0
+      ? `Waiting on ${unmetPrerequisites.map((p) => p === 'parcel' ? 'an established subject parcel' : p.replace(/_/g, ' ')).join(' and ')}.`
+      : probe.nextAction?.trim() || defaultNextAction(definition, status);
     return {
       id: definition.id,
       label: definition.label,
@@ -642,8 +700,11 @@ export function buildResearchReadinessManifest(input: ResearchReadinessManifestI
       // A gap only BLOCKS when it is red, critical, and a machine could close
       // it. A yellow unresolved input is a known unknown the intelligence layer
       // must reason with, never a blocker.
-      blocksIntelligence: status === 'red' && definition.intelligenceCritical && definition.machineBackfill,
+      blocksIntelligence: status === 'red' && definition.intelligenceCritical && definition.machineBackfill
+        && unmetPrerequisites.length === 0,
       knowledgePlan: probe.knowledgePlan ?? null,
+      prerequisites,
+      unmetPrerequisites,
     };
   });
 

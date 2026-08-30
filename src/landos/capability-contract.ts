@@ -9,11 +9,33 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
+/**
+ * Minimum subject context a capability itself requires before it can run.
+ * Declared, never inferred. The orchestrator and Research Readiness plan from
+ * these declarations instead of a single global parcel gate, so county/ZIP
+ * market work and seller work are never frozen by slow parcel resolution.
+ *
+ *   parcel                — an established working subject (research-grade or
+ *                           official; NOT necessarily officially verified)
+ *   county                — county + state (or county FIPS) known
+ *   zip                   — ZIP known
+ *   owner                 — owner of record known
+ *   seller_communications — seller contact/communications captured
+ */
+export type CapabilityPrerequisite = 'parcel' | 'county' | 'zip' | 'owner' | 'seller_communications';
+
+/** One requirement: a single prerequisite, or an any-of set (e.g. county OR ZIP
+ *  for market geography). All clauses must be satisfied. */
+export type CapabilityPrerequisiteClause = CapabilityPrerequisite | CapabilityPrerequisite[];
+
 export interface CapabilityMetadata {
   id: string;
   name: string;
   contractVersion: string;
   description: string;
+  /** Declared minimum context. Empty array = raw input only (the capability
+   *  itself establishes context). Absent = not yet declared. */
+  prerequisites?: CapabilityPrerequisiteClause[];
 }
 
 export type CapabilityEntity = 'LAND_ALLY' | 'TY_LAND_BIZ';

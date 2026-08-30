@@ -2,6 +2,7 @@ import {
   invokeCapabilityDefinition,
   type CapabilityInvocationRequest,
   type CapabilityMetadata,
+  type CapabilityPrerequisiteClause,
   type CapabilityResult,
   type JsonObject,
   type LandosCapability,
@@ -113,12 +114,42 @@ const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   ],
 ]);
 
+// ── Declared capability prerequisites ────────────────────────────────────────
+// The minimum context each registered capability itself requires. This is the
+// authoritative declaration the orchestrator and Research Readiness plan from;
+// there is no global parcel gate. `property-resolution` requires nothing — it
+// is the capability that ESTABLISHES the working subject from raw input.
+const CAPABILITY_PREREQUISITES: Record<string, CapabilityPrerequisiteClause[]> = {
+  [PROPERTY_RESOLUTION_CAPABILITY_ID]: [],
+  [ASSESSOR_TAX_CAPABILITY_ID]: ['parcel'],
+  [LANDPORTAL_RESEARCH_CAPABILITY_ID]: ['parcel'],
+  [LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY_ID]: ['parcel'],
+  [LANDPORTAL_VISUAL_CAPTURE_CAPABILITY_ID]: ['parcel'],
+  [LANDPORTAL_COMP_SEARCH_CAPABILITY_ID]: ['parcel'],
+  [COMPS_VALUATION_CAPABILITY_ID]: ['parcel'],
+  [ZONING_SUBDIVISION_CAPABILITY_ID]: ['parcel'],
+  [PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID]: ['parcel'],
+  [UTILITY_SERVICE_SCREEN_CAPABILITY_ID]: ['parcel'],
+  [ACQUISITION_INTELLIGENCE_CAPABILITY_ID]: ['parcel'],
+};
+
+/** Declared minimum context for a registered capability. An UNDECLARED
+ *  capability conservatively requires an established subject. */
+export function capabilityPrerequisites(capabilityId: string): CapabilityPrerequisiteClause[] {
+  return CAPABILITY_PREREQUISITES[capabilityId] ?? ['parcel'];
+}
+
 export function listRuntimeCapabilities(): CapabilityMetadata[] {
-  return [...CAPABILITIES.values()].map((definition) => ({ ...definition.metadata }));
+  return [...CAPABILITIES.values()].map((definition) => ({
+    ...definition.metadata,
+    prerequisites: capabilityPrerequisites(definition.metadata.id),
+  }));
 }
 
 export function runtimeCapability(capabilityId: string): CapabilityMetadata | null {
-  return CAPABILITIES.get(capabilityId)?.metadata ?? null;
+  const definition = CAPABILITIES.get(capabilityId);
+  if (!definition) return null;
+  return { ...definition.metadata, prerequisites: capabilityPrerequisites(capabilityId) };
 }
 
 export async function invokeRuntimeCapability(

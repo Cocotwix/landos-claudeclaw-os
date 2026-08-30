@@ -32,6 +32,7 @@ import {
 import { CompFullDetails } from './AcquisitionWorkspaceV2CompDetails';
 import { CompsValuationCapabilityRun } from './AcquisitionWorkspaceV2CompsValuationRun';
 import { providerSummary } from '@/lib/comp-provenance';
+import { countyLabel } from '@/lib/format';
 
 // ── View types (mirror src/landos/comps-valuation.ts) ──────────────────
 
@@ -965,7 +966,7 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
                         ? `${c.distanceMiles} mi${c.geography?.precision === 'approximate' ? ' (approx.)' : ''}`
                         : 'Unresolved'}</b>
                     </span>
-                    <span><i>Market</i><b>{c.geography?.city ?? c.geography?.zip ?? (c.county ? `${c.county} County` : '—')}</b></span>
+                    <span><i>Market</i><b>{c.geography?.city ?? c.geography?.zip ?? countyLabel(c.county) ?? '—'}</b></span>
                     <span><i>Source</i><b>{providerSummary(c.source)}</b></span>
                   </div>
                   <p class="awv2-cv-actualwhy">{conciseReason(c)}</p>

@@ -146,6 +146,7 @@ export interface GevInvestigationResult {
 export async function investigatePropertyWithGev(
   dealCardId: number,
   dossier: AcquisitionDossier,
+  options: { runId?: string | null; signal?: AbortSignal; isRunAuthoritative?: (runId: string) => boolean } = {},
 ): Promise<GevInvestigationResult> {
   const warnings: string[] = [];
   const subject = subjectCoordinates(dealCardId);
@@ -353,6 +354,12 @@ export async function investigatePropertyWithGev(
     return { observationCount: 0, warnings };
   }
 
+  // A timed-out/cancelled/superseded parent may finish browser or vision work,
+  // but it has lost publication authority before either durable write.
+  if (options.signal?.aborted || (options.runId && options.isRunAuthoritative && !options.isRunAuthoritative(options.runId))) {
+    return { observationCount: 0, warnings: [...warnings, 'God\'s Eye View completed after its parent run lost authority; late observations were not published.'] };
+  }
+
   // Persist: activity record (the lane the dossier reads) + evidence rows with
   // full provenance for the Evidence store.
   try {
@@ -371,6 +378,8 @@ export async function investigatePropertyWithGev(
       dealCardId,
       collectorKey: 'gev-spatial-investigation',
       actor: 'gev-investigation',
+      capabilityId: 'adaptive-spatial-investigation',
+      runId: options.runId,
       rows: analysis.observations.map((observation, index) => ({
         domain: 'property_spatial_visual',
         evidenceKind: 'gev_observation',

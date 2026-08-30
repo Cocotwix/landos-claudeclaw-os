@@ -81,3 +81,37 @@ describe('countyLabel', () => {
     expect(countyLabel('   ')).toBeNull();
   });
 });
+
+// F1 regression (sprint-2026-08-30-shared-foundation, pattern
+// canonical-state-partial-propagation): the Property Intelligence subject
+// panel rendered "Iredell County County" because a component appended
+// " County" unconditionally instead of using countyLabel(). Operator-facing
+// components must not hand-append the suffix — the label helper owns it.
+describe('no operator component hand-appends the County suffix', () => {
+  it('web components route county display through countyLabel', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const root = path.resolve(__dirname, '..');
+    const offenders: string[] = [];
+    const scan = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { scan(full); continue; }
+        if (!/\.(tsx|ts)$/.test(entry.name) || /\.test\./.test(entry.name)) continue;
+        if (/lib[\/]format\.ts$/.test(full)) continue;
+        const text = fs.readFileSync(full, 'utf8');
+        for (const [index, line] of text.split('\n').entries()) {
+          // An unconditional `${...} County` template append doubles when the
+          // source already carries the suffix. A line that guards with a
+          // suffix regex (OperatorRecordView) or calls countyLabel is fine.
+          if (/\$\{[^}]*county[^}]*\}\s+County`/i.test(line) && !/county\|parish\|borough/i.test(line)) {
+            offenders.push(`${path.relative(root, full)}:${index + 1}`);
+          }
+        }
+      }
+    };
+    scan(path.join(root, 'components'));
+    scan(path.join(root, 'pages'));
+    expect(offenders).toEqual([]);
+  });
+});

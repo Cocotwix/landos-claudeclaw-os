@@ -1,0 +1,30 @@
+[
+  {
+    "requirementId": "ws2-r2",
+    "liveUrl": "http://localhost:3141/dept/acquisitions/v2?deal=93",
+    "steps": "1) Open http://localhost:3141/dept/acquisitions/v2?deal=93 (county-known lead, parcel unresolved). 2) Scroll to the Research readiness strip on the Overview. 3) Read the tally chips beside the '2 / 18 Returned' heading. 4) GET /api/landos/deal-cards/93/research-readiness with the dashboard session and read manifest.operatorCompleteness.items.",
+    "expected": "The 14 parcel-scoped items whose only impediment is the unmet 'parcel' prerequisite are presented as waiting on subject establishment (waiting_prerequisite semantics) and are never shown to the operator as blocked/failed/error.",
+    "actual": "The Overview tally renders the chip '14 BLOCKED' for exactly these 14 waiting items, and the API's own operator projection returns outcome='blocked' for each of them (e.g. assessor_tax: outcome 'blocked', reason 'No Assessor & Tax run is on record.') even though the same response carries unmetPrerequisites=['parcel'] and the coverage layer correctly reports action='waiting_prerequisite'. projectOperatorResearchCompleteness in src/landos/research-readiness.ts (a file this workstream modified) maps status red -> 'blocked' unconditionally, so 'blocked' now covers two different bases: source-exhausted red vs waiting-on-subject red.",
+    "evidencePaths": [
+      ".runtime/landos/qa/ws2-declared-prerequisites-qa/deal93-readiness-tallies-14blocked.jpg"
+    ],
+    "apiOrDbEvidence": "GET /api/landos/deal-cards/93/research-readiness: manifest.operatorCompleteness = {returned:2, blocked:14, headline:'2 / 18 Returned'}; items such as assessor_tax have status 'red', unmetPrerequisites ['parcel'], operatorCompleteness outcome 'blocked'; coverage.entries for the same ids have action 'waiting_prerequisite'.",
+    "severity": "medium",
+    "suspectedSubsystem": "research-readiness operator completeness projection (projectOperatorResearchCompleteness, src/landos/research-readiness.ts) and the Overview tally label in web/src/components/AcquisitionWorkspaceV2ResearchReadiness.tsx",
+    "disposition": "internally_fixable",
+    "patternKey": "same-label-different-basis"
+  },
+  {
+    "requirementId": "ws2-r4",
+    "liveUrl": "http://localhost:3141/dept/acquisitions/v2?deal=93&page=property",
+    "steps": "1) Open deal 93 page=property. 2) Observe enabled 'Run Assessor & Tax', 'Run Zoning & Subdivision', 'Run LandPortal Research' buttons. 3) Read POST /api/landos/deal-cards/:id/assessor-tax in src/landos/routes.ts: the only gate is dealCardAssessorTaxSubject (subject card exists). 4) Deal 93 has an unverified_lead subject card (property card 83), so the 409 gate would not trigger.",
+    "expected": "Parcel-specific capabilities gate on an established subject wherever they can be started.",
+    "actual": "The declared prerequisites are consulted by readiness, coverage and the mission planner, but the direct per-panel capability endpoints gate only on subject-card existence, not on the declared 'parcel' prerequisite; the buttons are enabled on a deal whose readiness manifest says the parcel prerequisite is unmet. Not exercised (read-only QA; fixture must not be resolved), so no research was run and no mutation occurred. The brief's requirement names orchestrator/readiness, which do use the declarations, so this is recorded as deferred rather than failing the workstream.",
+    "evidencePaths": [],
+    "apiOrDbEvidence": "src/landos/routes.ts dealCardAssessorTaxSubject (line ~12086) returns 409 only when no canonical subject Property Card exists; GET /api/landos/deal-cards/93 shows propertyCards[0].id=83 verification_status='unverified_lead'; invokeRuntimeCapability performs no prerequisite check.",
+    "severity": "low",
+    "suspectedSubsystem": "capability runtime invocation path (direct deal-card capability POST routes)",
+    "disposition": "deferred",
+    "patternKey": "canonical-state-partial-propagation"
+  }
+]

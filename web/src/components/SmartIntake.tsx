@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebounce';
+import { countyLabel } from '@/lib/format';
 
 // SmartIntake is raw lead intake only. It may show helper hints from free/open
 // providers, but submission always uses the operator's exact typed text.
@@ -100,7 +101,7 @@ export function SmartIntake({
               <li key={s.label + i} class="px-3 py-2 text-[12px]">
                 <div class="text-[var(--color-text)]">{s.label}</div>
                 <div class="text-[10px] text-[var(--color-text-faint)]">
-                  {[s.county && `${s.county} County`, s.source].filter(Boolean).join(' - ')}
+                  {[countyLabel(s.county), s.source].filter(Boolean).join(' - ')}
                 </div>
               </li>
             ))}

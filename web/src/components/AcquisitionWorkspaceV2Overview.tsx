@@ -248,6 +248,7 @@ interface OverviewSectionProps {
     progress: IntelligenceRunProgressView | null;
     error: string | null;
     onRun: () => void;
+    onCancel: () => void;
   } | null;
   /** The four intelligence scores and the quick-flip economic status, from
    *  the persisted Deal Intelligence. Rendering runs nothing. */
@@ -1177,6 +1178,7 @@ export function OverviewSection({
           progress={acquisitionIntelligence.progress}
           error={acquisitionIntelligence.error}
           onRun={acquisitionIntelligence.onRun}
+          onCancel={acquisitionIntelligence.onCancel}
           onOpenFullIntelligence={() => {
             onOpenSection('property-intelligence');
             requestAnimationFrame(() => document.getElementById('full-acquisition-intelligence')?.scrollIntoView({ behavior: 'smooth' }));

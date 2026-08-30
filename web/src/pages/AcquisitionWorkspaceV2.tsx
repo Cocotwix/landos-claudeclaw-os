@@ -134,7 +134,7 @@ export interface IntelligenceRunStageView {
 
 export interface IntelligenceRunProgressView {
   runId: string;
-  status: 'running' | 'complete' | 'failed';
+  status: 'running' | 'complete' | 'failed' | 'cancelled';
   startedAt: string;
   finishedAt?: string | null;
   currentStage?: string | null;
@@ -168,7 +168,7 @@ interface IntelligenceStackResp {
   runtime?: AcquisitionIntelligenceRuntimeStatus | null;
   /** Present while a coordinated intelligence run is in flight, carrying the
    *  live stage projection so the card can show what LandOS is working on. */
-  run?: { startedAt?: string; error?: string | null; progress?: IntelligenceRunProgressView | null } | null;
+  run?: { runId?: string; status?: 'running' | 'failed' | 'cancelled'; startedAt?: string; error?: string | null; progress?: IntelligenceRunProgressView | null } | null;
   dealBrainRun?: { startedAt?: string; error?: string | null } | null;
   /** The persisted bounded reconciliation record plus in-flight state and the
    *  conflicts the seam could act on. SELECT-only projection. */
@@ -695,6 +695,20 @@ export function AcquisitionWorkspaceV2() {
     }
   };
 
+  const cancelAcquisitionIntelligence = async () => {
+    if (dealId == null || !aiRunning) return;
+    try {
+      const stopped = await apiPost<{ run?: { error?: string | null; progress?: IntelligenceRunProgressView | null } | null }>(
+        `/api/landos/deal-cards/${dealId}/intelligence/cancel`, {},
+      );
+      setAiRunning(false);
+      setAiProgress(stopped.run?.progress ?? null);
+      setAiError(stopped.run?.error ?? 'Stopped by Operator.');
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   // The explicit bounded reconciliation action: the persisted material
   // conflict drives ONE allowlisted governed capability, then ONE targeted
   // Property re-read, then it STOPS. Nothing on page load reaches this.
@@ -1071,6 +1085,7 @@ export function AcquisitionWorkspaceV2() {
               progress: aiProgress,
               error: aiError,
               onRun: runAcquisitionIntelligence,
+              onCancel: cancelAcquisitionIntelligence,
             }}
             intelligence={{
               scores: aiRead?.scores ?? null,

@@ -32,6 +32,7 @@
 //      passing quietly.
 
 import { applyCompSourcePolicy, compSourceFamily } from './comp-source-policy.js';
+import type { CapabilityPrerequisiteClause } from './capability-contract.js';
 import {
   candidateRowsFromPolicy,
   selectWorkingComps,
@@ -764,6 +765,11 @@ export const DEAL_INTELLIGENCE_CHILDREN: MissionChildSpec[] = [
     label: 'Market Pulse and Market Matrix',
     purpose: 'Assemble the Market Matrix and the Market Pulse read for the subject market.',
     role: 'supporting',
+    // County (macro) or ZIP (local pocket) is all this lane's inputs need; the
+    // parcel dependency exists only for leads whose county is still unknown,
+    // where resolution is the route TO the county. When the subject already
+    // carries its geography, the definition builder drops this edge.
+    prerequisites: [['county', 'zip']],
     dependsOn: ['parcel_identity'],
     timeoutMs: 240_000,
     group: DEAL_INTELLIGENCE_GROUPS.marketEvidence,
@@ -1902,15 +1908,46 @@ export function dealIntelligenceExecutors(
   };
 }
 
+/** Evaluates a lane's declared prerequisite clauses against the canonical
+ *  subject; returns the unmet ones (empty = the lane may start now). */
+export type LanePrerequisiteEvaluator = (
+  clauses: readonly CapabilityPrerequisiteClause[],
+) => unknown[];
+
+/**
+ * Prerequisite-aware child list. A lane that DECLARES its minimum subject
+ * context (`prerequisites`) and whose context the canonical subject already
+ * satisfies drops its `parcel_identity` dependency edge: county/ZIP market
+ * work starts immediately instead of waiting behind (or being skipped by)
+ * slow or failed parcel resolution. Lanes without a declaration are
+ * parcel-scoped and keep their edges — invariants 2-4 are untouched.
+ */
+export function dealIntelligenceChildrenForSubject(
+  unmetPrerequisitesFor: LanePrerequisiteEvaluator | null,
+): MissionChildSpec[] {
+  if (!unmetPrerequisitesFor) return DEAL_INTELLIGENCE_CHILDREN;
+  return DEAL_INTELLIGENCE_CHILDREN.map((spec) => {
+    if (!spec.prerequisites || spec.dependsOn.length === 0) return spec;
+    if (unmetPrerequisitesFor(spec.prerequisites).length > 0) return spec;
+    const dependsOn = spec.dependsOn.filter((dep) => dep !== 'parcel_identity');
+    if (dependsOn.length === spec.dependsOn.length) return spec;
+    return { ...spec, dependsOn };
+  });
+}
+
 /** The mission definition the route layer launches for one operator action. */
 export function dealIntelligenceMissionDefinition(
   capabilities: DealIntelligenceCapabilities,
+  options: {
+    /** Evaluates declared lane prerequisites against the canonical subject. */
+    unmetPrerequisitesFor?: LanePrerequisiteEvaluator;
+  } = {},
 ): FanOutMissionDefinition {
   return {
     kind: DEAL_INTELLIGENCE_KIND,
     label: 'Deal Intelligence',
     scope: DEAL_INTELLIGENCE_SCOPE,
-    children: DEAL_INTELLIGENCE_CHILDREN,
+    children: dealIntelligenceChildrenForSubject(options.unmetPrerequisitesFor ?? null),
     executors: dealIntelligenceExecutors(capabilities),
   };
 }

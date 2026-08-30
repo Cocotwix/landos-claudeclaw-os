@@ -16,6 +16,7 @@ import { getDealCard, type DealCardDetail } from './deal-card.js';
 import { getDealCardReport, type DealCardReportView } from './deal-card-report.js';
 import { getOpportunity, getOpportunityByDealCardId, type OpportunityRecord } from './opportunity.js';
 import { getPropertyCard, type PropertyCardDetail } from './property-card.js';
+import { resolveCanonicalIdentity } from './canonical-identity.js';
 
 export type PackageConfidence = 'high' | 'medium' | 'low' | 'none';
 
@@ -440,7 +441,12 @@ function buildFromCanonical(opportunity: OpportunityRecord, deal: DealCardDetail
     owner: property?.owner,
     acres: property?.acres,
   }, report.parcelVerified, marketResearch);
-  const resolved = report.parcelVerified && property?.verification_status === 'verified_property';
+  // The canonical identity is the shared subject answer. A research-grade
+  // established subject counts as resolved here; official verification is a
+  // stronger, separately reported state, never a precondition for the working
+  // subject.
+  const resolved = resolveCanonicalIdentity(deal.id).confirmed
+    || (report.parcelVerified && property?.verification_status === 'verified_property');
   const landCharacteristics = factsFromChecklist(report, resolved);
   const deedFindings = deedSection(property, report);
   const lienReview = lienSection(property);
@@ -512,7 +518,9 @@ function buildFromCanonical(opportunity: OpportunityRecord, deal: DealCardDetail
       contacts,
       address: nullable(property?.active_input_address), city: nullable(property?.city), county: nullable(property?.county), state: nullable(property?.state), apn: nullable(property?.apn),
       apparentRecordOwners: apparentOwners,
-      resolutionStatus: property?.verification_status ?? 'unresolved',
+      resolutionStatus: property?.verification_status === 'verified_property'
+        ? 'verified_property'
+        : resolved ? 'resolved' : (property?.verification_status ?? 'unresolved'),
       resolved,
       confidence: resolved ? 'high' : 'low',
       contradictions: unique(report.riskFlags ?? []),

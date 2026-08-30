@@ -302,6 +302,8 @@ export interface IntelligenceStackDeps {
    *  minutes can show the operator what it is working on. Observation only:
    *  it selects nothing, gates nothing, and is swallowed if it throws. */
   onProgress?: (event: IntelligenceRunEvent) => void;
+  /** Durable publication authority for a coordinated run. */
+  isRunAuthoritative?: (runId: string) => boolean;
   now?: () => Date;
 }
 
@@ -313,6 +315,8 @@ export interface IntelligenceStackRunInput {
   force?: boolean;
   requestedProvider?: string | null;
   requestedModel?: string | null;
+  runId?: string | null;
+  signal?: AbortSignal;
 }
 
 export interface IntelligenceStackProducts {
@@ -634,6 +638,12 @@ export async function runIntelligenceStack(
 ): Promise<IntelligenceStackRunResult> {
   const now = deps.now ?? (() => new Date());
   const warnings: string[] = [];
+  const assertRunAuthority = (): void => {
+    if (input.signal?.aborted || (input.runId && deps.isRunAuthoritative && !deps.isRunAuthoritative(input.runId))) {
+      throw new Error('The Intelligence run is no longer authoritative.');
+    }
+  };
+  assertRunAuthority();
   // Progress is a courtesy to the operator and never a participant in the
   // read: a reporting fault can never fail an intelligence run.
   const report = (event: IntelligenceRunEvent): void => {
@@ -790,6 +800,7 @@ export async function runIntelligenceStack(
     } catch (error) {
       warnings.push(`God's Eye View spatial investigation did not complete: ${error instanceof Error ? error.message.split(/\r?\n/, 1)[0] : String(error)}. The read proceeds on retained visual evidence.`);
     }
+    assertRunAuthority();
     // The investigation persists its result whichever way it lands, so the
     // evidence package must be re-read whenever it RAN — not only when it
     // returned observations. A pass that grounds none REPLACES the retained
@@ -881,6 +892,7 @@ export async function runIntelligenceStack(
       // "could not complete this read"; a deadline simply reaches it.
       run = await withDeadline(deps.analyst.run({
         dossier,
+        signal: input.signal,
         // The executor knows which specialist is working; the stack does not.
         // Forwarding the reporter is what lets the Deal Card name the layer.
         onStage: (layer, state, note) => report({ kind: 'stage', id: layer, state, note }),
@@ -931,6 +943,7 @@ export async function runIntelligenceStack(
             }),
         },
       }), ANALYST_CEILING_MS, 'The Acquisition Analyst');
+      assertRunAuthority();
     } catch (error) {
       return failed(`The Acquisition Analyst could not complete this read: ${error instanceof Error ? error.message.split(/\r?\n/, 1)[0] : String(error)}`);
     }
@@ -958,6 +971,7 @@ export async function runIntelligenceStack(
   );
 
   // 7. Build and persist each refreshed product.
+  assertRunAuthority();
   report({ kind: 'stage', id: 'finalizing', state: 'running' });
   // Model-detected visual/record conflicts, rendered in the carried triple
   // shape. Composed from the structured fields so the operator sees the record
@@ -1058,6 +1072,8 @@ export async function runIntelligenceStack(
       changeReason: `Property Intelligence read by ${runtimeFor('property').agentProfile} on ${runtimeFor('property').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'property_intelligence_read',
+      capabilityId: 'property-intelligence',
+      runId: input.runId,
     });
   }
 
@@ -1078,6 +1094,8 @@ export async function runIntelligenceStack(
       dealCardId: input.dealCardId,
       collectorKey: 'market-intelligence-web',
       actor: INTELLIGENCE_STACK_ACTOR,
+      capabilityId: 'market-intelligence',
+      runId: input.runId,
       rows: webEvidence.map((item) => ({
         domain: 'market_intelligence_web',
         evidenceKind: 'web_market_claim',
@@ -1166,6 +1184,8 @@ export async function runIntelligenceStack(
       changeReason: `Market Intelligence read by ${runtimeFor('market').agentProfile} on ${runtimeFor('market').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'market_intelligence_read',
+      capabilityId: 'market-intelligence',
+      runId: input.runId,
     });
   }
 
@@ -1236,6 +1256,8 @@ export async function runIntelligenceStack(
         : `Seller Intelligence read by ${runtimeFor('seller').agentProfile} on ${runtimeFor('seller').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'seller_intelligence_read',
+      capabilityId: 'seller-intelligence',
+      runId: input.runId,
     });
   }
 
@@ -1351,6 +1373,8 @@ export async function runIntelligenceStack(
       changeReason: whatChanged.join(' ').slice(0, 600) || `Deal Intelligence read by ${runtimeFor('deal').agentProfile} on ${runtimeFor('deal').model}.`,
       actor: INTELLIGENCE_STACK_ACTOR,
       auditEvent: 'deal_intelligence_read',
+      capabilityId: 'deal-intelligence',
+      runId: input.runId,
     });
   }
 

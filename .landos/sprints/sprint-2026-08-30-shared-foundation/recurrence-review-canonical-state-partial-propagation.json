@@ -1,0 +1,18 @@
+{
+  "failurePattern": "canonical-state-partial-propagation: a shared canonical conclusion or prerequisite is correct at its source, but a consumer keeps a private derivation, gate, or formatter and therefore disagrees with the authoritative contract.",
+  "sharedRootCause": "LandOS historically allowed each route and component to re-derive identity, prerequisites, acreage, counts, and display labels. This sprint creates shared Subject State and prerequisite contracts, but the recurrence audit found two consumer classes: operator projections/formatters in the accepted workstream, and older direct per-panel launch routes that are adjacent to the accepted readiness/orchestrator path.",
+  "whyAutomatedTestsMissedIt": "Earlier tests proved the canonical modules and individual consumers independently. They did not scan for private county formatting, assert the operator completeness projection over unmet prerequisites, or enumerate every direct route that can launch a capability.",
+  "whyBrowserQaMissedIt": "Prior journeys checked the header and resolved deals. They did not open the Property subject panel or a county-known parcel-less lead, so the duplicated county suffix and waiting-versus-blocked aggregate were first visible in this sprint's adversarial browser QA. The direct per-panel gate was identified read-only and intentionally not exercised against the retained fixture.",
+  "missingInvariant": "Every shared-state consumer must use CanonicalSubjectState, declared prerequisites, shared acreage, and shared presentation helpers; waiting on an unmet prerequisite is never blocked. Direct launch surfaces must eventually consult the same prerequisite evaluator before invoking parcel-specific work.",
+  "missingAcceptanceJourney": "The accepted journey now opens a county-known parcel-less lead and asserts waiting-on-subject separately from blocked, opens the Property subject panel and checks the county label exactly once, then contrasts an established parcel. A future route-normalization sprint should add an explicit click-path assertion for every direct per-panel capability control.",
+  "sharedRepair": "The accepted foundation routes identity and governing acreage through CanonicalSubjectState, capability planning/readiness through declared prerequisites, county display through countyLabel(), and operator completeness through an explicit waiting outcome. The older direct per-panel route gate remains the recorded F3 adjacent defer: it does not block the accepted readiness/coverage/mission-planning outcome and is not represented as repaired here.",
+  "newRegressionTest": "canonical-subject-state.test.ts and capability-prerequisites.test.ts cover shared state, declared prerequisite planning, waiting-not-blocked, and county/ZIP-safe scheduling; web/src/lib/format.test.ts scans operator components for private County suffix appends.",
+  "newBrowserAssertion": "WS1 recheck asserts one county label in the Property subject panel; WS2 recheck asserts deal 93 shows 13 WAITING ON SUBJECT and only one genuine BLOCKED item, persists after hard refresh, and deal 92 has zero waiting items.",
+  "affectedCapabilities": [
+    "property-resolution",
+    "landportal-research",
+    "research-readiness",
+    "deal-intelligence-mission"
+  ],
+  "reopenAcceptedCapability": false
+}

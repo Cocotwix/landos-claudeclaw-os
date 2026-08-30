@@ -499,22 +499,39 @@
           "findingId": "F11",
           "at": "2026-08-14T21:24:37.938Z",
           "summary": "The three open diligence questions (Zoning; Legal access and road frontage; Utilities) each visible as list items, a subset of API openQuestions"
+        },
+        {
+          "sprintId": "sprint-2026-08-30-shared-foundation",
+          "findingId": "F1",
+          "at": "2026-08-30T21:24:46.550Z",
+          "summary": "The subject panel presents the canonical subject county exactly once, e.g. 'Iredell County' (canonical subject state carries county='Iredell'; the shared countyLabel() formatter in web/src/lib/format.ts exists specifically to prevent doubling and its test asserts countyLabel('Iredell County County') === 'Iredell County')."
+        },
+        {
+          "sprintId": "sprint-2026-08-30-shared-foundation",
+          "findingId": "F3",
+          "at": "2026-08-30T22:03:48.425Z",
+          "summary": "Parcel-specific capabilities gate on an established subject wherever they can be started."
         }
       ],
       "review": {
-        "failurePattern": "canonical-state-partial-propagation (5th occurrence, ws2 F11): the unresolved panel wired to the canonical openQuestions rendered three EMPTY bullets — the canonical objects {label, reason, nextAction} were rendered directly as JSX children under a wrong string[] prop type, so the canonical data arrived but its content was dropped.",
-        "sharedRootCause": "The projection's item shape is declared per-consumer instead of shared: the component re-declared openQuestions as string[] while the server sends objects, and TypeScript could not catch it because the local declaration overrode the truth.",
-        "whyAutomatedTestsMissedIt": "Source-contract tests asserted which projection feeds the list, not that the rendered child is a string; no type-level link exists between the route's question shape and the component prop.",
-        "whyBrowserQaMissedIt": "The prior recheck verified the projection preference; only this recheck counted and read the rendered <li> contents.",
-        "missingInvariant": "A canonical projection's item type is imported from one declaration, never re-declared per consumer; list renderers render extracted text lines, never raw objects.",
-        "missingAcceptanceJourney": "Read each rendered unresolved bullet's text and fail on any empty bullet.",
-        "sharedRepair": "ws2 F11 repair: openQuestionLines() extracts 'label — reason' per question (string accepted for older projections), drops empties; prop type corrected to the object union.",
-        "newRegressionTest": "workspace-v2-lead-design.test.ts F8/F11 assertions on openQuestionLines extraction.",
-        "newBrowserAssertion": "QA recheck: every STILL UNRESOLVED bullet is non-empty and a subset of the API's question labels.",
-        "affectedCapabilities": [],
+        "failurePattern": "canonical-state-partial-propagation: a shared canonical conclusion or prerequisite is correct at its source, but a consumer keeps a private derivation, gate, or formatter and therefore disagrees with the authoritative contract.",
+        "sharedRootCause": "LandOS historically allowed each route and component to re-derive identity, prerequisites, acreage, counts, and display labels. This sprint creates shared Subject State and prerequisite contracts, but the recurrence audit found two consumer classes: operator projections/formatters in the accepted workstream, and older direct per-panel launch routes that are adjacent to the accepted readiness/orchestrator path.",
+        "whyAutomatedTestsMissedIt": "Earlier tests proved the canonical modules and individual consumers independently. They did not scan for private county formatting, assert the operator completeness projection over unmet prerequisites, or enumerate every direct route that can launch a capability.",
+        "whyBrowserQaMissedIt": "Prior journeys checked the header and resolved deals. They did not open the Property subject panel or a county-known parcel-less lead, so the duplicated county suffix and waiting-versus-blocked aggregate were first visible in this sprint's adversarial browser QA. The direct per-panel gate was identified read-only and intentionally not exercised against the retained fixture.",
+        "missingInvariant": "Every shared-state consumer must use CanonicalSubjectState, declared prerequisites, shared acreage, and shared presentation helpers; waiting on an unmet prerequisite is never blocked. Direct launch surfaces must eventually consult the same prerequisite evaluator before invoking parcel-specific work.",
+        "missingAcceptanceJourney": "The accepted journey now opens a county-known parcel-less lead and asserts waiting-on-subject separately from blocked, opens the Property subject panel and checks the county label exactly once, then contrasts an established parcel. A future route-normalization sprint should add an explicit click-path assertion for every direct per-panel capability control.",
+        "sharedRepair": "The accepted foundation routes identity and governing acreage through CanonicalSubjectState, capability planning/readiness through declared prerequisites, county display through countyLabel(), and operator completeness through an explicit waiting outcome. The older direct per-panel route gate remains the recorded F3 adjacent defer: it does not block the accepted readiness/coverage/mission-planning outcome and is not represented as repaired here.",
+        "newRegressionTest": "canonical-subject-state.test.ts and capability-prerequisites.test.ts cover shared state, declared prerequisite planning, waiting-not-blocked, and county/ZIP-safe scheduling; web/src/lib/format.test.ts scans operator components for private County suffix appends.",
+        "newBrowserAssertion": "WS1 recheck asserts one county label in the Property subject panel; WS2 recheck asserts deal 93 shows 13 WAITING ON SUBJECT and only one genuine BLOCKED item, persists after hard refresh, and deal 92 has zero waiting items.",
+        "affectedCapabilities": [
+          "property-resolution",
+          "landportal-research",
+          "research-readiness",
+          "deal-intelligence-mission"
+        ],
         "reopenAcceptedCapability": false,
-        "completedAt": "2026-08-14T21:26:41.872Z",
-        "coversOccurrences": 5
+        "completedAt": "2026-08-30T23:02:09.737Z",
+        "coversOccurrences": 7
       }
     },
     "same-label-different-basis": {
@@ -548,22 +565,28 @@
           "findingId": "F14",
           "at": "2026-08-14T22:31:13.170Z",
           "summary": "One consistent ceiling basis across pages, or each ceiling tile states its own basis and cross-references the other figure so the two ceilings cannot be misread as one measure"
+        },
+        {
+          "sprintId": "sprint-2026-08-30-shared-foundation",
+          "findingId": "F2",
+          "at": "2026-08-30T22:03:48.425Z",
+          "summary": "The 14 parcel-scoped items whose only impediment is the unmet 'parcel' prerequisite are presented as waiting on subject establishment (waiting_prerequisite semantics) and are never shown to the operator as blocked/failed/error."
         }
       ],
       "review": {
-        "coversOccurrences": 5,
-        "failurePattern": "same-label-different-basis (5th occurrence, ws4 F14): Overview 'Ceiling reference (60% of land value, rounded)' $248,500 next to Comps & Valuation 'Land-basis negotiation ceiling' $267,500 — the CV tile carried no basis on the tile itself, so two ceiling headwords carried different numbers across adjacent pages.",
-        "sharedRootCause": "Two genuinely different measures (60%-of-land-value acquisition reference vs the technical quick-flip negotiation hard stop) share the headword 'ceiling'; the prior repair made the full labels distinct but the CV tile did not state its own basis or cross-reference the 60% figure, leaving the numbers unreconciled at the point of reading.",
-        "whyAutomatedTestsMissedIt": "Existing tests enforced distinct label strings only; nothing required the CV ceiling tile to state its basis or name the 60% reference figure.",
-        "whyBrowserQaMissedIt": "Prior QA recorded it deferred at the 4th occurrence on the grounds the labels were distinct; the 5th-occurrence QA correctly re-raised it as an operator-misreading risk rather than accepting the deferral.",
-        "missingInvariant": "Any cross-page financial figure sharing a headword with a different-basis figure must state its own basis ON THE TILE and cross-reference the sibling figure's value, so the operator can reconcile the two numbers without switching pages.",
-        "missingAcceptanceJourney": "Cross-page ceiling reconciliation: read the CV negotiation ceiling tile and confirm it names its basis and the 60% reference figure that Overview shows.",
-        "sharedRepair": "The CV negotiation-ceiling tile now renders a basis sub-line (data-testid cv-ceiling-basis) derived from ceilingBasis, naming the technical quick-flip max and the 60% ceiling reference figure from negotiation.standardBand.pct60 — the exact number Overview displays.",
-        "newRegressionTest": "workspace-v2-comps-valuation-ui.test.ts: 'states the negotiation ceiling basis and names the 60% reference figure (ws4-f1)' — requires cv-ceiling-basis, the three basis-variant strings, negotiation.standardBand.pct60, and the .awv2-cv-dec .s style.",
-        "newBrowserAssertion": "ws4 recheck journey: the ceiling tile's sub-line must be visible and must contain the same dollar figure Overview's 'Ceiling reference (60% of land value, rounded)' row shows.",
+        "failurePattern": "same-label-different-basis: two surfaces print the same word (blocked, resolved, acreage) computed from different bases, so one surface contradicts the semantics another surface just established.",
+        "sharedRootCause": "Aggregate projections were written before the shared contracts existed and re-derive semantics locally. projectOperatorResearchCompleteness mapped every red readiness item to 'blocked' without consulting the new per-item unmetPrerequisites, so items merely waiting on the subject prerequisite read as refused in the one tally the operator scans.",
+        "whyAutomatedTestsMissedIt": "The new prerequisite tests asserted manifest items and coverage-plan actions but not the operator completeness projection, which has its own mapping.",
+        "whyBrowserQaMissedIt": "It did not: WS2 browser QA caught it on the live tally (14 BLOCKED). Prior sprints never rendered a county-known parcel-less lead, so the tally path was unexercised.",
+        "missingInvariant": "Every projection over readiness items must distinguish waiting-on-prerequisite from blocked; no aggregate may claim a source refused an answer when the item was never attemptable.",
+        "missingAcceptanceJourney": "Open a county-known lead without parcel resolution and assert the readiness tally shows waiting-on-subject separately from blocked.",
+        "sharedRepair": "OperatorResearchOutcome gained 'waiting'; projectOperatorResearchCompleteness maps red+unmetPrerequisites to waiting; the readiness strip renders 'N waiting on subject'; unattemptable items' nextAction states what they wait for instead of an instruction they cannot honor.",
+        "newRegressionTest": "capability-prerequisites.test.ts 'operator completeness — waiting is not blocked' (waiting=15, assessor_tax outcome waiting, nextAction names the wait; blocked once subject established).",
+        "newBrowserAssertion": "WS2 recheck asserts deal 93's readiness tally contains 'waiting on subject' and no longer counts the 15 parcel-scoped items as blocked.",
         "affectedCapabilities": [],
         "reopenAcceptedCapability": false,
-        "completedAt": "2026-08-14T22:31:52.262Z"
+        "completedAt": "2026-08-30T22:07:52.806Z",
+        "coversOccurrences": 6
       }
     },
     "ws1-legend-soon-swatch-contract": {

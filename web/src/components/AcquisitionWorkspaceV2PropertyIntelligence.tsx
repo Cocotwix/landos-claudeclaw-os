@@ -22,6 +22,7 @@ import {
   type AcquisitionIntelligenceRuntimeStatus,
 } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
 import { diligencePriorities } from '../lib/acquisition-intelligence-digest';
+import { countyLabel } from '../lib/format';
 import { LandPortalResearchRun } from './AcquisitionWorkspaceV2LandPortalResearch';
 import { OfficialParcelGisPanel, type OfficialParcelGisView } from './AcquisitionWorkspaceV2OfficialParcelGis';
 import { LandUsePanel, type LandUseView, type RetainedLandUseIntelligenceView } from './AcquisitionWorkspaceV2LandUse';
@@ -927,7 +928,7 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
             <Kv k="Owner of record" v={id.owner || null} />
             <Kv k="APN" v={id.apn || null} />
             <Kv k="Acreage" v={canonicalAcres} />
-            <Kv k="County" v={id.county ? `${id.county} County` : null} />
+            <Kv k="County" v={countyLabel(id.county)} />
             <Kv k="Municipality / jurisdiction" v={id.city || null} empty="Not yet resolved" />
             <Kv k="State" v={id.state_ || null} />
             <Kv k="ZIP" v={zip} />

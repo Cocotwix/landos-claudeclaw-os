@@ -296,13 +296,13 @@ export class PropertyIntelligenceStore {
     completedAt?: string | null;
     durationMs?: number | null;
     result?: unknown;
-  }): void {
+  }): boolean {
     ensureTables();
     const now = new Date().toISOString();
     const resultJson = input.result === undefined
       ? null
       : JSON.stringify(redactPropertyIntelligence(input.result));
-    getLandosDb().prepare(`
+    const result = getLandosDb().prepare(`
       UPDATE landos_property_intelligence_specialist SET
         status = ?,
         summary = COALESCE(?, summary),
@@ -316,6 +316,11 @@ export class PropertyIntelligenceStore {
         result_json = COALESCE(?, result_json),
         updated_at = ?
       WHERE run_id = ? AND specialist_id = ?
+        AND EXISTS (
+          SELECT 1 FROM landos_property_intelligence_run parent
+          WHERE parent.run_id = landos_property_intelligence_specialist.run_id
+            AND parent.status = 'running'
+        )
     `).run(
       input.status,
       input.summary ?? null,
@@ -331,6 +336,7 @@ export class PropertyIntelligenceStore {
       input.runId,
       input.specialistId,
     );
+    return Number(result.changes ?? 0) === 1;
   }
 
   listSpecialists(runId: string): SpecialistRow[] {
