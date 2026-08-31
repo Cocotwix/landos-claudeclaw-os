@@ -1,0 +1,6 @@
+RECHECK 2026-08-31 — Tools market journey, F3 retest and no-regression checks
+1) Iredell County, NC Market Pulse: "LOCAL AREA CONTEXT, NOT PARCEL VERIFIED ... growing (population +6.84% over 5 years) ... about $50,591/acre in the county (median of 316 comps)". County Market Research: "SOLD · IREDELL COUNTY (ALL ACREAGE) Price per Acre: $50,591 ... Population: 196,544".
+2) ZIP 28115 ZIP Market Research: "SOLD · ZIP 28115 (ALL ACREAGE) Price per Acre: $74,864 ... Population: 43,544". No "Failed to fetch" string appeared at any point in the session (6 invocations).
+3) F3 repair verified in shipped code: web/src/pages/Tools.tsx:15 maps TypeError to "The request did not reach LandOS. Try again; if it keeps happening, check the server." and the served bundle dist/web/assets/index-CrM1aamM.js (the exact asset loaded per network log) contains that string.
+4) Negative prerequisite: "28115" + Run Market Pulse renders "A county (with state) or county FIPS is required." (POST market-pulse/invoke -> 400).
+5) Hard refresh x2: clean render, zero console errors, load fires only GET /tools, assets, /api/dashboard/settings, /api/chat/stream, /api/health — no capability invocations on load.

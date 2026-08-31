@@ -1,0 +1,8 @@
+RECHECK 2026-08-31 — Tools > Market Research > County Market Research for "Loving County, TX"
+Panel chip: "Loving, TX · reused retained run"
+On-screen text (verbatim, get_page_text):
+  SOLD · TX STATEWIDE (ALL ACREAGE)
+  Price per Acre: $82,688 ... Population: 30,188,424 ...
+  County Market Research: retained market data returned (TX statewide (all acreage)).
+Missing (required by repair): the sentence "LandOS retains NO county-level market data for Loving, TX ..." and the Data gaps line "No county-level snapshot is retained for Loving, TX ...".
+The repaired summary/gap wording exists in marketMatrixOutcome (src/landos/market-geography-capabilities.ts) but the reused retained run replays the pre-repair summary.

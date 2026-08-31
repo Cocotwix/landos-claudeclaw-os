@@ -1,0 +1,21 @@
+RECHECK #2 regression page-text evidence — http://localhost:3141/tools — 2026-08-31 ~14:53 local
+
+Input "Iredell County, NC" — Run Market Pulse:
+Market Pulse / Iredell, NC / LOCAL AREA CONTEXT, NOT PARCEL VERIFIED
+Iredell County, NC is growing (population +6.84% over 5 years). Land is generally going for about $50,591/acre in the county (median of 316 comps).
+Growth: growing (+6.84%) — Iredell County, NC population growth +6.84% on a population of 196,544, from the retained LandOS Market Research county record (2026-Q3). Not a Census two-vintage measurement.
+County $/acre: Iredell County (all acreage): median $50,591/acre across 316 recorded sale(s) in the 2026-Q3 Market Research snapshot. Market context only, not a valuation basis.
+
+Run County Market Research:
+County Market Research / Iredell, NC / SOLD · IREDELL COUNTY (ALL ACREAGE)
+Price per Acre: $50,591 / Days on Market: 97 days / Sell-Through Rate: 76.7% / Absorption Rate: 43.41% / Months of Supply: 15.86 mo / Population: 196,544 / Population Density: 329 / Population Growth: 6.84%
+County Market Research: retained market data returned (Iredell County (all acreage)).
+
+Input "28115" — Run ZIP Market Research:
+ZIP Market Research / ZIP 28115 / SOLD · ZIP 28115 (ALL ACREAGE)
+Price per Acre: $74,864 / Days on Market: 202 days / Sell-Through Rate: 38.1% / Absorption Rate: 27.59% / Months of Supply: 31.94 mo / Population: 43,544 / Population Density: 596 / Population Growth: 4.59%
+ZIP Market Research: retained market data returned (ZIP 28115 (all acreage)).
+
+Hard refresh (Ctrl+Shift+R, twice): /tools rendered cleanly with empty panels; console errors: none; network on load: only /api/dashboard/settings, /api/chat/stream, /api/health — no capability invocations on load.
+
+DB (read-only, store/landos.db landos_capability_invocation): this recheck created 1.1.0 invocations only (market-pulse 14:52:30Z fresh Iredell, county-market-research 14:52:41Z, zip-market-research 14:53:08Z); Loving reuse resolved to 1.1.0 rows at 14:49:23Z; retained 1.0.0 pre-repair rows (14:11–14:31Z) were NOT replayed.

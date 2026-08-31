@@ -27,15 +27,17 @@ interface InvocationRow {
 const WAIT_FOR_RESULT_MS = 10 * 60_000;
 
 function subjectRef(request: CapabilityInvocationRequest): string | null {
-  return request.subject.kind === 'canonical_property'
-    ? String(request.subject.propertyCardId)
-    : request.subject.target ? String(request.subject.target.propertyCardId) : null;
+  if (request.subject.kind === 'canonical_property') return String(request.subject.propertyCardId);
+  if (request.subject.kind === 'raw_property') {
+    return request.subject.target ? String(request.subject.target.propertyCardId) : null;
+  }
+  return null;
 }
 
 function subjectDealCardId(request: CapabilityInvocationRequest): number | null {
-  return request.subject.kind === 'canonical_property'
-    ? request.subject.dealCardId ?? null
-    : request.subject.target?.dealCardId ?? null;
+  if (request.subject.kind === 'canonical_property') return request.subject.dealCardId ?? null;
+  if (request.subject.kind === 'raw_property') return request.subject.target?.dealCardId ?? null;
+  return null;
 }
 
 function resultStatus(result: CapabilityResult): 'succeeded' | 'needs_input' | 'failed' {
@@ -249,15 +251,17 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
     this.executionLock.release(capabilityId, subjectRefValue, ownerId);
   }
 
-  findReusable(capabilityId: string, idempotencyKey: string): CapabilityResult | null {
+  findReusable(capabilityId: string, idempotencyKey: string, contractVersion: string): CapabilityResult | null {
+    // Version-scoped reuse: a run recorded under an older contract version is
+    // pre-repair behavior and must never be replayed as the current result.
     const row = getLandosDb().prepare(`
       SELECT id, result_json
       FROM landos_capability_invocation
-      WHERE capability_id = ? AND idempotency_key = ?
+      WHERE capability_id = ? AND idempotency_key = ? AND capability_version = ?
         AND status IN ('succeeded','needs_input') AND result_json <> 'null'
       ORDER BY completed_at DESC, created_at DESC
       LIMIT 1
-    `).get(capabilityId, idempotencyKey) as InvocationRow | undefined;
+    `).get(capabilityId, idempotencyKey, contractVersion) as InvocationRow | undefined;
     return parsedResult(row);
   }
 
@@ -322,10 +326,10 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
       if (!/SQLITE_CONSTRAINT/.test(code) && !/UNIQUE constraint failed/i.test(error instanceof Error ? error.message : String(error))) throw error;
       const recover = db.transaction((): { started: true; researchSessionId: string | null } | { started: false; existingInvocationId: string } => {
         const existing = db.prepare(`
-        SELECT id, status, started_at FROM landos_capability_invocation
+        SELECT id, status, started_at, capability_version FROM landos_capability_invocation
         WHERE capability_id = ? AND idempotency_key = ?
         ORDER BY created_at DESC LIMIT 1
-      `).get(input.metadata.id, input.idempotencyKey) as { id: string; status: string; started_at: string | null } | undefined;
+      `).get(input.metadata.id, input.idempotencyKey) as { id: string; status: string; started_at: string | null; capability_version: string | null } | undefined;
         if (!existing) throw error;
         // A run still inside the wait window is the one to wait on.
         //
@@ -338,11 +342,15 @@ export class CapabilityInvocationStore implements CapabilityInvocationPersistenc
         // never finished is evidence, not clutter.
         const abandoned = existing.status === 'running'
           && Date.now() - Date.parse(existing.started_at ?? '') > WAIT_FOR_RESULT_MS;
-        if (existing.status !== 'failed' && !abandoned) return { started: false, existingInvocationId: existing.id };
+        // A row recorded under a different contract version is pre-repair
+        // state: it is superseded, never waited on, and re-keyed like a
+        // failed row so the key is usable by the current version.
+        const superseded = existing.capability_version !== input.metadata.contractVersion;
+        if (existing.status !== 'failed' && !abandoned && !superseded) return { started: false, existingInvocationId: existing.id };
         db.prepare(`
           UPDATE landos_capability_invocation
           SET idempotency_key = idempotency_key || ':' || status || ':' || id
-          WHERE id = ? AND status IN ('failed','running')
+          WHERE id = ?
         `).run(existing.id);
         insertRows();
         return { started: true, researchSessionId };

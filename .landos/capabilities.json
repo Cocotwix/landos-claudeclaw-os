@@ -232,7 +232,9 @@
         "src/landos/routes.ts",
         "src/landos/command-contract.ts"
       ],
-      "goldenJourneyIds": ["acquisition-workspace-v2-owner-family"],
+      "goldenJourneyIds": [
+        "acquisition-workspace-v2-owner-family"
+      ],
       "verificationCommands": [
         "npx vitest run src/landos/workspace-v2-lead-design.test.ts src/landos/workspace-v2-canonical-state.test.ts src/landos/workspace-v2-routing.test.ts src/landos/workspace-v2-section-switching.test.ts src/landos/workspace-v2-comps-valuation-ui.test.ts"
       ]
@@ -252,7 +254,9 @@
         "web/src/styles/workspace-v2-property-intelligence.css",
         "src/landos/property-intelligence-contract.ts"
       ],
-      "goldenJourneyIds": ["acquisition-workspace-v2-property-intelligence"],
+      "goldenJourneyIds": [
+        "acquisition-workspace-v2-property-intelligence"
+      ],
       "verificationCommands": [
         "npx vitest run src/landos/property-intelligence-contract.test.ts src/landos/property-intelligence.routes.test.ts src/landos/workspace-v2-lead-design.test.ts"
       ]
@@ -269,7 +273,9 @@
         "web/src/styles/workspace-v2-comps.css",
         "src/landos/acquisitions.ts"
       ],
-      "goldenJourneyIds": ["acquisition-workspace-v2-comps-valuation"],
+      "goldenJourneyIds": [
+        "acquisition-workspace-v2-comps-valuation"
+      ],
       "verificationCommands": [
         "npx vitest run src/landos/acquisitions-workspace.test.ts src/landos/workspace-v2-comps-valuation-ui.test.ts src/landos/workspace-v2-canonical-state.test.ts"
       ]
@@ -287,7 +293,9 @@
         "src/landos/land-use.ts",
         "src/landos/official-parcel-gis.ts"
       ],
-      "goldenJourneyIds": ["acquisition-workspace-v2-land-use-gis"],
+      "goldenJourneyIds": [
+        "acquisition-workspace-v2-land-use-gis"
+      ],
       "verificationCommands": [
         "npx vitest run src/landos/land-use.test.ts src/landos/official-parcel-gis.test.ts src/landos/workspace-v2-lead-design.test.ts"
       ]
@@ -303,7 +311,9 @@
         "web/src/components/AcquisitionWorkspaceV2RunStatus.tsx",
         "src/landos/property-intelligence-orchestrator.ts"
       ],
-      "goldenJourneyIds": ["acquisition-workspace-v2-run-status"],
+      "goldenJourneyIds": [
+        "acquisition-workspace-v2-run-status"
+      ],
       "verificationCommands": [
         "npx vitest run src/landos/property-intelligence-orchestrator.test.ts src/landos/property-intelligence-specialist-execution.test.ts"
       ]
@@ -319,7 +329,9 @@
         "web/src/components/AcquisitionWorkspaceV2CompDetails.tsx",
         "web/src/components/AcquisitionWorkspaceV2CompPhotoGallery.tsx"
       ],
-      "goldenJourneyIds": ["acquisition-workspace-v2-maps-details"],
+      "goldenJourneyIds": [
+        "acquisition-workspace-v2-maps-details"
+      ],
       "verificationCommands": [
         "npx vitest run src/landos/workspace-v2-comp-map-interaction.test.ts src/landos/workspace-v2-comp-map-expanded.test.ts src/landos/workspace-v2-comp-details-ui.test.ts"
       ]
@@ -337,10 +349,66 @@
         "src/landos/routes.ts",
         "src/landos/command-contract.ts"
       ],
-      "goldenJourneyIds": ["acquisition-workspace-v2-routes-contracts"],
+      "goldenJourneyIds": [
+        "acquisition-workspace-v2-routes-contracts"
+      ],
       "verificationCommands": [
         "npx vitest run src/landos/workspace-v2-routing.test.ts src/landos/workspace-v2-section-switching.test.ts web/src/lib/workspace-v2-nav.test.ts src/landos/landos-route-contract.test.ts"
       ]
+    },
+    {
+      "id": "tools-capability-reuse",
+      "name": "Tools Department Capability Reuse",
+      "department": "tools",
+      "acceptedVersion": "Sprint 4 worktree on c9e3c91 (committed this session)",
+      "goldenJourneyIds": [
+        "tools-market-geography-only",
+        "tools-deal-reuse",
+        "tools-capability-catalog"
+      ],
+      "regressionFixtures": [
+        "src/landos/market-geography-capabilities.test.ts",
+        "src/landos/tools-deal-reuse.routes.test.ts",
+        "src/landos/capability-prerequisites.test.ts"
+      ],
+      "sharedInvariants": [
+        "One capability, multiple callers: Tools invokes the same registered capability contracts the Deal Card mission uses; no Tools-specific duplicate capability or evidence pipeline may exist.",
+        "Geography market capabilities (county-market-research, zip-market-research, market-pulse) declare county/ZIP prerequisites and never demand or manufacture a property subject.",
+        "A market figure is presented under a geography label only when the Market Matrix resolution matched at or narrower than that geography; a wider basis carries its own label plus an explicit no-narrower-data statement, and never reaches Market Pulse's retained-county slot.",
+        "A retained capability run is reusable only under the exact contract version that recorded it; behavioral repairs ship with a contractVersion bump.",
+        "A Tools run against a selected Deal consumes the Deal's canonical Subject State via a canonical_property subject and never re-resolves identity; a subjectless Deal is a plain error, never a silent raw fallback.",
+        "The Tools capability catalog renders only from GET /api/landos/capabilities (the single registry with its operator manifest)."
+      ],
+      "browserAssertions": [
+        "/tools Market Pulse for a data-rich county renders real area-context figures labeled Local Area Context, Not Parcel Verified",
+        "/tools Market Pulse and County Market Research for Loving County, TX render honest gaps and the sentence that LandOS retains NO county-level market data, with statewide figures labeled TX statewide only",
+        "/tools ZIP-only input on a county tool renders the plain message that a county (with state) or county FIPS is required",
+        "/tools deal picker run binds the result to the Deal's subject property card id with honest returned-vs-accepted comp separation",
+        "/tools Capability Catalog lists exactly the registry's manually invocable capabilities plus the internal-only line"
+      ],
+      "proofArtifacts": [
+        ".landos/sprints/sprint-2026-08-31-tools-normalization/qa-report-ws1-recheck2.md",
+        ".landos/sprints/sprint-2026-08-31-tools-normalization/qa/qa-report-ws2-deal-reuse-subject.md",
+        ".landos/sprints/sprint-2026-08-31-tools-normalization/qa/qa-report-ws3-capability-catalog.md",
+        ".runtime/landos/qa/sprint4-ws1/tools-market-pulse-reused.jpg",
+        ".runtime/landos/qa/sprint4-ws2/tools-deal-selected-after-refresh.jpg"
+      ],
+      "knownLimitations": [
+        "Tools result panels are transient client state; a refresh clears the panes while retained runs reproduce results on demand (deal selection persists per-tab).",
+        "Assessor & Tax official sources (TN Comptroller layer, official parcel lookup) were unavailable in the acceptance environment; deterministic-first behavior and honest no-record admission were what acceptance proved."
+      ],
+      "deliberateExternalBlockers": [],
+      "sharedDependencyPaths": [
+        "src/landos/capability-contract.ts",
+        "src/landos/capability-registry.ts",
+        "src/landos/capability-store.ts",
+        "src/landos/market-geography-capabilities.ts",
+        "src/landos/routes.ts",
+        "web/src/pages/Tools.tsx"
+      ],
+      "tylerAcceptance": "Sprint 4 prompt: Tools department normalization & capability reuse; staged ledger sprint-2026-08-31-tools-normalization completed with independent QA and final review pass.",
+      "sprintId": "sprint-2026-08-31-tools-normalization",
+      "acceptedAt": "2026-08-31T16:10:01.109Z"
     }
   ]
 }

@@ -28,6 +28,24 @@ export type CapabilityPrerequisite = 'parcel' | 'county' | 'zip' | 'owner' | 'se
  *  for market geography). All clauses must be satisfied. */
 export type CapabilityPrerequisiteClause = CapabilityPrerequisite | CapabilityPrerequisite[];
 
+/** Operator-facing manifest facts for one capability — what the Tools catalog
+ *  needs to present it honestly. Declared, never inferred. */
+export interface CapabilityOperatorManifest {
+  /** Directly invocable by the operator from the Tools department. */
+  manualInvocation: boolean;
+  /** Can run without any Deal/lead existing (standalone research). */
+  runsWithoutDeal: boolean;
+  /** Admitted facts enter the authoritative evidence path when a canonical
+   *  subject carries the run. */
+  writesAuthoritativeEvidence: boolean;
+  /** The simplest useful operator input, in plain words. */
+  inputHint: string;
+  /** The LandOS-native skill (procedure) governing this capability, if any. */
+  skill?: string;
+  /** Governed recovery behavior, when one exists, in one plain sentence. */
+  recovery?: string;
+}
+
 export interface CapabilityMetadata {
   id: string;
   name: string;
@@ -36,6 +54,8 @@ export interface CapabilityMetadata {
   /** Declared minimum context. Empty array = raw input only (the capability
    *  itself establishes context). Absent = not yet declared. */
   prerequisites?: CapabilityPrerequisiteClause[];
+  /** Operator manifest for the Tools catalog. Absent = not operator-facing. */
+  operator?: CapabilityOperatorManifest;
 }
 
 export type CapabilityEntity = 'LAND_ALLY' | 'TY_LAND_BIZ';
@@ -47,7 +67,10 @@ export type CapabilitySubjectInput =
       rawInput: string;
       target?: { propertyCardId: number; dealCardId: number };
     }
-  | { kind: 'canonical_property'; entity: CapabilityEntity; propertyCardId: number; dealCardId?: number };
+  | { kind: 'canonical_property'; entity: CapabilityEntity; propertyCardId: number; dealCardId?: number }
+  // Geography-scoped research (county/ZIP market work) — a market question has
+  // no property subject and must never be forced to manufacture one.
+  | { kind: 'geography'; entity: CapabilityEntity; county?: string; state?: string; zip?: string; fips?: string };
 
 export interface CapabilityInvocationRequest {
   capabilityId: string;
@@ -122,7 +145,10 @@ export interface LandosCapability<TFacts extends JsonObject = JsonObject, TRunti
 }
 
 export interface CapabilityInvocationPersistence {
-  findReusable(capabilityId: string, idempotencyKey: string): CapabilityResult | null;
+  /** A retained run is reusable only under the SAME contract version that
+   *  recorded it: a repaired capability must never replay a pre-repair result
+   *  as if it were current behavior. */
+  findReusable(capabilityId: string, idempotencyKey: string, contractVersion: string): CapabilityResult | null;
   begin(input: {
     request: CapabilityInvocationRequest;
     metadata: CapabilityMetadata;
@@ -171,6 +197,10 @@ function validateInvocationEnvelope(request: CapabilityInvocationRequest): void 
       && (!Number.isInteger(request.subject.propertyCardId) || request.subject.propertyCardId < 1)) {
     throw new Error('canonical propertyCardId must be a positive integer');
   }
+  if (request.subject.kind === 'geography'
+      && !request.subject.county?.trim() && !request.subject.zip?.trim() && !request.subject.fips?.trim()) {
+    throw new Error('geography subject requires a county, ZIP, or county FIPS');
+  }
 }
 
 export async function invokeCapabilityDefinition<TFacts extends JsonObject, TRuntime>(input: {
@@ -190,7 +220,7 @@ export async function invokeCapabilityDefinition<TFacts extends JsonObject, TRun
   const mode = request.mode ?? 'reuse';
   const baseKey = capabilityIdempotencyKey(request);
   if (mode === 'reuse') {
-    const reusable = persistence.findReusable(definition.metadata.id, baseKey) as CapabilityResult<TFacts> | null;
+    const reusable = persistence.findReusable(definition.metadata.id, baseKey, definition.metadata.contractVersion) as CapabilityResult<TFacts> | null;
     if (reusable) {
       return {
         ...reusable,

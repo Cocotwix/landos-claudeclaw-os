@@ -279,6 +279,8 @@ export const PROPERTY_RESOLUTION_CAPABILITY: LandosCapability<PropertyResolution
         }
       }
       universal = await resolveSubjectProperty(dealCardId, runtime.universalOptions ?? {});
+    } else if (request.subject.kind !== 'raw_property') {
+      throw new Error('Property Resolution runs on a property subject, not geography.');
     } else {
       universal = await resolveRaw(request.subject.rawInput, request.subject.entity, runtime);
       if (request.subject.target) {

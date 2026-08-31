@@ -1,7 +1,20 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { History, Landmark, Map, Ruler, Scale, Search, Wrench } from 'lucide-preact';
 
-import { apiPost } from '@/lib/api';
+import { ApiError, apiGet, apiPost } from '@/lib/api';
+
+/** The server's plain operator message (e.g. a missing prerequisite) beats the
+ *  developer-style "failed: 400" wrapper whenever it exists. */
+function plainErrorMessage(caught: unknown): string {
+  if (caught instanceof ApiError) {
+    const body = caught.body as { error?: unknown } | null;
+    if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
+  }
+  // A network-level fetch failure ("Failed to fetch") is a transport hiccup,
+  // not something the operator can act on as-is.
+  if (caught instanceof TypeError) return 'The request did not reach LandOS. Try again; if it keeps happening, check the server.';
+  return caught instanceof Error ? caught.message : String(caught);
+}
 
 interface ResolutionResult {
   invocationId: string;
@@ -205,6 +218,74 @@ const LANDPORTAL_OUTCOME_LABEL: Record<LandPortalResearchResult['facts']['outcom
   not_available: 'No LandPortal record retrieved',
 };
 
+interface MarketMatrixSectionView {
+  available: boolean;
+  coverageLabel: string;
+  resolvedKeyLabel: string | null;
+  fields: Array<{ label: string; value: string | null; unknown: boolean }>;
+}
+
+interface MarketToolResult {
+  invocationId: string;
+  status: 'SUCCEEDED' | 'NEEDS_INPUT' | 'FAILED';
+  facts: {
+    geographyLabel?: string;
+    outcome?: string;
+    summary?: string;
+    sold?: { section?: MarketMatrixSectionView; resolution?: { available: boolean; resolvedKeyLabel: string | null; period: string | null; source: string | null } };
+    forSale?: { section?: MarketMatrixSectionView };
+    pulse?: {
+      label?: string;
+      plainEnglish?: string;
+      growth?: { direction: string; pctChange: number | null; note: string; source: string | null };
+      countyPricePerAcre?: { medianPpa: number | null; sampleSize: number; note: string };
+      zipPricePerAcre?: { medianPpa: number | null; sampleSize: number; note: string } | null;
+    };
+  };
+  evidence: Array<{ source: string; retrievedAt: string }>;
+  warnings: string[];
+  missingInformation: string[];
+  execution: { mode: 'reuse' | 'refresh'; reused: boolean; durationMs: number };
+}
+
+interface CatalogCapability {
+  id: string;
+  name: string;
+  contractVersion: string;
+  description: string;
+  prerequisites?: Array<string | string[]>;
+  operator?: {
+    manualInvocation: boolean;
+    runsWithoutDeal: boolean;
+    writesAuthoritativeEvidence: boolean;
+    inputHint: string;
+    skill?: string;
+    recovery?: string;
+  };
+}
+
+const PREREQUISITE_LABEL: Record<string, string> = {
+  parcel: 'a resolvable property (or an existing Deal)',
+  county: 'a county',
+  zip: 'a ZIP',
+  owner: 'an owner of record',
+  seller_communications: 'seller communications',
+};
+
+function prerequisiteSentence(prerequisites: Array<string | string[]> | undefined): string {
+  if (!prerequisites || prerequisites.length === 0) return 'Nothing — raw input is enough.';
+  const clause = (c: string | string[]) => Array.isArray(c)
+    ? c.map((p) => PREREQUISITE_LABEL[p] ?? p).join(' or ')
+    : PREREQUISITE_LABEL[c] ?? c;
+  return `Needs ${prerequisites.map(clause).join(' and ')}.`;
+}
+
+const MARKET_TOOL_LABEL: Record<string, string> = {
+  'market-pulse': 'Market Pulse',
+  'county-market-research': 'County Market Research',
+  'zip-market-research': 'ZIP Market Research',
+};
+
 const RECORD_STATUS_LABEL: Record<AssessorTaxResult['facts']['recordStatus'], string> = {
   official_record_retrieved: 'Official record retrieved',
   retained_record_only: 'Retained record only',
@@ -246,6 +327,43 @@ export function Tools() {
   const [lpToolResults, setLpToolResults] = useState<Record<string, { status?: string; facts?: Record<string, unknown> }>>({});
   const [lpToolRunning, setLpToolRunning] = useState<string | null>(null);
   const [lpToolError, setLpToolError] = useState<string | null>(null);
+  const [deals, setDeals] = useState<Array<{ id: number; title: string; status: string }>>([]);
+  // The deal selection survives a hard refresh (per-tab, never cross-session).
+  const [selectedDealId, setSelectedDealId] = useState<number | null>(() => {
+    try {
+      const stored = Number(sessionStorage.getItem('landos.tools.dealCardId'));
+      return Number.isInteger(stored) && stored > 0 ? stored : null;
+    } catch { return null; }
+  });
+  const selectDeal = (id: number | null) => {
+    setSelectedDealId(id);
+    try {
+      if (id == null) sessionStorage.removeItem('landos.tools.dealCardId');
+      else sessionStorage.setItem('landos.tools.dealCardId', String(id));
+    } catch { /* per-tab convenience only */ }
+  };
+  const [marketInput, setMarketInput] = useState('');
+  const [marketRunning, setMarketRunning] = useState<string | null>(null);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const [marketResults, setMarketResults] = useState<Record<string, MarketToolResult>>({});
+
+  // Existing Deals for subject reuse: a Tools run against a selected Deal
+  // consumes that Deal's canonical Subject State and never re-resolves it.
+  useEffect(() => {
+    let cancelled = false;
+    void apiGet<{ dealCards: Array<{ id: number; title: string; status: string }> }>('/api/landos/deal-cards')
+      .then((response) => { if (!cancelled) setDeals(response.dealCards ?? []); })
+      .catch(() => { /* the picker is a convenience; raw input still works */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  /** Body for a property-capability invoke: the selected Deal's canonical
+   *  subject when one is chosen, the raw operator input otherwise. */
+  const propertySubjectBody = (extra: Record<string, unknown> = {}): Record<string, unknown> =>
+    selectedDealId != null
+      ? { dealCardId: selectedDealId, entity: 'TY_LAND_BIZ', ...extra }
+      : { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', ...extra };
+  const hasPropertySubject = selectedDealId != null || !!rawInput.trim();
 
   const run = async (refresh = false) => {
     if (!rawInput.trim() || running) return;
@@ -268,18 +386,18 @@ export function Tools() {
   // Assessor & Tax runs the shared LandOS Capability. Property Resolution
   // establishes the subject first; this never creates a lead or a Deal Card.
   const runAssessorTax = async (refresh = false) => {
-    if (!rawInput.trim() || assessorRunning) return;
+    if (!hasPropertySubject || assessorRunning) return;
     setAssessorRunning(true);
     setAssessorError(null);
     try {
-      const response = await apiPost<{ resolution: ResolutionResult; result: AssessorTaxResult }>(
+      const response = await apiPost<{ resolution: ResolutionResult | null; result: AssessorTaxResult }>(
         '/api/landos/capabilities/assessor-tax/invoke',
-        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh },
+        propertySubjectBody({ refresh }),
       );
-      setResult(response.resolution);
+      if (response.resolution) setResult(response.resolution);
       setAssessor(response.result);
     } catch (caught) {
-      setAssessorError(caught instanceof Error ? caught.message : String(caught));
+      setAssessorError(plainErrorMessage(caught));
     } finally {
       setAssessorRunning(false);
     }
@@ -288,18 +406,18 @@ export function Tools() {
   // LandPortal Research runs the shared LandOS Capability. Property Resolution
   // establishes the subject first; this never creates a lead or a Deal Card.
   const runLandPortalResearch = async (refresh = false) => {
-    if (!rawInput.trim() || landPortalRunning) return;
+    if (!hasPropertySubject || landPortalRunning) return;
     setLandPortalRunning(true);
     setLandPortalError(null);
     try {
-      const response = await apiPost<{ resolution: ResolutionResult; result: LandPortalResearchResult }>(
+      const response = await apiPost<{ resolution: ResolutionResult | null; result: LandPortalResearchResult }>(
         '/api/landos/capabilities/landportal-research/invoke',
-        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh },
+        propertySubjectBody({ refresh }),
       );
-      setResult(response.resolution);
+      if (response.resolution) setResult(response.resolution);
       setLandPortal(response.result);
     } catch (caught) {
-      setLandPortalError(caught instanceof Error ? caught.message : String(caught));
+      setLandPortalError(plainErrorMessage(caught));
     } finally {
       setLandPortalRunning(false);
     }
@@ -308,18 +426,18 @@ export function Tools() {
   // Comps & Valuation runs the shared LandOS Capability. Property Resolution
   // establishes the subject first; this never creates a lead or a Deal Card.
   const runCompsValuation = async (refresh = false) => {
-    if (!rawInput.trim() || compsRunning) return;
+    if (!hasPropertySubject || compsRunning) return;
     setCompsRunning(true);
     setCompsError(null);
     try {
-      const response = await apiPost<{ resolution: ResolutionResult; result: CompsValuationResult }>(
+      const response = await apiPost<{ resolution: ResolutionResult | null; result: CompsValuationResult }>(
         '/api/landos/capabilities/comps-valuation/invoke',
-        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh },
+        propertySubjectBody({ refresh }),
       );
-      setResult(response.resolution);
+      if (response.resolution) setResult(response.resolution);
       setCompsValuation(response.result);
     } catch (caught) {
-      setCompsError(caught instanceof Error ? caught.message : String(caught));
+      setCompsError(plainErrorMessage(caught));
     } finally {
       setCompsRunning(false);
     }
@@ -329,18 +447,18 @@ export function Tools() {
   // establishes the subject first; this never creates a lead or a Deal Card.
   // The LOCATION question: what rules apply because of where the parcel is.
   const runZoningSubdivision = async (refresh = false) => {
-    if (!rawInput.trim() || zoningRunning) return;
+    if (!hasPropertySubject || zoningRunning) return;
     setZoningRunning(true);
     setZoningError(null);
     try {
-      const response = await apiPost<{ resolution: ResolutionResult; result: ZoningSubdivisionResult }>(
+      const response = await apiPost<{ resolution: ResolutionResult | null; result: ZoningSubdivisionResult }>(
         '/api/landos/capabilities/zoning-subdivision/invoke',
-        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh, research: true },
+        propertySubjectBody({ refresh, research: true }),
       );
-      setResult(response.resolution);
+      if (response.resolution) setResult(response.resolution);
       setZoning(response.result);
     } catch (caught) {
-      setZoningError(caught instanceof Error ? caught.message : String(caught));
+      setZoningError(plainErrorMessage(caught));
     } finally {
       setZoningRunning(false);
     }
@@ -350,18 +468,18 @@ export function Tools() {
   // PROPERTY question: what has happened to this exact parcel. Retained context
   // is consumed first, and any additional search is bounded.
   const runPropertyDevelopmentHistory = async (refresh = false) => {
-    if (!rawInput.trim() || historyRunning) return;
+    if (!hasPropertySubject || historyRunning) return;
     setHistoryRunning(true);
     setHistoryError(null);
     try {
-      const response = await apiPost<{ resolution: ResolutionResult; result: PropertyDevelopmentHistoryResult }>(
+      const response = await apiPost<{ resolution: ResolutionResult | null; result: PropertyDevelopmentHistoryResult }>(
         '/api/landos/capabilities/property-development-history/invoke',
-        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ', refresh, research: true },
+        propertySubjectBody({ refresh, research: true }),
       );
-      setResult(response.resolution);
+      if (response.resolution) setResult(response.resolution);
       setHistory(response.result);
     } catch (caught) {
-      setHistoryError(caught instanceof Error ? caught.message : String(caught));
+      setHistoryError(plainErrorMessage(caught));
     } finally {
       setHistoryRunning(false);
     }
@@ -370,19 +488,50 @@ export function Tools() {
   // The LandPortal three-tool split: Property Characteristics, Visual Capture
   // and Comp Search are separately callable capabilities with their own runs.
   const runLandPortalTool = async (tool: 'landportal-property-characteristics' | 'landportal-visual-capture' | 'landportal-comp-search') => {
-    if (!rawInput.trim() || lpToolRunning) return;
+    if (!hasPropertySubject || lpToolRunning) return;
     setLpToolRunning(tool);
     setLpToolError(null);
     try {
       const response = await apiPost<{ result: { status?: string; facts?: Record<string, unknown> } }>(
         `/api/landos/capabilities/${tool}/invoke`,
-        { rawInput: rawInput.trim(), entity: 'TY_LAND_BIZ' },
+        propertySubjectBody(),
       );
       setLpToolResults((prior) => ({ ...prior, [tool]: response.result }));
     } catch (caught) {
-      setLpToolError(caught instanceof Error ? caught.message : String(caught));
+      setLpToolError(plainErrorMessage(caught));
     } finally {
       setLpToolRunning(null);
+    }
+  };
+
+  // The catalog is the registry, verbatim: GET /api/landos/capabilities is the
+  // one authoritative manifest, and this section renders it without invention.
+  const [catalog, setCatalog] = useState<CatalogCapability[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void apiGet<{ capabilities: CatalogCapability[] }>('/api/landos/capabilities')
+      .then((response) => { if (!cancelled) setCatalog(response.capabilities ?? []); })
+      .catch(() => { /* the catalog is informational; the tools above still work */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // The geography market tools run the SAME registered capabilities any other
+  // caller uses. Their prerequisite is a county or ZIP — never a parcel — and
+  // they never create a lead, a Deal Card, or a property card.
+  const runMarketTool = async (tool: 'market-pulse' | 'county-market-research' | 'zip-market-research') => {
+    if (!marketInput.trim() || marketRunning) return;
+    setMarketRunning(tool);
+    setMarketError(null);
+    try {
+      const response = await apiPost<{ result: MarketToolResult }>(
+        `/api/landos/capabilities/${tool}/invoke`,
+        { rawInput: marketInput.trim(), entity: 'TY_LAND_BIZ' },
+      );
+      setMarketResults((prior) => ({ ...prior, [tool]: response.result }));
+    } catch (caught) {
+      setMarketError(plainErrorMessage(caught));
+    } finally {
+      setMarketRunning(null);
     }
   };
 
@@ -403,6 +552,29 @@ export function Tools() {
 
         <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="property-resolver-tool">
           <div class="flex items-center gap-2 font-semibold"><Search size={17} /> Property Resolver</div>
+          <label class="mt-4 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]" for="tools-deal-select">
+            Use an existing Deal (optional)
+          </label>
+          <select
+            id="tools-deal-select"
+            data-testid="tools-deal-select"
+            value={selectedDealId ?? ''}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              selectDeal(value ? Number(value) : null);
+            }}
+            class="mt-2 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+          >
+            <option value="">No Deal selected — research the raw input below</option>
+            {deals.map((deal) => (
+              <option key={deal.id} value={String(deal.id)}>{deal.title}</option>
+            ))}
+          </select>
+          {selectedDealId != null && (
+            <p class="mt-2 text-xs text-[var(--color-text-muted)]" data-testid="tools-deal-subject-note">
+              Research runs against this Deal's canonical subject — LandOS will not re-resolve or reinterpret its identity. Clear the selection to research raw input instead.
+            </p>
+          )}
           <label class="mt-4 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]" for="property-resolver-input">
             Raw property reference
           </label>
@@ -420,28 +592,28 @@ export function Tools() {
               {running ? 'Resolving…' : 'Resolve property'}
             </button>
             {result && <button type="button" disabled={running} onClick={() => void run(true)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">Refresh sources</button>}
-            <button type="button" data-testid="assessor-tax-run" disabled={assessorRunning || !rawInput.trim()} onClick={() => void runAssessorTax(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <button type="button" data-testid="assessor-tax-run" disabled={assessorRunning || !hasPropertySubject} onClick={() => void runAssessorTax(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {assessorRunning ? 'Reading assessor record…' : 'Run Assessor & Tax'}
             </button>
-            <button type="button" data-testid="landportal-research-run" disabled={landPortalRunning || !rawInput.trim()} onClick={() => void runLandPortalResearch(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <button type="button" data-testid="landportal-research-run" disabled={landPortalRunning || !hasPropertySubject} onClick={() => void runLandPortalResearch(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {landPortalRunning ? 'Reading LandPortal record…' : 'Run LandPortal Research'}
             </button>
-            <button type="button" data-testid="comps-valuation-run" disabled={compsRunning || !rawInput.trim()} onClick={() => void runCompsValuation(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <button type="button" data-testid="comps-valuation-run" disabled={compsRunning || !hasPropertySubject} onClick={() => void runCompsValuation(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {compsRunning ? 'Reading comp and valuation evidence…' : 'Run Comps & Valuation'}
             </button>
-            <button type="button" data-testid="zoning-subdivision-run" disabled={zoningRunning || !rawInput.trim()} onClick={() => void runZoningSubdivision(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <button type="button" data-testid="zoning-subdivision-run" disabled={zoningRunning || !hasPropertySubject} onClick={() => void runZoningSubdivision(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {zoningRunning ? 'Researching the land-use rules…' : 'Run Zoning & Subdivision'}
             </button>
-            <button type="button" data-testid="property-development-history-run" disabled={historyRunning || !rawInput.trim()} onClick={() => void runPropertyDevelopmentHistory(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <button type="button" data-testid="property-development-history-run" disabled={historyRunning || !hasPropertySubject} onClick={() => void runPropertyDevelopmentHistory(false)} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {historyRunning ? 'Reading the parcel record…' : 'Run Property Development History'}
             </button>
-            <button type="button" data-testid="landportal-property-characteristics-run" disabled={!!lpToolRunning || !rawInput.trim()} onClick={() => void runLandPortalTool('landportal-property-characteristics')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <button type="button" data-testid="landportal-property-characteristics-run" disabled={!!lpToolRunning || !hasPropertySubject} onClick={() => void runLandPortalTool('landportal-property-characteristics')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {lpToolRunning === 'landportal-property-characteristics' ? 'Extracting LandPortal characteristics…' : 'Run LandPortal Property Characteristics'}
             </button>
-            <button type="button" data-testid="landportal-visual-capture-run" disabled={!!lpToolRunning || !rawInput.trim()} onClick={() => void runLandPortalTool('landportal-visual-capture')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <button type="button" data-testid="landportal-visual-capture-run" disabled={!!lpToolRunning || !hasPropertySubject} onClick={() => void runLandPortalTool('landportal-visual-capture')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {lpToolRunning === 'landportal-visual-capture' ? 'Capturing LandPortal visuals…' : 'Run LandPortal Visual Capture'}
             </button>
-            <button type="button" data-testid="landportal-comp-search-run" disabled={!!lpToolRunning || !rawInput.trim()} onClick={() => void runLandPortalTool('landportal-comp-search')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <button type="button" data-testid="landportal-comp-search-run" disabled={!!lpToolRunning || !hasPropertySubject} onClick={() => void runLandPortalTool('landportal-comp-search')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
               {lpToolRunning === 'landportal-comp-search' ? 'Running LandPortal comp search…' : 'Run LandPortal Comp Search'}
             </button>
           </div>
@@ -466,6 +638,127 @@ export function Tools() {
             </div>
           )}
         </section>
+
+        <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="market-tools">
+          <div class="flex items-center gap-2 font-semibold"><Map size={17} /> Market Research</div>
+          <label class="mt-4 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]" for="market-geography-input">
+            Geography — county or ZIP, no parcel needed
+          </label>
+          <input
+            id="market-geography-input"
+            data-testid="market-geography-input"
+            value={marketInput}
+            onInput={(event) => setMarketInput(event.currentTarget.value)}
+            class="mt-2 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-3 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+            placeholder={'“Iredell County, NC” or a ZIP such as “28115”'}
+          />
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button type="button" data-testid="market-pulse-run" disabled={!!marketRunning || !marketInput.trim()} onClick={() => void runMarketTool('market-pulse')} class="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-black disabled:opacity-50">
+              {marketRunning === 'market-pulse' ? 'Reading the market pulse…' : 'Run Market Pulse'}
+            </button>
+            <button type="button" data-testid="county-market-research-run" disabled={!!marketRunning || !marketInput.trim()} onClick={() => void runMarketTool('county-market-research')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {marketRunning === 'county-market-research' ? 'Reading county market data…' : 'Run County Market Research'}
+            </button>
+            <button type="button" data-testid="zip-market-research-run" disabled={!!marketRunning || !marketInput.trim()} onClick={() => void runMarketTool('zip-market-research')} class="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              {marketRunning === 'zip-market-research' ? 'Reading ZIP market data…' : 'Run ZIP Market Research'}
+            </button>
+          </div>
+          <p class="mt-2 text-xs text-[var(--color-text-muted)]">
+            Market Pulse and County Market Research need a county; ZIP Market Research needs a ZIP.
+            All three read the market data LandOS already retains — nothing here creates a lead, spends a credit, or attributes data to a parcel.
+          </p>
+          {marketError && <div class="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300" role="alert" data-testid="market-tools-error">{marketError}</div>}
+          {Object.entries(marketResults).length > 0 && (
+            <div class="mt-3 space-y-3" data-testid="market-tool-results">
+              {Object.entries(marketResults).map(([tool, run]) => (
+                <div key={tool} class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-4 text-sm" data-testid={`market-result-${tool}`}>
+                  <div class="flex items-center justify-between">
+                    <div class="font-semibold">{MARKET_TOOL_LABEL[tool] ?? tool}</div>
+                    <div class="text-xs text-[var(--color-text-muted)]">{run.facts.geographyLabel ?? ''}{run.execution.reused ? ' · reused retained run' : ''}</div>
+                  </div>
+                  {tool === 'market-pulse' && run.facts.pulse && (
+                    <div class="mt-2 space-y-2">
+                      <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{run.facts.pulse.label}</div>
+                      <p class="leading-6">{run.facts.pulse.plainEnglish}</p>
+                      {run.facts.pulse.growth && (
+                        <div class="text-[var(--color-text-muted)]">Growth: {run.facts.pulse.growth.direction}{typeof run.facts.pulse.growth.pctChange === 'number' ? ` (${run.facts.pulse.growth.pctChange > 0 ? '+' : ''}${run.facts.pulse.growth.pctChange}%)` : ''} — {run.facts.pulse.growth.note}</div>
+                      )}
+                      {run.facts.pulse.countyPricePerAcre && (
+                        <div class="text-[var(--color-text-muted)]">County $/acre: {run.facts.pulse.countyPricePerAcre.note}</div>
+                      )}
+                    </div>
+                  )}
+                  {tool !== 'market-pulse' && (
+                    <div class="mt-2 space-y-2">
+                      {(['sold', 'forSale'] as const).map((side) => {
+                        const section = run.facts[side]?.section;
+                        if (!section) return null;
+                        return (
+                          <div key={side}>
+                            <div class="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                              {side === 'sold' ? 'Sold' : 'For sale'} · {section.available ? (section.resolvedKeyLabel ?? section.coverageLabel) : 'No retained data yet'}
+                            </div>
+                            {section.available && (
+                              <div class="mt-1 grid grid-cols-2 gap-x-6 gap-y-1 md:grid-cols-4">
+                                {section.fields.filter((f) => !f.unknown).map((f) => (
+                                  <div key={f.label}><span class="text-[var(--color-text-muted)]">{f.label}:</span> {f.value}</div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div class="mt-2 text-xs text-[var(--color-text-muted)]">{run.facts.summary}</div>
+                  {run.missingInformation.length > 0 && (
+                    <div class="mt-2 text-xs text-[var(--color-text-muted)]"><b>Data gaps:</b> {run.missingInformation.join(' ')}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {catalog.length > 0 && (
+          <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="capability-catalog">
+            <div class="flex items-center gap-2 font-semibold"><Landmark size={17} /> Capability Catalog</div>
+            <p class="mt-2 text-sm text-[var(--color-text-muted)]">
+              Every registered LandOS research capability, straight from the registry. The same capabilities serve New Lead, Deal Cards, and these Tools — one capability, multiple callers.
+            </p>
+            <div class="mt-4 space-y-2" data-testid="capability-catalog-list">
+              {catalog.filter((cap) => cap.operator?.manualInvocation).map((cap) => (
+                <div key={cap.id} class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-4 text-sm" data-testid={`catalog-${cap.id}`}>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="font-semibold">{cap.name}</span>
+                    {cap.operator?.runsWithoutDeal && (
+                      <span class="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">No Deal needed</span>
+                    )}
+                    {cap.operator?.writesAuthoritativeEvidence && (
+                      <span class="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">Writes evidence</span>
+                    )}
+                    {cap.operator?.skill && (
+                      <span class="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">Skill: {cap.operator.skill}</span>
+                    )}
+                  </div>
+                  <p class="mt-1 leading-6 text-[var(--color-text-muted)]">{cap.description}</p>
+                  <p class="mt-1 text-xs text-[var(--color-text-muted)]">
+                    <b>{prerequisiteSentence(cap.prerequisites)}</b> Input: {cap.operator?.inputHint}
+                  </p>
+                  {cap.operator?.recovery && (
+                    <p class="mt-1 text-xs text-[var(--color-text-muted)]">Recovery: {cap.operator.recovery}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+            {catalog.some((cap) => !cap.operator?.manualInvocation) && (
+              <div class="mt-4 text-xs text-[var(--color-text-muted)]" data-testid="capability-catalog-internal">
+                Runs automatically inside Deal Cards (not manually invocable here):{' '}
+                {catalog.filter((cap) => !cap.operator?.manualInvocation).map((cap) => cap.name).join(' · ')}
+              </div>
+            )}
+          </section>
+        )}
 
         {result && (
           <section class="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5" data-testid="property-resolver-result">

@@ -1,0 +1,8 @@
+RECHECK 2026-08-31 — Tools > Market Research > Market Pulse for "Loving County, TX"
+Panel chip: "Loving, TX · reused retained run"
+On-screen text (verbatim, get_page_text):
+  Loving County, TX is growing (population +4.59% over 5 years). Land is generally going for about $82,688/acre in the county (median of 29074 comps).
+  Growth: growing (+4.59%) — Loving County, TX population growth +4.59% on a population of 30,188,424, from the retained LandOS Market Research county record (2026-Q3). Not a Census two-vintage measurement.
+  County $/acre: TX statewide (all acreage): median $82,688/acre across 29074 recorded sale(s) in the 2026-Q3 Market Research snapshot.
+Prohibited content still present: statewide population 30,188,424, 29074 comps, $82,688/acre attributed to "the county", growth attributed to "the retained LandOS Market Research county record".
+Repaired code (src/landos/market-geography-capabilities.ts basisMatchesRequest gate) is on main, but the Tools route invokes with mode 'reuse' and the retained pre-repair run is replayed verbatim.

@@ -1,0 +1,16 @@
+Page-text evidence (screenshot substituted with named page-text read; renderer screenshot timed out in occluded operator Chrome).
+URL: http://localhost:3141/tools  Tab: 494897935
+
+County Market Research
+Loving, TX
+SOLD - TX STATEWIDE (ALL ACREAGE)
+Price per Acre: $82,688
+Days on Market: 104 days
+Sell-Through Rate: 33.94%
+Absorption Rate: 25.34%
+Months of Supply: 35.84 mo
+Population: 30,188,424
+Population Density: 112
+Population Growth: 4.59%
+FOR SALE - NO RETAINED DATA YET
+County Market Research: retained market data returned (TX statewide (all acreage)).

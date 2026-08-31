@@ -1,0 +1,5 @@
+Page-text evidence. URL: http://localhost:3141/tools  Tab: 494897935
+After first click of 'Run ZIP Market Research' with input '28115', the page showed the literal line:
+Failed to fetch
+Second click of the same button succeeded: POST /api/landos/capabilities/zip-market-research/invoke -> HTTP 200 and rendered:
+ZIP Market Research / ZIP 28115 - reused retained run / SOLD - ZIP 28115 (ALL ACREAGE) / Price per Acre: $74,864 / Days on Market: 202 days / Sell-Through Rate: 38.1% / Absorption Rate: 27.59% / Months of Supply: 31.94 mo / Population: 43,544 / Population Density: 596 / Population Growth: 4.59%

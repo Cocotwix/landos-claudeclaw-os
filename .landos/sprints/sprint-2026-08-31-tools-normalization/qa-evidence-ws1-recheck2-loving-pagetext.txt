@@ -1,0 +1,21 @@
+RECHECK #2 page-text evidence — http://localhost:3141/tools — 2026-08-31 ~14:52 local
+Input: "Loving County, TX", clicked Run Market Pulse (default mode, no refresh control).
+
+Market Pulse
+Loving, TX · reused retained run
+LOCAL AREA CONTEXT, NOT PARCEL VERIFIED
+Growth trend for Loving County, TX is unknown — retrieve population from the linked official source. County price-per-acre is not established yet — gather land comps to anchor it.
+Growth: unknown — No county geography for Loving County, TX — growth not measurable yet.
+County $/acre: No comps with usable price-per-acre for Loving County yet.
+Data gaps: Growth: No county geography for Loving County, TX — growth not measurable yet. County price per acre: No comps with usable price-per-acre for Loving County yet.
+
+ASSERTIONS: No 30,188,424 population, no ~29074 comps, no $82,688/acre, no "retained LandOS Market Research county record" attribution in the Market Pulse panel. Chip reads "reused retained run"; DB shows the reused run is capability_version 1.1.0 (post-repair, 14:49:23Z), not a 1.0.0 pre-repair run.
+
+Then clicked Run County Market Research (default mode):
+County Market Research
+Loving, TX · reused retained run
+SOLD · TX STATEWIDE (ALL ACREAGE)
+Price per Acre: $82,688 / Days on Market: 104 days / Sell-Through Rate: 33.94% / Absorption Rate: 25.34% / Months of Supply: 35.84 mo / Population: 30,188,424 / Population Density: 112 / Population Growth: 4.59%
+FOR SALE · NO RETAINED DATA YET
+County Market Research: LandOS retains NO county-level market data for Loving, TX. The figures shown are TX statewide (all acreage) — a clearly wider basis, never a county fact.
+Data gaps: No county-level snapshot is retained for Loving, TX; only the wider basis TX statewide (all acreage) exists.

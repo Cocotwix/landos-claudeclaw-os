@@ -141,6 +141,12 @@ import { apnSearchVariants, ownerSearchVariants, lpResolveForPreflight, type LpR
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
 import { capabilityPrerequisites, invokeRuntimeCapability, listRuntimeCapabilities, runtimeCapability } from './capability-registry.js';
 import {
+  COUNTY_MARKET_RESEARCH_CAPABILITY_ID,
+  MARKET_PULSE_CAPABILITY_ID,
+  ZIP_MARKET_RESEARCH_CAPABILITY_ID,
+  parseGeographyInput,
+} from './market-geography-capabilities.js';
+import {
   ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
   propertyFileIsSufficient,
 } from './acquisition-intelligence-capability.js';
@@ -6563,6 +6569,22 @@ export function registerLandosRoutes(app: Hono): void {
 
   app.get('/api/landos/capabilities', (c) => c.json({ capabilities: listRuntimeCapabilities() }));
 
+  // Tools deal-reuse: a Tools run against an EXISTING Deal consumes that
+  // Deal's canonical Subject State — the same retained identity every Deal
+  // Card caller uses — and never re-resolves or reinterprets it. Selecting a
+  // Deal without a subject property card is a plain error, never a silent
+  // fallback to raw re-resolution.
+  const toolsCanonicalSubject = (body: Record<string, unknown>):
+    | { subject: { kind: 'canonical_property'; entity: LandosEntity; propertyCardId: number; dealCardId: number } }
+    | { error: string }
+    | null => {
+    const dealCardId = Number(body.dealCardId);
+    if (!Number.isFinite(dealCardId) || dealCardId < 1) return null;
+    const retained = readResolverSubject(dealCardId);
+    if (!retained?.propertyCardId) return { error: `Deal Card ${dealCardId} has no subject property card` };
+    return { subject: { kind: 'canonical_property', entity: retained.entity, propertyCardId: retained.propertyCardId, dealCardId } };
+  };
+
   app.post('/api/landos/capabilities/property-resolution/invoke', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     try { return c.json({ result: await runToolsPropertyResolution(body) }); }
@@ -6575,19 +6597,21 @@ export function registerLandosRoutes(app: Hono): void {
   // never creates a Deal Card, a Property Card, or a CRM lead.
   app.post('/api/landos/capabilities/assessor-tax/invoke', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const canonical = toolsCanonicalSubject(body);
+    if (canonical && 'error' in canonical) return c.json({ error: canonical.error }, 400);
     const rawInput = str(body.rawInput) ?? str(body.text);
-    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    if (!canonical && !rawInput?.trim()) return c.json({ error: 'rawInput or dealCardId is required' }, 400);
     const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
     const refresh = body.refresh === true;
     try {
-      const resolution = await runToolsPropertyResolution(body);
+      const resolution = canonical ? null : await runToolsPropertyResolution(body);
       const result = await invokeRuntimeCapability({
         capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
         caller: { type: 'tools', ref: 'tools:assessor-tax' },
-        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        subject: canonical ? canonical.subject : { kind: 'raw_property', entity, rawInput: rawInput!.trim() },
         mode: refresh ? 'refresh' : 'reuse',
-        context: { surface: 'tools', tool: 'assessor-tax' },
-      }, { resolveSubject: async () => resolution });
+        context: { surface: 'tools', tool: 'assessor-tax', ...(canonical ? { dealCardId: canonical.subject.dealCardId } : {}) },
+      }, { ...(resolution ? { resolveSubject: async () => resolution } : {}) });
       return c.json({ resolution, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
@@ -6600,20 +6624,22 @@ export function registerLandosRoutes(app: Hono): void {
   // research: it never creates a Deal Card, a Property Card, or a CRM lead.
   app.post('/api/landos/capabilities/landportal-research/invoke', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const canonical = toolsCanonicalSubject(body);
+    if (canonical && 'error' in canonical) return c.json({ error: canonical.error }, 400);
     const rawInput = str(body.rawInput) ?? str(body.text);
-    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    if (!canonical && !rawInput?.trim()) return c.json({ error: 'rawInput or dealCardId is required' }, 400);
     const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
     const refresh = body.refresh === true;
     try {
-      const resolution = await runToolsPropertyResolution(body);
+      const resolution = canonical ? null : await runToolsPropertyResolution(body);
       const result = await invokeRuntimeCapability({
         capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
         caller: { type: 'tools', ref: 'tools:landportal-research' },
-        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        subject: canonical ? canonical.subject : { kind: 'raw_property', entity, rawInput: rawInput!.trim() },
         mode: refresh ? 'refresh' : 'reuse',
         parameters: { lane: 'parcel_facts' },
-        context: { surface: 'tools', tool: 'landportal-research' },
-      }, { resolveSubject: async () => resolution });
+        context: { surface: 'tools', tool: 'landportal-research', ...(canonical ? { dealCardId: canonical.subject.dealCardId } : {}) },
+      }, { ...(resolution ? { resolveSubject: async () => resolution } : {}) });
       return c.json({ resolution, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
@@ -6628,20 +6654,22 @@ export function registerLandosRoutes(app: Hono): void {
   // comparable evidence instead of manufacturing a card to hold some.
   app.post('/api/landos/capabilities/comps-valuation/invoke', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const canonical = toolsCanonicalSubject(body);
+    if (canonical && 'error' in canonical) return c.json({ error: canonical.error }, 400);
     const rawInput = str(body.rawInput) ?? str(body.text);
-    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    if (!canonical && !rawInput?.trim()) return c.json({ error: 'rawInput or dealCardId is required' }, 400);
     const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
     const refresh = body.refresh === true;
     try {
-      const resolution = await runToolsPropertyResolution(body);
+      const resolution = canonical ? null : await runToolsPropertyResolution(body);
       const result = await invokeRuntimeCapability({
         capabilityId: COMPS_VALUATION_CAPABILITY_ID,
         caller: { type: 'tools', ref: 'tools:comps-valuation' },
-        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        subject: canonical ? canonical.subject : { kind: 'raw_property', entity, rawInput: rawInput!.trim() },
         mode: refresh ? 'refresh' : 'reuse',
         parameters: { lane: 'retained_valuation' },
-        context: { surface: 'tools', tool: 'comps-valuation' },
-      }, { resolveSubject: async () => resolution });
+        context: { surface: 'tools', tool: 'comps-valuation', ...(canonical ? { dealCardId: canonical.subject.dealCardId } : {}) },
+      }, { ...(resolution ? { resolveSubject: async () => resolution } : {}) });
       return c.json({ resolution, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
@@ -6655,20 +6683,22 @@ export function registerLandosRoutes(app: Hono): void {
   // reports honestly that it retains no land-use rules for it.
   app.post('/api/landos/capabilities/zoning-subdivision/invoke', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const canonical = toolsCanonicalSubject(body);
+    if (canonical && 'error' in canonical) return c.json({ error: canonical.error }, 400);
     const rawInput = str(body.rawInput) ?? str(body.text);
-    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    if (!canonical && !rawInput?.trim()) return c.json({ error: 'rawInput or dealCardId is required' }, 400);
     const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
     const refresh = body.refresh === true;
     try {
-      const resolution = await runToolsPropertyResolution(body);
+      const resolution = canonical ? null : await runToolsPropertyResolution(body);
       const result = await invokeRuntimeCapability({
         capabilityId: ZONING_SUBDIVISION_CAPABILITY_ID,
         caller: { type: 'tools', ref: 'tools:zoning-subdivision' },
-        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        subject: canonical ? canonical.subject : { kind: 'raw_property', entity, rawInput: rawInput!.trim() },
         mode: refresh ? 'refresh' : 'reuse',
         parameters: { lane: body.research === true ? 'research' : 'retained_rules' },
-        context: { surface: 'tools', tool: 'zoning-subdivision' },
-      }, { resolveSubject: async () => resolution, runLandUseResearch: landUseResearchLane });
+        context: { surface: 'tools', tool: 'zoning-subdivision', ...(canonical ? { dealCardId: canonical.subject.dealCardId } : {}) },
+      }, { ...(resolution ? { resolveSubject: async () => resolution } : {}), runLandUseResearch: landUseResearchLane });
       return c.json({ resolution, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
@@ -6680,25 +6710,77 @@ export function registerLandosRoutes(app: Hono): void {
   // consumes the context LandOS already retained before any bounded search.
   app.post('/api/landos/capabilities/property-development-history/invoke', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const canonical = toolsCanonicalSubject(body);
+    if (canonical && 'error' in canonical) return c.json({ error: canonical.error }, 400);
     const rawInput = str(body.rawInput) ?? str(body.text);
-    if (!rawInput?.trim()) return c.json({ error: 'rawInput is required' }, 400);
+    if (!canonical && !rawInput?.trim()) return c.json({ error: 'rawInput or dealCardId is required' }, 400);
     const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
     const refresh = body.refresh === true;
     try {
-      const resolution = await runToolsPropertyResolution(body);
+      const resolution = canonical ? null : await runToolsPropertyResolution(body);
       const result = await invokeRuntimeCapability({
         capabilityId: PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
         caller: { type: 'tools', ref: 'tools:property-development-history' },
-        subject: { kind: 'raw_property', entity, rawInput: rawInput.trim() },
+        subject: canonical ? canonical.subject : { kind: 'raw_property', entity, rawInput: rawInput!.trim() },
         mode: refresh ? 'refresh' : 'reuse',
         parameters: { lane: body.research === true ? 'research' : 'retained_history' },
-        context: { surface: 'tools', tool: 'property-development-history' },
-      }, { resolveSubject: async () => resolution, runHistorySearch: propertyHistoryLane });
+        context: { surface: 'tools', tool: 'property-development-history', ...(canonical ? { dealCardId: canonical.subject.dealCardId } : {}) },
+      }, { ...(resolution ? { resolveSubject: async () => resolution } : {}), runHistorySearch: propertyHistoryLane });
       return c.json({ resolution, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
+
+  // ── Geography-scoped market capabilities ──────────────────────────────────
+  // County Market Research, ZIP Market Research and Market Pulse run on
+  // geography ALONE — their declared prerequisite is county or ZIP, never a
+  // parcel — and never create a lead, a Deal Card, or a property card. They
+  // are placements over the existing Market Matrix / Market Pulse engines
+  // through the same capability contract every other caller uses.
+  const marketGeographyBody = (body: Record<string, unknown>) => {
+    const explicit = {
+      county: str(body.county)?.trim() || undefined,
+      state: str(body.state)?.trim() || undefined,
+      zip: str(body.zip)?.trim() || undefined,
+      fips: str(body.fips)?.trim() || undefined,
+    };
+    if (explicit.county || explicit.zip || explicit.fips) return explicit;
+    const raw = str(body.rawInput) ?? str(body.text);
+    return raw?.trim() ? parseGeographyInput(raw) : explicit;
+  };
+  interface MarketGeographyContext {
+    req: { json: () => Promise<unknown> };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    json: (data: any, status?: any) => any;
+  }
+  const invokeMarketGeographyCapability = async (
+    c: MarketGeographyContext,
+    capabilityId: string,
+    tool: string,
+  ) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const geo = marketGeographyBody(body);
+    const entity = isEntity(body.entity) ? body.entity : 'TY_LAND_BIZ';
+    try {
+      const result = await invokeRuntimeCapability({
+        capabilityId,
+        caller: { type: 'tools', ref: `tools:${tool}` },
+        subject: { kind: 'geography', entity, ...geo },
+        mode: body.refresh === true ? 'refresh' : 'reuse',
+        context: { surface: 'tools', tool },
+      });
+      return c.json({ result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  };
+  app.post('/api/landos/capabilities/county-market-research/invoke', (c) =>
+    invokeMarketGeographyCapability(c, COUNTY_MARKET_RESEARCH_CAPABILITY_ID, 'county-market-research'));
+  app.post('/api/landos/capabilities/zip-market-research/invoke', (c) =>
+    invokeMarketGeographyCapability(c, ZIP_MARKET_RESEARCH_CAPABILITY_ID, 'zip-market-research'));
+  app.post('/api/landos/capabilities/market-pulse/invoke', (c) =>
+    invokeMarketGeographyCapability(c, MARKET_PULSE_CAPABILITY_ID, 'market-pulse'));
 
   // ── The LandPortal three-tool split ───────────────────────────────────────
   // Property Characteristics, Visual Capture and Comp Search are separately
@@ -6749,7 +6831,9 @@ export function registerLandosRoutes(app: Hono): void {
       }
       const result = await invokeRuntimeCapability({
         capabilityId,
-        caller: { type: parsed.subject.kind === 'canonical_property' ? 'deal_card' : 'tools', ref: `tools:${tool}` },
+        // A Tools run stays a 'tools' caller even against a Deal subject: the
+        // SURFACE is what the caller type records; the subject carries the deal.
+        caller: { type: 'tools', ref: `tools:${tool}` },
         subject: parsed.subject,
         mode: refresh ? 'refresh' : 'reuse',
         ...(Array.isArray(body.captureLabels) ? { parameters: { captureLabels: body.captureLabels.map(String) } } : {}),

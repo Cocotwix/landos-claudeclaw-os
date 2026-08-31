@@ -1,0 +1,22 @@
+[
+  {
+    "requirementId": "ws1-r2",
+    "liveUrl": "http://localhost:3141/tools",
+    "steps": [
+      "Open http://localhost:3141/tools",
+      "Type 'Loving County, TX' in the Market Research geography input",
+      "Click 'Run Market Pulse', then 'Run County Market Research'"
+    ],
+    "expected": "After the F1/F2 repairs (basisMatchesRequest gate and the 'LandOS retains NO county-level market data' summary/gap wording in src/landos/market-geography-capabilities.ts), the operator sees the corrected honest narrative for Loving, TX.",
+    "actual": "Both panels show the chip 'Loving, TX · reused retained run' and replay the pre-repair output verbatim: Market Pulse still says 'about $82,688/acre in the county (median of 29074 comps)' and 'population of 30,188,424, from the retained LandOS Market Research county record'; County Market Research still lacks the county no-data statement and Data gaps line. The Tools invoke routes use mode 'reuse' (src/landos/routes.ts), and retained runs recorded before the repair are never invalidated when the capability narrative changes (contractVersion unchanged at 1.0.0), so the repaired code never reaches the operator for any geography with a retained pre-repair run.",
+    "evidencePaths": [
+      ".landos/sprints/sprint-2026-08-31-tools-normalization/qa-evidence-ws1-recheck-loving-pulse-pagetext.txt",
+      ".landos/sprints/sprint-2026-08-31-tools-normalization/qa-evidence-ws1-recheck-loving-county-pagetext.txt"
+    ],
+    "apiOrDbEvidence": "Live page renders 'reused retained run'; repaired wording confirmed present in src/landos/market-geography-capabilities.ts (marketMatrixOutcome, basisMatchesRequest) on main; Tools market routes invoke with mode 'reuse'.",
+    "severity": "major",
+    "suspectedSubsystem": "capability run reuse layer (retained-run invalidation on capability narrative change)",
+    "disposition": "internally_fixable",
+    "patternKey": "canonical-state-partial-propagation"
+  }
+]

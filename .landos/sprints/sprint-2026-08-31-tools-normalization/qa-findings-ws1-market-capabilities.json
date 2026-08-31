@@ -1,0 +1,59 @@
+[
+  {
+    "requirementId": "ws1-r2",
+    "liveUrl": "http://localhost:3141/tools",
+    "steps": [
+      "Open http://localhost:3141/tools",
+      "In the Market Research geography input type 'Loving County, TX'",
+      "Click 'Run Market Pulse'"
+    ],
+    "expected": "With no retained Loving County market data, Market Pulse states the county data gap honestly. Any statewide fallback figure must be attributed to its true statewide basis, never presented as a county fact or as 'the retained LandOS Market Research county record'.",
+    "actual": "Market Pulse rendered: 'Loving County, TX is growing (population +4.59% over 5 years). Land is generally going for about $82,688/acre in the county (median of 29074 comps).' and 'Growth: growing (+4.59%) - Loving County, TX population growth +4.59% on a population of 30,188,424, from the retained LandOS Market Research county record (2026-Q3).' The population 30,188,424 and the $82,688/acre median over 29,074 sales are Texas STATEWIDE figures (Loving County has ~64 residents), yet the headline says 'in the county' and the growth line explicitly claims a county record. Only the small County $/acre detail line names 'TX statewide (all acreage)'.",
+    "evidencePaths": [
+      ".landos/sprints/sprint-2026-08-31-tools-normalization/qa-evidence-ws1-market-pulse-loving-pagetext.txt"
+    ],
+    "apiOrDbEvidence": "POST /api/landos/capabilities/market-pulse/invoke returned 200 with the statewide-basis payload; page rendered county-attributed narrative.",
+    "severity": "major",
+    "suspectedSubsystem": "market-pulse capability result narrative (statewide fallback attribution)",
+    "disposition": "internally_fixable",
+    "patternKey": "same-label-different-basis"
+  },
+  {
+    "requirementId": "ws1-r2",
+    "liveUrl": "http://localhost:3141/tools",
+    "steps": [
+      "Open http://localhost:3141/tools",
+      "Type 'Loving County, TX' in the Market Research geography input",
+      "Click 'Run County Market Research'"
+    ],
+    "expected": "A plain data-gap statement that no Loving County market data is retained, with any statewide fallback introduced explicitly as a substitute.",
+    "actual": "Panel titled 'County Market Research / Loving, TX' rendered a full metrics block headed 'SOLD - TX STATEWIDE (ALL ACREAGE)' and the message 'County Market Research: retained market data returned (TX statewide (all acreage)).' The basis IS labeled, but no sentence states that Loving County itself has no retained data, so under a county-titled panel an operator can read $82,688/acre as county-supported.",
+    "evidencePaths": [
+      ".landos/sprints/sprint-2026-08-31-tools-normalization/qa-evidence-ws1-county-loving-pagetext.txt"
+    ],
+    "apiOrDbEvidence": "POST /api/landos/capabilities/county-market-research/invoke returned 200; block labels statewide basis but omits the county gap statement.",
+    "severity": "minor",
+    "suspectedSubsystem": "county-market-research capability result rendering (fallback gap statement)",
+    "disposition": "internally_fixable",
+    "patternKey": "operator-gap-label-empty-subject"
+  },
+  {
+    "requirementId": "ws1-r1",
+    "liveUrl": "http://localhost:3141/tools",
+    "steps": [
+      "Open http://localhost:3141/tools",
+      "Type '28115' in the Market Research geography input",
+      "Click 'Run ZIP Market Research' (first invocation of this ZIP in the session)"
+    ],
+    "expected": "Either the ZIP result or a plain operator message; never a raw developer error string.",
+    "actual": "The literal text 'Failed to fetch' appeared above the results area. Clicking the same button again immediately succeeded (POST /api/landos/capabilities/zip-market-research/invoke -> 200) and rendered the ZIP 28115 metrics. Transient, reproduced once; the error surfaced verbatim as browser fetch-exception text, not an operator message.",
+    "evidencePaths": [
+      ".landos/sprints/sprint-2026-08-31-tools-normalization/qa-evidence-ws1-zip-failedfetch-pagetext.txt"
+    ],
+    "apiOrDbEvidence": "Second identical request returned HTTP 200; first attempt produced no recorded response (fetch-level failure).",
+    "severity": "minor",
+    "suspectedSubsystem": "Tools market section fetch error handling",
+    "disposition": "internally_fixable",
+    "patternKey": "market-tool-raw-fetch-error-surfaced"
+  }
+]

@@ -178,9 +178,27 @@
           "findingId": "F11",
           "at": "2026-07-15T20:09:26.781Z",
           "summary": "Every remaining-verification item names the fact needing confirmation."
+        },
+        {
+          "sprintId": "sprint-2026-08-31-tools-normalization",
+          "findingId": "F2",
+          "at": "2026-08-31T14:26:31.095Z",
+          "summary": "A plain data-gap statement that no Loving County market data is retained, with any statewide fallback introduced explicitly as a substitute."
         }
       ],
-      "review": null
+      "review": {
+        "failurePattern": "operator-gap-label-empty-subject: a panel titled with the subject the operator asked about (here 'County Market Research / Loving, TX') renders fallback content without ever stating that the asked-about subject itself has no data, so the absence is only discoverable by decoding sub-labels.",
+        "sharedRootCause": "Result renderers show whatever the engine returned and rely on inner basis labels (e.g. 'TX STATEWIDE (ALL ACREAGE)') to communicate the gap; no shared rule required an explicit top-level 'no data for <asked subject>' statement whenever returned content's scope differs from the panel's subject.",
+        "whyAutomatedTestsMissedIt": "Capability tests asserted the facts payload, not the operator-facing summary line for the widened case; no test required an explicit gap sentence naming the asked-about geography.",
+        "whyBrowserQaMissedIt": "It did not — browser QA raised it (F2) on the Loving County probe; the builder pass only used geographies whose data existed at the asked scope.",
+        "missingInvariant": "Whenever a result's carrying scope is wider than the subject named in the panel title, the result must include an explicit plain-language statement that no data is retained at the asked scope, rendered at the top level of the result, not only as a sub-label.",
+        "missingAcceptanceJourney": "Market-tool acceptance includes a no-data geography and asserts the visible gap sentence naming that geography, not merely the wider basis label.",
+        "sharedRepair": "marketMatrixOutcome now emits outcome 'wider_basis_returned' with summary 'LandOS retains NO county/ZIP-level market data for <geography> ...' plus a missingInformation entry; the Tools UI renders both under the result panel, so the gap statement appears with the data.",
+        "newRegressionTest": "src/landos/market-geography-capabilities.test.ts 'county market research states the county gap plainly when only a wider basis exists' and 'zip market research states the ZIP gap when only county/state coverage exists' assert the explicit gap sentence and missingInformation entry.",
+        "newBrowserAssertion": "On /tools, County Market Research for 'Loving County, TX' must visibly render the sentence 'LandOS retains NO county-level market data for Loving, TX' (and the Data gaps line) in the result panel, in addition to the 'TX statewide' basis label.",
+        "completedAt": "2026-08-31T14:32:43.965Z",
+        "coversOccurrences": 2
+      }
     },
     "duplicate-blocker-lines": {
       "occurrences": [
@@ -511,27 +529,26 @@
           "findingId": "F3",
           "at": "2026-08-30T22:03:48.425Z",
           "summary": "Parcel-specific capabilities gate on an established subject wherever they can be started."
+        },
+        {
+          "sprintId": "sprint-2026-08-31-tools-normalization",
+          "findingId": "F4",
+          "at": "2026-08-31T14:44:19.646Z",
+          "summary": "After the F1/F2 repairs (basisMatchesRequest gate and the 'LandOS retains NO county-level market data' summary/gap wording in src/landos/market-geography-capabilities.ts), the operator sees the corrected honest narrative for Loving, TX."
         }
       ],
       "review": {
-        "failurePattern": "canonical-state-partial-propagation: a shared canonical conclusion or prerequisite is correct at its source, but a consumer keeps a private derivation, gate, or formatter and therefore disagrees with the authoritative contract.",
-        "sharedRootCause": "LandOS historically allowed each route and component to re-derive identity, prerequisites, acreage, counts, and display labels. This sprint creates shared Subject State and prerequisite contracts, but the recurrence audit found two consumer classes: operator projections/formatters in the accepted workstream, and older direct per-panel launch routes that are adjacent to the accepted readiness/orchestrator path.",
-        "whyAutomatedTestsMissedIt": "Earlier tests proved the canonical modules and individual consumers independently. They did not scan for private county formatting, assert the operator completeness projection over unmet prerequisites, or enumerate every direct route that can launch a capability.",
-        "whyBrowserQaMissedIt": "Prior journeys checked the header and resolved deals. They did not open the Property subject panel or a county-known parcel-less lead, so the duplicated county suffix and waiting-versus-blocked aggregate were first visible in this sprint's adversarial browser QA. The direct per-panel gate was identified read-only and intentionally not exercised against the retained fixture.",
-        "missingInvariant": "Every shared-state consumer must use CanonicalSubjectState, declared prerequisites, shared acreage, and shared presentation helpers; waiting on an unmet prerequisite is never blocked. Direct launch surfaces must eventually consult the same prerequisite evaluator before invoking parcel-specific work.",
-        "missingAcceptanceJourney": "The accepted journey now opens a county-known parcel-less lead and asserts waiting-on-subject separately from blocked, opens the Property subject panel and checks the county label exactly once, then contrasts an established parcel. A future route-normalization sprint should add an explicit click-path assertion for every direct per-panel capability control.",
-        "sharedRepair": "The accepted foundation routes identity and governing acreage through CanonicalSubjectState, capability planning/readiness through declared prerequisites, county display through countyLabel(), and operator completeness through an explicit waiting outcome. The older direct per-panel route gate remains the recorded F3 adjacent defer: it does not block the accepted readiness/coverage/mission-planning outcome and is not represented as repaired here.",
-        "newRegressionTest": "canonical-subject-state.test.ts and capability-prerequisites.test.ts cover shared state, declared prerequisite planning, waiting-not-blocked, and county/ZIP-safe scheduling; web/src/lib/format.test.ts scans operator components for private County suffix appends.",
-        "newBrowserAssertion": "WS1 recheck asserts one county label in the Property subject panel; WS2 recheck asserts deal 93 shows 13 WAITING ON SUBJECT and only one genuine BLOCKED item, persists after hard refresh, and deal 92 has zero waiting items.",
-        "affectedCapabilities": [
-          "property-resolution",
-          "landportal-research",
-          "research-readiness",
-          "deal-intelligence-mission"
-        ],
-        "reopenAcceptedCapability": false,
-        "completedAt": "2026-08-30T23:02:09.737Z",
-        "coversOccurrences": 7
+        "failurePattern": "canonical-state-partial-propagation: a repair lands in the capability implementation but a durable projection of the OLD behavior keeps being served — here retained capability invocations recorded before the repair were replayed verbatim by mode:'reuse', so the operator saw the pre-repair statewide-as-county narrative after the fix shipped.",
+        "sharedRootCause": "The capability invocation store's reuse lookup keyed retained runs only by (capabilityId, idempotencyKey); the contract version that produced a run was recorded (capability_version) but never consulted, so results survived across behavioral revisions of the capability that produced them.",
+        "whyAutomatedTestsMissedIt": "Capability tests always run against a fresh test DB, so no test ever held a retained run recorded by an older revision of the same capability; the reuse path was only exercised same-version.",
+        "whyBrowserQaMissedIt": "It did not — recheck QA caught it precisely because the live business DB still held the pre-repair Loving County run and QA deliberately avoided refresh mode to preserve the reproduction.",
+        "missingInvariant": "A retained capability run is reusable only under the exact contract version that recorded it; shipping a behavioral repair requires bumping the capability's contractVersion, which atomically supersedes every retained pre-repair run for that capability.",
+        "missingAcceptanceJourney": "Post-repair browser acceptance must retest the repaired journey in DEFAULT reuse mode (not refresh), on a geography/subject whose retained run predates the repair.",
+        "sharedRepair": "capability-contract findReusable now takes the contract version; capability-store filters reuse by capability_version and treats a begin() collision with a different-version row as superseded (re-keyed, never waited on). The three market capabilities bumped to contractVersion 1.1.0 so all pre-repair runs are superseded system-wide through the shared store, not per-surface.",
+        "newRegressionTest": "src/landos/market-geography-capabilities.test.ts 'version-scoped reuse (F4 regression)': same-version invocation reuses the retained run; findReusable under any other contract version returns null.",
+        "newBrowserAssertion": "On /tools, invoking Market Pulse and County Market Research for 'Loving County, TX' WITHOUT refresh must render the repaired narrative (growth unknown, 'LandOS retains NO county-level market data'), never the retained pre-repair statewide-as-county text.",
+        "completedAt": "2026-08-31T14:49:56.638Z",
+        "coversOccurrences": 8
       }
     },
     "same-label-different-basis": {
@@ -571,22 +588,26 @@
           "findingId": "F2",
           "at": "2026-08-30T22:03:48.425Z",
           "summary": "The 14 parcel-scoped items whose only impediment is the unmet 'parcel' prerequisite are presented as waiting on subject establishment (waiting_prerequisite semantics) and are never shown to the operator as blocked/failed/error."
+        },
+        {
+          "sprintId": "sprint-2026-08-31-tools-normalization",
+          "findingId": "F1",
+          "at": "2026-08-31T14:26:31.095Z",
+          "summary": "With no retained Loving County market data, Market Pulse states the county data gap honestly. Any statewide fallback figure must be attributed to its true statewide basis, never presented as a county fact or as 'the retained LandOS Market Research county record'."
         }
       ],
       "review": {
-        "failurePattern": "same-label-different-basis: two surfaces print the same word (blocked, resolved, acreage) computed from different bases, so one surface contradicts the semantics another surface just established.",
-        "sharedRootCause": "Aggregate projections were written before the shared contracts existed and re-derive semantics locally. projectOperatorResearchCompleteness mapped every red readiness item to 'blocked' without consulting the new per-item unmetPrerequisites, so items merely waiting on the subject prerequisite read as refused in the one tally the operator scans.",
-        "whyAutomatedTestsMissedIt": "The new prerequisite tests asserted manifest items and coverage-plan actions but not the operator completeness projection, which has its own mapping.",
-        "whyBrowserQaMissedIt": "It did not: WS2 browser QA caught it on the live tally (14 BLOCKED). Prior sprints never rendered a county-known parcel-less lead, so the tally path was unexercised.",
-        "missingInvariant": "Every projection over readiness items must distinguish waiting-on-prerequisite from blocked; no aggregate may claim a source refused an answer when the item was never attemptable.",
-        "missingAcceptanceJourney": "Open a county-known lead without parcel resolution and assert the readiness tally shows waiting-on-subject separately from blocked.",
-        "sharedRepair": "OperatorResearchOutcome gained 'waiting'; projectOperatorResearchCompleteness maps red+unmetPrerequisites to waiting; the readiness strip renders 'N waiting on subject'; unattemptable items' nextAction states what they wait for instead of an instruction they cannot honor.",
-        "newRegressionTest": "capability-prerequisites.test.ts 'operator completeness — waiting is not blocked' (waiting=15, assessor_tax outcome waiting, nextAction names the wait; blocked once subject established).",
-        "newBrowserAssertion": "WS2 recheck asserts deal 93's readiness tally contains 'waiting on subject' and no longer counts the 15 parcel-scoped items as blocked.",
-        "affectedCapabilities": [],
-        "reopenAcceptedCapability": false,
-        "completedAt": "2026-08-30T22:07:52.806Z",
-        "coversOccurrences": 6
+        "failurePattern": "same-label-different-basis: a surface prints a figure under one geographic/semantic label while the number was computed from a different, wider basis — here Market Pulse and County Market Research attributed Texas STATEWIDE population, comp count, and $/acre to 'the retained LandOS Market Research county record' for Loving County, TX.",
+        "sharedRootCause": "The Market Matrix read deliberately widens geography (zip -> county -> state) and reports which key actually carried the record via matchLevel/resolvedKeyLabel, but new consumers keep reading only .available and .metrics and re-attach their OWN caller-side label (the county the operator asked about). Any consumer that ignores matchLevel silently converts a wider-basis record into a narrower-basis fact.",
+        "whyAutomatedTestsMissedIt": "The new capability tests injected matrix resolutions whose matchLevel always matched the requested geography (county question answered by a county record), so the widening path was never exercised; no fixture modeled a county with zero retained county data inside a state that has statewide coverage.",
+        "whyBrowserQaMissedIt": "It did not — browser QA caught it with the adversarial Loving County, TX probe. Builder browser acceptance missed it because it only exercised a data-rich county (Iredell, NC) where the basis and the label genuinely coincide.",
+        "missingInvariant": "A market figure may only be presented under a geography label when the resolution's matchLevel is at or narrower than that label's geography; a wider-basis record must carry its own resolvedKeyLabel and an explicit statement that no narrower data is retained, and must never populate a 'retained county record' input.",
+        "missingAcceptanceJourney": "Every market-tool acceptance run must include one data-gap geography (a county/ZIP known to have no retained snapshot inside a state that has wider coverage) alongside the data-rich geography, asserting the gap statement and the absence of narrow-label attribution.",
+        "sharedRepair": "market-geography-capabilities.ts gained basisMatchesRequest(resolution, requested): marketMatrixOutcome now classifies wider matches as outcome 'wider_basis_returned' with an explicit NO-county/ZIP-level-data summary and missingInformation entry, and Market Pulse passes retainedCounty only when the matrix resolved at county scope or narrower — a statewide record can no longer reach the pulse's county-record slot.",
+        "newRegressionTest": "src/landos/market-geography-capabilities.test.ts 'wider-basis honesty (Loving County regression)': market pulse withholds a statewide snapshot from the retained-county slot; county market research states the county gap plainly; zip market research states the ZIP gap when only county/state coverage exists.",
+        "newBrowserAssertion": "On /tools, running Market Pulse and County Market Research for 'Loving County, TX' must show growth 'unknown', county $/acre 'not established', and the County Market Research summary 'LandOS retains NO county-level market data for Loving, TX ... never a county fact'; no statewide population or comp count may appear under a county label.",
+        "completedAt": "2026-08-31T14:32:43.018Z",
+        "coversOccurrences": 7
       }
     },
     "ws1-legend-soon-swatch-contract": {
@@ -607,6 +628,17 @@
           "findingId": "F13",
           "at": "2026-08-14T21:49:37.651Z",
           "summary": "Each ladder rung shows exactly one step number (1-4) in its numbered badge."
+        }
+      ],
+      "review": null
+    },
+    "market-tool-raw-fetch-error-surfaced": {
+      "occurrences": [
+        {
+          "sprintId": "sprint-2026-08-31-tools-normalization",
+          "findingId": "F3",
+          "at": "2026-08-31T14:26:31.095Z",
+          "summary": "Either the ZIP result or a plain operator message; never a raw developer error string."
         }
       ],
       "review": null

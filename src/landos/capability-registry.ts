@@ -2,6 +2,7 @@ import {
   invokeCapabilityDefinition,
   type CapabilityInvocationRequest,
   type CapabilityMetadata,
+  type CapabilityOperatorManifest,
   type CapabilityPrerequisiteClause,
   type CapabilityResult,
   type JsonObject,
@@ -49,6 +50,15 @@ import {
   type PropertyDevelopmentHistoryRuntime,
 } from './property-development-history-capability.js';
 import {
+  COUNTY_MARKET_RESEARCH_CAPABILITY,
+  COUNTY_MARKET_RESEARCH_CAPABILITY_ID,
+  MARKET_PULSE_CAPABILITY,
+  MARKET_PULSE_CAPABILITY_ID,
+  ZIP_MARKET_RESEARCH_CAPABILITY,
+  ZIP_MARKET_RESEARCH_CAPABILITY_ID,
+  type MarketGeographyRuntime,
+} from './market-geography-capabilities.js';
+import {
   PROPERTY_RESOLUTION_CAPABILITY,
   PROPERTY_RESOLUTION_CAPABILITY_ID,
   type PropertyResolutionRuntime,
@@ -68,7 +78,8 @@ import {
 export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRuntime & LandPortalResearchRuntime
   & CompsValuationRuntime & ZoningSubdivisionRuntime & PropertyDevelopmentHistoryRuntime
   & UtilityServiceScreenRuntime & AcquisitionIntelligenceRuntimeDeps
-  & LandPortalPropertyCharacteristicsRuntime & LandPortalVisualCaptureRuntime & LandPortalCompSearchRuntime;
+  & LandPortalPropertyCharacteristicsRuntime & LandPortalVisualCaptureRuntime & LandPortalCompSearchRuntime
+  & MarketGeographyRuntime;
 
 const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
@@ -112,6 +123,21 @@ const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
     ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
     ACQUISITION_INTELLIGENCE_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
   ],
+  // Geography-scoped market capabilities: placements over the EXISTING Market
+  // Matrix / Market Pulse engines. Their prerequisite is county or ZIP — a
+  // market question never waits on, or manufactures, a property subject.
+  [
+    COUNTY_MARKET_RESEARCH_CAPABILITY_ID,
+    COUNTY_MARKET_RESEARCH_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
+  [
+    ZIP_MARKET_RESEARCH_CAPABILITY_ID,
+    ZIP_MARKET_RESEARCH_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
+  [
+    MARKET_PULSE_CAPABILITY_ID,
+    MARKET_PULSE_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
 ]);
 
 // ── Declared capability prerequisites ────────────────────────────────────────
@@ -131,6 +157,9 @@ const CAPABILITY_PREREQUISITES: Record<string, CapabilityPrerequisiteClause[]> =
   [PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID]: ['parcel'],
   [UTILITY_SERVICE_SCREEN_CAPABILITY_ID]: ['parcel'],
   [ACQUISITION_INTELLIGENCE_CAPABILITY_ID]: ['parcel'],
+  [COUNTY_MARKET_RESEARCH_CAPABILITY_ID]: ['county'],
+  [ZIP_MARKET_RESEARCH_CAPABILITY_ID]: ['zip'],
+  [MARKET_PULSE_CAPABILITY_ID]: ['county'],
 };
 
 /** Declared minimum context for a registered capability. An UNDECLARED
@@ -139,17 +168,101 @@ export function capabilityPrerequisites(capabilityId: string): CapabilityPrerequ
   return CAPABILITY_PREREQUISITES[capabilityId] ?? ['parcel'];
 }
 
+// ── Operator manifest ────────────────────────────────────────────────────────
+// What the Tools catalog needs to present each capability honestly. Declared
+// HERE, next to the prerequisites, so there is exactly one registry; the
+// per-capability metadata carries it out through the same contract every
+// caller already reads. A capability with no entry is not operator-facing.
+const PROPERTY_INPUT_HINT = 'An address, APN, owner + county, LandPortal URL, or an existing Deal.';
+const CAPABILITY_OPERATOR_MANIFEST: Record<string, CapabilityOperatorManifest> = {
+  [PROPERTY_RESOLUTION_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: false,
+    inputHint: 'Any raw property reference — address, APN, owner + county, coordinates, or a messy description.',
+  },
+  [ASSESSOR_TAX_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: true,
+    inputHint: PROPERTY_INPUT_HINT,
+    skill: 'Public Records Research / Recovery',
+    recovery: 'Deterministic official retrieval first; at most one governed specialist recovery when the official paths fall short.',
+  },
+  [LANDPORTAL_RESEARCH_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: true,
+    inputHint: PROPERTY_INPUT_HINT,
+    skill: 'LandPortal Research',
+    recovery: 'Deterministic LandPortal workflow with governed recovery when required outputs are incomplete.',
+  },
+  [LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: true,
+    inputHint: PROPERTY_INPUT_HINT, skill: 'LandPortal Research',
+  },
+  [LANDPORTAL_VISUAL_CAPTURE_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: true,
+    inputHint: PROPERTY_INPUT_HINT, skill: 'LandPortal Research',
+  },
+  [LANDPORTAL_COMP_SEARCH_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: true,
+    inputHint: PROPERTY_INPUT_HINT, skill: 'LandPortal Research',
+  },
+  [COMPS_VALUATION_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: true,
+    inputHint: PROPERTY_INPUT_HINT,
+    skill: 'Comp / Valuation Research',
+  },
+  [ZONING_SUBDIVISION_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: true,
+    inputHint: PROPERTY_INPUT_HINT,
+    skill: 'Government / Zoning & Planning Research',
+    recovery: 'Deterministic official-source race first; bounded research only after genuine insufficiency. Zoning is never guessed.',
+  },
+  [PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: true,
+    inputHint: PROPERTY_INPUT_HINT,
+    skill: 'Government / Zoning & Planning Research',
+  },
+  [UTILITY_SERVICE_SCREEN_CAPABILITY_ID]: {
+    manualInvocation: false, runsWithoutDeal: false, writesAuthoritativeEvidence: true,
+    inputHint: 'Runs from a Deal Card subject.',
+  },
+  [ACQUISITION_INTELLIGENCE_CAPABILITY_ID]: {
+    manualInvocation: false, runsWithoutDeal: false, writesAuthoritativeEvidence: false,
+    inputHint: 'Runs from a Deal Card once research capabilities have established facts.',
+  },
+  [COUNTY_MARKET_RESEARCH_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: false,
+    inputHint: 'A county with its state, e.g. "Iredell County, NC".',
+  },
+  [ZIP_MARKET_RESEARCH_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: false,
+    inputHint: 'A 5-digit ZIP, e.g. "28115".',
+  },
+  [MARKET_PULSE_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: false,
+    inputHint: 'A county with its state, e.g. "Iredell County, NC".',
+  },
+};
+
+/** Operator manifest for a registered capability, or null when it is not
+ *  operator-facing. */
+export function capabilityOperatorManifest(capabilityId: string): CapabilityOperatorManifest | null {
+  return CAPABILITY_OPERATOR_MANIFEST[capabilityId] ?? null;
+}
+
 export function listRuntimeCapabilities(): CapabilityMetadata[] {
   return [...CAPABILITIES.values()].map((definition) => ({
     ...definition.metadata,
     prerequisites: capabilityPrerequisites(definition.metadata.id),
+    ...(capabilityOperatorManifest(definition.metadata.id) ? { operator: capabilityOperatorManifest(definition.metadata.id)! } : {}),
   }));
 }
 
 export function runtimeCapability(capabilityId: string): CapabilityMetadata | null {
   const definition = CAPABILITIES.get(capabilityId);
   if (!definition) return null;
-  return { ...definition.metadata, prerequisites: capabilityPrerequisites(capabilityId) };
+  return {
+    ...definition.metadata,
+    prerequisites: capabilityPrerequisites(capabilityId),
+    ...(capabilityOperatorManifest(capabilityId) ? { operator: capabilityOperatorManifest(capabilityId)! } : {}),
+  };
 }
 
 export async function invokeRuntimeCapability(

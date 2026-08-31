@@ -1,0 +1,9 @@
+Page-text evidence (screenshot capture substituted with named page-text read: CDP Page.captureScreenshot timed out; capturing would require activating the operator's Chrome window).
+URL: http://localhost:3141/tools  Tab: 494897935  Time: 2026-08-31 (QA session)
+
+Market Pulse
+Loving, TX
+LOCAL AREA CONTEXT, NOT PARCEL VERIFIED
+Loving County, TX is growing (population +4.59% over 5 years). Land is generally going for about $82,688/acre in the county (median of 29074 comps).
+Growth: growing (+4.59%) - Loving County, TX population growth +4.59% on a population of 30,188,424, from the retained LandOS Market Research county record (2026-Q3). Not a Census two-vintage measurement.
+County $/acre: TX statewide (all acreage): median $82,688/acre across 29074 recorded sale(s) in the 2026-Q3 Market Research snapshot. Market context only, not a valuation basis.
