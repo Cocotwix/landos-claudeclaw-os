@@ -115,3 +115,24 @@ export function countyLabel(
   if (!bare) return name;
   return PARISH_OR_BOROUGH.test(name) ? name.replace(/\s+/g, ' ') : `${bare} County`;
 }
+
+/**
+ * The identity the current Deal Card shows for its subject property.
+ *
+ * CANONICAL CURRENT IDENTITY OUTRANKS A DERIVED INTELLIGENCE SNAPSHOT. A
+ * snapshot is a point-in-time read of a run that may have executed against an
+ * identity since corrected or superseded; the property record is the current
+ * accepted answer. Reading the snapshot first let a stale run keep naming a
+ * corrected parcel on the operator's own header, surviving a hard refresh.
+ */
+export function canonicalSubjectIdentity(
+  card: { apn?: string | null; owner?: string | null; county?: string | null; state?: string | null } | null | undefined,
+  snapshot: { apn?: string | null; owner?: string | null; county?: string | null; state_?: string | null } | null | undefined,
+): { apn: string; owner: string; county: string; state: string } {
+  return {
+    apn: card?.apn || snapshot?.apn || '',
+    owner: card?.owner || snapshot?.owner || '',
+    county: countyLabel(card?.county, snapshot?.county) || '',
+    state: card?.state || snapshot?.state_ || '',
+  };
+}

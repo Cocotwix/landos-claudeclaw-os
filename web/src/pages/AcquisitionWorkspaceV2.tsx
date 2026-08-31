@@ -20,7 +20,7 @@ import {
   LineChart, Scale, Target, FolderOpen,
 } from 'lucide-preact';
 import { apiGet, apiPost, chatId, legacyUrl } from '@/lib/api';
-import { countyLabel } from '@/lib/format';
+import { canonicalSubjectIdentity, countyLabel } from '@/lib/format';
 import {
   readPage, pageHref, rememberWorkspaceDeal, lastWorkspaceDealId,
   DEAL_PAGES, type WorkspaceV2Page,
@@ -798,20 +798,29 @@ export function AcquisitionWorkspaceV2() {
   // ── View model, straight from canonical data ─────────────────────────
   const id = snap.identity || {};
   const card0 = deal?.dealCard?.propertyCards?.[0];
+  // ── Canonical current identity outranks a derived intelligence snapshot ────
+  // A snapshot is a DERIVED, point-in-time read of a run that may have executed
+  // against an identity since corrected or superseded; the property record is
+  // the current accepted answer. Reading the snapshot FIRST let a stale run keep
+  // naming a corrected parcel on the operator's own header — a Deal whose
+  // accepted APN had been corrected still showed the old identifier after a hard
+  // refresh. This is the same class the acreage decision below already fixed for
+  // measurements, applied to the fields that identify the subject.
+  const subject = canonicalSubjectIdentity(card0, id);
   // Primary visible label: the address when known; otherwise the best
   // available property identity (APN / owner / county+state) — never the
   // internal deal number.
   const bestIdentity = [
-    (id.apn || card0?.apn) ? `APN ${id.apn || card0?.apn}` : '',
-    id.owner || card0?.owner || '',
-    [id.county || card0?.county, id.state_ || card0?.state].filter(Boolean).join(', '),
+    subject.apn ? `APN ${subject.apn}` : '',
+    subject.owner,
+    [subject.county, subject.state].filter(Boolean).join(', '),
   ].filter(Boolean).join(' · ');
   const address = id.displayAddress || deal?.dealCard?.title || bestIdentity || 'Property identity pending';
   const addrParts = address.split(',');
   const street = addrParts[0]?.trim() || address;
   const locality = addrParts.slice(1).join(',').trim();
   const zip = matchNum(address, /\b(\d{5})\s*$/) || deal?.dealCard?.propertyCards?.[0]?.zip || '';
-  const owner = id.owner || deal?.dealCard?.propertyCards?.[0]?.owner || '';
+  const owner = subject.owner;
   // The reconciled canonical acreage governs the header when the official-
   // record reconciliation resolved it; the identity snapshot and property
   // card figures are the fallbacks (and converge with it after adoption).
@@ -961,9 +970,9 @@ export function AcquisitionWorkspaceV2() {
         </h1>
         <div class="awv2-owner-line">
           <span>Owner of record <b>{owner || 'Unknown'}</b></span>
-          {(id.apn || card0?.apn) && <span class="mono">APN {id.apn || card0?.apn}</span>}
+          {subject.apn && <span class="mono">APN {subject.apn}</span>}
           {acres != null && <span class="mono">{acres} AC</span>}
-          {countyLabel(id.county, card0?.county) && <span class="mono">{(countyLabel(id.county, card0?.county) as string).toUpperCase()}, {id.state_ || ''}</span>}
+          {subject.county && <span class="mono">{subject.county.toUpperCase()}, {subject.state}</span>}
         </div>
 
         {pendingResolution && (
