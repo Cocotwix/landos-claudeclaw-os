@@ -43,6 +43,10 @@ import type { SnapshotFact } from './property-intelligence-snapshot.js';
 import { countyRecordFactsFromPublicRun } from './property-intelligence-specialist-execution.js';
 import { PROPERTY_RESOLUTION_CAPABILITY_ID } from './property-resolution-capability.js';
 import { PublicIntelligenceStore } from './public-intelligence-store.js';
+import type {
+  PublicRecordsRecoveryInput,
+  PublicRecordsRecoveryOutcome,
+} from './public-records-recovery-specialist.js';
 import type { PublicIntelligenceSubject } from './public-property-intelligence.js';
 import {
   governmentFactsFromPublicRecordOutcomes,
@@ -201,6 +205,9 @@ export interface AssessorTaxRuntime {
    *  every statewide parcel layer). Overridden only by tests. */
   lookupCountyAssessor?: typeof lookupCountyAssessorRecord;
   lookupTimeoutMs?: number;
+  /** One governed alternate route after the deterministic ladder returns no
+   * record. Production injects this only from an authoritative cancellable run. */
+  recoverPublicRecords?: (input: Omit<PublicRecordsRecoveryInput, 'signal'>) => Promise<PublicRecordsRecoveryOutcome>;
 }
 
 const str = (value: unknown): string | null => {
@@ -646,9 +653,61 @@ export const ASSESSOR_TAX_CAPABILITY: LandosCapability<AssessorTaxFacts, Assesso
     // `reuse` answers from what this subject already retains when it has an
     // assessor record; `refresh` always goes back to the official source.
     const useRetainedOnly = (request.mode ?? 'reuse') === 'reuse' && retained.length > 0;
-    const live = subjectResolution === 'RESOLVED' && !useRetainedOnly
+    let live = subjectResolution === 'RESOLVED' && !useRetainedOnly
       ? await liveRecords(subject, runtime)
       : { records: [], evidence: [] as CapabilityEvidenceReference[], attempts: [] as OfficialParcelAttempt[], summary: null, jurisdiction: null };
+
+    // Deterministic-first, one bounded governed recovery. The callback is
+    // absent on ordinary direct calls and is injected only by a controller that
+    // owns an authoritative run id and AbortSignal. The specialist returns a
+    // structured handback; it never writes the Deal Card itself.
+    const recoveryRunId = str((request.context ?? {}).runId);
+    if (subjectResolution === 'RESOLVED' && !useRetainedOnly && !live.records.length
+        && runtime.recoverPublicRecords && recoveryRunId && subject.dealCardId && subject.propertyCardId) {
+      const deterministicFailureReason = live.attempts.length
+        ? live.attempts.map((attempt) => `${attempt.source}: ${attempt.status} — ${attempt.note}`).join('; ')
+        : 'No configured deterministic official parcel or county assessor adapter applied to this jurisdiction.';
+      const recovery = await runtime.recoverPublicRecords({
+        runId: recoveryRunId,
+        dealCardId: subject.dealCardId,
+        propertyCardId: subject.propertyCardId,
+        subject: {
+          address: subject.address, county: subject.county, state: subject.state,
+          apn: subject.apn, owner: subject.owner,
+        },
+        deterministicFailureReason,
+        attempts: live.attempts.map((attempt) => ({ source: attempt.source, status: attempt.status, note: attempt.note })),
+        unresolvedRequirements: [
+          'Owner of record from the assessor or appraisal record',
+          'Assessed or taxable value from the assessor record',
+          'Annual property-tax amount and payment standing',
+        ],
+      });
+      const handback = recovery.handback;
+      if (handback?.subjectMatch === 'exact' && handback.facts.length) {
+        const sources = new Map(handback.sources.map((source) => [source.id, source]));
+        live = {
+          ...live,
+          records: handback.facts.map((fact) => {
+            const source = sources.get(fact.sourceId)!;
+            return {
+              field: fact.label,
+              value: String(fact.value),
+              classification: 'official_record' as const,
+              source: source.name,
+              sourceUrl: source.url,
+              retrievedAt: source.retrievedAt,
+            };
+          }),
+          evidence: [...live.evidence, ...recovery.evidence],
+          summary: handback.recoveryReason || `${handback.facts.length} official public-record fact(s) recovered after deterministic adapter exhaustion.`,
+        };
+      } else {
+        warnings.push(recovery.error
+          ?? handback?.exactFailureReason
+          ?? `Public-record recovery finished ${recovery.status.toLowerCase().replaceAll('_', ' ')} without exact-subject facts.`);
+      }
+    }
 
     if (subjectResolution === 'RESOLVED' && !useRetainedOnly && !live.records.length) {
       warnings.push(live.attempts.length

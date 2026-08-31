@@ -18,6 +18,7 @@
 import { useState } from 'preact/hooks';
 
 import { apiPost } from '@/lib/api';
+import { useCanonicalParcelGate } from '@/lib/useCanonicalParcelGate';
 
 interface HistoryEvent {
   key: string;
@@ -70,6 +71,7 @@ export function PropertyDevelopmentHistoryPanel({ dealId }: { dealId?: number })
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<PropertyDevelopmentHistoryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const gate = useCanonicalParcelGate(dealId);
 
   if (!dealId) return null;
 
@@ -100,7 +102,8 @@ export function PropertyDevelopmentHistoryPanel({ dealId }: { dealId?: number })
       <button
         type="button"
         data-testid="awv2-property-development-history-button"
-        disabled={running}
+        disabled={running || gate.blocked}
+        title={gate.blocked ? gate.reason : 'Run Property Development History'}
         onClick={() => { void invoke(); }}
       >
         {running ? 'Reading the parcel record…' : 'Run Property Development History'}
@@ -108,6 +111,7 @@ export function PropertyDevelopmentHistoryPanel({ dealId }: { dealId?: number })
       {' '}Reads what LandOS already retained about this exact parcel first, then runs one bounded
       targeted search if that did not establish material history. It never changes which parcel this
       card is about, and it never changes the seller or contact on this deal.
+      {gate.blocked && <div class="awv2-pi-note">Waiting for prerequisite: {gate.reason}</div>}
       {error && <div class="awv2-pi-note" role="alert">{error}</div>}
       {result && (
         <div class="awv2-property-history-result" data-testid="awv2-property-development-history-result">

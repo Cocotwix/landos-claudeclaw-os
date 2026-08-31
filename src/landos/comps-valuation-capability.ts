@@ -82,7 +82,10 @@ export type CompsValuationOutcome =
 
 /** What the injected live comparable-collection lane reports back. */
 export type CompCollectionOutcome = {
+  /** Every provider row returned, before source-policy admission. */
   candidateCount: number;
+  /** Rows that survived the vacant-land comp source policy as usable evidence. */
+  usableCandidateCount: number;
   duplicatesMerged: number;
   sources: string[];
   summary: string;
@@ -654,20 +657,22 @@ export const COMPS_VALUATION_CAPABILITY: LandosCapability<CompsValuationFacts, C
       const facts: CompsValuationFacts = {
         ...emptyFacts(lane, subject, collection.summary),
         executed: true,
-        outcome: collection.candidateCount > 0 ? 'lane_completed' : 'not_available',
+        outcome: collection.usableCandidateCount > 0 ? 'lane_completed' : 'not_available',
         collection,
         sourceAttempts: collection.sourceAttempts,
       };
       return {
-        status: collection.candidateCount > 0 ? 'SUCCEEDED' : 'NEEDS_INPUT',
+        status: collection.usableCandidateCount > 0 ? 'SUCCEEDED' : 'NEEDS_INPUT',
         subjectResolution,
         canonicalSubject,
         facts,
         evidence: resolutionEvidence,
         warnings,
-        missingInformation: collection.candidateCount > 0
+        missingInformation: collection.usableCandidateCount > 0
           ? []
-          : ['At least one comparable candidate from an approved marketplace'],
+          : [collection.candidateCount > 0
+            ? 'At least one returned record that survives the vacant-land comparable policy as usable evidence'
+            : 'At least one comparable candidate from an approved marketplace'],
       };
     }
 

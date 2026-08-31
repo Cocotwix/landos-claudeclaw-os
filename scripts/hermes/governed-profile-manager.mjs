@@ -27,6 +27,7 @@ export const LANDOS_SHARED_CDP_URL = 'http://127.0.0.1:9224';
 
 export const PROFILE_IDS = Object.freeze([
   'landos-research',
+  'landos-public-records',
   'landos-visual-qa',
   'landos-debug',
   'landos-knowledge',
@@ -355,9 +356,9 @@ function validateManifestStructure(manifest, { workspace, runtimeRoot, strictRun
   if (manifest.schemaVersion !== '1.0.0') failures.push('unsupported manifest schemaVersion');
   if (manifest.manifestId !== 'landos-governed-hermes') failures.push('unexpected manifestId');
   if (JSON.stringify(Object.keys(manifest.profiles).sort()) !== JSON.stringify([...PROFILE_IDS].sort())) {
-    failures.push('manifest must define exactly the five governed profile ids');
+    failures.push('manifest must define exactly the six governed profile ids');
   }
-  if (manifest.skills.customSnapshots.length !== 6) failures.push('manifest must define exactly six custom skill snapshots');
+  if (manifest.skills.customSnapshots.length !== 7) failures.push('manifest must define exactly seven custom skill snapshots');
   const approvedProtections = manifest.policy?.approvedProtections ?? {};
   const requiredProtections = ['noSecretOrEnvExposure', 'noArbitrarySqlOrDestructiveDeletes', 'noUnrestrictedDealCardMutation', 'isolatedVisualAcceptance', 'noSelfCertification', 'dirtyStatePreservation', 'crossPropertyRejection'];
   if (!requiredProtections.every((key) => approvedProtections[key] === true)
@@ -759,10 +760,11 @@ function configFailures(config, profile, context, mcpActivation = { enabled: fal
     if (config?.browser?.engine !== 'auto' || config?.browser?.cdp_url !== '' || config?.browser?.restrict_evaluate !== true) failures.push('browser/CDP scope differs from the profile contract');
     if (profile.id === 'landos-visual-qa' && (config?.browser?.allow_private_urls !== true || config?.browser?.record_sessions !== true)) failures.push('visual QA must support isolated localhost recording');
   } else if (config?.browser != null) failures.push('browser configured outside its profile scope');
-  const expectsDuckDuckGo = profile.id === 'landos-research' && profile.capabilities.toolsets.includes('web');
+  const expectsDuckDuckGo = profile.capabilities.skills.includes('duckduckgo-search')
+    && profile.capabilities.toolsets.includes('web');
   if (expectsDuckDuckGo) {
     if (config?.web?.backend !== 'ddgs' || config?.web?.search_backend !== 'ddgs' || config?.web?.extract_backend !== 'ddgs') {
-      failures.push('landos-research web provider must be pinned to keyless ddgs');
+      failures.push(`${profile.id} web provider must be pinned to keyless ddgs`);
     }
   } else if (config?.web != null) failures.push('non-research profiles may not configure a web provider');
   const requiredDisabledPlugins = [...NON_SELECTED_WEB_PROVIDER_PLUGINS, ...(expectsDuckDuckGo ? [] : ['web/ddgs'])].sort();

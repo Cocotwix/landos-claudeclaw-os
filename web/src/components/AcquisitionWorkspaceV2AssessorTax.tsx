@@ -12,6 +12,7 @@
 import { useState } from 'preact/hooks';
 
 import { apiPost } from '@/lib/api';
+import { useCanonicalParcelGate } from '@/lib/useCanonicalParcelGate';
 
 interface AssessorTaxRunResult {
   subjectResolution: string;
@@ -51,6 +52,7 @@ export function AssessorTaxRun({ dealId }: { dealId?: number }) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<AssessorTaxRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const gate = useCanonicalParcelGate(dealId);
 
   if (!dealId) return null;
 
@@ -81,13 +83,15 @@ export function AssessorTaxRun({ dealId }: { dealId?: number }) {
       <button
         type="button"
         data-testid="awv2-assessor-tax-run"
-        disabled={running}
+        disabled={running || gate.blocked}
+        title={gate.blocked ? gate.reason : 'Run Assessor & Tax'}
         onClick={() => { void invoke(); }}
       >
         {running ? 'Reading the assessor record…' : 'Run Assessor & Tax'}
       </button>
       {' '}Reads the county assessor and taxing-jurisdiction record for this Deal Card&apos;s
       existing canonical parcel. It never changes which parcel this card is about.
+      {gate.blocked && <div class="awv2-pi-note">Waiting for prerequisite: {gate.reason}</div>}
       {error && <div class="awv2-pi-note" role="alert">{error}</div>}
       {result && (
         <div class="awv2-assessor-tax-result" data-testid="awv2-assessor-tax-result">

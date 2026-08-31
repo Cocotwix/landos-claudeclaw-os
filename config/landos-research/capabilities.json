@@ -12,7 +12,7 @@
       "runtimePrerequisite": "ddgs CLI",
       "runtimeState": "installed",
       "runtimeVersion": "9.14.4",
-      "profiles": ["landos-research"],
+      "profiles": ["landos-research", "landos-public-records"],
       "governance": "Return source URLs and snippets; fetch selected sources separately; official-domain validation and grounded citations remain mandatory."
     },
     {

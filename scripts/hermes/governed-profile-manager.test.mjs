@@ -140,8 +140,8 @@ test('repository audit and practical profile provisioning are isolated and idemp
   try {
     const audit = auditRepository(options(fixture));
     assert.equal(audit.ok, true, audit.failures.join('\n'));
-    assert.equal(audit.profiles, 5);
-    assert.equal(audit.customSkills, 6);
+    assert.equal(audit.profiles, 6);
+    assert.equal(audit.customSkills, 7);
 
     const first = provisionProfiles(options(fixture));
     assert.equal(first.ok, true);
@@ -184,7 +184,7 @@ test('repository audit and practical profile provisioning are isolated and idemp
       for (const runtimeDirectory of ['logs/curator', 'pairing', 'hooks', 'image_cache', 'audio_cache']) {
         assert.ok(fs.statSync(path.join(profileRoot, runtimeDirectory)).isDirectory());
       }
-      if (profileId === 'landos-research') {
+      if (['landos-research', 'landos-public-records'].includes(profileId)) {
         assert.equal(config.web.search_backend, 'ddgs');
         assert.equal(config.plugins.disabled.includes('web/ddgs'), false);
       } else {

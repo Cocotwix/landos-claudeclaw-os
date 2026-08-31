@@ -184,6 +184,60 @@
         "landos-research"
       ]
     },
+    "landos-public-records": {
+      "templatePath": "config/hermes/governed-profiles/landos-public-records",
+      "skillAllowlist": [
+        "landos-public-records-recovery",
+        "plan",
+        "duckduckgo-search"
+      ],
+      "toolsetAllowlist": [
+        "browser",
+        "clarify",
+        "code_execution",
+        "computer_use",
+        "file",
+        "memory",
+        "session_search",
+        "skills",
+        "terminal",
+        "todo",
+        "vision",
+        "web"
+      ],
+      "toolAllowlist": [
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_dialog",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "clarify",
+        "computer_use",
+        "memory",
+        "patch",
+        "process",
+        "read_file",
+        "search_files",
+        "session_search",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "terminal",
+        "todo",
+        "vision_analyze",
+        "web_extract",
+        "web_search",
+        "write_file"
+      ],
+      "mcpAllowlist": []
+    },
     "landos-visual-qa": {
       "templatePath": "config/hermes/governed-profiles/landos-visual-qa",
       "skillAllowlist": [
@@ -620,6 +674,36 @@
         ],
         "updatePolicy": "manual version bump, dangerous-pattern scan, pending full diff, explicit owner approval, new SHA-256 snapshot",
         "expectedSha256": "77829ca9beba7e9f704377bbfa795d597d746214b8fe725a1f7346347345ac54"
+      },
+      {
+        "id": "landos-public-records-recovery",
+        "version": "1.0.0",
+        "kind": "custom",
+        "source": {
+          "type": "repository-snapshot",
+          "path": "config/hermes/governance/snapshots/landos-public-records-recovery/1.0.0",
+          "hermesVersion": null,
+          "commit": "repository-dirty-snapshot-2026-08-30"
+        },
+        "installedAt": "2026-08-30T00:00:00.000Z",
+        "externalInstallation": "deferred-to-integration",
+        "audit": {
+          "result": "safe",
+          "scanner": "landos-governed-scan-v1",
+          "scannedAt": "2026-08-30T00:00:00.000Z",
+          "findingCount": 0,
+          "notes": "Repository-authored immutable snapshot; exact-subject, bounded alternate-route recovery only."
+        },
+        "owners": [
+          "landos-public-records"
+        ],
+        "permissions": [
+          "bounded official public-record recovery",
+          "exact-subject structured evidence handback",
+          "retained public-source artifact references"
+        ],
+        "updatePolicy": "manual version bump, dangerous-pattern scan, full diff, explicit owner approval, new SHA-256 snapshot",
+        "expectedSha256": "6ae738ff3408350c82472d759bf558eee5bd1828001bf821c7c8866d68323036"
       }
     ],
     "bundledGovernance": {
@@ -828,6 +912,7 @@
         "sourcePath": "skills/software-development/plan",
         "profiles": [
           "landos-research",
+          "landos-public-records",
           "landos-visual-qa",
           "landos-debug",
           "landos-knowledge",
@@ -965,7 +1050,8 @@
           "notes": "Four medium documentation/install findings; safe verdict. Pinned keyless ddgs runtime verified locally."
         },
         "owners": [
-          "landos-research"
+          "landos-research",
+          "landos-public-records"
         ],
         "permissions": [
           "free keyless public web/news/image search",

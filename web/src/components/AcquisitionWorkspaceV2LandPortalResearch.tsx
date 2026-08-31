@@ -12,6 +12,7 @@
 import { useState } from 'preact/hooks';
 
 import { apiPost } from '@/lib/api';
+import { useCanonicalParcelGate } from '@/lib/useCanonicalParcelGate';
 
 interface LandPortalResearchRunResult {
   subjectResolution: string;
@@ -54,6 +55,7 @@ export function LandPortalResearchRun({ dealId }: { dealId?: number }) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<LandPortalResearchRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const gate = useCanonicalParcelGate(dealId);
 
   if (!dealId) return null;
 
@@ -84,13 +86,15 @@ export function LandPortalResearchRun({ dealId }: { dealId?: number }) {
       <button
         type="button"
         data-testid="awv2-landportal-research-run"
-        disabled={running}
+        disabled={running || gate.blocked}
+        title={gate.blocked ? gate.reason : 'Run LandPortal Research'}
         onClick={() => { void invoke(); }}
       >
         {running ? 'Reading the LandPortal record…' : 'Run LandPortal Research'}
       </button>
       {' '}Reads the LandPortal record for this Deal Card&apos;s existing canonical parcel.
       It never changes which parcel this card is about.
+      {gate.blocked && <div class="awv2-pi-note">Waiting for prerequisite: {gate.reason}</div>}
       {error && <div class="awv2-pi-note" role="alert">{error}</div>}
       {result && (
         <div class="awv2-landportal-research-result" data-testid="awv2-landportal-research-result">

@@ -74,6 +74,9 @@ export function researchStatusForOutcome(
 export interface AutoLaunchIntakeInput extends Omit<LaunchDealIntelligenceOptions, 'trigger'> {
   opportunityId: number;
   hooks?: Partial<IntakeLifecycleHooks>;
+  /** Close the New Lead vertical slice after retrieval: coverage reconciliation,
+   * targeted backfill, and the four-layer intelligence cascade. */
+  afterCompletion?: (input: { launch: DealIntelligenceLaunch; snapshot: PropertyIntelligenceSnapshot; status: Extract<OpportunityResearchStatus, 'complete' | 'partial'> }) => Promise<void> | void;
 }
 
 /**
@@ -84,7 +87,7 @@ export interface AutoLaunchIntakeInput extends Omit<LaunchDealIntelligenceOption
  * failed) so the caller can log it.
  */
 export function autoLaunchDealIntelligenceForIntake(input: AutoLaunchIntakeInput): DealIntelligenceLaunch | null {
-  const { opportunityId, hooks: overrides, ...launchOptions } = input;
+  const { opportunityId, hooks: overrides, afterCompletion, ...launchOptions } = input;
   const hooks: IntakeLifecycleHooks = { ...DEFAULT_HOOKS, ...overrides };
   const { dealCardId } = launchOptions;
   // One shared store, so the settle path below reads the SAME run row the
@@ -121,7 +124,7 @@ export function autoLaunchDealIntelligenceForIntake(input: AutoLaunchIntakeInput
 
     // Fire-and-forget: the settle path runs long after the intake response.
     void completion
-      .then((snapshot) => {
+      .then(async (snapshot) => {
         // The run row is re-read before any lifecycle write. A row that no
         // longer exists means the world this launch belonged to is gone (the
         // store was reset or replaced underneath a still-running chain); an
@@ -157,6 +160,11 @@ export function autoLaunchDealIntelligenceForIntake(input: AutoLaunchIntakeInput
             );
           } catch (err) {
             logger.warn({ err, dealCardId, opportunityId }, 'deal_intelligence_intake_discovery_brief_failed');
+          }
+          try {
+            await afterCompletion?.({ launch, snapshot, status });
+          } catch (err) {
+            logger.warn({ err, dealCardId, opportunityId, runId: launch.runId }, 'deal_intelligence_intake_post_completion_failed');
           }
         }
       })

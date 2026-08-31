@@ -604,9 +604,16 @@ export const LANDPORTAL_RESEARCH_CAPABILITY: LandosCapability<LandPortalResearch
       // The inspection persists its own cumulative evidence; read it back so
       // the capability result reports what the parcel actually now holds.
       const after = retainedEvidence(subject.propertyCardId, runtime).retained;
+      // Browser completion is transport evidence, not a property-research
+      // result. The lane completes only when the exact-subject read left the
+      // two durable outputs downstream resolution consumes: a provider URL and
+      // at least one retained parcel fact.
+      const requiredOutputsReturned = inspection.ok
+        && !!after.parcelUrl
+        && after.parcelFactCount > 0;
       sourceAttempts.push({
         source: 'LandPortal authenticated parcel page',
-        status: inspection.ok ? 'used' : 'no_result',
+        status: requiredOutputsReturned ? 'used' : 'no_result',
         note: inspection.note,
       });
       if (after.parcelUrl && after.parcelUrl !== retained.parcelUrl) {
@@ -619,15 +626,18 @@ export const LANDPORTAL_RESEARCH_CAPABILITY: LandosCapability<LandPortalResearch
         });
       }
       if (!inspection.ok) missingInformation.push('A readable LandPortal parcel page for this subject');
+      else if (!requiredOutputsReturned) {
+        missingInformation.push('A retained LandPortal parcel URL and at least one exact-subject parcel fact');
+      }
       const facts: LandPortalResearchFacts = {
         ...emptyFacts(lane, subject, after, inspection.note),
         executed: true,
-        outcome: inspection.ok ? 'lane_completed' : after.parcelFactCount ? 'retained_only' : 'not_available',
+        outcome: requiredOutputsReturned ? 'lane_completed' : after.parcelFactCount ? 'retained_only' : 'not_available',
         inspection,
         sourceAttempts,
       };
       return {
-        status: inspection.ok ? 'SUCCEEDED' : 'NEEDS_INPUT',
+        status: requiredOutputsReturned ? 'SUCCEEDED' : 'NEEDS_INPUT',
         subjectResolution,
         canonicalSubject,
         facts,
@@ -671,8 +681,11 @@ export const LANDPORTAL_RESEARCH_CAPABILITY: LandosCapability<LandPortalResearch
         status: agentic.status,
         note: agentic.note,
       });
-      const succeeded = agentic.status === 'exact_match';
-      if (!succeeded) missingInformation.push('An exact-subject LandPortal specialist handback');
+      // An exact-match verdict without a persisted category is still only a
+      // specialist assertion. Requiring the durable handback keeps workflow
+      // completion distinct from records returned.
+      const succeeded = agentic.status === 'exact_match' && agentic.persistedCategories.length > 0;
+      if (!succeeded) missingInformation.push('An exact-subject LandPortal specialist handback with persisted output');
       const facts: LandPortalResearchFacts = {
         ...emptyFacts(lane, subject, after, agentic.note),
         executed: true,

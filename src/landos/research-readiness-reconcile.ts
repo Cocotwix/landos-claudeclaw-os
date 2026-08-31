@@ -286,21 +286,45 @@ function landPortalProbe(ctx: ReconcileContext): ResearchReadinessProbe {
 function assessorTaxProbe(ctx: ReconcileContext): ResearchReadinessProbe {
   const reading = ctx.capability('assessor-tax');
   const recordStatus = asString(reading.facts.recordStatus);
-  const usable = recordStatus === 'official_record_retrieved' || recordStatus === 'retained_record_only';
+  // The bounded recovery specialist admits only exact-subject facts through
+  // the shared evidence boundary. Read that durable output directly so a
+  // deterministic miss followed by a successful recovery actually replans the
+  // checklist instead of leaving Assessor & Tax red forever.
+  let recovery: { count: number; latest: string | null; official: boolean; source: string | null } = {
+    count: 0, latest: null, official: false, source: null,
+  };
+  try {
+    const row = getLandosDb().prepare(`
+      SELECT count(*) AS count, max(retrieved_at) AS latest,
+             max(CASE WHEN source_tier='official_government_source' THEN 1 ELSE 0 END) AS official,
+             max(source_name) AS source
+        FROM landos_property_evidence_item
+       WHERE deal_card_id=? AND domain='public_records'
+         AND originating_capability='landos-public-records-recovery'
+    `).get(ctx.dealCardId) as { count?: number; latest?: string | null; official?: number; source?: string | null } | undefined;
+    recovery = {
+      count: Number(row?.count ?? 0), latest: row?.latest ?? null,
+      official: Number(row?.official ?? 0) > 0, source: row?.source ?? null,
+    };
+  } catch { /* capability result remains the source when no evidence table is available */ }
+  const recovered = recovery.count > 0;
+  const usable = recordStatus === 'official_record_retrieved' || recordStatus === 'retained_record_only' || recovered;
   // Retained LandPortal figures are NOT an assessor record. They are named here
   // so the operator can see the gap is about provenance, not about numbers.
   const retainedAssessed = factText(ctx.research, 'assessed_value');
   const retainedTax = factText(ctx.research, 'Tax Amount');
   return {
     itemId: 'assessor_tax',
-    attempted: !!reading.result,
-    technicalSuccess: reading.succeeded,
+    attempted: !!reading.result || recovered,
+    technicalSuccess: reading.succeeded || recovered,
     usableEvidence: usable,
     unresolved: recordStatus === 'not_retrieved',
     lastAttemptAt: reading.completedAt,
-    lastSuccessAt: usable ? reading.completedAt : null,
+    lastSuccessAt: usable ? reading.completedAt ?? recovery.latest : null,
     reason: usable
-      ? `Assessor & Tax returned a ${recordStatus === 'official_record_retrieved' ? 'live official' : 'retained'} record.`
+      ? recovered
+        ? `Public-record recovery returned ${recovery.count} exact-subject fact${recovery.count === 1 ? '' : 's'}${recovery.source ? ` from ${recovery.source}` : ''}${recovery.official ? ' on an official government source' : ''}.`
+        : `Assessor & Tax returned a ${recordStatus === 'official_record_retrieved' ? 'live official' : 'retained'} record.`
       : reading.result
         ? `Assessor & Tax ran and no assessor or tax record was retrieved.${failureNote(reading)}`
         : `No Assessor & Tax run is on record.${retainedAssessed || retainedTax

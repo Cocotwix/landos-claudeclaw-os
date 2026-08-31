@@ -16,6 +16,7 @@
 
 import { invokeRuntimeCapability, type RuntimeCapabilityRuntime } from './capability-registry.js';
 import type { CapabilityEntity, CapabilityInvocationMode, JsonObject } from './capability-contract.js';
+import { runPublicRecordsRecovery } from './public-records-recovery-specialist.js';
 import {
   isReconcileError,
   reconcileResearchReadiness,
@@ -69,6 +70,10 @@ export interface ResearchBackfillDeps {
   invoke?: typeof invokeRuntimeCapability;
   runtime?: RuntimeCapabilityRuntime;
   now?: () => string;
+  /** Durable authority owned by the parent intelligence/coverage run. */
+  runId?: string;
+  signal?: AbortSignal;
+  isRunAuthoritative?: (runId: string) => boolean;
 }
 
 /**
@@ -86,6 +91,21 @@ export async function runResearchReadinessBackfill(
 ): Promise<ResearchBackfillReport | ResearchReadinessReconcileError> {
   const now = deps.now ?? (() => new Date().toISOString());
   const invoke = deps.invoke ?? invokeRuntimeCapability;
+  const runtime: RuntimeCapabilityRuntime = {
+    ...(deps.runtime ?? {}),
+    ...(deps.runId ? {
+      recoverPublicRecords: async (input) => {
+        if (deps.signal?.aborted || (deps.isRunAuthoritative && !deps.isRunAuthoritative(input.runId))) {
+          return {
+            status: 'FAILED' as const, handback: null,
+            outputFile: '', evidence: [], admission: null,
+            error: 'The parent run is no longer authoritative; public-record recovery was not started.',
+          };
+        }
+        return runPublicRecordsRecovery({ ...input, signal: deps.signal });
+      },
+    } : {}),
+  };
 
   const before = reconcileResearchReadiness(dealCardId, now());
   if (isReconcileError(before)) return before;
@@ -98,6 +118,14 @@ export async function runResearchReadinessBackfill(
     // result the store already holds under the same key. Asking for `refresh`
     // in both cases is the honest reading of "this item has no usable answer".
     const mode: CapabilityInvocationMode = 'refresh';
+    if (deps.signal?.aborted || (deps.runId && deps.isRunAuthoritative && !deps.isRunAuthoritative(deps.runId))) {
+      ran.push({
+        capabilityId: target.capabilityId, itemIds: target.itemIds, labels: target.labels,
+        status: 'failed', invocationId: null,
+        summary: 'The parent run was cancelled or superseded before this capability started.',
+      });
+      continue;
+    }
     try {
       const result = await invoke({
         capabilityId: target.capabilityId,
@@ -110,8 +138,11 @@ export async function runResearchReadinessBackfill(
         },
         mode,
         parameters: BACKFILL_PARAMETERS[target.capabilityId],
-        context: { surface: 'research_readiness_backfill', dealCardId, items: target.itemIds },
-      }, deps.runtime ?? {});
+        context: {
+          surface: 'research_readiness_backfill', dealCardId, items: target.itemIds,
+          ...(deps.runId ? { runId: deps.runId } : {}),
+        },
+      }, runtime);
       ran.push({
         capabilityId: target.capabilityId,
         itemIds: target.itemIds,

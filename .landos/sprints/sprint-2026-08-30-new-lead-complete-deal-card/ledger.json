@@ -1,0 +1,1089 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-08-30-new-lead-complete-deal-card",
+  "title": "New Lead to Complete Deal Card Production Vertical Slice",
+  "createdAt": "2026-08-30T23:45:44.374Z",
+  "originalPrompt": "# LANDOS SPRINT 2\r\n# NEW LEAD → COMPLETE DEAL CARD PRODUCTION VERTICAL SLICE\r\n\r\nThe Shared Foundation Consolidation sprint is COMPLETE and has already been committed, pushed, and remotely verified.\r\n\r\nStarting production baseline for this sprint:\r\n\r\n`1f9d6c4d74e676e6f55b40be13f8f75ce7916372`\r\n\r\nIMPORTANT:\r\nTrust ACTUAL current HEAD first.\r\n\r\nDo not reset or roll back if HEAD has legitimately advanced.\r\n\r\nThe previous sprint established:\r\n\r\n- canonical Subject State\r\n- research-subject-resolved separate from official verification\r\n- declared capability prerequisites\r\n- durable authoritative run identity\r\n- cancellation / timeout late-write guards\r\n- restart/rejoin persistence\r\n- unified evidence admission\r\n- adaptive-browser evidence promotion\r\n- canonical result vocabulary\r\n- readiness based on answered evidence rather than invocation alone\r\n\r\nThose are accepted foundation infrastructure.\r\n\r\nDO NOT redesign or rebuild them.\r\n\r\nThis sprint makes New Lead → Deal Card the first full production consumer of that foundation.\r\n\r\n---\r\n\r\n# PRODUCT OUTCOME\r\n\r\nThe operator experience should be:\r\n\r\n1. Tyler enters whatever usable seller/property information he has into New Lead.\r\n2. LandOS determines the working property through whatever valid route is available.\r\n3. As soon as sufficient context exists, independent research begins.\r\n4. Existing deterministic workflows run first.\r\n5. If a deterministic workflow does not return the REQUIRED information, LandOS diagnoses why.\r\n6. If another valid route exists, bounded adaptive recovery attempts to finish the requirement.\r\n7. Returned facts/artifacts go through authoritative evidence admission.\r\n8. Research Readiness reconciles and re-plans.\r\n9. Property / Market / Seller / Deal Intelligence builds from the completed evidence.\r\n10. The Deal Card returns the most complete HONEST result possible without developer babysitting.\r\n\r\nThe target is:\r\n\r\n**Create lead → walk away → return to a researched Deal Card.**\r\n\r\nOperator clarification should be exceptional.\r\n\r\nDeveloper intervention should not be part of the normal workflow.\r\n\r\n---\r\n\r\n# FIRST — INSPECT, DO NOT RE-AUDIT\r\n\r\nBefore editing:\r\n\r\n1. inspect current HEAD\r\n2. inspect git status\r\n3. verify Shared Foundation commit is present\r\n4. inspect the current New Lead → mission → readiness → intelligence path\r\n5. inspect the current deterministic capability implementations\r\n6. inspect existing Hermes skills/profiles and adaptive-recovery infrastructure\r\n7. inspect the remaining F3 direct-panel subject gates\r\n\r\nDo NOT repeat the architecture audit.\r\n\r\nDo NOT launch a broad repo archaeology exercise.\r\n\r\nThe architecture decisions are settled.\r\n\r\nReuse the foundation.\r\n\r\n---\r\n\r\n# CORE OPERATING DOCTRINE\r\n\r\n## LandOS is looking for the property, not a particular identifier\r\n\r\nPossible property pointers include:\r\n\r\n- APN / parcel ID\r\n- full street address\r\n- partial but resolvable address\r\n- owner\r\n- LandPortal URL\r\n- survey\r\n- deed\r\n- uploaded document\r\n- other sufficiently specific evidence\r\n\r\nOne valid route may be sufficient.\r\n\r\nExamples:\r\n\r\nAPN succeeds\r\n→ proceed.\r\n\r\nAddress succeeds while supplied APN fails\r\n→ proceed using established subject.\r\n\r\nExact LandPortal parcel link establishes subject\r\n→ proceed.\r\n\r\nSubject-matching survey/deed establishes subject\r\n→ proceed.\r\n\r\nDo NOT require every pointer to corroborate before research starts.\r\n\r\n---\r\n\r\n# AUTONOMOUS RESOLUTION FIRST\r\n\r\nClarification is a LAST-RESORT escape hatch.\r\n\r\nNormal hierarchy:\r\n\r\n1. figure it out autonomously\r\n2. proceed if sufficiently clear\r\n3. proceed with explicitly labeled working assumption when uncertainty is non-blocking\r\n4. ask Tyler only when a decision-changing ambiguity remains after reasonable evidence/tools/routes are exhausted\r\n\r\nDo not build an interview workflow around New Lead.\r\n\r\nDo not ask for information LandOS can reasonably discover itself.\r\n\r\nDuring initial intake there should be at most ONE concise high-value clarification turn when truly necessary.\r\n\r\nNo ping-pong questioning.\r\n\r\n---\r\n\r\n# DETERMINISTIC FIRST → INTELLIGENT RECOVERY\r\n\r\nThis is the central behavior of this sprint.\r\n\r\nFor every research requirement:\r\n\r\nneed\r\n→ deterministic capability\r\n→ validate REQUIRED output\r\n→ if insufficient, diagnose WHY\r\n→ select another valid recovery route\r\n→ retrieve evidence\r\n→ structured evidence admission\r\n→ readiness reconcile\r\n→ continue\r\n\r\nA deterministic failure does NOT mean evidence is unavailable.\r\n\r\nDifferent failure causes should produce different recovery behavior.\r\n\r\nExamples:\r\n\r\n### Site/workflow changed\r\nKnown deterministic browser selector/path breaks.\r\n\r\nDesired response:\r\n→ diagnose layout/workflow failure\r\n→ bounded governed-browser adaptive recovery\r\n→ retrieve required evidence\r\n→ feed structured findings back into evidence\r\n\r\n### Free login required\r\nIf company/security policy permits creation/use of a free account:\r\n\r\n→ recover through approved login/account path\r\n→ retrieve evidence\r\n→ preserve artifact/provenance\r\n\r\nDo not expose credentials.\r\n\r\n### Paid source required\r\nIf company doctrine prohibits payment:\r\n\r\n→ BLOCKED\r\n→ exact source\r\n→ exact required payment/cost if known\r\n→ why it matters\r\n→ continue all unrelated research\r\n\r\n### CAPTCHA / human verification / legal acknowledgement\r\n→ NEEDS_OPERATOR_ACTION\r\n\r\n### Public source unavailable/offline\r\n→ external temporary blocker for that requirement only\r\n\r\n### No record exists\r\n→ legitimate evidence result\r\n\r\n---\r\n\r\n# RESEARCH READINESS IS THE CONTROLLER\r\n\r\nFor every requirement:\r\n\r\nSATISFIED\r\n→ reuse\r\n→ do not rerun unnecessarily\r\n\r\nMISSING + RELEVANT\r\n→ schedule appropriate capability\r\n\r\nPARTIAL\r\n→ determine exact missing requirement\r\n→ select alternate valid route if one exists\r\n\r\nNEW EVIDENCE\r\n→ reconcile\r\n→ re-plan\r\n\r\nNOT RELEVANT\r\n→ NOT_APPLICABLE\r\n\r\nVALID ROUTES EXHAUSTED\r\n→ BLOCKED with exact reason\r\n\r\nHUMAN ACTION REQUIRED\r\n→ NEEDS_OPERATOR_ACTION\r\n\r\nDo not confuse:\r\n- capability invoked\r\n- capability process completed\r\n- required evidence actually returned\r\n\r\nOnly the last one satisfies the requirement.\r\n\r\n---\r\n\r\n# DO NOT REOPEN SETTLED FACTS WITHOUT REAL CONTRADICTION\r\n\r\nOnce canonical Subject State establishes the working subject:\r\n\r\ndownstream systems consume it.\r\n\r\nThey do not independently decide:\r\n\"maybe this is the wrong parcel.\"\r\n\r\nOfficial verification may upgrade confidence later.\r\n\r\nIt does not invalidate a sufficiently established research subject merely because official evidence is absent.\r\n\r\nLikewise:\r\n- operator-confirmed context should remain settled unless contradictory evidence appears\r\n- governing acreage should remain settled unless stronger evidence appears\r\n- satisfied research items should not churn every cycle\r\n\r\n---\r\n\r\n# SURVEY DOCTRINE\r\n\r\nFor a valid subject-matching survey:\r\n\r\n**SURVEY GOVERNS surveyed parcel acreage, boundaries, and dimensions.**\r\n\r\nGIS / assessor / LandPortal acreage remains reference evidence.\r\n\r\nRecency:\r\n\r\n- subject-matching survey within ~5 years: generally current unless newer material parcel-change evidence\r\n- 0–60 days: very fresh\r\n- during 0–60 days, county/GIS mismatch should normally be interpreted as publication/update lag\r\n- after ~60 days, investigate material discrepancy, but survey still governs absent stronger conflicting survey/legal evidence\r\n\r\nDo not create operator blockers merely because GIS acreage differs.\r\n\r\n---\r\n\r\n# SPECIALIST / SKILL IMPLEMENTATION\r\n\r\nThe architecture audit determined that five new standing agents are NOT warranted.\r\n\r\nUse the following actual shape.\r\n\r\n---\r\n\r\n# 1. LANDPORTAL RESEARCH\r\n\r\nVERDICT:\r\n\r\n**Existing deterministic capabilities + LandOS Skill + existing governed recovery.**\r\n\r\nDo NOT create another general-purpose LandPortal agent.\r\n\r\nInspect and reuse:\r\n- existing LandPortal capabilities\r\n- staged hybrid pilot\r\n- internal API mapping\r\n- browser ownership controls\r\n- visual capture\r\n- Hermes lane\r\n- existing adaptive-research-recovery infrastructure\r\n\r\nAuthor/normalize a LandOS-native LandPortal research Skill where needed.\r\n\r\nIts procedure should define completion in terms of required outputs, not browser navigation.\r\n\r\nExpected subject research can include where relevant:\r\n\r\n- exact subject confirmation\r\n- owner\r\n- parcel facts\r\n- acreage/context\r\n- road/frontage\r\n- environmental overlays\r\n- mandatory Base Maps / Layers → Show Owner Names\r\n- relevant property visuals\r\n- surrounding parcel/ownership context\r\n- relevant comp capture\r\n- other existing LandPortal SOP outputs\r\n\r\nIf deterministic LandPortal returns incomplete evidence:\r\n\r\n→ diagnose why\r\n→ invoke existing governed recovery path\r\n→ structured evidence admission\r\n→ readiness reconcile\r\n\r\nWire existing recovery infrastructure that is already implemented but not fully connected before inventing anything new.\r\n\r\n---\r\n\r\n# 2. GOVERNMENT / ZONING & PLANNING RESEARCH\r\n\r\nVERDICT:\r\n\r\n**LandOS Skill over existing deterministic land-use/source-race engine, with bounded recovery only after deterministic exhaustion.**\r\n\r\nDo not create a permanent agent just to run known zoning workflows.\r\n\r\nAuthor/normalize a Government / Zoning / Planning Skill defining:\r\n\r\n### Core zoning requirements\r\nwhere applicable:\r\n\r\n- zoning district\r\n- official source\r\n- by-right principal uses\r\n- manufactured/mobile-home eligibility\r\n- minimum lot size\r\n- frontage/width\r\n- setbacks\r\n- overlays\r\n- notable restrictions\r\n- governing ordinance/code source\r\n\r\n### Subdivision requirements\r\nONLY when subdivision is materially relevant:\r\n\r\n- whether division is allowed\r\n- minor vs major subdivision\r\n- thresholds\r\n- maximum lots where determinable\r\n- frontage requirements\r\n- access/road/private-drive standards\r\n- utility requirements\r\n- review/approval authority\r\n- other material thresholds\r\n\r\nDo not force subdivision analysis onto every property.\r\n\r\nUse existing:\r\n- land-use source race\r\n- ordinance/code ladders\r\n- Municode/eCode360/amlegal paths\r\n- cached county knowledge\r\n- official source adapters\r\n\r\nOnly after deterministic routes are insufficient should bounded reasoning/browser recovery occur.\r\n\r\nRecovery writes structured evidence, not prose-only output.\r\n\r\n---\r\n\r\n# 3. PUBLIC RECORDS / ASSESSOR RECOVERY SPECIALIST\r\n\r\nThis is the ONE new specialist agent justified by the architecture audit.\r\n\r\nPurpose:\r\n\r\nHandle unknown/unfamiliar county/public-record platforms when deterministic platform adapters and escalation ladders cannot retrieve the required output.\r\n\r\nDo NOT duplicate known ArcGIS / Beacon / Schneider / Tyler / assessor adapter logic.\r\n\r\nThe specialist only earns invocation after deterministic recovery is insufficient.\r\n\r\nIt should be a governed Hermes profile patterned after existing LandOS research governance.\r\n\r\nIt may reason across:\r\n\r\n- platform fingerprint information\r\n- ArcGIS service discovery\r\n- assessor/GIS portals\r\n- tax/property card portals\r\n- recorder/deed sources\r\n- official document repositories\r\n- governed browser\r\n- permitted direct public endpoints\r\n- existing MCP/read/research surfaces if already active and usable\r\n\r\nRequired behavior:\r\n\r\n1. understand WHY deterministic retrieval failed\r\n2. identify likely platform/source path\r\n3. attempt bounded recovery\r\n4. retain relevant artifact\r\n5. extract structured facts\r\n6. write through authoritative evidence admission\r\n7. return exact unresolved requirement if still incomplete\r\n\r\nNever create an ungoverned free-ranging web agent.\r\n\r\nRespect approvals/security/browser ownership.\r\n\r\n---\r\n\r\n# 4. MARKET RESEARCH + MARKET PULSE\r\n\r\nDO NOT create another Market Pulse agent.\r\n\r\nMarket Pulse already exists as a Tool.\r\n\r\nMake sure prerequisite scheduling actually exploits the new foundation.\r\n\r\n### County\r\nAs soon as county is known:\r\n\r\nrun/reuse:\r\n- County Market Research\r\n- County Market Pulse\r\n\r\n### ZIP\r\nAs soon as ZIP is known:\r\n\r\nrun/reuse:\r\n- ZIP Market Research\r\n\r\nUse native Market Research metrics where available, including:\r\n\r\n- relevant acreage band\r\n- adjacent/useful acreage bands\r\n- all-acreage\r\n- most-liquid band\r\n- median $/acre\r\n- DOM\r\n- sell-through\r\n- absorption\r\n- months supply\r\n- recorded sales/activity\r\n- sample size / recency where available\r\n\r\nThe eventual Market Intelligence input should include:\r\n\r\nCOUNTY:\r\nmacro market\r\n\r\nZIP:\r\nlocal market pocket\r\n\r\nMarket Intelligence should be able to compare:\r\n- ZIP outperforming / tracking / lagging county\r\n- pricing differences\r\n- liquidity differences\r\n- sample quality\r\n- recency\r\n\r\nThin ZIP samples should not automatically override stronger county evidence.\r\n\r\n---\r\n\r\n# MARKET PULSE LOCALIZATION\r\n\r\nCounty Pulse begins when county is known.\r\n\r\nWhen subject/ZIP/location becomes available, classify Pulse findings by relevance:\r\n\r\n- inside subject ZIP\r\n- immediately nearby\r\n- adjoining ZIP\r\n- same growth corridor\r\n- elsewhere in county\r\n\r\nZIP boundaries are not walls.\r\n\r\nA development project three miles away in an adjoining ZIP may be more relevant than one 35 miles away inside the same county.\r\n\r\nPulse themes may include:\r\n\r\n- residential development\r\n- subdivisions\r\n- roads/highways\r\n- water/sewer expansion\r\n- employers\r\n- industrial/commercial investment\r\n- planning/land-use activity\r\n- housing growth\r\n- major projects\r\n- buyer/investor activity\r\n- other meaningful demand/value/liquidity signals\r\n\r\nDo not price future growth as if already realized.\r\n\r\n---\r\n\r\n# 5. COMP / VALUATION\r\n\r\nVERDICT:\r\n\r\n**Existing deterministic collection/validation/math + LandOS Skill + existing bounded model recovery.**\r\n\r\nDo NOT create another standing comp agent.\r\n\r\nAuthor/normalize one authoritative Comp / Valuation Skill.\r\n\r\nResolve the existing conflicting source-order doctrine if still present.\r\n\r\nComp selection should consider:\r\n\r\n- property/product type\r\n- geography\r\n- buyer pool\r\n- acreage\r\n- utilities/access\r\n- recency\r\n- use\r\n- improvements where relevant\r\n- exclusions\r\n- sale validity\r\n\r\nDeterministic collectors run first.\r\n\r\nThen validate whether there are ACTUALLY usable comps.\r\n\r\nIf deterministic sources return:\r\n- records with unusable locations\r\n- wrong product type\r\n- stale sales\r\n- duplicates\r\n- insufficient sample\r\n- unresolved sale identity\r\n\r\ndo NOT call the requirement complete merely because records returned.\r\n\r\nUse bounded adaptive recovery where appropriate.\r\n\r\nRecovered comps enter the SAME comp validation chokepoint/evidence path.\r\n\r\nValuation math remains deterministic after comp acceptance.\r\n\r\nAcreage differences such as ~1.5 vs ~1.8 acres should not automatically create a fundamentally different comp methodology when the actual buyer/product class remains the same.\r\n\r\n---\r\n\r\n# AUTHOR THE LANDOS-NATIVE SKILLS\r\n\r\nUse the approved Skill Architect patterns where useful.\r\n\r\nDo NOT blindly vendor external upstream skills as runtime dependencies.\r\n\r\nCreate/update LandOS-native governed skills for:\r\n\r\n- LandPortal Research\r\n- Government / Zoning & Planning Research\r\n- Public Records Research / Recovery procedure\r\n- Comp / Valuation Research\r\n\r\nEach skill must earn its existence by encoding things such as:\r\n\r\n- specialized domain knowledge\r\n- reusable procedure\r\n- company rules\r\n- multi-tool process\r\n- verification requirements\r\n- fallback behavior\r\n- evidence requirements\r\n- completion criteria\r\n\r\nDo not create SKILL.md prompt junk.\r\n\r\nEach important skill should include explicit scenarios/tests or equivalent validation.\r\n\r\nPreserve source/provenance notes for external patterns borrowed.\r\n\r\n---\r\n\r\n# REMAINING F3 — FIX DURING THIS SPRINT\r\n\r\nThe Shared Foundation sprint intentionally deferred:\r\n\r\ndirect per-panel endpoints still using older subject-card gates.\r\n\r\nThis sprint naturally exercises those Deal Card surfaces.\r\n\r\nFind all relevant direct panel/intelligence/research endpoints still bypassing:\r\n\r\n- canonical Subject State\r\n- capability prerequisites\r\n\r\nMigrate them.\r\n\r\nDesired behavior:\r\n\r\nA direct panel endpoint should not say:\r\n\"no parcel / unresolved\"\r\n\r\nwhen canonical Subject State says the working subject is established.\r\n\r\nLikewise, a county/ZIP market panel should not require exact parcel identity unless that panel genuinely needs it.\r\n\r\nDo not create another compatibility shim if the endpoint can consume canonical state directly.\r\n\r\nAdd regression coverage.\r\n\r\nF3 should be considered closed by this sprint.\r\n\r\n---\r\n\r\n# PROPERTY / MARKET / SELLER / DEAL INTELLIGENCE\r\n\r\nAfter research evidence is reconciled:\r\n\r\nProperty Intelligence reads the completed Property evidence.\r\n\r\nMarket Intelligence reads:\r\n- County Market Research\r\n- ZIP Market Research\r\n- County Market Pulse\r\n- localized subject-relevant Pulse\r\n\r\nSeller Intelligence reads seller context/communications available to it.\r\n\r\nDeal Intelligence / Deal Brain synthesizes:\r\n\r\nPROPERTY STORY\r\n+\r\nMARKET STORY\r\n+\r\nSELLER STORY\r\n+\r\ndeterministic valuation\r\n+\r\ncompany strategy/doctrine\r\n\r\nDo not let Intelligence redefine settled underlying facts.\r\n\r\nIntelligence interprets evidence.\r\n\r\nIt is not a second property-resolution system.\r\n\r\n---\r\n\r\n# STRUCTURED SPECIALIST RESULTS\r\n\r\nAny reasoning/recovery specialist should return structured results compatible with the shared evidence/result contract.\r\n\r\nConceptually include:\r\n\r\n- facts / claims\r\n- sources\r\n- provenance\r\n- confidence\r\n- artifacts\r\n- scope\r\n- unresolved requirements\r\n- exact failure/recovery reason\r\n- completion/result status\r\n\r\nDo not leave important results only inside model prose.\r\n\r\n---\r\n\r\n# RUN / RECOVERY DISCIPLINE\r\n\r\nThe Shared Foundation sprint established authoritative run identity.\r\n\r\nUSE IT.\r\n\r\nAny new recovery work must:\r\n\r\n- carry run identity\r\n- respect cancellation\r\n- respect supersession\r\n- reject late authoritative writes\r\n- preserve refresh/rejoin behavior\r\n- not create new unbounded in-memory Maps\r\n- not bypass evidence admission\r\n\r\nDo not regress the accepted cancellation behavior.\r\n\r\n---\r\n\r\n# TOOLS DEPARTMENT COMPATIBILITY\r\n\r\nDeal Cards must NOT own research capabilities.\r\n\r\nThe underlying capabilities/skills should remain reusable.\r\n\r\nAny capability introduced or normalized here should be designed so the same capability can later be manually invoked from Tools.\r\n\r\nDo not build a separate:\r\n- DealCard LandPortal\r\n- DealCard zoning\r\n- DealCard comp\r\n- DealCard public records\r\n\r\nOne capability, multiple callers.\r\n\r\nThis sprint does NOT require a full Tools UI redesign.\r\n\r\nJust preserve capability portability and register the Public Records recovery capability appropriately if needed.\r\n\r\n---\r\n\r\n# MCP\r\n\r\nDo NOT add external MCP servers.\r\n\r\nDo NOT require MCP activation to complete this sprint unless CURRENT LandOS operation already depends on it.\r\n\r\nThe existing direct adapters and capability interfaces remain valid.\r\n\r\nMCP activation requiring secrets/operator approval remains a separate approved action.\r\n\r\nDo not modify API_SERVER_KEY or secrets in this sprint.\r\n\r\n---\r\n\r\n# NOT IN SCOPE\r\n\r\nDo not build:\r\n\r\n- UI/UX redesign\r\n- Design System Extractor integration\r\n- Web Design Engineer work\r\n- Web Design Reviewer work\r\n- Seller Call Prep\r\n- Daily Briefing\r\n- Pipeline Commander\r\n- Conversation → Action\r\n- War Council\r\n- Finance/TC expansion\r\n- Jarvis / Max\r\n- Forge\r\n- company-wide visual Skill Registry\r\n- new generic orchestration framework\r\n- new external MCP\r\n- uncontrolled agent swarm\r\n\r\nStay focused on New Lead → completed Deal Card.\r\n\r\n---\r\n\r\n# ACCEPTANCE — REAL PRODUCTION VERTICAL SLICE\r\n\r\nDo not consider this complete because tests pass.\r\n\r\nExercise actual local LandOS.\r\n\r\nUse fresh/disposable New Lead inputs, not only an old repaired Deal.\r\n\r\nThis is NOT yet the full cold-lead torture-test sprint, but prove the actual production journey with at least representative fresh cases.\r\n\r\nAt minimum include:\r\n\r\n## CASE A — conventional complete intake\r\n\r\nFresh lead with:\r\n- full address\r\n- APN\r\n- seller/contact basics\r\n\r\nProve:\r\n\r\nNew Lead\r\n→ working subject\r\n→ independent capabilities start as prerequisites become available\r\n→ property research\r\n→ county + ZIP market work\r\n→ readiness\r\n→ intelligence\r\n→ Deal Card\r\n\r\n## CASE B — alternate-resolution behavior\r\n\r\nFresh controlled lead where one supplied identifier is missing, incomplete, or non-authoritative but another viable property pointer exists.\r\n\r\nExamples:\r\n- address only\r\n- APN formatting variation\r\n- address succeeds while supplied parcel representation differs\r\n- document-led if there is already a safe fixture\r\n\r\nProve:\r\n\r\nLandOS uses the viable route rather than failing because one pointer is imperfect.\r\n\r\nDo not manufacture false evidence merely to force a PASS.\r\n\r\n---\r\n\r\n# REQUIRED ACCEPTANCE PROOFS\r\n\r\nDemonstrate:\r\n\r\n1. New Lead can establish a working subject autonomously.\r\n2. Downstream Deal Card surfaces consume canonical Subject State.\r\n3. F3 old direct-panel gating is closed.\r\n4. County Market Research / Market Pulse can begin without official parcel verification when county is available.\r\n5. ZIP Market Research begins when ZIP is available.\r\n6. Parcel-specific lanes correctly wait for/use established subject.\r\n7. LandPortal required outputs actually land.\r\n8. Government/zoning required outputs either land or produce an honest exact status.\r\n9. Public Records deterministic route works where supported.\r\n10. Public Records recovery specialist activates only when justified.\r\n11. Comp workflow distinguishes returned records from valid usable comps.\r\n12. Adaptive recovery evidence enters canonical evidence.\r\n13. Research Readiness re-plans after new evidence.\r\n14. Satisfied items do not churn unnecessarily.\r\n15. No false BLOCKED while valid recovery route remains.\r\n16. NEEDS_OPERATOR_ACTION appears only for genuine human action.\r\n17. Intelligence is current after completion.\r\n18. Refresh does not mutate state.\r\n19. Cancelled/superseded work cannot write late.\r\n20. Final Deal Card accurately distinguishes known, interpreted, assumed, partial, blocked and unresolved information.\r\n\r\n---\r\n\r\n# OPERATOR EXPERIENCE\r\n\r\nDo not optimize for developer observability at the expense of operator experience.\r\n\r\nThe end result should feel like:\r\n\r\n\"I entered a lead and LandOS handled the research.\"\r\n\r\nThe Deal Card should not require Tyler to understand:\r\n\r\n- worker IDs\r\n- DAG internals\r\n- fingerprints\r\n- invocation rows\r\n- adapter names\r\n- recovery implementation\r\n\r\nThose may exist in diagnostics.\r\n\r\nOperator-facing output should communicate:\r\n\r\n- what LandOS established\r\n- what it found\r\n- confidence/context\r\n- what remains incomplete\r\n- why\r\n- whether Tyler actually needs to do anything\r\n\r\n---\r\n\r\n# PERFORMANCE\r\n\r\nUse parallelism where prerequisites are genuinely independent.\r\n\r\nDo not serialize:\r\n- county market\r\n- ZIP market\r\n- owner research\r\n- seller analysis\r\n\r\nbehind parcel-specific work when unnecessary.\r\n\r\nDo not dispatch excessive subagents.\r\n\r\nOne primary implementation agent owns the critical path.\r\n\r\nUse focused helper/subagents only when they materially reduce wall-clock time.\r\n\r\nDo not repeatedly re-explore settled architecture.\r\n\r\n---\r\n\r\n# TESTING\r\n\r\nRun focused tests first.\r\n\r\nAdd regression coverage for:\r\n\r\n- F3 panel gates\r\n- LandPortal completion semantics\r\n- government recovery result admission\r\n- Public Records deterministic→recovery handoff\r\n- Market county/ZIP prerequisite execution\r\n- comp valid-result semantics\r\n- adaptive evidence reintegration\r\n- no late-write regression\r\n- readiness re-planning\r\n\r\nThen run appropriate broader tests.\r\n\r\nTypecheck/build/runtime health must pass.\r\n\r\nDo not hide baseline failures.\r\n\r\nDifferentiate clearly:\r\n- newly introduced failure\r\n- pre-existing baseline failure\r\n- out-of-scope stale test\r\n\r\nInternal failures are work, not blockers.\r\n\r\n---\r\n\r\n# GIT / REPO SAFETY\r\n\r\nOnly ONE writable coding session in this working tree.\r\n\r\nDo not run Claude Code writable against the same tree concurrently.\r\n\r\nPreserve unrelated untracked files.\r\n\r\nDo not reset/revert legitimate work.\r\n\r\nDo not expose or modify secrets.\r\n\r\nNo paid APIs.\r\n\r\nNo production deployment.\r\n\r\n---\r\n\r\n# COMPLETION\r\n\r\nDo not stop after:\r\n- creating the Skills\r\n- wiring the Public Records specialist\r\n- fixing F3\r\n- making one panel work\r\n\r\nThis is ONE coherent production vertical-slice sprint.\r\n\r\nContinue until New Lead → Deal Card acceptance passes.\r\n\r\nNo arbitrary 25-minute stop.\r\n\r\nWhen complete:\r\n\r\n1. final focused tests\r\n2. appropriate broad regression\r\n3. typecheck\r\n4. production build\r\n5. managed runtime validation\r\n6. real browser acceptance\r\n7. inspect git diff/status\r\n8. commit\r\n9. push\r\n10. verify remote commit\r\n11. stop\r\n\r\nDo NOT start the cold-lead matrix sprint automatically.\r\n\r\n---\r\n\r\n# FINAL REPORT\r\n\r\nReturn:\r\n\r\n## STARTING STATE\r\n- starting HEAD\r\n- current architecture reused\r\n\r\n## IMPLEMENTATION\r\n- LandPortal Skill/recovery wiring\r\n- Government/Zoning Skill\r\n- Public Records recovery specialist\r\n- Comp/Valuation Skill\r\n- prerequisite execution behavior\r\n- F3 closure\r\n- any adaptive-recovery wiring\r\n\r\n## REUSED VS NEW\r\nClearly state what existing LandOS infrastructure was reused and what was genuinely added.\r\n\r\n## NEW LEAD ACCEPTANCE\r\nFor each fresh test lead:\r\n- supplied input\r\n- subject resolution result\r\n- research lanes\r\n- adaptive recovery if triggered\r\n- readiness outcome\r\n- intelligence outcome\r\n- final Deal Card state\r\n\r\n## SPECIALIST BEHAVIOR\r\nShow that recovery specialists only ran where needed.\r\n\r\n## TESTS\r\nCommands/results.\r\n\r\n## DEFERRED\r\nOnly genuine future scope.\r\n\r\nFull cold-lead matrix remains the next sprint.\r\n\r\n## GIT\r\n- ending commit\r\n- push result\r\n- remote verification\r\n\r\nFinish exactly:\r\n\r\nLANDOS_SPRINT_COMPLETE: PASS\r\n\r\nOnly use:\r\n\r\nLANDOS_SPRINT_BLOCKED: <exact external blocker>\r\n\r\nfor a genuine external impossibility.\r\n\r\nInternal bugs, failed tests, broken selectors, missing wiring, or incomplete implementation are WORK — not blockers.",
+  "promptSha256": "44da21ddd677039ae27bb2e44b48831310405fba219fe25ea8d52ffc828ade0f",
+  "workstreams": [
+    {
+      "id": "ws1-governed-research-recovery",
+      "name": "Governed research skills and bounded recovery",
+      "operatorOutcome": "LandPortal, government/zoning, public-records, and comp research use explicit completion rules; deterministic misses invoke bounded recovery only when justified and recovered evidence enters the canonical evidence path.",
+      "inScope": [
+        "LandOS-native research skills",
+        "LandPortal deterministic-to-recovery handoff",
+        "government/zoning recovery admission",
+        "public-records deterministic-to-specialist handoff",
+        "comp usable-result semantics",
+        "structured recovery evidence"
+      ],
+      "backendServices": [
+        "LandPortal Research capability",
+        "Zoning & Subdivision capability",
+        "Assessor & Tax capability",
+        "Comps & Valuation capability",
+        "adaptive research recovery",
+        "shared evidence admission",
+        "governed Hermes profiles"
+      ],
+      "frontendScreens": [
+        "Deal Card Property",
+        "Deal Card Research Readiness",
+        "Deal Card Comps & Valuation"
+      ],
+      "requiredDataState": "An established canonical subject with deterministic provider outcomes and a controlled unsupported public-record platform fixture.",
+      "browserJourney": {
+        "journeyId": "governed-research-recovery",
+        "steps": [
+          "Open a Deal Card with an established subject",
+          "Run or reuse the relevant property research",
+          "Confirm required output rather than invocation count controls completion",
+          "Confirm any justified recovery and exact unresolved status are operator-readable",
+          "Hard refresh and confirm retained evidence and status do not rerun research"
+        ]
+      },
+      "testRequirements": [
+        "LandPortal completion semantics",
+        "government recovery result admission",
+        "public-records deterministic-to-recovery handoff",
+        "comp usable-result semantics",
+        "adaptive evidence reintegration",
+        "no late authoritative write"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "A deterministic miss is presented as exhausted while a valid recovery route remains",
+        "A recovery result exists only in model prose",
+        "An unusable comp row satisfies valuation readiness",
+        "A cancelled or superseded run admits late evidence"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        {
+          "id": "ws1-r1",
+          "text": "Four governed LandOS-native research skills encode domain procedure, fallback, evidence, completion criteria, and validation scenarios.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "id": "ws1-r2",
+          "text": "LandPortal and government/zoning deterministic misses select bounded recovery without creating duplicate standing agents.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "id": "ws1-r3",
+          "text": "Public Records deterministic retrieval hands off to one governed specialist only after deterministic exhaustion and returns a structured result.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "id": "ws1-r4",
+          "text": "Recovered evidence enters canonical evidence admission with run identity and late-write rejection.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E3",
+            "E4"
+          ]
+        },
+        {
+          "id": "ws1-r5",
+          "text": "Comp completion requires usable validated comps, not merely returned records.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-08-31T00:59:10.711Z",
+        "reportPath": ".runtime/landos/qa/sprint2-in-app-browser-acceptance.md",
+        "evidenceIds": [
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-08-31T00:58:43.746Z",
+          "detail": "Four validated native skills, governed Public Records specialist, deterministic-to-recovery handoff, canonical evidence admission, and usable-comp completion semantics implemented",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-08-31T00:58:46.417Z",
+          "detail": "Focused Sprint 2 tests passed across recovery, evidence, LandPortal, comp, governance, and late-write contracts",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-08-31T00:58:49.450Z",
+          "detail": "Cross-module focused integration suite passed; repository-wide baseline reported separately",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-08-31T00:58:52.340Z",
+          "detail": "TypeScript typecheck passed cleanly",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-08-31T00:58:55.726Z",
+          "detail": "Production Vite and server build passed",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-08-31T00:58:58.589Z",
+          "detail": "Managed runtime healthy on localhost:3141 and live governed skills verified",
+          "evidenceIds": [
+            "E4"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-08-31T00:59:10.710Z",
+          "detail": "independent browser QA (.runtime/landos/qa/sprint2-in-app-browser-acceptance.md)",
+          "evidenceIds": [
+            "E2",
+            "E3",
+            "E4",
+            "E5",
+            "E6"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws2-prerequisites-f3-readiness",
+      "name": "Prerequisite scheduling, F3 closure, and readiness reconciliation",
+      "operatorOutcome": "Independent county, ZIP, seller, and parcel lanes start as soon as their own prerequisites exist; every direct Deal Card launch surface consumes Canonical Subject State and declared capability prerequisites.",
+      "inScope": [
+        "New Lead mission prerequisite scheduling",
+        "county Market Research and Market Pulse",
+        "ZIP Market Research",
+        "direct panel capability gates",
+        "Research Readiness re-planning and non-churn"
+      ],
+      "backendServices": [
+        "Deal Intelligence mission",
+        "capability registry prerequisites",
+        "Canonical Subject State",
+        "Research Readiness",
+        "Market Research",
+        "Market Pulse"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Overview",
+        "Deal Card Research Readiness",
+        "Deal Card Market",
+        "direct capability panels"
+      ],
+      "requiredDataState": "A county-known and ZIP-known lead without an established parcel, contrasted with an established-subject Deal Card.",
+      "browserJourney": {
+        "journeyId": "prerequisites-f3-readiness",
+        "steps": [
+          "Open a county-known unresolved lead",
+          "Confirm county and ZIP market work is eligible while parcel lanes wait",
+          "Confirm parcel panel controls cannot bypass declared prerequisites",
+          "Establish the subject through a viable route",
+          "Confirm readiness re-plans and satisfied items do not churn",
+          "Hard refresh and confirm no research reruns"
+        ]
+      },
+      "testRequirements": [
+        "F3 direct panel gates",
+        "county and ZIP prerequisite execution",
+        "readiness re-planning",
+        "satisfied-item non-churn",
+        "alternate viable subject route"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "A direct panel launches parcel work while the parcel prerequisite is unmet",
+        "County or ZIP market work waits unnecessarily on parcel identity",
+        "Canonical Subject State says resolved while a Deal Card consumer says no parcel",
+        "Satisfied readiness items rerun without new evidence"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": [
+        "ws1-governed-research-recovery"
+      ],
+      "requirements": [
+        {
+          "id": "ws2-r1",
+          "text": "Direct per-panel capability endpoints use Canonical Subject State and the declared prerequisite evaluator, closing F3.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10",
+            "E14"
+          ]
+        },
+        {
+          "id": "ws2-r2",
+          "text": "County Market Research and Market Pulse can run or reuse when county is known without official parcel verification.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10"
+          ]
+        },
+        {
+          "id": "ws2-r3",
+          "text": "ZIP Market Research can run or reuse when ZIP is known.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10"
+          ]
+        },
+        {
+          "id": "ws2-r4",
+          "text": "Parcel-specific lanes wait for and then consume the established working subject.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10",
+            "E14"
+          ]
+        },
+        {
+          "id": "ws2-r5",
+          "text": "New evidence re-plans readiness while already satisfied items are reused rather than churned.",
+          "verified": true,
+          "evidenceIds": [
+            "E9",
+            "E10",
+            "E11"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-08-31T01:01:19.648Z",
+        "reportPath": ".runtime/landos/qa/sprint2-in-app-browser-acceptance.md",
+        "evidenceIds": [
+          "E10",
+          "E11",
+          "E12",
+          "E13",
+          "E14"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-08-31T01:01:04.212Z",
+          "detail": "Canonical subject prerequisites, direct-panel F3 migration, county/ZIP scheduler, and readiness reconciliation implemented",
+          "evidenceIds": [
+            "E9"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-08-31T01:01:06.557Z",
+          "detail": "Focused F3, prerequisite, and readiness tests passed",
+          "evidenceIds": [
+            "E9"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-08-31T01:01:09.223Z",
+          "detail": "Cross-module prerequisite and route integration tests passed",
+          "evidenceIds": [
+            "E9"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-08-31T01:01:11.629Z",
+          "detail": "TypeScript typecheck passed cleanly",
+          "evidenceIds": [
+            "E9"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-08-31T01:01:14.482Z",
+          "detail": "Production build passed",
+          "evidenceIds": [
+            "E9"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-08-31T01:01:17.263Z",
+          "detail": "Production runtime healthy and Deal 96/98 prerequisite states served on localhost:3141",
+          "evidenceIds": [
+            "E12"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-08-31T01:01:19.647Z",
+          "detail": "independent browser QA (.runtime/landos/qa/sprint2-in-app-browser-acceptance.md)",
+          "evidenceIds": [
+            "E10",
+            "E11",
+            "E12",
+            "E13",
+            "E14"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws3-new-lead-production-slice",
+      "name": "Fresh New Lead to completed Deal Card production journey",
+      "operatorOutcome": "Tyler can enter a usable lead, leave it alone, and return to the most complete honest Deal Card LandOS can produce without developer intervention.",
+      "inScope": [
+        "fresh conventional lead",
+        "fresh alternate-resolution lead",
+        "Property, Market, Seller, and Deal Intelligence",
+        "operator status language",
+        "refresh and cancellation safety"
+      ],
+      "backendServices": [
+        "New Lead intake",
+        "Property Resolution",
+        "Deal Intelligence mission",
+        "Research Readiness",
+        "intelligence stack",
+        "Deal Card read model"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Overview",
+        "Deal Card Property",
+        "Deal Card Market",
+        "Deal Card Seller",
+        "Deal Card Comps & Valuation",
+        "Deal Card Research Readiness"
+      ],
+      "requiredDataState": "Two fresh disposable leads: one with full address, APN, and seller basics; one with one incomplete or non-authoritative identifier plus another viable property pointer.",
+      "browserJourney": {
+        "journeyId": "fresh-new-lead-to-deal-card",
+        "steps": [
+          "Create conventional fresh lead",
+          "Observe autonomous subject establishment and prerequisite-driven research",
+          "Open the researched Deal Card and inspect all intelligence surfaces",
+          "Hard refresh and confirm persistence and no unintended reruns",
+          "Create alternate-resolution fresh lead",
+          "Confirm the viable route establishes the subject despite the imperfect pointer",
+          "Confirm final known, interpreted, assumed, partial, blocked, and unresolved distinctions"
+        ]
+      },
+      "testRequirements": [
+        "full focused regression suite from the brief",
+        "appropriate broad regression",
+        "typecheck",
+        "production build",
+        "managed runtime health",
+        "real browser acceptance for both fresh leads"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "A fresh lead requires developer intervention",
+        "A viable subject route is ignored because another pointer is imperfect",
+        "Intelligence is stale relative to admitted evidence",
+        "Refresh mutates state or reruns expensive research",
+        "Operator output hides incomplete or blocked requirements"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": [
+        "ws2-prerequisites-f3-readiness"
+      ],
+      "requirements": [
+        {
+          "id": "ws3-r1",
+          "text": "A fresh conventional intake reaches a researched current Deal Card through autonomous subject resolution and independent prerequisite scheduling.",
+          "verified": true,
+          "evidenceIds": [
+            "E15",
+            "E16",
+            "E17",
+            "E21"
+          ]
+        },
+        {
+          "id": "ws3-r2",
+          "text": "A fresh alternate-resolution intake uses the viable property pointer instead of failing because another pointer is incomplete or non-authoritative.",
+          "verified": true,
+          "evidenceIds": [
+            "E17",
+            "E21"
+          ]
+        },
+        {
+          "id": "ws3-r3",
+          "text": "Property, Market, Seller, and Deal Intelligence consume reconciled evidence and remain current.",
+          "verified": true,
+          "evidenceIds": [
+            "E16",
+            "E17",
+            "E21"
+          ]
+        },
+        {
+          "id": "ws3-r4",
+          "text": "Refresh and restart preserve state without rerunning research, and cancelled or superseded work cannot write late.",
+          "verified": true,
+          "evidenceIds": [
+            "E15",
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "id": "ws3-r5",
+          "text": "The final Deal Card accurately distinguishes known, interpreted, assumed, partial, blocked, unresolved, and genuine operator-action states.",
+          "verified": true,
+          "evidenceIds": [
+            "E17",
+            "E21"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-08-31T01:02:58.193Z",
+        "reportPath": ".runtime/landos/qa/sprint2-in-app-browser-acceptance.md",
+        "evidenceIds": [
+          "E16",
+          "E17",
+          "E18",
+          "E19",
+          "E20",
+          "E21"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-08-31T01:02:38.454Z",
+          "detail": "End-to-end New Lead completion hook, authoritative coverage cycle, prerequisite scheduling, evidence reconciliation, and current intelligence cascade implemented",
+          "evidenceIds": [
+            "E15"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-08-31T01:02:41.760Z",
+          "detail": "Focused Sprint 2 acceptance tests passed",
+          "evidenceIds": [
+            "E15"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-08-31T01:02:44.736Z",
+          "detail": "Acceptance-focused cross-module regression passed; full-suite baseline failures are disclosed in the final report",
+          "evidenceIds": [
+            "E15"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-08-31T01:02:47.580Z",
+          "detail": "TypeScript typecheck passed cleanly",
+          "evidenceIds": [
+            "E15"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-08-31T01:02:52.786Z",
+          "detail": "Production build passed",
+          "evidenceIds": [
+            "E15"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-08-31T01:02:55.326Z",
+          "detail": "Managed runtime served fresh Deals 95, 96, and 98 with healthy HTTP 200 status",
+          "evidenceIds": [
+            "E19"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-08-31T01:02:58.193Z",
+          "detail": "independent browser QA (.runtime/landos/qa/sprint2-in-app-browser-acceptance.md)",
+          "evidenceIds": [
+            "E16",
+            "E17",
+            "E18",
+            "E19",
+            "E20",
+            "E21"
+          ]
+        }
+      ]
+    }
+  ],
+  "findings": [],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-08-31T00:55:46.998Z",
+      "kind": "test_result",
+      "summary": "Focused Sprint 2 regression: 110 tests passed; skill validator and governed audit passed",
+      "workstreamId": "ws1-governed-research-recovery"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-08-31T00:55:59.540Z",
+      "kind": "browser_journey",
+      "summary": "Deal 95 Property page retained exact LandPortal subject facts, 35 returned comps, honest usable-comp and zoning statuses, and enabled canonical-subject panel controls",
+      "path": ".runtime/landos/qa/sprint2-case-a-property.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=95&page=property",
+      "workstreamId": "ws1-governed-research-recovery"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-08-31T00:56:12.676Z",
+      "kind": "refresh_persistence",
+      "summary": "Deal 95 hard refresh preserved canonical subject, readiness, LandPortal facts, artifacts, and direct-panel eligibility without launching another intake mission",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=95&page=property",
+      "workstreamId": "ws1-governed-research-recovery"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-08-31T00:56:13.403Z",
+      "kind": "restart_persistence",
+      "summary": "Managed runtime restart retained Deal 95 authoritative evidence and read model; health returned HTTP 200",
+      "workstreamId": "ws1-governed-research-recovery"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-08-31T00:56:14.514Z",
+      "kind": "independent_browser_qa",
+      "summary": "In-app browser acceptance exercised the production build with fresh Deal 95 and exact retained data; console and visible status inspected",
+      "workstreamId": "ws1-governed-research-recovery"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-08-31T00:56:15.267Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "Visual inspection confirmed readable exact known/partial/blocked distinctions and enabled canonical-subject actions",
+      "path": ".runtime/landos/qa/sprint2-case-a-property.png",
+      "workstreamId": "ws1-governed-research-recovery"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-08-31T00:59:45.253Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "surface=Deal 95 Property at localhost:3141 expected=retained exact evidence and canonical subject controls visible_assertion=APN 023 003.02, LandPortal link, known/partial/blocked statuses, 35 returned versus 0 usable comps, and four enabled Run controls refresh=same subject, facts, readiness, and controls remained after hard refresh console=zero browser errors reruns=no new intake mission or research rerun screenshot=.runtime/landos/qa/sprint2-case-a-property.png",
+      "path": ".runtime/landos/qa/sprint2-case-a-property.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=95&page=property",
+      "workstreamId": "ws1-governed-research-recovery"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-08-31T01:00:02.926Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "surface=Deal 95 Property at http://localhost:3141/dept/acquisitions/v2?deal=95&page=property expected=retained exact evidence and canonical-subject actions visible_assertion=heading 5170 Highway 60; APN 023 003.02; View in LandPortal; 35 retained comps; 0 strict FMV qualifying; Run Zoning, Development History, Assessor & Tax, and LandPortal buttons enabled refresh=after hard refresh heading remained 5170 Highway 60, APN remained 023 003.02, View in LandPortal remained visible, and the same four Run buttons remained enabled console=zero error entries reruns=research status stayed settled and no new intake mission launched screenshot=.runtime/landos/qa/sprint2-case-a-property.png",
+      "path": ".runtime/landos/qa/sprint2-case-a-property.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=95&page=property",
+      "workstreamId": "ws1-governed-research-recovery"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-08-31T01:00:28.469Z",
+      "kind": "test_result",
+      "summary": "F3 direct-route, prerequisite scheduler, canonical gate, and readiness reconciliation focused regressions passed",
+      "workstreamId": "ws2-prerequisites-f3-readiness"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-08-31T01:00:31.294Z",
+      "kind": "browser_journey",
+      "summary": "Deal 96 showed Roane County and ZIP 37763 market rows with 13 parcel lanes waiting; Deal 98 then resolved through an exact-link pointer and released four parcel controls",
+      "path": ".runtime/landos/qa/sprint2-case-d-alternate-property.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=98&page=property",
+      "workstreamId": "ws2-prerequisites-f3-readiness"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-08-31T01:00:34.398Z",
+      "kind": "refresh_persistence",
+      "summary": "Deal 98 hard refresh retained heading 5170 Highway 60, APN 023 003.02, LandPortal link, and four enabled direct controls without restarting research",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=98&page=property",
+      "workstreamId": "ws2-prerequisites-f3-readiness"
+    },
+    {
+      "id": "E12",
+      "recordedAt": "2026-08-31T01:00:37.473Z",
+      "kind": "restart_persistence",
+      "summary": "Managed runtime restart preserved canonical subject and readiness stores; live Deal 95 remained readable with HTTP 200 health",
+      "workstreamId": "ws2-prerequisites-f3-readiness"
+    },
+    {
+      "id": "E13",
+      "recordedAt": "2026-08-31T01:00:40.656Z",
+      "kind": "independent_browser_qa",
+      "summary": "In-app production browser exercised unresolved county/ZIP state and resolved canonical-subject state with zero console errors",
+      "path": ".runtime/landos/qa/sprint2-in-app-browser-acceptance.md",
+      "workstreamId": "ws2-prerequisites-f3-readiness"
+    },
+    {
+      "id": "E14",
+      "recordedAt": "2026-08-31T01:00:45.145Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "surface=Deal 98 Property at http://localhost:3141/dept/acquisitions/v2?deal=98&page=property expected=county and ZIP work independent from parcel plus direct controls released after subject resolution visible_assertion=before resolution Roane County matrix and ZIP 37763 row showed while 13 items waited on subject; after exact-link resolution heading showed 5170 Highway 60, APN 023 003.02, and four Run buttons refresh=after hard refresh heading stayed 5170 Highway 60, APN stayed 023 003.02, and all four Run buttons stayed enabled console=zero error entries reruns=research status remained settled and did not launch another mission screenshot=.runtime/landos/qa/sprint2-case-d-alternate-property.png",
+      "path": ".runtime/landos/qa/sprint2-case-d-alternate-property.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=98&page=property",
+      "workstreamId": "ws2-prerequisites-f3-readiness"
+    },
+    {
+      "id": "E15",
+      "recordedAt": "2026-08-31T01:02:02.770Z",
+      "kind": "test_result",
+      "summary": "Focused Sprint 2 acceptance regression passed 110 tests; typecheck, production build, skill validation, and governance audit passed",
+      "workstreamId": "ws3-new-lead-production-slice"
+    },
+    {
+      "id": "E16",
+      "recordedAt": "2026-08-31T01:02:05.178Z",
+      "kind": "api_evidence",
+      "summary": "Coverage logs show Deal 95 research_coverage_settled with cascade=produced and refreshedLayers property, market, seller, deal; Deal 98 retained APN 023 003.02 from one source",
+      "path": "logs/main.log",
+      "workstreamId": "ws3-new-lead-production-slice"
+    },
+    {
+      "id": "E17",
+      "recordedAt": "2026-08-31T01:02:07.595Z",
+      "kind": "browser_journey",
+      "summary": "Fresh Deal 95 conventional intake and fresh Deal 98 exact-link/no-APN intake both created through New Lead and returned researched operator Deal Cards",
+      "path": ".runtime/landos/qa/sprint2-in-app-browser-acceptance.md",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=98&page=property",
+      "workstreamId": "ws3-new-lead-production-slice"
+    },
+    {
+      "id": "E18",
+      "recordedAt": "2026-08-31T01:02:10.087Z",
+      "kind": "refresh_persistence",
+      "summary": "Deal 98 hard refresh retained 5170 Highway 60, APN 023 003.02, exact LandPortal link, and enabled panels with research settled",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=98&page=property",
+      "workstreamId": "ws3-new-lead-production-slice"
+    },
+    {
+      "id": "E19",
+      "recordedAt": "2026-08-31T01:02:13.270Z",
+      "kind": "restart_persistence",
+      "summary": "Managed restart retained Deal 95 evidence and current intelligence; HTTP health returned 200",
+      "workstreamId": "ws3-new-lead-production-slice"
+    },
+    {
+      "id": "E20",
+      "recordedAt": "2026-08-31T01:02:16.199Z",
+      "kind": "independent_browser_qa",
+      "summary": "Real production browser acceptance completed for fresh Deals 95 and 98 with zero console errors and an honest unresolved Deal 96 control",
+      "path": ".runtime/landos/qa/sprint2-in-app-browser-acceptance.md",
+      "workstreamId": "ws3-new-lead-production-slice"
+    },
+    {
+      "id": "E21",
+      "recordedAt": "2026-08-31T01:02:19.118Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "surface=Deal 95 Overview and Deal 98 Property at http://localhost:3141/dept/acquisitions/v2 expected=fresh leads autonomously return current honest Deal Cards visible_assertion=Deal 95 showed 5170 Highway 60, 9 of 18 returned, Property score 62, Market score 63, current Deal read, and explicit partial/blocked unknowns; Deal 98 showed exact-link resolution to APN 023 003.02 and four enabled Run controls refresh=after hard refresh Deal 98 still showed 5170 Highway 60, APN 023 003.02, View in LandPortal, four enabled Run controls, and no running status console=zero error entries across both tabs reruns=no new intake mission and settled research stayed settled screenshot=.runtime/landos/qa/sprint2-case-a-property.png,.runtime/landos/qa/sprint2-case-d-alternate-property.png",
+      "path": ".runtime/landos/qa/sprint2-case-a-property.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=95",
+      "workstreamId": "ws3-new-lead-production-slice"
+    },
+    {
+      "id": "E22",
+      "recordedAt": "2026-08-31T01:03:26.571Z",
+      "kind": "final_regression",
+      "summary": "Final acceptance regression: 110 focused tests passed, typecheck passed, production build passed, governed audit passed, skill validation passed, runtime healthy, two fresh browser journeys passed; full repository baseline 7982 passed and 41 pre-existing/stale failures disclosed",
+      "path": ".runtime/landos/qa/sprint2-in-app-browser-acceptance.md",
+      "workstreamId": "ws3-new-lead-production-slice"
+    }
+  ],
+  "finalRegression": {
+    "result": "pass",
+    "at": "2026-08-31T01:03:36.022Z",
+    "detail": "Acceptance-focused regression, typecheck, build, runtime, governance, skills, and both fresh browser journeys passed; full-suite baseline failures disclosed without hiding",
+    "evidenceIds": [
+      "E1",
+      "E9",
+      "E15",
+      "E22"
+    ]
+  },
+  "finalReview": {
+    "result": "pass",
+    "at": "2026-08-31T01:03:38.455Z",
+    "detail": "LandOS sprint acceptance review: All 15 requirements verified; live operator surfaces show canonical subject consumption, current intelligence, honest partial/blocked states, and refresh persistence",
+    "evidenceIds": [
+      "E8",
+      "E14",
+      "E16",
+      "E21",
+      "E22"
+    ]
+  },
+  "sprintStatus": "complete",
+  "log": [
+    {
+      "at": "2026-08-30T23:45:44.375Z",
+      "event": "sprint_created",
+      "detail": "New Lead to Complete Deal Card Production Vertical Slice"
+    },
+    {
+      "at": "2026-08-30T23:45:45.095Z",
+      "event": "workstream_started",
+      "detail": "ws1-governed-research-recovery"
+    },
+    {
+      "at": "2026-08-31T00:58:43.746Z",
+      "event": "phase_recorded",
+      "detail": "ws1-governed-research-recovery:implementation:pass"
+    },
+    {
+      "at": "2026-08-31T00:58:46.417Z",
+      "event": "phase_recorded",
+      "detail": "ws1-governed-research-recovery:targeted_tests:pass"
+    },
+    {
+      "at": "2026-08-31T00:58:49.451Z",
+      "event": "phase_recorded",
+      "detail": "ws1-governed-research-recovery:integration_tests:pass"
+    },
+    {
+      "at": "2026-08-31T00:58:52.340Z",
+      "event": "phase_recorded",
+      "detail": "ws1-governed-research-recovery:typecheck:pass"
+    },
+    {
+      "at": "2026-08-31T00:58:55.727Z",
+      "event": "phase_recorded",
+      "detail": "ws1-governed-research-recovery:production_build:pass"
+    },
+    {
+      "at": "2026-08-31T00:58:58.589Z",
+      "event": "phase_recorded",
+      "detail": "ws1-governed-research-recovery:runtime_verification:pass"
+    },
+    {
+      "at": "2026-08-31T00:59:10.711Z",
+      "event": "phase_recorded",
+      "detail": "ws1-governed-research-recovery:browser_qa:pass"
+    },
+    {
+      "at": "2026-08-31T00:59:10.711Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-governed-research-recovery:pass"
+    },
+    {
+      "at": "2026-08-31T00:59:13.534Z",
+      "event": "requirement_verified",
+      "detail": "ws1-governed-research-recovery/ws1-r1"
+    },
+    {
+      "at": "2026-08-31T00:59:17.002Z",
+      "event": "requirement_verified",
+      "detail": "ws1-governed-research-recovery/ws1-r2"
+    },
+    {
+      "at": "2026-08-31T00:59:19.899Z",
+      "event": "requirement_verified",
+      "detail": "ws1-governed-research-recovery/ws1-r3"
+    },
+    {
+      "at": "2026-08-31T00:59:23.478Z",
+      "event": "requirement_verified",
+      "detail": "ws1-governed-research-recovery/ws1-r4"
+    },
+    {
+      "at": "2026-08-31T00:59:26.826Z",
+      "event": "requirement_verified",
+      "detail": "ws1-governed-research-recovery/ws1-r5"
+    },
+    {
+      "at": "2026-08-31T01:00:04.130Z",
+      "event": "workstream_passed",
+      "detail": "ws1-governed-research-recovery"
+    },
+    {
+      "at": "2026-08-31T01:00:25.918Z",
+      "event": "workstream_started",
+      "detail": "ws2-prerequisites-f3-readiness"
+    },
+    {
+      "at": "2026-08-31T01:01:04.212Z",
+      "event": "phase_recorded",
+      "detail": "ws2-prerequisites-f3-readiness:implementation:pass"
+    },
+    {
+      "at": "2026-08-31T01:01:06.558Z",
+      "event": "phase_recorded",
+      "detail": "ws2-prerequisites-f3-readiness:targeted_tests:pass"
+    },
+    {
+      "at": "2026-08-31T01:01:09.224Z",
+      "event": "phase_recorded",
+      "detail": "ws2-prerequisites-f3-readiness:integration_tests:pass"
+    },
+    {
+      "at": "2026-08-31T01:01:11.630Z",
+      "event": "phase_recorded",
+      "detail": "ws2-prerequisites-f3-readiness:typecheck:pass"
+    },
+    {
+      "at": "2026-08-31T01:01:14.483Z",
+      "event": "phase_recorded",
+      "detail": "ws2-prerequisites-f3-readiness:production_build:pass"
+    },
+    {
+      "at": "2026-08-31T01:01:17.264Z",
+      "event": "phase_recorded",
+      "detail": "ws2-prerequisites-f3-readiness:runtime_verification:pass"
+    },
+    {
+      "at": "2026-08-31T01:01:19.648Z",
+      "event": "phase_recorded",
+      "detail": "ws2-prerequisites-f3-readiness:browser_qa:pass"
+    },
+    {
+      "at": "2026-08-31T01:01:19.648Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-prerequisites-f3-readiness:pass"
+    },
+    {
+      "at": "2026-08-31T01:01:22.466Z",
+      "event": "requirement_verified",
+      "detail": "ws2-prerequisites-f3-readiness/ws2-r1"
+    },
+    {
+      "at": "2026-08-31T01:01:25.042Z",
+      "event": "requirement_verified",
+      "detail": "ws2-prerequisites-f3-readiness/ws2-r2"
+    },
+    {
+      "at": "2026-08-31T01:01:27.977Z",
+      "event": "requirement_verified",
+      "detail": "ws2-prerequisites-f3-readiness/ws2-r3"
+    },
+    {
+      "at": "2026-08-31T01:01:30.732Z",
+      "event": "requirement_verified",
+      "detail": "ws2-prerequisites-f3-readiness/ws2-r4"
+    },
+    {
+      "at": "2026-08-31T01:01:33.112Z",
+      "event": "requirement_verified",
+      "detail": "ws2-prerequisites-f3-readiness/ws2-r5"
+    },
+    {
+      "at": "2026-08-31T01:01:35.616Z",
+      "event": "workstream_passed",
+      "detail": "ws2-prerequisites-f3-readiness"
+    },
+    {
+      "at": "2026-08-31T01:01:59.812Z",
+      "event": "workstream_started",
+      "detail": "ws3-new-lead-production-slice"
+    },
+    {
+      "at": "2026-08-31T01:02:38.455Z",
+      "event": "phase_recorded",
+      "detail": "ws3-new-lead-production-slice:implementation:pass"
+    },
+    {
+      "at": "2026-08-31T01:02:41.760Z",
+      "event": "phase_recorded",
+      "detail": "ws3-new-lead-production-slice:targeted_tests:pass"
+    },
+    {
+      "at": "2026-08-31T01:02:44.736Z",
+      "event": "phase_recorded",
+      "detail": "ws3-new-lead-production-slice:integration_tests:pass"
+    },
+    {
+      "at": "2026-08-31T01:02:47.580Z",
+      "event": "phase_recorded",
+      "detail": "ws3-new-lead-production-slice:typecheck:pass"
+    },
+    {
+      "at": "2026-08-31T01:02:52.786Z",
+      "event": "phase_recorded",
+      "detail": "ws3-new-lead-production-slice:production_build:pass"
+    },
+    {
+      "at": "2026-08-31T01:02:55.327Z",
+      "event": "phase_recorded",
+      "detail": "ws3-new-lead-production-slice:runtime_verification:pass"
+    },
+    {
+      "at": "2026-08-31T01:02:58.193Z",
+      "event": "phase_recorded",
+      "detail": "ws3-new-lead-production-slice:browser_qa:pass"
+    },
+    {
+      "at": "2026-08-31T01:02:58.193Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-new-lead-production-slice:pass"
+    },
+    {
+      "at": "2026-08-31T01:03:01.034Z",
+      "event": "requirement_verified",
+      "detail": "ws3-new-lead-production-slice/ws3-r1"
+    },
+    {
+      "at": "2026-08-31T01:03:03.441Z",
+      "event": "requirement_verified",
+      "detail": "ws3-new-lead-production-slice/ws3-r2"
+    },
+    {
+      "at": "2026-08-31T01:03:05.922Z",
+      "event": "requirement_verified",
+      "detail": "ws3-new-lead-production-slice/ws3-r3"
+    },
+    {
+      "at": "2026-08-31T01:03:09.293Z",
+      "event": "requirement_verified",
+      "detail": "ws3-new-lead-production-slice/ws3-r4"
+    },
+    {
+      "at": "2026-08-31T01:03:13.449Z",
+      "event": "requirement_verified",
+      "detail": "ws3-new-lead-production-slice/ws3-r5"
+    },
+    {
+      "at": "2026-08-31T01:03:16.297Z",
+      "event": "workstream_passed",
+      "detail": "ws3-new-lead-production-slice"
+    },
+    {
+      "at": "2026-08-31T01:03:36.023Z",
+      "event": "final_regression",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-08-31T01:03:38.456Z",
+      "event": "final_review",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-08-31T01:03:41.125Z",
+      "event": "sprint_completed",
+      "detail": "complete"
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 import { useState } from 'preact/hooks';
 
 import { apiPost } from '@/lib/api';
+import { useCanonicalParcelGate } from '@/lib/useCanonicalParcelGate';
 
 interface CompsValuationRunResult {
   invocationId: string;
@@ -71,6 +72,7 @@ export function CompsValuationCapabilityRun({ dealId }: { dealId?: number }) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<CompsValuationRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const gate = useCanonicalParcelGate(dealId);
 
   if (!dealId) return null;
 
@@ -101,13 +103,15 @@ export function CompsValuationCapabilityRun({ dealId }: { dealId?: number }) {
       <button
         type="button"
         data-testid="awv2-comps-valuation-run-button"
-        disabled={running}
+        disabled={running || gate.blocked}
+        title={gate.blocked ? gate.reason : 'Run Comps & Valuation'}
         onClick={() => { void invoke(); }}
       >
         {running ? 'Reading the comp and valuation evidence…' : 'Run Comps & Valuation'}
       </button>
       {' '}Reads the comparable evidence and the valuation for this Deal Card&apos;s existing canonical
       parcel through the shared LandOS Capability. It never changes which parcel this card is about.
+      {gate.blocked && <div class="awv2-pi-note">Waiting for prerequisite: {gate.reason}</div>}
       {error && <div class="awv2-pi-note" role="alert">{error}</div>}
       {result && (
         <div class="awv2-comps-valuation-run-result" data-testid="awv2-comps-valuation-run-result">

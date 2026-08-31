@@ -1,10 +1,7 @@
 ---
 name: landos-landportal
 description: Run one bounded LandOS LandPortal specialist lookup.
-version: 1.1.0
-author: LandOS
 license: Proprietary
-platforms: [windows]
 metadata:
   hermes:
     tags: [landos, landportal, property-intelligence, cdp]
@@ -12,6 +9,32 @@ metadata:
 ---
 
 # LandOS LandPortal specialist lookup
+
+## Capability completion contract
+
+LandOS invokes this specialist only after its deterministic LandPortal read has
+run or proved inapplicable. Browser navigation is not completion. A LandPortal
+requirement is complete only when the requested subject-matching output is
+returned and retained with provenance. Classify each requested category as:
+
+- `RETURNED`: usable subject-matching facts or validated artifacts were retained.
+- `PARTIAL`: useful evidence was retained, but named required outputs are missing.
+- `BLOCKED`: a paid source, public outage, or unavailable approved access path
+  prevented retrieval; name the exact source and reason.
+- `NEEDS_OPERATOR_ACTION`: CAPTCHA, legal acknowledgement, or an existing-login
+  step genuinely requires the operator.
+- `FAILED`: the bounded workflow broke before it could produce an honest result.
+
+Do not call a category returned because a page opened, a workflow finished, or
+rows existed. If the deterministic read missed because the provider surface
+changed, use this bounded browser procedure, retain the structured handback, and
+let LandOS admit and reconcile it. Never report `BLOCKED` while an allowed route
+in the bounded sequence remains untried.
+
+Validation scenarios: an exact parcel whose sidebar returns facts is
+`RETURNED`; a parcel with facts but no requested owner-name overlay is `PARTIAL`;
+a CAPTCHA is `NEEDS_OPERATOR_ACTION`; an exhausted exact-subject search is an
+honest no-match handback and never imports nearby-parcel facts.
 
 ## When to use
 

@@ -125,7 +125,8 @@ export function AcquisitionIntelligenceSection({ read, readiness, runtime, stale
         </div>
         <div class="awv2-ai-actions">
           {read?.dealRead?.confidence && <span class={`awv2-ai-weight w-${(read.dealRead.confidence || '').toLowerCase().replace(/\s+/g, '-')}`}>{read.dealRead.confidence}</span>}
-          <button type="button" class="awv2-ai-run" disabled={running} onClick={onRun}>
+          <button type="button" class="awv2-ai-run" disabled={running || readiness?.ok === false} onClick={onRun}
+            title={readiness?.ok === false ? readiness.reason : 'Read the retained property file'}>
             <RefreshCw size={14} class={running ? 'spin' : undefined} />
             {running ? 'Reading the property file…' : read ? 'Re-read the property file' : 'Read the property file'}
           </button>

@@ -1,0 +1,223 @@
+{
+  "sprintId": "sprint-2026-08-30-new-lead-complete-deal-card",
+  "title": "New Lead to Complete Deal Card Production Vertical Slice",
+  "originalPromptPath": "C:/Users/tbutt/.codex/attachments/bfec63ba-cd18-4764-910a-614b8c22f933/pasted-text.txt",
+  "workstreams": [
+    {
+      "id": "ws1-governed-research-recovery",
+      "name": "Governed research skills and bounded recovery",
+      "operatorOutcome": "LandPortal, government/zoning, public-records, and comp research use explicit completion rules; deterministic misses invoke bounded recovery only when justified and recovered evidence enters the canonical evidence path.",
+      "inScope": [
+        "LandOS-native research skills",
+        "LandPortal deterministic-to-recovery handoff",
+        "government/zoning recovery admission",
+        "public-records deterministic-to-specialist handoff",
+        "comp usable-result semantics",
+        "structured recovery evidence"
+      ],
+      "backendServices": [
+        "LandPortal Research capability",
+        "Zoning & Subdivision capability",
+        "Assessor & Tax capability",
+        "Comps & Valuation capability",
+        "adaptive research recovery",
+        "shared evidence admission",
+        "governed Hermes profiles"
+      ],
+      "frontendScreens": [
+        "Deal Card Property",
+        "Deal Card Research Readiness",
+        "Deal Card Comps & Valuation"
+      ],
+      "requiredDataState": "An established canonical subject with deterministic provider outcomes and a controlled unsupported public-record platform fixture.",
+      "browserJourney": {
+        "journeyId": "governed-research-recovery",
+        "steps": [
+          "Open a Deal Card with an established subject",
+          "Run or reuse the relevant property research",
+          "Confirm required output rather than invocation count controls completion",
+          "Confirm any justified recovery and exact unresolved status are operator-readable",
+          "Hard refresh and confirm retained evidence and status do not rerun research"
+        ]
+      },
+      "testRequirements": [
+        "LandPortal completion semantics",
+        "government recovery result admission",
+        "public-records deterministic-to-recovery handoff",
+        "comp usable-result semantics",
+        "adaptive evidence reintegration",
+        "no late authoritative write"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "A deterministic miss is presented as exhausted while a valid recovery route remains",
+        "A recovery result exists only in model prose",
+        "An unusable comp row satisfies valuation readiness",
+        "A cancelled or superseded run admits late evidence"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        { "id": "ws1-r1", "text": "Four governed LandOS-native research skills encode domain procedure, fallback, evidence, completion criteria, and validation scenarios." },
+        { "id": "ws1-r2", "text": "LandPortal and government/zoning deterministic misses select bounded recovery without creating duplicate standing agents." },
+        { "id": "ws1-r3", "text": "Public Records deterministic retrieval hands off to one governed specialist only after deterministic exhaustion and returns a structured result." },
+        { "id": "ws1-r4", "text": "Recovered evidence enters canonical evidence admission with run identity and late-write rejection." },
+        { "id": "ws1-r5", "text": "Comp completion requires usable validated comps, not merely returned records." }
+      ],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true }
+    },
+    {
+      "id": "ws2-prerequisites-f3-readiness",
+      "name": "Prerequisite scheduling, F3 closure, and readiness reconciliation",
+      "operatorOutcome": "Independent county, ZIP, seller, and parcel lanes start as soon as their own prerequisites exist; every direct Deal Card launch surface consumes Canonical Subject State and declared capability prerequisites.",
+      "inScope": [
+        "New Lead mission prerequisite scheduling",
+        "county Market Research and Market Pulse",
+        "ZIP Market Research",
+        "direct panel capability gates",
+        "Research Readiness re-planning and non-churn"
+      ],
+      "backendServices": [
+        "Deal Intelligence mission",
+        "capability registry prerequisites",
+        "Canonical Subject State",
+        "Research Readiness",
+        "Market Research",
+        "Market Pulse"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Overview",
+        "Deal Card Research Readiness",
+        "Deal Card Market",
+        "direct capability panels"
+      ],
+      "requiredDataState": "A county-known and ZIP-known lead without an established parcel, contrasted with an established-subject Deal Card.",
+      "browserJourney": {
+        "journeyId": "prerequisites-f3-readiness",
+        "steps": [
+          "Open a county-known unresolved lead",
+          "Confirm county and ZIP market work is eligible while parcel lanes wait",
+          "Confirm parcel panel controls cannot bypass declared prerequisites",
+          "Establish the subject through a viable route",
+          "Confirm readiness re-plans and satisfied items do not churn",
+          "Hard refresh and confirm no research reruns"
+        ]
+      },
+      "testRequirements": [
+        "F3 direct panel gates",
+        "county and ZIP prerequisite execution",
+        "readiness re-planning",
+        "satisfied-item non-churn",
+        "alternate viable subject route"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "A direct panel launches parcel work while the parcel prerequisite is unmet",
+        "County or ZIP market work waits unnecessarily on parcel identity",
+        "Canonical Subject State says resolved while a Deal Card consumer says no parcel",
+        "Satisfied readiness items rerun without new evidence"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": ["ws1-governed-research-recovery"],
+      "requirements": [
+        { "id": "ws2-r1", "text": "Direct per-panel capability endpoints use Canonical Subject State and the declared prerequisite evaluator, closing F3." },
+        { "id": "ws2-r2", "text": "County Market Research and Market Pulse can run or reuse when county is known without official parcel verification." },
+        { "id": "ws2-r3", "text": "ZIP Market Research can run or reuse when ZIP is known." },
+        { "id": "ws2-r4", "text": "Parcel-specific lanes wait for and then consume the established working subject." },
+        { "id": "ws2-r5", "text": "New evidence re-plans readiness while already satisfied items are reused rather than churned." }
+      ],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true }
+    },
+    {
+      "id": "ws3-new-lead-production-slice",
+      "name": "Fresh New Lead to completed Deal Card production journey",
+      "operatorOutcome": "Tyler can enter a usable lead, leave it alone, and return to the most complete honest Deal Card LandOS can produce without developer intervention.",
+      "inScope": [
+        "fresh conventional lead",
+        "fresh alternate-resolution lead",
+        "Property, Market, Seller, and Deal Intelligence",
+        "operator status language",
+        "refresh and cancellation safety"
+      ],
+      "backendServices": [
+        "New Lead intake",
+        "Property Resolution",
+        "Deal Intelligence mission",
+        "Research Readiness",
+        "intelligence stack",
+        "Deal Card read model"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Overview",
+        "Deal Card Property",
+        "Deal Card Market",
+        "Deal Card Seller",
+        "Deal Card Comps & Valuation",
+        "Deal Card Research Readiness"
+      ],
+      "requiredDataState": "Two fresh disposable leads: one with full address, APN, and seller basics; one with one incomplete or non-authoritative identifier plus another viable property pointer.",
+      "browserJourney": {
+        "journeyId": "fresh-new-lead-to-deal-card",
+        "steps": [
+          "Create conventional fresh lead",
+          "Observe autonomous subject establishment and prerequisite-driven research",
+          "Open the researched Deal Card and inspect all intelligence surfaces",
+          "Hard refresh and confirm persistence and no unintended reruns",
+          "Create alternate-resolution fresh lead",
+          "Confirm the viable route establishes the subject despite the imperfect pointer",
+          "Confirm final known, interpreted, assumed, partial, blocked, and unresolved distinctions"
+        ]
+      },
+      "testRequirements": [
+        "full focused regression suite from the brief",
+        "appropriate broad regression",
+        "typecheck",
+        "production build",
+        "managed runtime health",
+        "real browser acceptance for both fresh leads"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "A fresh lead requires developer intervention",
+        "A viable subject route is ignored because another pointer is imperfect",
+        "Intelligence is stale relative to admitted evidence",
+        "Refresh mutates state or reruns expensive research",
+        "Operator output hides incomplete or blocked requirements"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": ["ws2-prerequisites-f3-readiness"],
+      "requirements": [
+        { "id": "ws3-r1", "text": "A fresh conventional intake reaches a researched current Deal Card through autonomous subject resolution and independent prerequisite scheduling." },
+        { "id": "ws3-r2", "text": "A fresh alternate-resolution intake uses the viable property pointer instead of failing because another pointer is incomplete or non-authoritative." },
+        { "id": "ws3-r3", "text": "Property, Market, Seller, and Deal Intelligence consume reconciled evidence and remain current." },
+        { "id": "ws3-r4", "text": "Refresh and restart preserve state without rerunning research, and cancelled or superseded work cannot write late." },
+        { "id": "ws3-r5", "text": "The final Deal Card accurately distinguishes known, interpreted, assumed, partial, blocked, unresolved, and genuine operator-action states." }
+      ],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true }
+    }
+  ]
+}

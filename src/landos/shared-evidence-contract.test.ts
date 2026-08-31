@@ -97,6 +97,33 @@ describe('shared evidence admission', () => {
       expect(readiness.items.find((item) => item.id === 'road_frontage')).toMatchObject({ status: 'green' });
     }
   });
+
+  it('replans assessor readiness when bounded public-record recovery admits exact-subject evidence', () => {
+    const runs = new IntelligenceStackRunStore();
+    const progress = startRunProgress('public_recovery_run', '2026-08-30T12:00:00.000Z');
+    runs.create({ runId: 'public_recovery_run', dealCardId: 93, startedAt: progress.startedAt, progress });
+    const admitted = writeEvidence({
+      dealCardId: 93,
+      capabilityId: 'landos-public-records-recovery',
+      collectorKey: 'landos-public-records-recovery',
+      runId: 'public_recovery_run',
+      rows: [{
+        domain: 'public_records', evidenceKind: 'official_public_record', factKey: 'owner_of_record',
+        raw: 'TEST OWNER', normalized: 'TEST OWNER', sourceName: 'Iredell County Assessor',
+        sourceUrl: 'https://example.gov/parcel/001-002', sourceTier: 'official_government_source',
+        confidence: 'confirmed', retrievedAt: '2026-08-30T12:01:00.000Z',
+        artifactRef: 'C:/artifacts/001-002.html', dedupeOn: 'owner|001-002',
+      }],
+    });
+    expect(admitted.evidenceIds).toHaveLength(1);
+
+    const readiness = reconcileResearchReadiness(93);
+    expect('error' in readiness).toBe(false);
+    if (!('error' in readiness)) {
+      expect(readiness.items.find((item) => item.id === 'assessor_tax')).toMatchObject({ status: 'green' });
+      expect(readiness.items.find((item) => item.id === 'assessor_tax')?.reason).toContain('Public-record recovery returned');
+    }
+  });
 });
 
 describe('shared research result vocabulary', () => {

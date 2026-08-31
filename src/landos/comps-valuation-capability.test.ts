@@ -357,7 +357,7 @@ describe('Comps & Valuation Capability', () => {
         ran += 1;
         expect(input).toEqual({ propertyCardId: card.id, dealCardId: deal.id });
         return {
-          candidateCount: 21, duplicatesMerged: 3,
+          candidateCount: 21, usableCandidateCount: 8, duplicatesMerged: 3,
           sources: ['LandPortal visible', 'Zillow', 'Redfin'],
           summary: '21 comparable candidate(s) collected from 3 approved marketplace(s).',
           sourceAttempts: [{ source: 'Comparable collection lane', status: 'completed', note: '21 collected.' }],
@@ -370,7 +370,32 @@ describe('Comps & Valuation Capability', () => {
     const projected = facts(result);
     expect(projected.lane).toBe('comp_collection');
     expect(projected.collection?.candidateCount).toBe(21);
+    expect(projected.collection?.usableCandidateCount).toBe(8);
     expect(projected.collection?.sources).toContain('Redfin');
+  });
+
+  it('distinguishes provider records returned from usable comparable evidence', async () => {
+    const { deal, card } = canonicalSubject();
+    const result = await invokeRuntimeCapability({
+      capabilityId: COMPS_VALUATION_CAPABILITY_ID,
+      caller: { type: 'new_lead', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+      parameters: { lane: 'comp_collection' },
+    }, {
+      runCompCollection: async () => ({
+        candidateCount: 4,
+        usableCandidateCount: 0,
+        duplicatesMerged: 0,
+        sources: ['LandPortal visible'],
+        summary: 'Four records returned, but none survived the vacant-land comparable policy.',
+        sourceAttempts: [{ source: 'Comparable collection lane', status: 'completed', note: 'Four rows read.' }],
+      }),
+    });
+
+    expect(result.status).toBe('NEEDS_INPUT');
+    expect(facts(result).collection).toMatchObject({ candidateCount: 4, usableCandidateCount: 0 });
+    expect(result.missingInformation.join(' ')).toContain('survives the vacant-land comparable policy');
   });
 
   it('runs the existing New Lead valuation computation and keeps a not-priceable answer honest', async () => {

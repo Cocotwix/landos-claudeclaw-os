@@ -138,7 +138,7 @@ import { buildLeadCardTitle, streetReferenceFrom, unresolvedLeadStorageLabel, is
 import { planResolver, smallestNextIdentifier, type IntakeFields } from './resolver-planner.js';
 import { apnSearchVariants, ownerSearchVariants, lpResolveForPreflight, type LpResolveResult } from './landportal-client.js';
 import { buildDiscoveryCallReport, buildConfirmedParcelDiscoveryReport, buildAreaDiscoveryReport, type DiscoveryIntake } from './discovery-call-report.js';
-import { invokeRuntimeCapability, listRuntimeCapabilities, runtimeCapability } from './capability-registry.js';
+import { capabilityPrerequisites, invokeRuntimeCapability, listRuntimeCapabilities, runtimeCapability } from './capability-registry.js';
 import {
   ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
   propertyFileIsSufficient,
@@ -197,6 +197,7 @@ import {
   startRunProgress,
 } from './intelligence-run-progress.js';
 import { IntelligenceStackRunStore } from './intelligence-stack-run-store.js';
+import { runMarketPrerequisiteWork } from './market-prerequisite-scheduler.js';
 import { readIntelligenceStackState, runIntelligenceStack } from './intelligence-stack.js';
 import {
   DEAL_INTELLIGENCE_PRODUCT_TYPE,
@@ -566,7 +567,7 @@ import {
 } from './exact-address-web-discovery.js';
 import { loadSubjectListingDetail, reprojectSubjectListingDetail } from './subject-listing-store.js';
 import { resolveCanonicalIdentity, supersessionLabel } from './canonical-identity.js';
-import { resolveCanonicalSubjectState } from './canonical-subject-state.js';
+import { resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -2078,6 +2079,14 @@ export function registerLandosRoutes(app: Hono): void {
         missionStore: missionGraphStore,
         snapshotStore: propertyIntelligenceStore,
         browserCleanup: () => closeSurplusSessionPages(),
+        afterCompletion: async () => {
+          const current = getDealCard(deal.id);
+          if (!current) return;
+          const cycle = await runDealCoverageCycle(deal.id, current.entity as CapabilityEntity, 'automatic');
+          if ('error' in cycle) {
+            logger.warn({ dealCardId: deal.id, msg: cycle.error }, 'new_lead_coverage_cycle_skipped');
+          }
+        },
       });
     }
     return c.json({
@@ -2109,6 +2118,11 @@ export function registerLandosRoutes(app: Hono): void {
       missionStore: missionGraphStore,
       snapshotStore: propertyIntelligenceStore,
       browserCleanup: () => closeSurplusSessionPages(),
+      afterCompletion: async () => {
+        const current = getDealCard(queued.legacyDealCardId!);
+        if (!current) return;
+        await runDealCoverageCycle(queued.legacyDealCardId!, current.entity as CapabilityEntity, 'automatic');
+      },
     });
     return c.json({ opportunity: queued, launch }, 202);
   });
@@ -7854,8 +7868,16 @@ export function registerLandosRoutes(app: Hono): void {
         runCompCollection: async (): Promise<CompCollectionOutcome> => {
           executed = await execute();
           const candidates = executed.data?.candidates ?? [];
+          const market = marketContextFor(getDealCard(dealCardId));
+          const policy = applyCompSourcePolicy({
+            state: market.geography.state,
+            county: market.geography.county ?? market.geography.fips,
+            zip: market.geography.zip,
+            acres: market.geography.acres,
+          }, candidates);
           return {
             candidateCount: candidates.length,
+            usableCandidateCount: policy.acceptedSold.length + policy.acceptedActive.length,
             duplicatesMerged: executed.data?.duplicatesMerged ?? 0,
             sources: [...new Set(candidates.map((candidate) => candidate.provider).filter(Boolean))],
             summary: executed.summary,
@@ -8990,6 +9012,7 @@ export function registerLandosRoutes(app: Hono): void {
     marketPulse: async (id: number) => {
       const deal = getDealCard(id);
       const canonical = canonicalPropertyInputForDeal(id);
+      const marketContext = deal ? marketContextFor(deal) : null;
       const providerRunId = missionGraphStore.activeMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, id)?.missionId
         ?? `deal-${id}-market-${Date.now()}`;
       const contextAdapter = <T,>(input: {
@@ -9033,23 +9056,40 @@ export function registerLandosRoutes(app: Hono): void {
       // Scan (including the Brockovich data-center research) are independent
       // provider lanes, so they must begin together after identity rather than
       // making one provider's latency a prerequisite for the other.
-      const [matrix, pulseResult, marketScan] = await Promise.all([
+      const [matrix, marketPrerequisites, marketScan] = await Promise.all([
         runLane(contextAdapter({
           laneId: 'market_matrix', providerId: 'landos_market_matrix',
           execute: async () => deal ? marketMatrixFor(deal) : null,
           evidence: (result) => result ? [{ field: 'market_matrix', value: result }] : [],
         })),
-        runLane(contextAdapter({
-          laneId: 'market_pulse', providerId: 'landos_market_pulse',
-          execute: () => marketPulseForDeal(id).catch(() => null),
-          evidence: (result) => result?.marketPulse ? [{ field: 'market_pulse', value: result.marketPulse }] : [],
-        })),
+        runMarketPrerequisiteWork({
+          county: marketContext?.geography.county ?? null,
+          state: marketContext?.geography.state ?? null,
+          zip: marketContext?.geography.zip ?? null,
+        }, {
+          countyResearch: () => runLane(contextAdapter({
+            laneId: 'county_market_research', providerId: 'landos_market_research',
+            execute: async () => marketContext?.county.available ? marketContext.county : null,
+            evidence: (result) => result ? [{ field: 'county_market_research', value: result }] : [],
+          })),
+          countyPulse: () => runLane(contextAdapter({
+            laneId: 'county_market_pulse', providerId: 'landos_market_pulse',
+            execute: () => marketPulseForDeal(id).catch(() => null),
+            evidence: (result) => result?.marketPulse ? [{ field: 'market_pulse', value: result.marketPulse }] : [],
+          })),
+          zipResearch: () => runLane(contextAdapter({
+            laneId: 'zip_market_research', providerId: 'landos_market_research',
+            execute: async () => marketContext?.zip.available ? marketContext.zip : null,
+            evidence: (result) => result ? [{ field: 'zip_market_research', value: result }] : [],
+          })),
+        }),
         runLane(contextAdapter({
           laneId: 'data_center', providerId: 'brockovich_data_center_map',
           execute: () => deal ? operatorMarketScanForDeal(id, deal).catch(() => null) : Promise.resolve(null),
           evidence: (result) => result?.dataCenterWatch ? [{ field: 'data_center_watch', value: result.dataCenterWatch, sourceUrl: result.dataCenterWatch.browserMapEvidence?.sourceUrl ?? null }] : [],
         })),
       ]);
+      const pulseResult = marketPrerequisites.county_market_pulse.value as Awaited<ReturnType<typeof marketPulseForDeal>>;
       const pulse = pulseResult?.marketPulse ?? null;
       const now = new Date().toISOString();
       const facts: SnapshotFact[] = [];
@@ -9094,10 +9134,25 @@ export function registerLandosRoutes(app: Hono): void {
           });
         }
       }
+      for (const task of Object.values(marketPrerequisites)) {
+        if (task.status !== 'returned') continue;
+        facts.push({
+          key: task.id,
+          label: task.id === 'county_market_research' ? 'County Market Research'
+            : task.id === 'county_market_pulse' ? 'County Market Pulse' : 'ZIP Market Research',
+          value: task.reason,
+          grade: 'likely_indication',
+          source: task.id === 'county_market_pulse' ? 'LandOS Market Pulse' : 'LandOS Market Research',
+          sourceUrl: null,
+          retrievedAt: now,
+          note: task.geography ? `Geography: ${task.geography}.` : null,
+        });
+      }
       return {
         marketMatrix: matrix ?? null,
         marketPulse: pulse,
         marketScan,
+        marketPrerequisites,
         facts,
         summary: matrix && pulse
           ? 'Market Matrix and Market Pulse assembled for the subject market.'
@@ -10905,8 +10960,15 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
-    const cardId = subjectCardId(deal);
-    if (!cardId) return c.json({ error: 'deal card has no subject property card' }, 409);
+    const canonical = resolveCanonicalSubjectState(id);
+    const cardId = canonical.propertyCardId ?? subjectCardId(deal);
+    const missing = unmetPrerequisites(canonical, capabilityPrerequisites(ACQUISITION_INTELLIGENCE_CAPABILITY_ID));
+    if (!cardId || missing.length) return c.json({
+      error: 'waiting_prerequisite', outcome: 'waiting_prerequisite',
+      capabilityId: ACQUISITION_INTELLIGENCE_CAPABILITY_ID,
+      unmetPrerequisites: cardId ? missing : ['parcel'],
+      canonicalSubject: { propertyCardId: cardId, subjectResolved: canonical.subjectResolved, officiallyVerified: canonical.officiallyVerified, basis: canonical.basis },
+    }, 409);
     // One run per Deal Card. A second press while one is in flight joins the
     // run already going rather than starting a competing read.
     const inFlight = acquisitionIntelligenceRuns.get(id);
@@ -11313,7 +11375,12 @@ export function registerLandosRoutes(app: Hono): void {
               id,
               deal.entity as CapabilityEntity,
               { itemIds },
-              { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
+              {
+                runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane },
+                runId,
+                signal: controller.signal,
+                isRunAuthoritative: (candidateRunId) => intelligenceStackRunStore.isAuthoritative(candidateRunId, id),
+              },
             );
             return 'error' in report ? null : report.after;
           },
@@ -11871,11 +11938,10 @@ export function registerLandosRoutes(app: Hono): void {
   app.post('/api/landos/deal-cards/:id/land-use/run', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
-    const deal = getDealCard(id);
-    if (!deal) return c.json({ error: 'deal card not found' }, 404);
-
-    const cardId = subjectCardId(deal);
-    if (!cardId || !getPropertyCard(cardId)) return c.json({ error: 'deal card has no subject property card' }, 409);
+    const subject = dealCardAssessorTaxSubject(id, ZONING_SUBDIVISION_CAPABILITY_ID);
+    if ('error' in subject) return c.json(subject, subject.status);
+    const { deal, cardId } = subject;
+    if (!getPropertyCard(cardId)) return c.json({ error: 'deal card has no subject property card' }, 409);
 
     // Subject facts an operator can supply. They are SELLER-REPORTED and are
     // used to screen physical plausibility and to generate discovery questions.
@@ -12112,11 +12178,30 @@ export function registerLandosRoutes(app: Hono): void {
   // Deal Card → Assessor & Tax. The subject is the Deal Card's existing
   // canonical Property Card; the capability reads it and never replaces it, so
   // a rerun can refresh the assessor record without touching property identity.
-  const dealCardAssessorTaxSubject = (id: number) => {
+  const dealCardAssessorTaxSubject = (id: number, capabilityId?: string) => {
     const deal = getDealCard(id);
     if (!deal) return { error: 'deal card not found' as const, status: 404 as const };
-    const cardId = subjectCardId(deal);
+    const canonical = resolveCanonicalSubjectState(id);
+    const cardId = canonical.propertyCardId ?? subjectCardId(deal);
     if (!cardId) return { error: 'this Deal Card has no canonical subject Property Card yet' as const, status: 409 as const };
+    if (capabilityId) {
+      const missing = unmetPrerequisites(canonical, capabilityPrerequisites(capabilityId));
+      if (missing.length) {
+        return {
+          error: 'waiting_prerequisite' as const,
+          status: 409 as const,
+          outcome: 'waiting_prerequisite' as const,
+          capabilityId,
+          unmetPrerequisites: missing,
+          canonicalSubject: {
+            propertyCardId: cardId,
+            subjectResolved: canonical.subjectResolved,
+            officiallyVerified: canonical.officiallyVerified,
+            basis: canonical.basis,
+          },
+        };
+      }
+    }
     return { deal, cardId };
   };
 
@@ -12174,8 +12259,8 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    const subject = dealCardAssessorTaxSubject(id);
-    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    const subject = dealCardAssessorTaxSubject(id, ASSESSOR_TAX_CAPABILITY_ID);
+    if ('error' in subject) return c.json(subject, subject.status);
     try {
       const result = await invokeRuntimeCapability({
         capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
@@ -12215,8 +12300,8 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    const subject = dealCardAssessorTaxSubject(id);
-    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    const subject = dealCardAssessorTaxSubject(id, LANDPORTAL_RESEARCH_CAPABILITY_ID);
+    if ('error' in subject) return c.json(subject, subject.status);
     try {
       const result = await invokeRuntimeCapability({
         capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
@@ -12258,8 +12343,8 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    const subject = dealCardAssessorTaxSubject(id);
-    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    const subject = dealCardAssessorTaxSubject(id, COMPS_VALUATION_CAPABILITY_ID);
+    if ('error' in subject) return c.json(subject, subject.status);
     try {
       const result = await invokeRuntimeCapability({
         capabilityId: COMPS_VALUATION_CAPABILITY_ID,
@@ -12301,8 +12386,8 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    const subject = dealCardAssessorTaxSubject(id);
-    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    const subject = dealCardAssessorTaxSubject(id, ZONING_SUBDIVISION_CAPABILITY_ID);
+    if ('error' in subject) return c.json(subject, subject.status);
     try {
       const result = await invokeRuntimeCapability({
         capabilityId: ZONING_SUBDIVISION_CAPABILITY_ID,
@@ -12345,8 +12430,8 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    const subject = dealCardAssessorTaxSubject(id);
-    if ('error' in subject) return c.json({ error: subject.error }, subject.status);
+    const subject = dealCardAssessorTaxSubject(id, PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID);
+    if ('error' in subject) return c.json(subject, subject.status);
     try {
       const result = await invokeRuntimeCapability({
         capabilityId: PROPERTY_DEVELOPMENT_HISTORY_CAPABILITY_ID,
@@ -12411,7 +12496,16 @@ export function registerLandosRoutes(app: Hono): void {
     const evidenceSatisfied = new Set(
       (evidence?.satisfiedFields ?? []).flatMap((field) => EVIDENCE_SATISFIES[field] ?? []),
     );
-    const result = await runResearchCoverageCycle({ dealCardId: id, entity, trigger }, {
+    // Coverage is an evidence-producing run in its own right. Give the entire
+    // backfill -> recovery -> cascade chain one durable authority record so a
+    // cancelled or superseded cycle cannot publish late specialist evidence.
+    const startedAt = new Date().toISOString();
+    const runId = `coverage_${id}_${Date.now().toString(36)}`;
+    const controller = new AbortController();
+    intelligenceStackRunStore.create({ runId, dealCardId: id, startedAt, progress: startRunProgress(runId, startedAt) });
+    let failure: string | null = null;
+    try {
+      const result = await runResearchCoverageCycle({ dealCardId: id, entity, trigger }, {
       reconcile: (dealCardId) => {
         const manifest = reconcileResearchReadiness(dealCardId);
         return isReconcileError(manifest) ? { error: manifest.error } : manifest;
@@ -12434,7 +12528,12 @@ export function registerLandosRoutes(app: Hono): void {
           dealCardId,
           subjectEntity,
           { itemIds: remaining, includeStale: true, includeUnresolved: options?.includeUnresolved === true },
-          { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
+          {
+            runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane },
+            runId,
+            signal: controller.signal,
+            isRunAuthoritative: (candidateRunId) => intelligenceStackRunStore.isAuthoritative(candidateRunId, id),
+          },
         );
         return 'error' in report ? null : report.after;
       },
@@ -12444,17 +12543,27 @@ export function registerLandosRoutes(app: Hono): void {
       // incomplete-but-sufficient evidence rather than staying silent.
       cascade: async (dealCardId) => {
         const deal = getDealCard(dealCardId);
-        const stackResult = await runIntelligenceStack({ dealCardId }, {
+        const stackResult = await runIntelligenceStack({ dealCardId, runId, signal: controller.signal }, {
           ...intelligenceStackReadDeps,
           analyst: createIntelligenceExecutor(),
-          investigateSpatial: (cardId, dossier) => investigatePropertyWithGev(cardId, dossier),
+          isRunAuthoritative: (candidateRunId) => intelligenceStackRunStore.isAuthoritative(candidateRunId, id),
+          investigateSpatial: (cardId, dossier) => investigatePropertyWithGev(cardId, dossier, {
+            runId,
+            signal: controller.signal,
+            isRunAuthoritative: (candidateRunId) => intelligenceStackRunStore.isAuthoritative(candidateRunId, id),
+          }),
           runBackfill: async (itemIds: string[]) => {
             if (!deal) return null;
             const report = await runResearchReadinessBackfill(
               dealCardId,
               deal.entity as CapabilityEntity,
               { itemIds },
-              { runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane } },
+              {
+                runtime: { runLandUseResearch: landUseResearchLane, runHistorySearch: propertyHistoryLane },
+                runId,
+                signal: controller.signal,
+                isRunAuthoritative: (candidateRunId) => intelligenceStackRunStore.isAuthoritative(candidateRunId, id),
+              },
             );
             return 'error' in report ? null : report.after;
           },
@@ -12468,9 +12577,25 @@ export function registerLandosRoutes(app: Hono): void {
         };
       },
       log: (event, detail) => logger.info(detail, event),
-    });
-    if (!('error' in result)) researchCoverageCycles.set(id, result);
-    return result;
+      });
+      if ('error' in result) failure = result.error;
+      else researchCoverageCycles.set(id, result);
+      return result;
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      const entry = intelligenceStackRunStore.get(runId);
+      if (entry?.authoritative) {
+        intelligenceStackRunStore.finish({
+          runId,
+          dealCardId: id,
+          status: failure ? 'failed' : 'complete',
+          progress: finishRunProgress(entry.progress, { error: failure }, new Date().toISOString()),
+          error: failure,
+        });
+      }
+    }
   };
 
   app.get('/api/landos/deal-cards/:id/research-readiness', (c) => {
@@ -12485,6 +12610,15 @@ export function registerLandosRoutes(app: Hono): void {
     const coverage = planResearchCoverage(manifest);
     return c.json({
       manifest,
+      canonicalSubject: (() => {
+        const subject = resolveCanonicalSubjectState(id);
+        return {
+          propertyCardId: subject.propertyCardId,
+          subjectResolved: subject.subjectResolved,
+          officiallyVerified: subject.officiallyVerified,
+          basis: subject.basis,
+        };
+      })(),
       coverage,
       evidenceRequirements: specialistEvidenceRequirements(coverage, manifest),
       lastCycle: researchCoverageCycles.get(id) ?? null,

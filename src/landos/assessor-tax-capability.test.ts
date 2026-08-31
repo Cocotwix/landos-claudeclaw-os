@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ASSESSOR_TAX_CAPABILITY,
@@ -168,6 +168,53 @@ describe('Assessor & Tax Capability', () => {
       note: 'The layer answered and held no record for this APN.',
     }]);
     expect(result.warnings.join(' ')).toContain('TN Comptroller statewide parcel layer');
+  });
+
+  it('invokes one governed recovery only after the deterministic ladder misses', async () => {
+    const { deal, card } = canonicalSubject();
+    let recoveryCalls = 0;
+    const result = await invokeRuntimeCapability({
+      capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+      context: { runId: 'intel_assessor_recovery' },
+    }, {
+      lookupParcel: async () => noMatch,
+      lookupCountyAssessor: async () => null,
+      recoverPublicRecords: async (recoveryInput) => {
+        recoveryCalls += 1;
+        expect(recoveryInput.runId).toBe('intel_assessor_recovery');
+        expect(recoveryInput.attempts).toHaveLength(1);
+        return {
+          status: 'RETURNED', outputFile: 'recovery.json', error: null,
+          admission: { evidenceIds: [91], duplicates: 0, propertyIdentityVersionId: 1, skippedReason: null },
+          evidence: [{ source: 'Williamson County Assessor', sourceUrl: 'https://example.gov/parcel/042123', sourceType: 'official_county_assessor', retrievedAt: '2026-08-30T12:00:00.000Z' }],
+          handback: {
+            schemaVersion: '1.0', runId: 'intel_assessor_recovery', dealCardId: deal.id, propertyCardId: card.id,
+            status: 'RETURNED', deterministicFailureReason: 'no match', recoveryReason: 'Official county page matched the APN.', subjectMatch: 'exact',
+            facts: [{ key: 'owner_of_record', label: 'Owner of record', value: 'RECOVERED OWNER LLC', sourceId: 'county', confidence: 'confirmed' }],
+            sources: [{ id: 'county', name: 'Williamson County Assessor', url: 'https://example.gov/parcel/042123', sourceType: 'official_county_assessor', retrievedAt: '2026-08-30T12:00:00.000Z', official: true }],
+            artifacts: [], unresolvedRequirements: [], exactFailureReason: null, attempts: [],
+          },
+        };
+      },
+    });
+    expect(recoveryCalls).toBe(1);
+    expect(result.status).toBe('SUCCEEDED');
+    expect(facts(result).assessor.ownerOfRecord).toBe('RECOVERED OWNER LLC');
+  });
+
+  it('does not invoke governed recovery when deterministic retrieval succeeds', async () => {
+    const { deal, card } = canonicalSubject();
+    const recoverPublicRecords = vi.fn();
+    await invokeRuntimeCapability({
+      capabilityId: ASSESSOR_TAX_CAPABILITY_ID,
+      caller: { type: 'deal_card', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh', context: { runId: 'intel_no_recovery' },
+    }, { lookupParcel: async () => matched(), recoverPublicRecords });
+    expect(recoverPublicRecords).not.toHaveBeenCalled();
   });
 
   it('falls through to the structured county assessor search when no parcel layer carries the county', async () => {

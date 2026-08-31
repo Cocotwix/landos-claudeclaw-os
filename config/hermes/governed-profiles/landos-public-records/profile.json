@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "landos-public-records",
+  "purpose": [
+    "Bounded recovery of one exact assessor, GIS, tax, recorder, or official-document requirement",
+    "Use only after deterministic adapters and their escalation ladders fail",
+    "Return structured, source-grounded evidence for LandOS admission"
+  ],
+  "invocation": {
+    "interactive": "hermes --profile landos-public-records chat",
+    "oneShot": "hermes --profile landos-public-records --skills landos-public-records-recovery -q <bounded-assignment>",
+    "requireExplicitAssignment": true
+  },
+  "io": {
+    "acceptedInputs": [
+      "established canonical subject",
+      "deterministic failure reason and exhausted attempts",
+      "exact unresolved public-record requirement",
+      "authoritative LandOS run id and output path"
+    ],
+    "producedOutputs": [
+      "structured public-record recovery result",
+      "exact-subject facts with source references",
+      "retained artifact references",
+      "blocked, operator-action, or no-record classifications"
+    ]
+  },
+  "authority": {
+    "may": [
+      "use bounded keyless public search and official public-record sources",
+      "operate the explicitly connected LandOS research browser through browser and CDP tools",
+      "write only the assigned recovery artifact",
+      "return structured evidence for guarded LandOS admission"
+    ],
+    "mustNot": [
+      "read or expose .env files, credentials, cookies, tokens, or browser storage",
+      "run arbitrary SQL or destructive deletes",
+      "mutate Deal Cards, valuation, strategy, offers, or seller CRM",
+      "reuse evidence from another property or accept an inexact subject match",
+      "use paid APIs, create accounts, accept legal terms, or self-certify implementation"
+    ],
+    "implementationAuthority": false,
+    "acceptanceAuthority": false
+  },
+  "capabilities": {
+    "skills": [
+      "landos-public-records-recovery",
+      "plan",
+      "duckduckgo-search"
+    ],
+    "toolsets": [
+      "browser",
+      "clarify",
+      "code_execution",
+      "computer_use",
+      "file",
+      "memory",
+      "session_search",
+      "skills",
+      "terminal",
+      "todo",
+      "vision",
+      "web"
+    ],
+    "tools": [
+      "browser_back",
+      "browser_cdp",
+      "browser_click",
+      "browser_console",
+      "browser_dialog",
+      "browser_get_images",
+      "browser_navigate",
+      "browser_press",
+      "browser_scroll",
+      "browser_snapshot",
+      "browser_type",
+      "browser_vision",
+      "clarify",
+      "computer_use",
+      "memory",
+      "patch",
+      "process",
+      "read_file",
+      "search_files",
+      "session_search",
+      "skill_manage",
+      "skill_view",
+      "skills_list",
+      "terminal",
+      "todo",
+      "vision_analyze",
+      "web_extract",
+      "web_search",
+      "write_file"
+    ],
+    "mcpServers": []
+  },
+  "storage": {
+    "profileRoot": "<HERMES_HOME>/profiles/landos-public-records",
+    "memory": "memories/",
+    "sessions": "sessions/",
+    "skills": "skills/",
+    "outputs": "assigned recovery artifact only; canonical admission remains inside LandOS"
+  },
+  "sessions": {
+    "reuse": "within-profile-only",
+    "crossProfileAccess": "denied",
+    "propertyIsolation": "one bounded exact-subject assignment per invocation",
+    "persistentMemory": true
+  }
+}

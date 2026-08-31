@@ -314,14 +314,16 @@ describe('LandPortal Research Capability', () => {
     };
 
     let inspected = false;
+    let retainedAfterInspection = false;
     const inspection = await invokeRuntimeCapability({
       ...base,
       capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
       parameters: { lane: 'parcel_inspection' },
     }, {
-      loadInspection: () => null,
+      loadInspection: () => retainedAfterInspection ? retainedInspection() : null,
       runParcelInspection: async () => {
         inspected = true;
+        retainedAfterInspection = true;
         return { ok: true, comparableCount: 4, note: 'LandPortal parcel read completed.' };
       },
     });
@@ -346,6 +348,43 @@ describe('LandPortal Research Capability', () => {
     expect(laneRan).toBe(true);
     expect(agentic.status).toBe('SUCCEEDED');
     expect(facts(agentic).agentic?.status).toBe('exact_match');
+  });
+
+  it('does not call a browser-only inspection completion a returned parcel record', async () => {
+    const { deal, card } = canonicalSubject();
+    const result = await invokeRuntimeCapability({
+      capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+      caller: { type: 'new_lead', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+      parameters: { lane: 'parcel_inspection' },
+    }, {
+      loadInspection: () => null,
+      runParcelInspection: async () => ({ ok: true, comparableCount: 0, note: 'Navigation completed but no record was retained.' }),
+    });
+
+    expect(result.status).toBe('NEEDS_INPUT');
+    expect(facts(result).outcome).toBe('not_available');
+    expect(result.missingInformation.join(' ')).toContain('retained LandPortal parcel URL');
+  });
+
+  it('does not accept an exact-match specialist verdict without persisted output', async () => {
+    const { deal, card } = canonicalSubject();
+    const result = await invokeRuntimeCapability({
+      capabilityId: LANDPORTAL_RESEARCH_CAPABILITY_ID,
+      caller: { type: 'new_lead', ref: `deal:${deal.id}` },
+      subject: { kind: 'canonical_property', entity: 'TY_LAND_BIZ', propertyCardId: card.id, dealCardId: deal.id },
+      mode: 'refresh',
+      parameters: { lane: 'agentic_specialists', runId: 'run-empty' },
+    }, {
+      loadInspection: () => null,
+      runAgenticSpecialists: async (input) => ({
+        status: 'exact_match', runId: input.runId, note: 'No durable output.', persistedCategories: [], workUnits: [],
+      }),
+    });
+
+    expect(result.status).toBe('NEEDS_INPUT');
+    expect(result.missingInformation.join(' ')).toContain('persisted output');
   });
 
   it('still refuses to adopt a LandPortal record before an exact parcel has been released', async () => {

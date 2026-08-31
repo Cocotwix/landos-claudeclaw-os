@@ -3,6 +3,7 @@
   "mcpManifest": "config/landos-mcp/hermes-mcp-fragment.yaml",
   "profileMcpAllowlists": {
     "landos-research": ["landos-read", "landos-research"],
+    "landos-public-records": [],
     "landos-visual-qa": ["landos-read", "landos-acceptance"],
     "landos-debug": ["landos-read"],
     "landos-knowledge": ["landos-read"],
@@ -10,6 +11,7 @@
   },
   "profileMcpDenylists": {
     "landos-research": ["landos-acceptance"],
+    "landos-public-records": ["landos-acceptance", "landos-research", "landos-read"],
     "landos-visual-qa": ["landos-research"],
     "landos-debug": ["landos-acceptance", "landos-research"],
     "landos-knowledge": ["landos-acceptance", "landos-research"],

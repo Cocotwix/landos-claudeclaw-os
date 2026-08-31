@@ -7,7 +7,7 @@
       "status": "approved-enabled",
       "runtimeState": "installed",
       "runtimeVersion": "9.14.4",
-      "profiles": ["landos-research"]
+      "profiles": ["landos-research", "landos-public-records"]
     },
     "grounded-citations": {
       "selection": "required",

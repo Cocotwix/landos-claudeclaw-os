@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { apiGet, apiPost } from '@/lib/api';
+import { useCanonicalParcelGate } from '@/lib/useCanonicalParcelGate';
 
 interface ZoningSubdivisionRunResult {
   invocationId: string;
@@ -108,6 +109,7 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ZoningSubdivisionRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const gate = useCanonicalParcelGate(dealId);
 
   // Load the persisted result on open/refresh — a normal page view READS what
   // the shared Capability already computed and stored; it never triggers a
@@ -166,7 +168,8 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
       <button
         type="button"
         data-testid="awv2-zoning-subdivision-run-button"
-        disabled={running}
+        disabled={running || gate.blocked}
+        title={gate.blocked ? gate.reason : 'Run Zoning & Subdivision'}
         onClick={() => { void invoke(); }}
       >
         {running ? 'Researching the land-use rules…' : 'Run Zoning & Subdivision'}
@@ -174,6 +177,7 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
       {' '}Establishes the controlling jurisdiction and reads its zoning and subdivision rules for this
       Deal Card&apos;s existing canonical parcel through the shared LandOS Capability, then applies those
       rules to the parcel. It never changes which parcel this card is about.
+      {gate.blocked && <div class="awv2-pi-note">Waiting for prerequisite: {gate.reason}</div>}
       {error && <div class="awv2-pi-note" role="alert">{error}</div>}
       {result && (
         <div class="awv2-zoning-subdivision-run-result" data-testid="awv2-zoning-subdivision-run-result">

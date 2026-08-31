@@ -50,6 +50,8 @@ export interface DerivedEvidenceInput {
   retrievedAt: string;
   /** What makes this row distinct. Hashed into the idempotency key. */
   dedupeOn: string;
+  /** Retained page/document/screenshot that carried this fact, when present. */
+  artifactRef?: string | null;
 }
 
 export interface DerivedEvidenceResult {
@@ -147,7 +149,7 @@ export function writeEvidence(input: EvidenceAdmissionInput): DerivedEvidenceRes
         input.collectorKey,
         row.retrievedAt,
         row.retrievedAt,
-        null,
+        row.artifactRef ?? null,
         input.capabilityId,
         input.runId ?? null,
         typeof row.normalized === 'string' ? row.normalized : stableJson(row.normalized),

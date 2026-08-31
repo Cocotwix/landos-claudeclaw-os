@@ -291,6 +291,9 @@ export interface MarketPulseHandback {
   marketScan?: unknown;
   marketMatrixAvailable: boolean;
   marketPulseAvailable: boolean;
+  /** County research + County Pulse + ZIP research scheduled independently as
+   * soon as their own geography exists. */
+  marketPrerequisites?: Record<string, unknown>;
   facts: SnapshotFact[];
   summary: string;
 }

@@ -104,6 +104,36 @@ beforeEach(() => {
 });
 
 describe('intake auto-launch: one lead, one mission', () => {
+  it('hands a usable completed mission into the post-completion production loop exactly once', async () => {
+    const missionStore = new MissionGraphStore();
+    const snapshotStore = new PropertyIntelligenceStore();
+    let finish: () => void = () => {};
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    const handbacks: Array<{ runId: string; status: string; snapshotStatus: string }> = [];
+
+    const launch = autoLaunchDealIntelligenceForIntake({
+      dealCardId: 60,
+      opportunityId: 9060,
+      capabilities: caps(),
+      missionStore,
+      snapshotStore,
+      hooks: { research: () => {}, discoveryBrief: () => {} },
+      afterCompletion: ({ launch: completed, snapshot, status }) => {
+        handbacks.push({ runId: completed.runId, status, snapshotStatus: snapshot.status });
+        finish();
+      },
+      ...RUN_OPTS,
+    });
+    if (!launch) throw new Error('intake auto-launch returned null for a valid lead');
+    await finished;
+
+    expect(handbacks).toEqual([{
+      runId: launch.runId,
+      status: expect.stringMatching(/complete|partial/),
+      snapshotStatus: expect.stringMatching(/complete|partial/),
+    }]);
+  });
+
   it('one valid intake produces EXACTLY one active mission and one active run', async () => {
     const missionStore = new MissionGraphStore();
     const snapshotStore = new PropertyIntelligenceStore();
