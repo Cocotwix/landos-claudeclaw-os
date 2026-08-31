@@ -128,6 +128,78 @@ const APN_TOKEN_RE = new RegExp(`\\b${APN_TOKEN_SOURCE}\\b`, 'g');
 const APN_SHAPE_RE = new RegExp(`^${APN_TOKEN_SOURCE}$`);
 const APN_DECIMAL_RE = /\b\d{2,6}\.\d{1,4}\b/g;
 
+// ── A measurement standing next to a parcel number is not part of it ─────────
+// A lead that reads "APN 00083-A-03400 1.5 AC BRADFORD COUNTY, FL" puts an
+// acreage figure immediately after the parcel number, and the APN token scanner
+// treats a space as a segment separator — so it captured "00083-A-03400 1.5" as
+// the parcel identifier. That corrupted identifier then became the Deal's
+// canonical APN, and every later comparison was answering the wrong question:
+// the subject survey naming 00083-A-03400 read as ANOTHER parcel, the subject
+// stayed unresolved, and governing acreage never established. Deal 114 (Bradford
+// County, FL) is the acceptance case; the defect is system-wide and affects every
+// intake whose parcel number is followed by an acreage.
+//
+// The rule is deliberately narrow, so it can never truncate a real parcel
+// number: the discarded token must be separated from the identifier by
+// WHITESPACE (a "-" or "." joins segments INSIDE one parcel number, so
+// "094-020.08" is untouched), it must be a plain quantity, and an acreage unit
+// must follow it in the source text. Nothing else is removed.
+const ACREAGE_UNIT_WORD_RE = /^[ \t]*(?:acs?|acres?)(?![a-z])/i;
+// The SAME lead with its line breaks lost runs the unit into the next line:
+// "...1.5 ACBRADFORD COUNTY, FL". A case transition from "AC" straight into
+// another capitalised word is that signature, and it is deliberately
+// case-SENSITIVE so ordinary lowercase prose can never trip it.
+const ACREAGE_UNIT_GLUED_RE = /^[ \t]*AC(?=[A-Z])/;
+const MEASUREMENT_TOKEN_RE = /^\d{1,4}(?:\.\d{1,4})?$/;
+/** The identifier must remain a substantial parcel number after the trim. */
+const MIN_REMAINING_APN_DIGITS = 5;
+
+/** Does an acreage unit stand immediately after this span in the source text? */
+function acreageUnitFollows(following: string): boolean {
+  return ACREAGE_UNIT_WORD_RE.test(following) || ACREAGE_UNIT_GLUED_RE.test(following);
+}
+
+/**
+ * Split an acreage that was run TOGETHER with the parcel number's last digits.
+ *
+ * Deal 114's lead lost its line breaks, so "00083-A-03400" and "1.5 AC" arrived
+ * as "00083-A-034001.5 AC". The fraction is unambiguous; only the whole part's
+ * length is in question, and an acreage whole part is never written with a
+ * leading zero ("01.5 acres" is not a thing). The shortest leading-zero-free
+ * suffix of the digit run is therefore the measurement, and what precedes it is
+ * the parcel number. Returns null when no such split exists.
+ */
+function splitGluedAcreage(raw: string): string | null {
+  const tail = raw.match(/(\d+)\.(\d{1,4})$/);
+  if (!tail) return null;
+  const digits = tail[1]!;
+  for (let take = 1; take < digits.length; take += 1) {
+    const whole = digits.slice(digits.length - take);
+    if (whole.startsWith('0')) continue;
+    const head = raw.slice(0, raw.length - (tail[0]!.length - (digits.length - take)));
+    if (head.replace(/[^0-9]/g, '').length < MIN_REMAINING_APN_DIGITS) return null;
+    // The parcel number must still end on its own digit run, never mid-separator.
+    return /[0-9A-Za-z]$/.test(head) ? head : null;
+  }
+  return null;
+}
+
+/**
+ * Drop a trailing acreage figure the span scanner swallowed into an APN.
+ * `following` is the source text immediately after the captured span, which is
+ * what proves the trailing token is a measurement rather than a parcel segment.
+ */
+export function dropTrailingMeasurement(raw: string, following: string): string {
+  if (!acreageUnitFollows(following)) return raw;
+  const split = raw.match(/^(.*\S)[ \t]+(\S+)$/);
+  if (split) {
+    const [, head, tail] = split as unknown as [string, string, string];
+    if (MEASUREMENT_TOKEN_RE.test(tail) && head.replace(/[^0-9]/g, '').length >= MIN_REMAINING_APN_DIGITS) return head;
+    return raw;
+  }
+  return splitGluedAcreage(raw) ?? raw;
+}
+
 /**
  * Find every APN-shaped token in the text and normalize it. The first LABELED
  * APN ("Parcel ID:", "APN:", "Parcel No:") is the primary; every other distinct
@@ -139,15 +211,27 @@ export function extractApnCandidates(text: string): ApnCandidates {
 
   // Collect every APN-shaped span with its position so fragments contained
   // inside a longer match (e.g. the "020.08" tail of "094-020.08") are dropped.
-  type Span = { raw: string; start: number; end: number };
+  // `cover` is how much SOURCE TEXT the match consumed; `raw` may be shorter
+  // when a swallowed acreage was trimmed off. Containment is judged on cover, so
+  // trimming an acreage off a parcel number can never expose that acreage as a
+  // second parcel.
+  type Span = { raw: string; start: number; end: number; cover: number };
   const spans: Span[] = [];
-  for (const m of t.matchAll(APN_TOKEN_RE)) spans.push({ raw: m[0], start: m.index ?? 0, end: (m.index ?? 0) + m[0].length });
-  for (const m of t.matchAll(APN_DECIMAL_RE)) spans.push({ raw: m[0], start: m.index ?? 0, end: (m.index ?? 0) + m[0].length });
+  for (const m of t.matchAll(APN_TOKEN_RE)) {
+    const start = m.index ?? 0;
+    const cover = start + m[0].length;
+    const raw = dropTrailingMeasurement(m[0], t.slice(cover));
+    spans.push({ raw, start, end: start + raw.length, cover });
+  }
+  for (const m of t.matchAll(APN_DECIMAL_RE)) {
+    const start = m.index ?? 0;
+    spans.push({ raw: m[0], start, end: start + m[0].length, cover: start + m[0].length });
+  }
   // Longest-at-a-position first, then drop any span fully contained in a kept one.
-  spans.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  spans.sort((a, b) => a.start - b.start || (b.cover - b.start) - (a.cover - a.start));
   const kept: Span[] = [];
   for (const s of spans) {
-    if (kept.some((k) => s.start >= k.start && s.end <= k.end)) continue;
+    if (kept.some((k) => s.start >= k.start && s.cover <= k.cover)) continue;
     kept.push(s);
   }
 
@@ -173,9 +257,13 @@ export function extractApnCandidates(text: string): ApnCandidates {
   // trailing period survives into the property card and then defeats the EXACT
   // match an official county/state parcel layer requires, so a genuinely
   // resolvable parcel silently stays provisional.
-  const labeled = t.match(
+  const labeledMatch = t.match(
     new RegExp(`\\b(?:apn|parcel(?:\\s*(?:id|no|no\\.|number|#))?)[:\\s]+((?:[A-Za-z]{1,4}\\d{0,6}[ \\t.\\/\\-]+)?${APN_TOKEN_SOURCE})`, 'i'),
-  )?.[1]?.trim().replace(/[\s.\/\-]+$/, '');
+  );
+  const labeledRaw = labeledMatch?.[1]?.trim().replace(/[\s.\/\-]+$/, '');
+  const labeled = labeledRaw
+    ? dropTrailingMeasurement(labeledRaw, t.slice((labeledMatch!.index ?? 0) + labeledMatch![0].length))
+    : labeledRaw;
   const labeledNorm = labeled ? normalizeApn(labeled) : null;
   if (labeledNorm) {
     // Drop the prefix-stripped fragment the span scanner produced (its digits are

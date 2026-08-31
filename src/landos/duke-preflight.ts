@@ -1,6 +1,6 @@
 import { logger } from '../logger.js';
 import { resolveParcelIdentity, type LpResolveArgs, type LpResolveResult } from './parcel-capability.js';
-import { maskFieldLabels } from './intake-normalize.js';
+import { dropTrailingMeasurement, maskFieldLabels } from './intake-normalize.js';
 
 export type DukePreflightOutcome =
   | { type: 'skip' }
@@ -220,9 +220,15 @@ function extractApnShaped(text: string): string | undefined {
   // map-block-parcel APN like "094-020.08" is captured WHOLE, not truncated to
   // its decimal tail "020.08". Separators are [ \t] only (never \s) so the token
   // never merges across a newline with the next line's house number.
-  const bare =
-    text.match(/\b\d{2,6}(?:[ \t]*[.\/\-][ \t]*\d{1,6}|[ \t]+\d{1,6}){1,4}\b/)?.[0] ??
-    text.match(/\b\d{2,6}\.\d{1,4}\b/)?.[0];
+  // An acreage beside the parcel number is not part of it — the same shared rule
+  // the Smart Intake scanner applies, so this fallback cannot reintroduce the
+  // corrupted identifier the labeled path above now rejects.
+  const bareMatch =
+    text.match(/\b\d{2,6}(?:[ \t]*[.\/\-][ \t]*\d{1,6}|[ \t]+\d{1,6}){1,4}\b/) ??
+    text.match(/\b\d{2,6}\.\d{1,4}\b/);
+  const bare = bareMatch
+    ? dropTrailingMeasurement(bareMatch[0], text.slice((bareMatch.index ?? 0) + bareMatch[0].length))
+    : undefined;
   for (const cand of [labeled, bare]) {
     const apn = pickApnShape(cand);
     if (apn) return apn;
@@ -334,8 +340,15 @@ export function extractPropertyArgs(text: string): LpResolveArgs | null {
   // pasted lead using the county's own wording must not fall through to the
   // capped dash pattern below, which truncates long multi-group parcel IDs.
   const apnKwMatch = text.match(/\b(?:apn|parcel(?:[^\S\n]*(?:id|no\.?|number|#))?)[:\s]+((?:(?=\S*[A-Za-z])(?=\S*\d)[A-Za-z0-9]{2,6}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*(?:[^\S\n]+(?:[A-Za-z]{1,2}[^\S\n]+)?(?=[0-9A-Za-z./\-]*[0-9])[0-9A-Za-z][0-9A-Za-z./\-]*)*)/i);
+  // An acreage standing beside the parcel number is not part of it. This path
+  // OUTRANKS the shared scanner, so it must apply the SAME rule or the corrupted
+  // identifier simply wins here instead — which is how "00083-A-03400" plus the
+  // seller's "1.5 AC" became one Deal's canonical parcel number.
   const apnKw = apnKwMatch && !LABELED_ADDRESS_VALUE_RE.test(text.slice(apnKwMatch.index ?? 0))
-    ? apnKwMatch[1]?.replace(/[^\S\n]+/g, ' ').trim().replace(/[\s./\-]+$/, '')
+    ? dropTrailingMeasurement(
+      apnKwMatch[1]?.replace(/[^\S\n]+/g, ' ').trim().replace(/[\s./\-]+$/, '') ?? '',
+      text.slice((apnKwMatch.index ?? 0) + apnKwMatch[0].length),
+    ) || undefined
     : undefined;
   // A parcel number carries at least five digits. Without this floor the token
   // class above stops at the first non-parcel word and hands back the leading
