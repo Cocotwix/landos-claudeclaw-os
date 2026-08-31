@@ -38,6 +38,7 @@ import { getLandosDb, landosAudit } from './db.js';
 import { ownerNameTokens, roadNameTokens, scoreResultCandidate } from './website-intelligence.js';
 import type { ResultCandidate } from './website-intelligence.js';
 import { apnIdentifiersCorroborate } from './apn-identity.js';
+import { looksLikeStreetAddress } from './lead-identity.js';
 
 export const LANDPORTAL_CAPABILITY_BASE = 'https://landportal.com';
 
@@ -59,6 +60,14 @@ export interface LandPortalSubject {
   acreage?: number | null;
   lat?: number | null;
   lng?: number | null;
+}
+
+/** A real operator/source street that may participate in parcel identity.
+ * Storage labels such as `Parcel 023.003-02` name a lead but are not situs
+ * addresses and must never contradict the actual road shown by a parcel panel. */
+export function landPortalSubjectStreet(subject: LandPortalSubject): string | undefined {
+  const address = subject.address?.trim();
+  return address && looksLikeStreetAddress(address) ? address : undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,13 +317,14 @@ function acreageMatches(text: string, acreage?: number | null): boolean {
  */
 export function rankLandPortalResults(candidates: ResultCandidate[], subject: LandPortalSubject): RankedLandPortalResult[] {
   const ownerToks = subject.owner ? ownerNameTokens(subject.owner) : [];
-  const roadToks = subject.address ? roadNameTokens(subject.address) : [];
+  const subjectStreet = landPortalSubjectStreet(subject);
+  const roadToks = subjectStreet ? roadNameTokens(subjectStreet) : [];
   const apnForms = [subject.apn, ...(subject.apnAlternates ?? [])].filter((x): x is string => !!x && compactId(x).length >= 4);
 
   return candidates
     .map((candidate) => {
       const score = scoreResultCandidate(candidate, {
-        apn: subject.apn, address: subject.address, owner: subject.owner,
+        apn: subject.apn, address: subjectStreet, owner: subject.owner,
         city: subject.city, county: subject.county, state: subject.state,
       });
       const hay = candidate.text.toLowerCase();
@@ -350,6 +360,7 @@ export function verifyResultSelection(
   subject: LandPortalSubject,
 ): { checkpoint: VisualCheckpoint; selected: RankedLandPortalResult | null; ranked: RankedLandPortalResult[] } {
   const ranked = rankLandPortalResults(candidates, subject);
+  const subjectStreet = landPortalSubjectStreet(subject);
   const confirmed: string[] = [];
   const blockers: string[] = [];
 
@@ -364,7 +375,7 @@ export function verifyResultSelection(
     // Cross-county collision guard: an APN-only match that contradicts BOTH the
     // known road and the known jurisdiction is a different parcel.
     const contradictsPlace = jurisdictionKnown && !r.comparison.city && !r.comparison.county;
-    const contradictsRoad = !!subject.address && !r.comparison.road;
+    const contradictsRoad = !!subjectStreet && !r.comparison.road;
     if (r.comparison.apn && contradictsPlace && contradictsRoad) return false;
     return true;
   });
@@ -423,11 +434,12 @@ export function verifyParcelSelected(frame: ParcelDetailFrame, subject: LandPort
     else blockers.push(`Owner on the parcel detail is "${frame.owner}", subject owner is "${subject.owner}".`);
   }
   let situsCorroborated = false;
-  if (subject.address) {
-    const toks = roadNameTokens(subject.address);
+  const subjectStreet = landPortalSubjectStreet(subject);
+  if (subjectStreet) {
+    const toks = roadNameTokens(subjectStreet);
     if (!frame.address) unverified.push('The parcel detail does not display a situs address.');
     else if (toks.length && toks.every((t) => norm(frame.address).includes(t))) { situsCorroborated = true; confirmed.push(`Road/situs matches: ${frame.address}.`); }
-    else blockers.push(`Road on the parcel detail is "${frame.address}", subject road is "${subject.address}".`);
+    else blockers.push(`Road on the parcel detail is "${frame.address}", subject road is "${subjectStreet}".`);
   }
   if (subject.county) {
     if (!frame.county) unverified.push('The parcel detail does not display a county.');

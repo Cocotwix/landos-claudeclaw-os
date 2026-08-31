@@ -648,6 +648,10 @@ export function extractAreaSignals(text: string): { city?: string; county?: stri
   );
   let county = countyMatch?.[1]?.replace(/\s+/g, ' ').trim();
   if (!county) {
+    const abbreviated = [...t.matchAll(/\b([A-Z][A-Za-z.'\-]*(?:\s+[A-Z][A-Za-z.'\-]*)?)\s+(?:Co\.(?!\w)|Co(?=\s*(?:[,;\n]|[A-Z]{2}\b|Tennessee\b|$)))/g)].at(-1);
+    county = abbreviated?.[1]?.replace(/\s+/g, ' ').trim();
+  }
+  if (!county) {
     // Labeled "County: <Name>" (CRM/record exports); exclude road words + state names.
     const labeled = t.match(/\bcounty[:\s]+([A-Z][a-zA-Z.'\-]+)\b/i)?.[1];
     if (labeled && !/^(?:road|rd|line|route|rte|highway|hwy)$/i.test(labeled) && !resolveState(labeled)) {
@@ -667,7 +671,7 @@ export function extractAreaSignals(text: string): { city?: string; county?: stri
   }
   // "County: Cherokee, GA" sets both county and city to Cherokee — the value is
   // the county, so drop the redundant city echo.
-  if (city && county && city.toLowerCase() === county.toLowerCase()) city = undefined;
+  if (city && county && city.replace(/\s+(?:co\.?|county)$/i, '').trim().toLowerCase() === county.toLowerCase()) city = undefined;
   return {
     ...(city ? { city } : {}),
     ...(county ? { county } : {}),

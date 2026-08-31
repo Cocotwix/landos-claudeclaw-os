@@ -25,8 +25,10 @@ function seedResearchGradeSubject(id: number, verificationStatus: string): numbe
       apn, county, state, city, zip, owner, acres, fips, verification_source)
     VALUES (?, 'TY_LAND_BIZ', ?, '1206 Mockingbird Valley Rd', 'mockingbird valley rd',
       '4870-90-2087', 'Iredell', 'NC', 'Statesville', '28625', 'DOE JOHN', 10.5, '37097',
-      'LandPortal authenticated parcel panel')
-  `).run(id, verificationStatus);
+      ?)
+  `).run(id, verificationStatus, verificationStatus === 'verified_property'
+    ? 'Official Iredell County assessor parcel record'
+    : 'LandPortal authenticated parcel panel');
   db.prepare(`INSERT INTO landos_deal_card_property (deal_card_id, card_id, role) VALUES (?, ?, 'subject')`).run(id, id);
   writeParcelIdentity(id, {
     subjectCardId: id, state: 'confirmed', confidence: 0.9,
@@ -60,6 +62,15 @@ describe('subjectResolved is independent of officiallyVerified', () => {
     expect(subject.subjectResolved).toBe(true);
     expect(subject.officiallyVerified).toBe(true);
     expect(subject.apn).toBe('4870-90-2087');
+  });
+
+  it('a legacy verified-property flag backed only by a provider does not imply official verification', () => {
+    const id = seedResearchGradeSubject(77, 'verified_property');
+    getLandosDb().prepare(`UPDATE landos_property_card
+      SET verification_source = 'LandPortal authenticated parcel panel' WHERE id = ?`).run(id);
+    const subject = resolveCanonicalSubjectState(id);
+    expect(subject.subjectResolved).toBe(true);
+    expect(subject.officiallyVerified).toBe(false);
   });
 
   it('an unestablished subject is neither resolved nor verified, and erases nothing it does not have', () => {

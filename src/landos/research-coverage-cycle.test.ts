@@ -181,9 +181,28 @@ describe('the cycle', () => {
     expect('error' in result ? null : result.attemptedItemIds).toEqual([]);
   });
 
+  it('does not automatically reopen a lane that already returned a blocked answer', async () => {
+    const blocked = manifestOf([item('public_water', 'red', { attempted: true })]);
+    let backfillCalls = 0;
+    let cascadeCalls = 0;
+    const result = await runResearchCoverageCycle({ dealCardId: 90, entity, trigger: 'automatic' }, {
+      reconcile: () => blocked,
+      backfill: async () => { backfillCalls++; return blocked; },
+      cascade: async () => {
+        cascadeCalls++;
+        return { outcome: 'produced', reason: null, refreshedLayers: ['property'], reusedLayers: [] };
+      },
+    });
+
+    expect(backfillCalls).toBe(0);
+    expect(cascadeCalls).toBe(1);
+    expect('error' in result ? null : result.attemptedItemIds).toEqual([]);
+    expect('error' in result ? null : result.after?.entries[0].state).toBe('BLOCKED');
+  });
+
   it('keeps the cycle bounded and honest when retrieval fails', async () => {
     const stuck = manifestOf([item('public_water', 'red', { attempted: true })]);
-    const result = await runResearchCoverageCycle({ dealCardId: 90, entity }, {
+    const result = await runResearchCoverageCycle({ dealCardId: 90, entity, trigger: 'operator_rerun' }, {
       reconcile: () => stuck,
       backfill: async () => { throw new Error('utility screen transport refused'); },
       cascade: async () => ({ outcome: 'produced', reason: null, refreshedLayers: ['property'], reusedLayers: [] }),

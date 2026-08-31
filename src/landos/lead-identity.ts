@@ -307,7 +307,11 @@ export function sanitizeLocalityCandidate(
   value: string | null | undefined,
   options: { allowStateName?: boolean } = {},
 ): string | null {
-  const text = (value ?? '').trim().replace(/\s+/g, ' ').replace(/[.,;:]+$/, '');
+  // "near Birchwood" and "around Cleveland" express locality uncertainty;
+  // the qualifier is not part of the place name. The caller already retains
+  // candidate/uncertain provenance, so strip only this leading prose token.
+  const text = (value ?? '').trim().replace(/\s+/g, ' ').replace(/[.,;:]+$/, '')
+    .replace(/^(?:near|around|outside(?:\s+of)?)\s+/i, '');
   if (!text) return null;
   if (/[.;:0-9]/.test(text)) return null;
   const tokens = text.split(' ');

@@ -671,7 +671,10 @@ export async function runIntelligenceStack(
   if (isManifest(manifestOrError)) {
     manifest = manifestOrError;
     const criticalGaps = manifest.items
-      .filter((item) => item.status === 'red' && item.machineBackfillAllowed && item.blocksIntelligence)
+      // The coverage cycle owns retries. Intelligence preflight may fill an
+      // untouched critical gap, but it must not immediately repeat a source
+      // lane that already returned an honest no-answer for this subject.
+      .filter((item) => item.status === 'red' && !item.attempted && item.machineBackfillAllowed && item.blocksIntelligence)
       .map((item) => item.id);
     if (criticalGaps.length && deps.runBackfill) {
       try {

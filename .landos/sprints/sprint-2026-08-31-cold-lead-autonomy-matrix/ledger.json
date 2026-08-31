@@ -1,0 +1,1121 @@
+{
+  "schema": 1,
+  "sprintId": "sprint-2026-08-31-cold-lead-autonomy-matrix",
+  "title": "Cold-Lead Autonomy and Acceptance Matrix",
+  "createdAt": "2026-08-31T01:36:45.380Z",
+  "originalPrompt": "# LANDOS SPRINT 3\r\n# COLD-LEAD AUTONOMY & ACCEPTANCE MATRIX\r\n\r\nSprint 2 — New Lead → Complete Deal Card Production Vertical Slice — is COMPLETE, committed, pushed, and remotely verified.\r\n\r\nAccepted baseline commit:\r\n\r\n`faa6051eb7169cd11af2ed9a4cb7f23e54375f70`\r\n\r\nTrust actual current HEAD first.\r\n\r\nDo not reset or roll back legitimate newer work.\r\n\r\nThis sprint is primarily an ACCEPTANCE / HARDENING sprint.\r\n\r\nDo NOT redesign LandOS architecture.\r\nDo NOT create another agent framework.\r\nDo NOT re-audit the repository.\r\nDo NOT rebuild systems already accepted in Sprints 1–2.\r\n\r\nThe purpose is to test whether a normal operator can throw different kinds of real-world lead information into New Lead, walk away, and receive the most complete honest Deal Card LandOS can produce.\r\n\r\n---\r\n\r\n# CORE QUESTION\r\n\r\nDoes New Lead → Deal Card now work across realistic intake permutations without developer babysitting?\r\n\r\nTest it.\r\n\r\nDo not assume it works because the previous representative cases passed.\r\n\r\n---\r\n\r\n# PRODUCT STANDARD\r\n\r\nThe target experience is:\r\n\r\nmessy seller/property input\r\n→ LandOS understands whatever it can\r\n→ establishes the working property through any sufficient route\r\n→ starts independent research as soon as each lane has enough context\r\n→ deterministic tools run first\r\n→ incomplete deterministic output triggers bounded intelligent recovery\r\n→ evidence is admitted\r\n→ readiness reconciles/re-plans\r\n→ intelligence is regenerated\r\n→ operator receives an honest Deal Card\r\n\r\nClarification is an exception.\r\n\r\nDeveloper intervention during the research run is a failure of autonomy unless a genuine external/human requirement exists.\r\n\r\n---\r\n\r\n# FIRST — INSPECT CURRENT STATE BRIEFLY\r\n\r\nBefore testing:\r\n\r\n1. confirm current HEAD\r\n2. confirm worktree state\r\n3. confirm accepted Sprint 2 systems are present\r\n4. confirm local runtime can start cleanly\r\n5. inspect current test/fixture capabilities for creating disposable leads\r\n\r\nDo not perform broad architecture exploration.\r\n\r\n---\r\n\r\n# COLD-LEAD MATRIX\r\n\r\nExercise a minimum of FIVE fresh controlled New Lead cases.\r\n\r\nPrefer real publicly resolvable properties or safe existing fixtures where appropriate.\r\n\r\nDo not fabricate external evidence simply to manufacture successful results.\r\n\r\nEach test should represent a materially different intake shape.\r\n\r\n## CASE 1 — ADDRESS + APN\r\n\r\nSupply:\r\n\r\n- complete street address\r\n- APN\r\n- minimal seller/contact information\r\n\r\nExpected:\r\n\r\n- property established\r\n- APN normalized\r\n- county/ZIP work starts as prerequisites arrive\r\n- parcel-specific work follows subject establishment\r\n- Deal Card completes as far as available evidence allows\r\n\r\nThis is the standard control case.\r\n\r\n---\r\n\r\n## CASE 2 — ADDRESS ONLY\r\n\r\nSupply:\r\n\r\n- complete valid street address\r\n- NO APN\r\n\r\nExpected:\r\n\r\nLandOS resolves the property itself.\r\n\r\nIt must not ask Tyler for an APN merely because one was not supplied if the property can be independently established.\r\n\r\nVerify:\r\n\r\naddress\r\n→ jurisdiction\r\n→ parcel resolution\r\n→ canonical subject\r\n→ downstream research\r\n\r\n---\r\n\r\n## CASE 3 — APN / PARCEL ONLY\r\n\r\nSupply:\r\n\r\n- parcel/APN\r\n- enough jurisdiction context to make the identifier reasonably usable\r\n- NO street address\r\n\r\nExpected:\r\n\r\nLandOS searches for the property rather than requiring the operator to provide an address.\r\n\r\nIf the APN uniquely establishes the property:\r\n→ proceed.\r\n\r\nIf it genuinely cannot be uniquely resolved:\r\n→ honest unresolved/clarification state.\r\n\r\nDo not fabricate an address.\r\n\r\n---\r\n\r\n## CASE 4 — ALTERNATE POINTER / DOCUMENT-LED\r\n\r\nUse one valid non-standard property pointer such as:\r\n\r\n- exact LandPortal parcel URL\r\n- subject-matching survey\r\n- deed\r\n- other existing supported property document\r\n\r\nPrefer the safest currently supported path.\r\n\r\nExpected:\r\n\r\nLandOS recognizes that the document/link points to THE PROPERTY.\r\n\r\nIt must not require redundant APN/address corroboration merely because the intake path is different.\r\n\r\nAny extracted document evidence must retain provenance.\r\n\r\n---\r\n\r\n## CASE 5 — MESSY / PARTIAL INTAKE\r\n\r\nSupply realistic imperfect seller-style input.\r\n\r\nExamples:\r\n\r\n- owner name + partial location/address\r\n- incomplete street formatting\r\n- parcel notation with punctuation variation\r\n- conversational text containing multiple potentially useful clues\r\n- other non-clean intake shape\r\n\r\nDo NOT make it intentionally impossible.\r\n\r\nThe case should be difficult but reasonably resolvable.\r\n\r\nExpected behavior:\r\n\r\nLandOS combines clues and attempts autonomous resolution.\r\n\r\nIf sufficiently clear:\r\n→ proceed.\r\n\r\nIf uncertainty is non-blocking:\r\n→ proceed with clearly labeled working conclusion.\r\n\r\nOnly if a decision-changing ambiguity survives reasonable autonomous investigation:\r\n→ one concise high-value clarification / NEEDS_OPERATOR_ACTION state.\r\n\r\nNo interview loop.\r\n\r\n---\r\n\r\n# OPTIONAL SIXTH CASE — TRUE UNRESOLVABLE\r\n\r\nIf useful and inexpensive, include one intentionally insufficient lead.\r\n\r\nPurpose:\r\n\r\nprove LandOS knows when NOT to hallucinate.\r\n\r\nExpected:\r\n\r\n- geography-safe research may still run if geography is known\r\n- parcel-specific work waits\r\n- no invented APN\r\n- no invented acreage\r\n- no invented zoning\r\n- no invented valuation\r\n- exact unresolved requirement communicated truthfully\r\n\r\nThis case should NOT count as a failed sprint merely because the property is genuinely unresolvable.\r\n\r\nCorrect refusal is PASS behavior.\r\n\r\n---\r\n\r\n# FOR EVERY TEST CASE CAPTURE\r\n\r\nRecord:\r\n\r\n- exact input supplied\r\n- what LandOS extracted from intake\r\n- initial canonical Subject State\r\n- how property establishment occurred\r\n- whether clarification was requested\r\n- when county became available\r\n- when ZIP became available\r\n- when exact subject became available\r\n- capability schedule/order\r\n- deterministic failures\r\n- adaptive recovery attempts\r\n- final evidence landed\r\n- Research Readiness states\r\n- current Property Intelligence\r\n- current Market Intelligence\r\n- current Seller Intelligence\r\n- current Deal Intelligence\r\n- final Deal Card state\r\n- operator action genuinely required, if any\r\n- runtime duration where practical\r\n\r\nDo not expose internal details in normal operator UI merely to satisfy test logging.\r\n\r\nAcceptance artifacts may capture those details separately.\r\n\r\n---\r\n\r\n# AUTONOMY SCORECARD\r\n\r\nFor each lead classify:\r\n\r\n## AUTONOMOUS PASS\r\n\r\nNo Tyler interaction was needed other than initial lead entry.\r\n\r\n## LEGITIMATE CLARIFICATION\r\n\r\nOne concise operator question was genuinely necessary after autonomous routes were exhausted.\r\n\r\nThis may still PASS if the ambiguity truly changes the property/decision.\r\n\r\n## AUTONOMY FAILURE\r\n\r\nExamples:\r\n\r\n- asks for APN when address could resolve it\r\n- asks for address when exact LandPortal link already identifies subject\r\n- developer manually invokes a missing research lane to finish the Deal Card\r\n- system stops because one deterministic source failed while alternatives existed\r\n- system marks BLOCKED while a valid recovery route remains\r\n- system requires refresh/restart to continue normal processing\r\n- one subsystem declares subject unresolved after canonical Subject State established it\r\n\r\nAny autonomy failure caused by LandOS implementation is in-scope work.\r\n\r\nFix the systemic cause and rerun the affected case.\r\n\r\n---\r\n\r\n# RESEARCH BEHAVIOR TO VERIFY\r\n\r\nAcross the matrix prove:\r\n\r\n### Property resolution\r\n- multiple valid pointer types work\r\n- canonical subject stays stable once established\r\n- official verification remains a separate axis\r\n- downstream systems do not independently reopen identity\r\n\r\n### Market\r\n- county work starts when county becomes known\r\n- ZIP work starts when ZIP becomes known\r\n- market work does not unnecessarily wait for parcel verification\r\n- county vs ZIP outputs remain distinct\r\n\r\n### LandPortal\r\n- exact-subject retained evidence is required\r\n- visuals/property facts actually land\r\n- unsuccessful navigation alone does not count as success\r\n\r\n### Government/Zoning\r\n- deterministic official-source procedure first\r\n- recovery only if needed\r\n- missing zoning remains unresolved rather than guessed\r\n\r\n### Public Records\r\n- known platforms use deterministic adapters\r\n- governed recovery specialist only invokes after deterministic exhaustion\r\n- recovery result must exact-match subject before admission\r\n\r\n### Comps\r\n- returned candidates are not automatically usable comps\r\n- strict FMV qualification remains honest\r\n- thin/invalid comp set may result in valuation pending\r\n- do not invent FMV to make the Deal Card look complete\r\n\r\n### Evidence\r\n- every meaningful recovered fact lands through authoritative evidence admission\r\n- provenance/run/subject scope retained\r\n- browser evidence is promotable\r\n- weak/conflicting evidence does not silently replace stronger evidence\r\n\r\n### Readiness\r\n- SATISFIED stays satisfied\r\n- PARTIAL identifies real missing output\r\n- NOT_APPLICABLE is truthful\r\n- BLOCKED only after valid routes exhausted\r\n- NEEDS_OPERATOR_ACTION only for actual human action\r\n- attempted-but-unanswered work remains unsatisfied\r\n- new evidence triggers bounded reconciliation/re-planning\r\n\r\n### Intelligence\r\n- uses the accepted evidence\r\n- does not redefine resolved factual state\r\n- becomes current after evidence changes\r\n- remains current after hard refresh\r\n- no stale fingerprint/run behavior returns\r\n\r\n---\r\n\r\n# SURVEY TEST IF AVAILABLE\r\n\r\nIf one of the safe test cases can naturally include a valid subject-matching survey, verify:\r\n\r\n- survey governs surveyed acreage/boundaries/dimensions\r\n- alternate GIS/assessor acreage remains retained evidence\r\n- fresh survey vs lagging GIS does not produce a false blocker\r\n- all Deal Card consumers show one governing acreage conclusion\r\n\r\nDo not manufacture a survey solely to satisfy this requirement.\r\n\r\nIf no appropriate fixture exists, mark this acceptance item NOT TESTED in this sprint rather than fabricate it.\r\n\r\n---\r\n\r\n# NO DEVELOPER BABYSITTING DURING EACH RUN\r\n\r\nThis is important.\r\n\r\nOnce each New Lead is submitted:\r\n\r\nDO NOT manually:\r\n- repair its database row\r\n- change the subject\r\n- invoke skipped capabilities\r\n- edit evidence\r\n- force intelligence\r\n- alter readiness\r\n- correct APN\r\n- inject a result\r\n\r\nObserve what LandOS does autonomously.\r\n\r\nIf a defect appears:\r\n\r\n1. record the failure\r\n2. let the run settle safely\r\n3. diagnose the systemic code issue\r\n4. fix it\r\n5. create/rerun a fresh equivalent case\r\n6. prove the corrected autonomous behavior\r\n\r\nNever convert a failed acceptance case into a pass by manually fixing that deal.\r\n\r\n---\r\n\r\n# FAILURE TRIAGE\r\n\r\nWhen something fails, classify it before fixing.\r\n\r\n## PRODUCT DEFECT\r\nLandOS had enough capability/context but behaved incorrectly.\r\n\r\n→ fix now.\r\n\r\n## RECOVERY DEFECT\r\nA deterministic route failed and valid alternative existed, but recovery did not occur correctly.\r\n\r\n→ fix now.\r\n\r\n## SOURCE OUTCOME\r\nSource truthfully contains no answer.\r\n\r\n→ not a software failure.\r\n\r\n## EXTERNAL BLOCKER\r\nSource offline, paid-only, CAPTCHA/human requirement, prohibited login action, etc.\r\n\r\n→ honest status; unrelated work continues.\r\n\r\n## TEST/BASELINE DEFECT\r\nExisting unrelated broad-suite issue.\r\n\r\n→ document; do not expand scope unless this sprint touched it.\r\n\r\n---\r\n\r\n# IMPORTANT: NO NEW ARCHITECTURE\r\n\r\nDo not respond to an acceptance failure by creating:\r\n\r\n- another identity store\r\n- another orchestrator\r\n- another evidence table\r\n- another status vocabulary\r\n- another standing agent\r\n- another generic recovery framework\r\n- another dispatch system\r\n\r\nUse the accepted Sprints 1–2 infrastructure.\r\n\r\nIf a bug reveals a missing integration, wire the existing contracts correctly.\r\n\r\n---\r\n\r\n# PERFORMANCE\r\n\r\nMeasure rough end-to-end run times where practical.\r\n\r\nDo not impose arbitrary short timeouts merely to make the sprint faster.\r\n\r\nBut identify obvious unnecessary serialization or repeated work.\r\n\r\nSatisfied evidence should not be repeatedly recollected without cause.\r\n\r\nUse concurrent prerequisite-safe research.\r\n\r\nKeep subagent use targeted.\r\n\r\nDo not spawn a large Explore/QA swarm unless required.\r\n\r\n---\r\n\r\n# OPERATOR-FACING ACCEPTANCE\r\n\r\nFor at least the representative successful cases, inspect the actual Deal Card as Tyler would see it.\r\n\r\nCheck:\r\n\r\n- subject header\r\n- acreage\r\n- property facts\r\n- research state\r\n- market information\r\n- comps/valuation state\r\n- intelligence panels\r\n- action-needed messaging\r\n- partial/blocked/unresolved communication\r\n\r\nThe operator should not need to understand DAGs, run IDs, fingerprints, capability IDs, or worker internals.\r\n\r\nThe UI can expose diagnostics elsewhere, but the normal Deal Card should tell a clear operational story.\r\n\r\n---\r\n\r\n# TESTING\r\n\r\nAfter any repairs:\r\n\r\nrun:\r\n- focused regression tests\r\n- relevant route/integration tests\r\n- typecheck\r\n- production build\r\n- managed runtime health\r\n- applicable governance/skill audits\r\n- existing acceptance ledger validation\r\n\r\nRun the broad suite as appropriate.\r\n\r\nDo not hide baseline failures.\r\n\r\n---\r\n\r\n# STOP CONDITIONS / DEFERRED SCOPE\r\n\r\nDo NOT begin:\r\n\r\n- Tools UI redesign\r\n- overall UI/UX redesign\r\n- Design System Extractor\r\n- Seller Call Prep\r\n- Daily Briefing\r\n- Pipeline Commander\r\n- Strategy/War Council\r\n- Finance/TC\r\n- Jarvis\r\n- Forge\r\n\r\nThis sprint ends after the cold-lead matrix is accepted and any systemic defects discovered by it are repaired.\r\n\r\n---\r\n\r\n# GIT\r\n\r\nStart from actual current HEAD.\r\n\r\nOnly one writable coding session in this tree.\r\n\r\nPreserve unrelated untracked files.\r\n\r\nAfter the complete matrix passes:\r\n\r\n1. final regression\r\n2. final browser acceptance\r\n3. inspect diff/status\r\n4. commit any required hardening changes\r\n5. push\r\n6. verify remote\r\n\r\nIf the system passes without requiring code changes, do NOT create a meaningless commit.\r\n\r\nStill return the exact tested HEAD and remote verification.\r\n\r\n---\r\n\r\n# FINAL REPORT\r\n\r\nReturn a matrix summarizing every test lead:\r\n\r\n| Case | Intake Type | Subject Established | Clarification | Market Early | Parcel Research | Recovery | Final Readiness | Intelligence | Autonomy Verdict |\r\n\r\nThen report:\r\n\r\n## DEFECTS FOUND\r\nWhat acceptance exposed.\r\n\r\n## FIXES\r\nOnly systemic fixes actually made.\r\n\r\n## AUTONOMY RESULT\r\nHow many leads completed without operator intervention.\r\n\r\n## HONEST FAILURE RESULT\r\nCases where LandOS correctly refused to fabricate missing facts.\r\n\r\n## PERFORMANCE\r\nApproximate times.\r\n\r\n## TESTS\r\nFinal results.\r\n\r\n## NEXT STEP\r\nState whether LandOS is ready to move to:\r\n**Tools normalization → UI/UX sprint**\r\n\r\nDo NOT start those tasks.\r\n\r\n## GIT\r\n- starting HEAD\r\n- ending HEAD/commit\r\n- push result\r\n- remote verification\r\n\r\nFinish exactly:\r\n\r\nLANDOS_SPRINT_COMPLETE: PASS\r\n\r\nOnly use:\r\n\r\nLANDOS_SPRINT_BLOCKED: <exact external blocker>\r\n\r\nfor a genuine external impossibility.\r\n\r\nInternal implementation defects discovered during acceptance are WORK, not blockers.",
+  "promptSha256": "f19c713ec0b0881e519d66afc9b274445f7bf8b3e7ae53ade49f79dd413b7c77",
+  "workstreams": [
+    {
+      "id": "ws1-conventional-resolution",
+      "name": "Address plus APN and address-only autonomy",
+      "operatorOutcome": "A normal operator can submit either a complete address with APN or a valid address alone, walk away, and receive the most complete honest Deal Card LandOS can produce without developer intervention.",
+      "inScope": [
+        "fresh address plus APN intake",
+        "fresh address-only intake",
+        "canonical subject establishment",
+        "prerequisite-safe market and parcel scheduling",
+        "Deal Card readiness and intelligence"
+      ],
+      "backendServices": [
+        "New Lead intake",
+        "Property Resolution",
+        "Deal Intelligence mission",
+        "Research Readiness",
+        "intelligence stack"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Overview",
+        "Deal Card Property",
+        "Deal Card Market",
+        "Deal Card Seller",
+        "Deal Card Research Readiness"
+      ],
+      "requiredDataState": "Two fresh disposable leads for the same publicly resolvable control property: one complete address plus APN and minimal safe seller information, one address only with no APN.",
+      "browserJourney": {
+        "journeyId": "cold-lead-conventional-resolution",
+        "steps": [
+          "Submit the address plus APN lead through New Lead and make no manual corrections",
+          "Observe subject establishment, capability scheduling, recovery, readiness, and intelligence until settled",
+          "Inspect the resulting Deal Card through normal operator navigation",
+          "Submit the address-only lead through New Lead and make no manual corrections",
+          "Confirm autonomous parcel resolution and downstream research",
+          "Hard refresh representative results and confirm persistence without unintended reruns"
+        ]
+      },
+      "testRequirements": [
+        "intake extraction and APN normalization",
+        "address-only autonomous parcel resolution",
+        "prerequisite scheduler and readiness reconciliation",
+        "current intelligence after admitted evidence"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "Address-only intake asks for an APN despite a viable autonomous resolution route",
+        "Developer intervention is needed after submission",
+        "County or ZIP work waits unnecessarily on parcel verification",
+        "Deal Card intelligence is stale relative to admitted evidence"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        {
+          "id": "ws1-r1",
+          "text": "A fresh address plus APN intake normalizes the parcel, establishes one stable canonical subject, and autonomously settles to an honest Deal Card.",
+          "verified": true,
+          "evidenceIds": [
+            "E2",
+            "E3"
+          ]
+        },
+        {
+          "id": "ws1-r2",
+          "text": "A fresh address-only intake resolves the parcel autonomously when public evidence can establish it and does not request a redundant APN.",
+          "verified": true,
+          "evidenceIds": [
+            "E2",
+            "E3"
+          ]
+        },
+        {
+          "id": "ws1-r3",
+          "text": "County and ZIP work begin when their own prerequisites arrive while parcel-specific work waits for and then consumes the canonical subject.",
+          "verified": true,
+          "evidenceIds": [
+            "E2"
+          ]
+        },
+        {
+          "id": "ws1-r4",
+          "text": "Recovered evidence retains source, run, and subject provenance and drives bounded readiness reconciliation without churning satisfied work.",
+          "verified": true,
+          "evidenceIds": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "id": "ws1-r5",
+          "text": "Property, Market, Seller, and Deal Intelligence become current and the visible Deal Card survives refresh without unintended research reruns.",
+          "verified": true,
+          "evidenceIds": [
+            "E3",
+            "E4",
+            "E5",
+            "E6",
+            "E7",
+            "E8"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-08-31T06:15:12.611Z",
+        "reportPath": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md",
+        "evidenceIds": [
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-08-31T06:15:07.303Z",
+          "detail": "Systemic intake, identity, provenance, readiness, and no-repeat coverage defects repaired",
+          "evidenceIds": [
+            "E2"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-08-31T06:15:07.986Z",
+          "detail": "Sprint-focused regression passed 345 tests across 16 files",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-08-31T06:15:09.129Z",
+          "detail": "Exact New Lead route regression and live five-case matrix passed",
+          "evidenceIds": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-08-31T06:15:09.819Z",
+          "detail": "Standalone TypeScript typecheck passed",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-08-31T06:15:10.527Z",
+          "detail": "Production web and server build passed",
+          "evidenceIds": [
+            "E1"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-08-31T06:15:11.210Z",
+          "detail": "Managed runtime restarted at PID 280664 and returned HTTP 200",
+          "evidenceIds": [
+            "E5"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-08-31T06:15:12.611Z",
+          "detail": "independent browser QA (.runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md)",
+          "evidenceIds": [
+            "E3",
+            "E4",
+            "E5",
+            "E6",
+            "E7"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws2-alternate-pointers",
+      "name": "APN-only and exact document-link autonomy",
+      "operatorOutcome": "A parcel identifier with jurisdiction or an exact supported property link can establish the property without a redundant street address or identifier request.",
+      "inScope": [
+        "fresh APN-only intake with jurisdiction",
+        "fresh exact LandPortal parcel-link intake",
+        "alternate-pointer subject establishment",
+        "document/link provenance",
+        "parcel-specific downstream research"
+      ],
+      "backendServices": [
+        "New Lead intake",
+        "Universal Property Resolution",
+        "LandPortal Research",
+        "evidence admission",
+        "Deal Intelligence mission"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Property",
+        "Deal Card Documents and Visuals",
+        "Deal Card Research Readiness"
+      ],
+      "requiredDataState": "Two fresh disposable leads for a public control property: one APN plus county/state with no street address, one exact retained LandPortal parcel URL without redundant APN/address corroboration.",
+      "browserJourney": {
+        "journeyId": "cold-lead-alternate-pointers",
+        "steps": [
+          "Submit APN plus jurisdiction through New Lead without a street address",
+          "Observe autonomous property search and honest resolution or genuine ambiguity",
+          "Submit an exact supported LandPortal parcel URL through New Lead",
+          "Confirm the link establishes the same subject and retains provenance",
+          "Inspect parcel research, readiness, intelligence, and refresh persistence"
+        ]
+      },
+      "testRequirements": [
+        "APN-only resolution with jurisdiction",
+        "exact LandPortal link resolution",
+        "alternate-pointer provenance admission",
+        "canonical subject stability"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "APN-only intake requires the operator to provide an address when the parcel can be uniquely resolved",
+        "Exact LandPortal link intake requests redundant APN or address corroboration",
+        "A downstream consumer reopens identity after canonical establishment",
+        "Link-derived evidence loses provenance or admits a different parcel"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": [
+        "ws1-conventional-resolution"
+      ],
+      "requirements": [
+        {
+          "id": "ws2-r1",
+          "text": "An APN plus sufficient jurisdiction context can establish the subject without a fabricated or operator-supplied street address when uniquely resolvable.",
+          "verified": true,
+          "evidenceIds": [
+            "E10",
+            "E11",
+            "E12"
+          ]
+        },
+        {
+          "id": "ws2-r2",
+          "text": "An exact supported LandPortal parcel URL is recognized as the property pointer and does not trigger redundant identifier clarification.",
+          "verified": true,
+          "evidenceIds": [
+            "E10",
+            "E11",
+            "E12"
+          ]
+        },
+        {
+          "id": "ws2-r3",
+          "text": "Alternate-pointer evidence retains provenance and exact-subject association through authoritative admission.",
+          "verified": true,
+          "evidenceIds": [
+            "E10",
+            "E11"
+          ]
+        },
+        {
+          "id": "ws2-r4",
+          "text": "Canonical subject state remains stable and every downstream parcel consumer uses it rather than reopening identity.",
+          "verified": true,
+          "evidenceIds": [
+            "E10",
+            "E11"
+          ]
+        },
+        {
+          "id": "ws2-r5",
+          "text": "The alternate-pointer Deal Cards settle autonomously as far as available evidence allows and persist through refresh and managed restart.",
+          "verified": true,
+          "evidenceIds": [
+            "E12",
+            "E13",
+            "E14",
+            "E15",
+            "E16"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-08-31T06:16:44.506Z",
+        "reportPath": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md",
+        "evidenceIds": [
+          "E12",
+          "E13",
+          "E14",
+          "E15",
+          "E16"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-08-31T06:16:39.156Z",
+          "detail": "APN normalization, exact pointer decoding, trusted checkpoint admission, and scope projection repaired",
+          "evidenceIds": [
+            "E11"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-08-31T06:16:39.870Z",
+          "detail": "Focused APN, LandPortal, identity, and route regressions passed",
+          "evidenceIds": [
+            "E10"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-08-31T06:16:40.578Z",
+          "detail": "Fresh Deal 102 and Deal 105 alternate-pointer journeys passed",
+          "evidenceIds": [
+            "E10",
+            "E11",
+            "E12"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-08-31T06:16:41.279Z",
+          "detail": "Standalone TypeScript typecheck passed",
+          "evidenceIds": [
+            "E10"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-08-31T06:16:41.957Z",
+          "detail": "Production web and server build passed",
+          "evidenceIds": [
+            "E10"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-08-31T06:16:42.643Z",
+          "detail": "Managed runtime PID 280664 healthy at HTTP 200",
+          "evidenceIds": [
+            "E14"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-08-31T06:16:44.506Z",
+          "detail": "independent browser QA (.runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md)",
+          "evidenceIds": [
+            "E12",
+            "E13",
+            "E14",
+            "E15",
+            "E16"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ws3-messy-matrix-acceptance",
+      "name": "Messy intake and final autonomy matrix acceptance",
+      "operatorOutcome": "A realistic imperfect seller-style submission is combined autonomously into a stable working subject when reasonably resolvable, and the full five-case matrix communicates honest completeness, gaps, and genuine operator action on the normal Deal Card.",
+      "inScope": [
+        "fresh messy or partial intake",
+        "bounded clue combination and recovery",
+        "five-case autonomy scorecard",
+        "operator-facing Deal Card clarity",
+        "honest unresolved and valuation-pending behavior"
+      ],
+      "backendServices": [
+        "New Lead intake",
+        "Property Resolution",
+        "adaptive recovery",
+        "Research Readiness",
+        "intelligence stack",
+        "Deal Card read model"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Overview",
+        "Deal Card Property",
+        "Deal Card Market",
+        "Deal Card Seller",
+        "Deal Card Comps and Valuation",
+        "Deal Card Research Readiness"
+      ],
+      "requiredDataState": "One fresh difficult but reasonably resolvable seller-style lead plus the four fresh matrix leads from the prior workstreams; optionally one genuinely insufficient lead if inexpensive.",
+      "browserJourney": {
+        "journeyId": "cold-lead-messy-final-matrix",
+        "steps": [
+          "Submit realistic imperfect seller-style intake through New Lead",
+          "Make no manual corrections and observe bounded autonomous resolution and research",
+          "Inspect the final Deal Card and any action-needed message as an operator",
+          "Reinspect representative successful cases after hard refresh and managed restart",
+          "Confirm no new console errors or unintended expensive reruns",
+          "Produce the five-case autonomy, readiness, recovery, intelligence, and performance matrix"
+        ]
+      },
+      "testRequirements": [
+        "messy intake extraction and clue combination",
+        "bounded clarification semantics",
+        "comp usability and honest valuation pending",
+        "evidence/readiness/intelligence reconciliation",
+        "focused regressions, relevant integrations, typecheck, production build, governance audits, and applicable broad suite"
+      ],
+      "persistence": {
+        "refresh": true,
+        "restart": true
+      },
+      "failureConditions": [
+        "A reasonably resolvable messy lead enters an interview loop or needs developer repair",
+        "A valid recovery route remains when LandOS reports blocked",
+        "Missing zoning, comps, or valuation is guessed to make the card look complete",
+        "The normal Deal Card exposes internals instead of a clear operational story",
+        "Any successful case requires refresh or restart to continue processing"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": [
+        "ws2-alternate-pointers"
+      ],
+      "requirements": [
+        {
+          "id": "ws3-r1",
+          "text": "A fresh difficult but reasonably resolvable seller-style intake combines its clues autonomously and reaches one stable working subject or asks at most one genuinely decision-changing clarification.",
+          "verified": true,
+          "evidenceIds": [
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "id": "ws3-r2",
+          "text": "Across all five leads deterministic routes run first, bounded recovery runs only when justified, and no developer action is used to turn a failed case into a pass.",
+          "verified": true,
+          "evidenceIds": [
+            "E17",
+            "E18"
+          ]
+        },
+        {
+          "id": "ws3-r3",
+          "text": "Every meaningful fact and artifact used by readiness or intelligence is admitted with source, run, subject scope, and honest confidence.",
+          "verified": true,
+          "evidenceIds": [
+            "E18"
+          ]
+        },
+        {
+          "id": "ws3-r4",
+          "text": "Readiness and all four intelligence layers remain current after evidence changes and persist through hard refresh and managed restart without rerunning settled research.",
+          "verified": true,
+          "evidenceIds": [
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "id": "ws3-r5",
+          "text": "The visible Deal Card clearly communicates the established subject, property facts, market, comp/valuation status, intelligence, unresolved gaps, and only genuine operator action without exposing orchestration internals.",
+          "verified": true,
+          "evidenceIds": [
+            "E19",
+            "E20",
+            "E21",
+            "E22",
+            "E23"
+          ]
+        }
+      ],
+      "applicable": {
+        "integrationTests": true,
+        "typecheck": true,
+        "build": true
+      },
+      "status": "accepted",
+      "builderResult": null,
+      "browserQaResult": {
+        "result": "pass",
+        "at": "2026-08-31T06:17:46.002Z",
+        "reportPath": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md",
+        "evidenceIds": [
+          "E19",
+          "E20",
+          "E21",
+          "E22",
+          "E23"
+        ]
+      },
+      "repairHistory": [],
+      "independentReviewResult": null,
+      "finalAcceptance": "accepted",
+      "phases": [
+        {
+          "phase": "implementation",
+          "status": "pass",
+          "at": "2026-08-31T06:17:40.582Z",
+          "detail": "Conversational scope parsing, evidence authority, readiness planning, and specialist no-repeat seams repaired",
+          "evidenceIds": [
+            "E18"
+          ]
+        },
+        {
+          "phase": "targeted_tests",
+          "status": "pass",
+          "at": "2026-08-31T06:17:41.286Z",
+          "detail": "Final focused suite passed 345 tests across 16 files",
+          "evidenceIds": [
+            "E17"
+          ]
+        },
+        {
+          "phase": "integration_tests",
+          "status": "pass",
+          "at": "2026-08-31T06:17:42.020Z",
+          "detail": "Five fresh accepted-build New Lead journeys and exact route regression passed",
+          "evidenceIds": [
+            "E17",
+            "E18",
+            "E19"
+          ]
+        },
+        {
+          "phase": "typecheck",
+          "status": "pass",
+          "at": "2026-08-31T06:17:42.718Z",
+          "detail": "Standalone TypeScript typecheck passed",
+          "evidenceIds": [
+            "E17"
+          ]
+        },
+        {
+          "phase": "production_build",
+          "status": "pass",
+          "at": "2026-08-31T06:17:43.425Z",
+          "detail": "Production web and server build passed",
+          "evidenceIds": [
+            "E17"
+          ]
+        },
+        {
+          "phase": "runtime_verification",
+          "status": "pass",
+          "at": "2026-08-31T06:17:44.125Z",
+          "detail": "Final managed restart PID 280664 returned HTTP 200 and persisted Deal 113",
+          "evidenceIds": [
+            "E21"
+          ]
+        },
+        {
+          "phase": "browser_qa",
+          "status": "pass",
+          "at": "2026-08-31T06:17:46.001Z",
+          "detail": "independent browser QA (.runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md)",
+          "evidenceIds": [
+            "E19",
+            "E20",
+            "E21",
+            "E22",
+            "E23"
+          ]
+        }
+      ]
+    }
+  ],
+  "findings": [],
+  "evidence": [
+    {
+      "id": "E1",
+      "recordedAt": "2026-08-31T06:14:41.265Z",
+      "kind": "test_result",
+      "summary": "Focused 345-test regression passed; broad suite 7998 passed with 43 recorded baseline failures",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E2",
+      "recordedAt": "2026-08-31T06:14:41.973Z",
+      "kind": "api_evidence",
+      "summary": "Deal 100 and Deal 101 autonomous mission, readiness, and intelligence outcomes",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E3",
+      "recordedAt": "2026-08-31T06:14:42.679Z",
+      "kind": "browser_journey",
+      "summary": "Five-case New Lead and Deal Card operator journey",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E4",
+      "recordedAt": "2026-08-31T06:14:43.404Z",
+      "kind": "refresh_persistence",
+      "summary": "Deal Card state survived hard refresh",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E5",
+      "recordedAt": "2026-08-31T06:14:44.127Z",
+      "kind": "restart_persistence",
+      "summary": "Deal 113 persisted after final managed restart PID 280664",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E6",
+      "recordedAt": "2026-08-31T06:14:45.313Z",
+      "kind": "independent_browser_qa",
+      "summary": "Repository browser QA passed 5 of 5 assertions with zero diagnostics",
+      "path": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E7",
+      "recordedAt": "2026-08-31T06:14:46.022Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "Final Deal 113 full-route visual acceptance",
+      "path": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/route-after-hard-refresh.png",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E8",
+      "recordedAt": "2026-08-31T06:15:33.048Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "surface=Deal 113 Overview; expected=canonical subject and current intelligence after autonomous completion; visible_assertion=5170 HIGHWAY 60, APN 023 003.02, 40.5 AC, Property 54, Market 66 grade B, seller pre-contact, FMV pending; refresh=hard refresh and managed restart preserved the same operator state; console=zero relevant errors; reruns=no unintended research rerun and no assessor/zoning repeat; screenshot=route-after-hard-refresh.png",
+      "path": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/route-after-hard-refresh.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=113",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E9",
+      "recordedAt": "2026-08-31T06:15:50.482Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "surface=Deal 113 Overview at localhost:3141; expected=canonical subject and current intelligence after autonomous completion; visible_assertion=5170 HIGHWAY 60 with APN 023 003.02, 40.5 AC, Property 54 Moderate, Market 66 Good grade B, seller pre-contact, and FMV Pending; refresh=after hard refresh and managed restart the screen still showed 5170 HIGHWAY 60, Property 54, Market 66, and FMV Pending; console=zero relevant errors; reruns=no unintended research rerun and no assessor or zoning repeat; screenshot=route-after-hard-refresh.png",
+      "path": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/route-after-hard-refresh.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=113",
+      "workstreamId": "ws1-conventional-resolution"
+    },
+    {
+      "id": "E10",
+      "recordedAt": "2026-08-31T06:16:16.813Z",
+      "kind": "test_result",
+      "summary": "APN-only and exact LandPortal pointer focused regressions passed within the 345-test suite",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws2-alternate-pointers"
+    },
+    {
+      "id": "E11",
+      "recordedAt": "2026-08-31T06:16:17.518Z",
+      "kind": "api_evidence",
+      "summary": "Deal 102 APN-only and Deal 105 exact-pointer autonomous outcomes",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws2-alternate-pointers"
+    },
+    {
+      "id": "E12",
+      "recordedAt": "2026-08-31T06:16:18.264Z",
+      "kind": "browser_journey",
+      "summary": "Alternate-pointer New Lead journeys settled without clarification",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws2-alternate-pointers"
+    },
+    {
+      "id": "E13",
+      "recordedAt": "2026-08-31T06:16:18.974Z",
+      "kind": "refresh_persistence",
+      "summary": "Alternate-pointer result and canonical subject survived refresh",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws2-alternate-pointers"
+    },
+    {
+      "id": "E14",
+      "recordedAt": "2026-08-31T06:16:20.135Z",
+      "kind": "restart_persistence",
+      "summary": "Canonical subject and intelligence persisted after managed restart PID 280664",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws2-alternate-pointers"
+    },
+    {
+      "id": "E15",
+      "recordedAt": "2026-08-31T06:16:20.843Z",
+      "kind": "independent_browser_qa",
+      "summary": "Repository browser QA passed 5 of 5 assertions with zero diagnostics",
+      "path": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md",
+      "workstreamId": "ws2-alternate-pointers"
+    },
+    {
+      "id": "E16",
+      "recordedAt": "2026-08-31T06:16:21.544Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "surface=Deal 113 Overview at localhost:3141; expected=alternate-pointer subject remains canonical through downstream research; visible_assertion=5170 HIGHWAY 60 with APN 023 003.02, 40.5 AC, Property 54 Moderate, Market 66 Good grade B, seller pre-contact, and FMV Pending; refresh=after hard refresh and managed restart the screen still showed 5170 HIGHWAY 60, APN 023 003.02, Property 54, and Market 66; console=zero relevant errors; reruns=no identity reopen, unintended research rerun, assessor repeat, or zoning repeat; screenshot=route-after-hard-refresh.png",
+      "path": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/route-after-hard-refresh.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=113",
+      "workstreamId": "ws2-alternate-pointers"
+    },
+    {
+      "id": "E17",
+      "recordedAt": "2026-08-31T06:17:17.592Z",
+      "kind": "test_result",
+      "summary": "Final no-repeat repair passed the focused 345-test regression; broad suite result recorded",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "id": "E18",
+      "recordedAt": "2026-08-31T06:17:18.287Z",
+      "kind": "api_evidence",
+      "summary": "Deal 113 accepted-build mission, coverage, invocation, readiness, and intelligence evidence",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "id": "E19",
+      "recordedAt": "2026-08-31T06:17:19.433Z",
+      "kind": "browser_journey",
+      "summary": "Five fresh controlled New Lead cases completed without operator clarification",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "id": "E20",
+      "recordedAt": "2026-08-31T06:17:20.172Z",
+      "kind": "refresh_persistence",
+      "summary": "Deal 113 canonical subject and all current intelligence survived hard refresh",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "id": "E21",
+      "recordedAt": "2026-08-31T06:17:20.884Z",
+      "kind": "restart_persistence",
+      "summary": "Deal 113 persisted after final managed restart at PID 280664 and HTTP 200",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "id": "E22",
+      "recordedAt": "2026-08-31T06:17:21.581Z",
+      "kind": "independent_browser_qa",
+      "summary": "Independent repository browser QA passed 5 of 5 live assertions and two screenshots with zero diagnostics",
+      "path": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/report.md",
+      "workstreamId": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "id": "E23",
+      "recordedAt": "2026-08-31T06:17:22.287Z",
+      "kind": "browser_visual_acceptance",
+      "summary": "surface=Deal 113 Overview at localhost:3141; expected=messy input autonomously settles to the most complete honest Deal Card; visible_assertion=5170 HIGHWAY 60 with owner CAMERON NATHANIEL JOSEPH, APN 023 003.02, 40.5 AC, readiness 7 returned 2 partial 4 unresolved 5 blocked 1 not required, Property 54 Moderate, Market 66 Good grade B, seller pre-contact, and FMV Pending; refresh=after hard refresh and managed restart the screen still showed 5170 HIGHWAY 60, Property 54, Market 66, and FMV Pending; console=zero relevant errors; reruns=coverage attempted only four untouched utility gaps and did not repeat assessor or zoning; screenshot=route-after-hard-refresh.png",
+      "path": ".runtime/landos/qa/browser-route--dept-acquisitions-v2-deal-113-2026-08-31T06-04-46-342Z/route-after-hard-refresh.png",
+      "url": "http://localhost:3141/dept/acquisitions/v2?deal=113",
+      "workstreamId": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "id": "E24",
+      "recordedAt": "2026-08-31T06:18:05.312Z",
+      "kind": "final_regression",
+      "summary": "Focused 345 tests, exact route test, typecheck, production build, runtime health, five-case matrix, refresh, restart, and browser QA passed; broad 7998-pass 43-baseline-failure result recorded",
+      "path": ".landos/sprints/sprint-2026-08-31-cold-lead-autonomy-matrix/acceptance-matrix.md",
+      "workstreamId": "ws3-messy-matrix-acceptance"
+    }
+  ],
+  "finalRegression": {
+    "result": "pass",
+    "at": "2026-08-31T06:18:06.019Z",
+    "detail": "Sprint-focused regression, exact route integration, typecheck, production build, managed runtime, five fresh live cases, and independent browser QA passed; broad baseline failures recorded honestly",
+    "evidenceIds": [
+      "E17",
+      "E18",
+      "E19",
+      "E20",
+      "E21",
+      "E22",
+      "E23",
+      "E24"
+    ]
+  },
+  "finalReview": {
+    "result": "pass",
+    "at": "2026-08-31T06:18:06.724Z",
+    "detail": "codex-primary: Primary evidence review confirms all five fresh cases are autonomous passes, systemic defects are repaired, Deal 113 proves the accepted build, and unsupported zoning/FMV/survey claims remain absent",
+    "evidenceIds": [
+      "E17",
+      "E18",
+      "E19",
+      "E20",
+      "E21",
+      "E22",
+      "E23",
+      "E24"
+    ]
+  },
+  "sprintStatus": "complete",
+  "log": [
+    {
+      "at": "2026-08-31T01:36:45.380Z",
+      "event": "sprint_created",
+      "detail": "Cold-Lead Autonomy and Acceptance Matrix"
+    },
+    {
+      "at": "2026-08-31T01:37:08.144Z",
+      "event": "workstream_started",
+      "detail": "ws1-conventional-resolution"
+    },
+    {
+      "at": "2026-08-31T06:15:07.304Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conventional-resolution:implementation:pass"
+    },
+    {
+      "at": "2026-08-31T06:15:07.987Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conventional-resolution:targeted_tests:pass"
+    },
+    {
+      "at": "2026-08-31T06:15:09.130Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conventional-resolution:integration_tests:pass"
+    },
+    {
+      "at": "2026-08-31T06:15:09.820Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conventional-resolution:typecheck:pass"
+    },
+    {
+      "at": "2026-08-31T06:15:10.528Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conventional-resolution:production_build:pass"
+    },
+    {
+      "at": "2026-08-31T06:15:11.211Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conventional-resolution:runtime_verification:pass"
+    },
+    {
+      "at": "2026-08-31T06:15:12.611Z",
+      "event": "phase_recorded",
+      "detail": "ws1-conventional-resolution:browser_qa:pass"
+    },
+    {
+      "at": "2026-08-31T06:15:12.611Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws1-conventional-resolution:pass"
+    },
+    {
+      "at": "2026-08-31T06:15:13.489Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conventional-resolution/ws1-r1"
+    },
+    {
+      "at": "2026-08-31T06:15:14.170Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conventional-resolution/ws1-r2"
+    },
+    {
+      "at": "2026-08-31T06:15:14.848Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conventional-resolution/ws1-r3"
+    },
+    {
+      "at": "2026-08-31T06:15:15.591Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conventional-resolution/ws1-r4"
+    },
+    {
+      "at": "2026-08-31T06:15:16.259Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conventional-resolution/ws1-r5"
+    },
+    {
+      "at": "2026-08-31T06:15:33.763Z",
+      "event": "requirement_verified",
+      "detail": "ws1-conventional-resolution/ws1-r5"
+    },
+    {
+      "at": "2026-08-31T06:15:51.188Z",
+      "event": "workstream_passed",
+      "detail": "ws1-conventional-resolution"
+    },
+    {
+      "at": "2026-08-31T06:16:16.129Z",
+      "event": "workstream_started",
+      "detail": "ws2-alternate-pointers"
+    },
+    {
+      "at": "2026-08-31T06:16:39.157Z",
+      "event": "phase_recorded",
+      "detail": "ws2-alternate-pointers:implementation:pass"
+    },
+    {
+      "at": "2026-08-31T06:16:39.871Z",
+      "event": "phase_recorded",
+      "detail": "ws2-alternate-pointers:targeted_tests:pass"
+    },
+    {
+      "at": "2026-08-31T06:16:40.579Z",
+      "event": "phase_recorded",
+      "detail": "ws2-alternate-pointers:integration_tests:pass"
+    },
+    {
+      "at": "2026-08-31T06:16:41.280Z",
+      "event": "phase_recorded",
+      "detail": "ws2-alternate-pointers:typecheck:pass"
+    },
+    {
+      "at": "2026-08-31T06:16:41.957Z",
+      "event": "phase_recorded",
+      "detail": "ws2-alternate-pointers:production_build:pass"
+    },
+    {
+      "at": "2026-08-31T06:16:42.644Z",
+      "event": "phase_recorded",
+      "detail": "ws2-alternate-pointers:runtime_verification:pass"
+    },
+    {
+      "at": "2026-08-31T06:16:44.506Z",
+      "event": "phase_recorded",
+      "detail": "ws2-alternate-pointers:browser_qa:pass"
+    },
+    {
+      "at": "2026-08-31T06:16:44.506Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws2-alternate-pointers:pass"
+    },
+    {
+      "at": "2026-08-31T06:16:45.195Z",
+      "event": "requirement_verified",
+      "detail": "ws2-alternate-pointers/ws2-r1"
+    },
+    {
+      "at": "2026-08-31T06:16:45.888Z",
+      "event": "requirement_verified",
+      "detail": "ws2-alternate-pointers/ws2-r2"
+    },
+    {
+      "at": "2026-08-31T06:16:46.582Z",
+      "event": "requirement_verified",
+      "detail": "ws2-alternate-pointers/ws2-r3"
+    },
+    {
+      "at": "2026-08-31T06:16:47.277Z",
+      "event": "requirement_verified",
+      "detail": "ws2-alternate-pointers/ws2-r4"
+    },
+    {
+      "at": "2026-08-31T06:16:48.399Z",
+      "event": "requirement_verified",
+      "detail": "ws2-alternate-pointers/ws2-r5"
+    },
+    {
+      "at": "2026-08-31T06:16:49.107Z",
+      "event": "workstream_passed",
+      "detail": "ws2-alternate-pointers"
+    },
+    {
+      "at": "2026-08-31T06:17:16.885Z",
+      "event": "workstream_started",
+      "detail": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "at": "2026-08-31T06:17:40.583Z",
+      "event": "phase_recorded",
+      "detail": "ws3-messy-matrix-acceptance:implementation:pass"
+    },
+    {
+      "at": "2026-08-31T06:17:41.286Z",
+      "event": "phase_recorded",
+      "detail": "ws3-messy-matrix-acceptance:targeted_tests:pass"
+    },
+    {
+      "at": "2026-08-31T06:17:42.021Z",
+      "event": "phase_recorded",
+      "detail": "ws3-messy-matrix-acceptance:integration_tests:pass"
+    },
+    {
+      "at": "2026-08-31T06:17:42.718Z",
+      "event": "phase_recorded",
+      "detail": "ws3-messy-matrix-acceptance:typecheck:pass"
+    },
+    {
+      "at": "2026-08-31T06:17:43.426Z",
+      "event": "phase_recorded",
+      "detail": "ws3-messy-matrix-acceptance:production_build:pass"
+    },
+    {
+      "at": "2026-08-31T06:17:44.125Z",
+      "event": "phase_recorded",
+      "detail": "ws3-messy-matrix-acceptance:runtime_verification:pass"
+    },
+    {
+      "at": "2026-08-31T06:17:46.002Z",
+      "event": "phase_recorded",
+      "detail": "ws3-messy-matrix-acceptance:browser_qa:pass"
+    },
+    {
+      "at": "2026-08-31T06:17:46.002Z",
+      "event": "browser_qa_recorded",
+      "detail": "ws3-messy-matrix-acceptance:pass"
+    },
+    {
+      "at": "2026-08-31T06:17:46.689Z",
+      "event": "requirement_verified",
+      "detail": "ws3-messy-matrix-acceptance/ws3-r1"
+    },
+    {
+      "at": "2026-08-31T06:17:47.386Z",
+      "event": "requirement_verified",
+      "detail": "ws3-messy-matrix-acceptance/ws3-r2"
+    },
+    {
+      "at": "2026-08-31T06:17:48.076Z",
+      "event": "requirement_verified",
+      "detail": "ws3-messy-matrix-acceptance/ws3-r3"
+    },
+    {
+      "at": "2026-08-31T06:17:48.810Z",
+      "event": "requirement_verified",
+      "detail": "ws3-messy-matrix-acceptance/ws3-r4"
+    },
+    {
+      "at": "2026-08-31T06:17:49.892Z",
+      "event": "requirement_verified",
+      "detail": "ws3-messy-matrix-acceptance/ws3-r5"
+    },
+    {
+      "at": "2026-08-31T06:17:50.612Z",
+      "event": "workstream_passed",
+      "detail": "ws3-messy-matrix-acceptance"
+    },
+    {
+      "at": "2026-08-31T06:18:06.019Z",
+      "event": "final_regression",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-08-31T06:18:06.724Z",
+      "event": "final_review",
+      "detail": "pass"
+    },
+    {
+      "at": "2026-08-31T06:18:07.819Z",
+      "event": "sprint_completed",
+      "detail": "complete"
+    }
+  ]
+}

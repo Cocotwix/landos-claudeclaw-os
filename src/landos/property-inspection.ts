@@ -468,6 +468,7 @@ function packageFromLandPortal(
   ev: BrowserEvidence,
   cardId?: number,
   dealCardId?: number | null,
+  searchKey?: BrowserSearchKey,
 ): PendingPropertyInspectionRecord | null {
   if (!ev.inspection) return null;
   // ── THE VERIFIED ENTRY RECORD ────────────────────────────────────────────
@@ -488,11 +489,50 @@ function packageFromLandPortal(
   const verifiedParcel = ev.status === 'retrieved'
     || (ev.visualCheckpoints ?? []).some((c) => c.kind === 'parcel_selected' && c.passed);
   const entryUrl = operatorLandPortalEntryUrl(ev.inspection.parcelUrl);
-  const openedApn = ev.facts.find((fact) => fact.key === 'apn')?.value ?? null;
-  const entryRecord = !ev.inspection.parcelUrlRecord && verifiedParcel && entryUrl && openedApn
-    ? {
-      url: entryUrl,
-      source: 'operator:landportal_entry_url_verified_on_screen',
+  // LandPortal is a SPA: a search can open and verify the exact parcel panel
+  // while `location.href` remains the bare site root. That root is NOT a
+  // canonical parcel identifier and must never be decoded as one, but dropping
+  // the checkpoint verdict solely because the router did not update the URL
+  // loses the authenticated APN/address facts the browser just verified.
+  // Retain the provider page as provenance only; fips/propertyId remain null.
+  const verifiedProviderPage = (() => {
+    const raw = ev.inspection.parcelUrl?.trim();
+    if (!raw) return null;
+    try {
+      const parsed = new URL(raw);
+      return parsed.protocol === 'https:' && /^(?:www\.)?landportal\.com$/i.test(parsed.hostname)
+        ? parsed.toString()
+        : null;
+    } catch {
+      return null;
+    }
+  })();
+  // The live direct-panel path can retain the parcel table before it projects
+  // the same value into the generic BrowserFact array. The panel field is the
+  // opened record's own identifier and has passed the same parcel checkpoint,
+  // so it is the authoritative fallback for this record—not caller input.
+  const openedApn = ev.facts.find((fact) => fact.key === 'apn')?.value
+    ?? inspectionFact(ev.inspection.parcelFacts, ['Parcel ID', 'APN', 'Parcel Number'])
+    ?? null;
+  const verifiedRecordUrl = entryUrl ?? verifiedProviderPage;
+  const existingRecord = ev.inspection.parcelUrlRecord;
+  const upgradableSearchRecord = existingRecord?.verifiedSubject === true
+    && existingRecord.source === 'provider:landportal_search_result_verified_on_screen'
+    && verifiedProviderPage === existingRecord.url;
+  const entryRecord = verifiedParcel && verifiedRecordUrl && openedApn
+    ? upgradableSearchRecord
+      ? {
+        ...existingRecord,
+        // A fresh passed checkpoint may add the scope an older record lacked.
+        // Never replace a retained nonblank scope with caller input.
+        verifiedCounty: existingRecord.verifiedCounty ?? (searchKey?.county?.trim() || null),
+        verifiedState: existingRecord.verifiedState ?? (searchKey?.state?.trim() || null),
+      }
+      : !existingRecord ? {
+      url: verifiedRecordUrl,
+      source: entryUrl
+        ? 'operator:landportal_entry_url_verified_on_screen'
+        : 'provider:landportal_search_result_verified_on_screen',
       capturedAt: new Date().toISOString(),
       propertyCardId: cardId ?? 0,
       dealCardId: dealCardId ?? null,
@@ -500,7 +540,9 @@ function packageFromLandPortal(
       apn: openedApn,
       fips: null,
       propertyId: null,
-    }
+      verifiedCounty: searchKey?.county?.trim() || null,
+      verifiedState: searchKey?.state?.trim() || null,
+    } : null
     : null;
   return {
     ...ev.inspection,
@@ -628,7 +670,7 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
   const landPortalBudgetMs = (): number => Math.max(1, remainingMs() - officialRecordsReserveMs);
 
   if (landPortalEvidence?.inspection) {
-    const lp = packageFromLandPortal(landPortalEvidence, input.cardId, input.dealCardId);
+    const lp = packageFromLandPortal(landPortalEvidence, input.cardId, input.dealCardId, input.searchKey);
     if (lp) inspection = lp;
     upsertRoute(routes, 'LandPortal', { status: 'used', confidence: 'high', note: landPortalEvidence.note || 'LandPortal inspection reused from browser evidence.', url: inspection.parcelUrl });
   } else if (deps.landPortalBrowser?.configured()) {
@@ -637,7 +679,7 @@ export async function runPropertyInspection(input: PropertyInspectionInput, deps
       { timeoutMs: landPortalBudgetMs(), onSubjectFacts: input.onLandPortalSubjectFacts },
     );
     if (landPortalEvidence.inspection) {
-      const lp = packageFromLandPortal(landPortalEvidence, input.cardId, input.dealCardId);
+      const lp = packageFromLandPortal(landPortalEvidence, input.cardId, input.dealCardId, input.searchKey);
       if (lp) inspection = lp;
       upsertRoute(routes, 'LandPortal', { status: landPortalEvidence.status === 'retrieved' ? 'used' : 'partial', confidence: 'high', note: landPortalEvidence.note || 'LandPortal inspection captured.', url: inspection.parcelUrl });
     } else {

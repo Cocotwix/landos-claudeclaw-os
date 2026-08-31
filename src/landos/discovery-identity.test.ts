@@ -39,6 +39,35 @@ const LIBERTY_LANDPORTAL = {
 };
 
 describe('discovery-stage subject identity', () => {
+  it('uses a passed SPA parcel checkpoint when the provider leaves the browser on its root URL', () => {
+    const decision = reconcileDiscoveryIdentity({
+      subject: { address: 'Parcel 023.003-02', city: 'Birchwood', county: 'Hamilton', state: 'TN', apn: '023.003-02' },
+      landPortal: {
+        parcelUrl: 'https://landportal.com/',
+        verifiedSubject: true,
+        verifiedSubjectApn: '023 003.02',
+        verifiedSubjectCounty: 'Hamilton',
+        verifiedSubjectState: 'TN',
+        sourceLabel: 'LandPortal authenticated parcel panel',
+        parcelFacts: {
+          'Parcel ID': '023 003.02',
+          'Parcel Address': '5170 HIGHWAY 60',
+          'Owner Name': 'CAMERON NATHANIEL JOSEPH',
+          Acres: '40.500',
+        },
+      },
+      official: { status: 'unavailable', note: 'No official county source answered.' },
+    });
+
+    expect(decision).toMatchObject({
+      state: 'provisional',
+      discoveryUsable: true,
+      patch: { apn: '023 003.02', county: 'Hamilton', state: 'TN', owner: 'CAMERON NATHANIEL JOSEPH', acres: 40.5 },
+      visualSourceUrl: 'https://landportal.com/',
+    });
+    expect(decision.discoveryBasis).toMatch(/verified search scope/i);
+  });
+
   it('uses exact operator APN/jurisdiction plus the authenticated LandPortal parcel panel when the official source is unavailable', () => {
     const decision = reconcileDiscoveryIdentity({
       subject: LIBERTY_SUBJECT,

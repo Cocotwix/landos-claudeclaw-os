@@ -264,6 +264,27 @@ describe('visual verification is required after a LandPortal parcel is selected'
     expect(cp.confirmed.join(' ')).toMatch(/Road\/situs matches/i);
   });
 
+  it('does not treat a synthetic Parcel <APN> card label as a situs conflict', () => {
+    const cp = verifyParcelSelected(detailFrame({
+      owner: null,
+      address: '5170 HIGHWAY 60',
+      apn: '023 003.02',
+      county: 'Hamilton',
+      state: 'TN',
+      acreage: null,
+      lat: null,
+      lng: null,
+    }), {
+      address: 'Parcel 023.003-02',
+      apn: '023.003-02',
+      county: 'Hamilton',
+      state: 'TN',
+    });
+    expect(cp.passed).toBe(true);
+    expect(cp.blockers.join(' ')).not.toMatch(/subject road/i);
+    expect(cp.confirmed.join(' ')).toMatch(/APN reconciles|County matches|State matches/i);
+  });
+
   it('reconciles the state-prefixed APN 073090 04200 with the county-local 090 04200 in Roane', () => {
     const cp = verifyParcelSelected(detailFrame({ apn: '090 04200' }), DEAL_32);
     expect(cp.passed).toBe(true);

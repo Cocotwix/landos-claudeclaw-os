@@ -1,0 +1,218 @@
+{
+  "sprintId": "sprint-2026-08-31-cold-lead-autonomy-matrix",
+  "title": "Cold-Lead Autonomy and Acceptance Matrix",
+  "originalPromptPath": "C:/Users/tbutt/.codex/attachments/9ebd6c23-2af6-4c60-9f4a-6193a44e253c/pasted-text.txt",
+  "workstreams": [
+    {
+      "id": "ws1-conventional-resolution",
+      "name": "Address plus APN and address-only autonomy",
+      "operatorOutcome": "A normal operator can submit either a complete address with APN or a valid address alone, walk away, and receive the most complete honest Deal Card LandOS can produce without developer intervention.",
+      "inScope": [
+        "fresh address plus APN intake",
+        "fresh address-only intake",
+        "canonical subject establishment",
+        "prerequisite-safe market and parcel scheduling",
+        "Deal Card readiness and intelligence"
+      ],
+      "backendServices": [
+        "New Lead intake",
+        "Property Resolution",
+        "Deal Intelligence mission",
+        "Research Readiness",
+        "intelligence stack"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Overview",
+        "Deal Card Property",
+        "Deal Card Market",
+        "Deal Card Seller",
+        "Deal Card Research Readiness"
+      ],
+      "requiredDataState": "Two fresh disposable leads for the same publicly resolvable control property: one complete address plus APN and minimal safe seller information, one address only with no APN.",
+      "browserJourney": {
+        "journeyId": "cold-lead-conventional-resolution",
+        "steps": [
+          "Submit the address plus APN lead through New Lead and make no manual corrections",
+          "Observe subject establishment, capability scheduling, recovery, readiness, and intelligence until settled",
+          "Inspect the resulting Deal Card through normal operator navigation",
+          "Submit the address-only lead through New Lead and make no manual corrections",
+          "Confirm autonomous parcel resolution and downstream research",
+          "Hard refresh representative results and confirm persistence without unintended reruns"
+        ]
+      },
+      "testRequirements": [
+        "intake extraction and APN normalization",
+        "address-only autonomous parcel resolution",
+        "prerequisite scheduler and readiness reconciliation",
+        "current intelligence after admitted evidence"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "Address-only intake asks for an APN despite a viable autonomous resolution route",
+        "Developer intervention is needed after submission",
+        "County or ZIP work waits unnecessarily on parcel verification",
+        "Deal Card intelligence is stale relative to admitted evidence"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": [],
+      "requirements": [
+        { "id": "ws1-r1", "text": "A fresh address plus APN intake normalizes the parcel, establishes one stable canonical subject, and autonomously settles to an honest Deal Card." },
+        { "id": "ws1-r2", "text": "A fresh address-only intake resolves the parcel autonomously when public evidence can establish it and does not request a redundant APN." },
+        { "id": "ws1-r3", "text": "County and ZIP work begin when their own prerequisites arrive while parcel-specific work waits for and then consumes the canonical subject." },
+        { "id": "ws1-r4", "text": "Recovered evidence retains source, run, and subject provenance and drives bounded readiness reconciliation without churning satisfied work." },
+        { "id": "ws1-r5", "text": "Property, Market, Seller, and Deal Intelligence become current and the visible Deal Card survives refresh without unintended research reruns." }
+      ],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true }
+    },
+    {
+      "id": "ws2-alternate-pointers",
+      "name": "APN-only and exact document-link autonomy",
+      "operatorOutcome": "A parcel identifier with jurisdiction or an exact supported property link can establish the property without a redundant street address or identifier request.",
+      "inScope": [
+        "fresh APN-only intake with jurisdiction",
+        "fresh exact LandPortal parcel-link intake",
+        "alternate-pointer subject establishment",
+        "document/link provenance",
+        "parcel-specific downstream research"
+      ],
+      "backendServices": [
+        "New Lead intake",
+        "Universal Property Resolution",
+        "LandPortal Research",
+        "evidence admission",
+        "Deal Intelligence mission"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Property",
+        "Deal Card Documents and Visuals",
+        "Deal Card Research Readiness"
+      ],
+      "requiredDataState": "Two fresh disposable leads for a public control property: one APN plus county/state with no street address, one exact retained LandPortal parcel URL without redundant APN/address corroboration.",
+      "browserJourney": {
+        "journeyId": "cold-lead-alternate-pointers",
+        "steps": [
+          "Submit APN plus jurisdiction through New Lead without a street address",
+          "Observe autonomous property search and honest resolution or genuine ambiguity",
+          "Submit an exact supported LandPortal parcel URL through New Lead",
+          "Confirm the link establishes the same subject and retains provenance",
+          "Inspect parcel research, readiness, intelligence, and refresh persistence"
+        ]
+      },
+      "testRequirements": [
+        "APN-only resolution with jurisdiction",
+        "exact LandPortal link resolution",
+        "alternate-pointer provenance admission",
+        "canonical subject stability"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "APN-only intake requires the operator to provide an address when the parcel can be uniquely resolved",
+        "Exact LandPortal link intake requests redundant APN or address corroboration",
+        "A downstream consumer reopens identity after canonical establishment",
+        "Link-derived evidence loses provenance or admits a different parcel"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": ["ws1-conventional-resolution"],
+      "requirements": [
+        { "id": "ws2-r1", "text": "An APN plus sufficient jurisdiction context can establish the subject without a fabricated or operator-supplied street address when uniquely resolvable." },
+        { "id": "ws2-r2", "text": "An exact supported LandPortal parcel URL is recognized as the property pointer and does not trigger redundant identifier clarification." },
+        { "id": "ws2-r3", "text": "Alternate-pointer evidence retains provenance and exact-subject association through authoritative admission." },
+        { "id": "ws2-r4", "text": "Canonical subject state remains stable and every downstream parcel consumer uses it rather than reopening identity." },
+        { "id": "ws2-r5", "text": "The alternate-pointer Deal Cards settle autonomously as far as available evidence allows and persist through refresh and managed restart." }
+      ],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true }
+    },
+    {
+      "id": "ws3-messy-matrix-acceptance",
+      "name": "Messy intake and final autonomy matrix acceptance",
+      "operatorOutcome": "A realistic imperfect seller-style submission is combined autonomously into a stable working subject when reasonably resolvable, and the full five-case matrix communicates honest completeness, gaps, and genuine operator action on the normal Deal Card.",
+      "inScope": [
+        "fresh messy or partial intake",
+        "bounded clue combination and recovery",
+        "five-case autonomy scorecard",
+        "operator-facing Deal Card clarity",
+        "honest unresolved and valuation-pending behavior"
+      ],
+      "backendServices": [
+        "New Lead intake",
+        "Property Resolution",
+        "adaptive recovery",
+        "Research Readiness",
+        "intelligence stack",
+        "Deal Card read model"
+      ],
+      "frontendScreens": [
+        "New Lead",
+        "Deal Card Overview",
+        "Deal Card Property",
+        "Deal Card Market",
+        "Deal Card Seller",
+        "Deal Card Comps and Valuation",
+        "Deal Card Research Readiness"
+      ],
+      "requiredDataState": "One fresh difficult but reasonably resolvable seller-style lead plus the four fresh matrix leads from the prior workstreams; optionally one genuinely insufficient lead if inexpensive.",
+      "browserJourney": {
+        "journeyId": "cold-lead-messy-final-matrix",
+        "steps": [
+          "Submit realistic imperfect seller-style intake through New Lead",
+          "Make no manual corrections and observe bounded autonomous resolution and research",
+          "Inspect the final Deal Card and any action-needed message as an operator",
+          "Reinspect representative successful cases after hard refresh and managed restart",
+          "Confirm no new console errors or unintended expensive reruns",
+          "Produce the five-case autonomy, readiness, recovery, intelligence, and performance matrix"
+        ]
+      },
+      "testRequirements": [
+        "messy intake extraction and clue combination",
+        "bounded clarification semantics",
+        "comp usability and honest valuation pending",
+        "evidence/readiness/intelligence reconciliation",
+        "focused regressions, relevant integrations, typecheck, production build, governance audits, and applicable broad suite"
+      ],
+      "persistence": { "refresh": true, "restart": true },
+      "failureConditions": [
+        "A reasonably resolvable messy lead enters an interview loop or needs developer repair",
+        "A valid recovery route remains when LandOS reports blocked",
+        "Missing zoning, comps, or valuation is guessed to make the card look complete",
+        "The normal Deal Card exposes internals instead of a clear operational story",
+        "Any successful case requires refresh or restart to continue processing"
+      ],
+      "requiredProofs": [
+        "test_result",
+        "api_evidence",
+        "browser_journey",
+        "refresh_persistence",
+        "restart_persistence",
+        "independent_browser_qa",
+        "browser_visual_acceptance"
+      ],
+      "dependsOn": ["ws2-alternate-pointers"],
+      "requirements": [
+        { "id": "ws3-r1", "text": "A fresh difficult but reasonably resolvable seller-style intake combines its clues autonomously and reaches one stable working subject or asks at most one genuinely decision-changing clarification." },
+        { "id": "ws3-r2", "text": "Across all five leads deterministic routes run first, bounded recovery runs only when justified, and no developer action is used to turn a failed case into a pass." },
+        { "id": "ws3-r3", "text": "Every meaningful fact and artifact used by readiness or intelligence is admitted with source, run, subject scope, and honest confidence." },
+        { "id": "ws3-r4", "text": "Readiness and all four intelligence layers remain current after evidence changes and persist through hard refresh and managed restart without rerunning settled research." },
+        { "id": "ws3-r5", "text": "The visible Deal Card clearly communicates the established subject, property facts, market, comp/valuation status, intelligence, unresolved gaps, and only genuine operator action without exposing orchestration internals." }
+      ],
+      "applicable": { "integrationTests": true, "typecheck": true, "build": true }
+    }
+  ]
+}

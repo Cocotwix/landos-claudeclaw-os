@@ -108,7 +108,7 @@ function baseDossier(): AcquisitionDossier {
   };
 }
 
-function manifest(overrides: Array<{ id: string; status: string; machineBackfillAllowed?: boolean; blocksIntelligence?: boolean }>): ResearchReadinessManifest {
+function manifest(overrides: Array<{ id: string; status: string; attempted?: boolean; machineBackfillAllowed?: boolean; blocksIntelligence?: boolean }>): ResearchReadinessManifest {
   return {
     contractVersion: 'research-readiness-manifest-v1',
     headline: '10 / 19 ready',
@@ -116,6 +116,7 @@ function manifest(overrides: Array<{ id: string; status: string; machineBackfill
       id: item.id,
       label: item.id.replace(/_/g, ' '),
       status: item.status,
+      attempted: item.attempted ?? false,
       machineBackfillAllowed: item.machineBackfillAllowed ?? false,
       blocksIntelligence: item.blocksIntelligence ?? false,
     })),
@@ -552,6 +553,24 @@ describe('readiness preflight', () => {
     expect(result.outcome).toBe('produced');
     // The unresolved yellow travels into the prompt as a named unknown.
     expect(fake.calls[0].prompt).toMatch(/still unresolved/i);
+  });
+
+  it('does not immediately retry an attempted critical gap while producing intelligence from retained evidence', async () => {
+    const backfilled: string[][] = [];
+    const attemptedManifest = manifest([
+      { id: 'assessor_tax', status: 'red', attempted: true, machineBackfillAllowed: true, blocksIntelligence: true },
+      { id: 'seller_information', status: 'gray' },
+    ]);
+    const fake = fakeAnalyst();
+    const result = await runIntelligenceStack({ dealCardId: 89 }, deps({
+      analyst: fake.analyst,
+      reconcileReadiness: () => attemptedManifest,
+      runBackfill: async (itemIds) => { backfilled.push(itemIds); return attemptedManifest; },
+    }));
+
+    expect(backfilled).toEqual([]);
+    expect(result.backfilledItems).toEqual([]);
+    expect(result.outcome).toBe('produced');
   });
 
   it('surfaces a model-detected visual/record conflict on the Property AND Deal products, with the bounded verification', async () => {

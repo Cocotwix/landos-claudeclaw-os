@@ -356,6 +356,25 @@ describe('LandOS routes - Phase 1 manual opportunity workflow', () => {
     expect(thinBody.extraction.sellerName).toBeNull();
   });
 
+  it('seeds unverified parcel hints from an exact LandPortal pointer', async () => {
+    const token = Buffer.from('fips=47065&apn=023+003.02&propertyid=172954755').toString('base64');
+    const pointer = `https://landportal.com/?property=${encodeURIComponent(token)}`;
+    const created = await post('/api/landos/leads/manual', {
+      rawInput: `Exact property pointer: ${pointer}`,
+    });
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as any;
+    expect(body.extraction).toMatchObject({ apn: '023 003.02', state: 'TN' });
+    const property = getLandosDb().prepare(`
+      SELECT apn, state, fips, lp_property_id, lp_url, verification_status
+      FROM landos_property_card WHERE id = ?
+    `).get(body.propertyCardId) as Record<string, unknown>;
+    expect(property).toMatchObject({
+      apn: '023 003.02', state: 'TN', fips: '47065', lp_property_id: '172954755',
+      lp_url: pointer, verification_status: 'unverified_lead',
+    });
+  });
+
   it('creates one durable lead immediately, starts research, and reconciles every count surface', async () => {
     const created = await post('/api/landos/leads/manual', {
       entity: 'TY_LAND_BIZ', sellerName: 'Synthetic Route Seller',

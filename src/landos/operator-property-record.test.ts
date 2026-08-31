@@ -87,6 +87,25 @@ const baseContext: OperatorRecordContext = {
   deedRetrieved: false,
 };
 
+describe('acreage authority', () => {
+  it('labels provider acreage as provider evidence instead of an assessor roll', () => {
+    const record = buildOperatorPropertyRecord(null, {
+      ...baseContext,
+      assessedAcres: null,
+      providerAcres: 40.5,
+      parcelVerified: false,
+      verificationSource: 'provider:landportal_search_result_verified_on_screen',
+    });
+
+    expect(record.identity.assessedAcres).toBeNull();
+    expect(record.identity.governingAcreage).toMatchObject({
+      value: 40.5,
+      kind: 'provider',
+      source: 'Data provider',
+    });
+  });
+});
+
 describe('septic outlook verdict', () => {
   it('is poor when every rated component is very limited, with a plain-English why', () => {
     const outlook = computeSepticOutlook(soilsPoor, null);

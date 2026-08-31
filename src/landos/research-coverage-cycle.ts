@@ -366,7 +366,8 @@ export async function runResearchCoverageCycle(
   // try. An automatic cycle never does this; a lane nobody still asks for is
   // left settled at PARTIAL rather than re-run forever.
   const stillRequired = new Set(requirements.map((requirement) => requirement.itemId));
-  const reopenUnresolved = input.trigger === 'operator_rerun'
+  const operatorRerun = input.trigger === 'operator_rerun';
+  const reopenUnresolved = operatorRerun
     && plan.entries.some((entry) => entry.state === 'PARTIAL' && entry.machineResolvable && stillRequired.has(entry.id));
 
   // One fan-out is not the checklist. An item can only become runnable once the
@@ -391,7 +392,12 @@ export async function runResearchCoverageCycle(
     const runnable = workingPlan.entries
       .filter((entry) => entry.action === 'run' && entry.machineResolvable)
       .filter((entry) => !settledForCycle.has(entry.id))
-      .filter((entry) => entry.state !== 'PARTIAL' || (reopenUnresolved && stillRequired.has(entry.id)))
+      .filter((entry) => {
+        if (entry.state === 'NOT_RUN' || entry.state === 'NEEDS_REFRESH') return true;
+        if (!operatorRerun || !stillRequired.has(entry.id)) return false;
+        if (entry.state === 'BLOCKED') return true;
+        return entry.state === 'PARTIAL' && reopenUnresolved;
+      })
       .map((entry) => entry.id);
     if (!runnable.length) break;
 

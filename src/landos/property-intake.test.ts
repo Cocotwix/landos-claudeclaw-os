@@ -35,6 +35,15 @@ describe('public-first property intake', () => {
     expect(intake.zip).toBe('37885');
   });
 
+  it('recognizes a county abbreviation without a period when a state follows', () => {
+    const intake = parsePropertyIntake(
+      'Forty-acre tract near Highway 60 outside Birchwood, Hamilton Co TN. Parcel 023.003-02.',
+    );
+    expect(intake.county).toBe('Hamilton');
+    expect(intake.state).toBe('TN');
+    expect(intake.apn).toBe('023.003-02');
+  });
+
   it('does not misread an APN segment as a ZIP', () => {
     const intake = parsePropertyIntake('APN 002-07637-000, Monroe County, TN');
     expect(intake.zip).toBeUndefined();

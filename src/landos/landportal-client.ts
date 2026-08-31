@@ -476,6 +476,23 @@ export function apnSearchVariants(raw: string | null | undefined): string[] {
   out.add(collapsed.replace(/\s+/g, '-'));       // dash-separated
   out.add(collapsed.replace(/\s+/g, '/'));       // slash-separated
   out.add(collapsed.replace(/\s+/g, ''));        // whitespace removed (keeps dot)
+  // A caller may supply the same county APN with different punctuation on each
+  // boundary (for example `023.003-02` while the provider stores
+  // `023 003.02`). Split only on existing separators and recombine the exact
+  // same alphanumeric groups. These are search variants, never identity facts;
+  // acceptance still requires the returned APN and jurisdiction to agree.
+  const groups = collapsed.split(/[\s.\/-]+/).filter(Boolean);
+  if (groups.length >= 2) {
+    out.add(groups.join(' '));
+    out.add(groups.join('-'));
+    out.add(groups.join('/'));
+    out.add(groups.join('.'));
+    out.add(groups.join(''));
+  }
+  if (groups.length >= 3) {
+    out.add(`${groups[0]} ${groups.slice(1).join('.')}`);
+    out.add(`${groups[0]}-${groups.slice(1).join('.')}`);
+  }
   const digitsOnly = base.replace(/[^0-9]/g, '');// decimal/punctuation-stripped digits
   if (digitsOnly.length >= 4) out.add(digitsOnly);
   return [...out].filter((v) => v.length >= 2);  // LP search minimum is 2 chars

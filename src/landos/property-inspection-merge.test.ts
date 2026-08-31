@@ -6,6 +6,55 @@ const empty = (): PropertyInspectionRecord => ({
 });
 
 describe('mergePropertyInspections', () => {
+  it('retains a verified SPA search record while keeping its root URL non-canonical', () => {
+    const searched: PropertyInspectionRecord = {
+      ...empty(),
+      parcelUrl: 'https://landportal.com/',
+      parcelUrlRecord: {
+        url: 'https://landportal.com/',
+        source: 'provider:landportal_search_result_verified_on_screen',
+        capturedAt: '2026-08-31T00:00:00.000Z',
+        propertyCardId: 91,
+        dealCardId: 109,
+        verifiedSubject: true,
+        apn: '023 003.02',
+        fips: null,
+        propertyId: null,
+        verifiedCounty: 'Hamilton',
+        verifiedState: 'TN',
+      },
+      parcelFacts: { 'Parcel ID': '023 003.02', 'Parcel Address': '5170 HIGHWAY 60', Acres: '40.500' },
+    };
+
+    const merged = mergePropertyInspections([searched]);
+    expect(merged?.parcelUrlRecord).toEqual(searched.parcelUrlRecord);
+    expect(merged?.parcelUrlRecord?.fips).toBeNull();
+    expect(merged?.parcelUrlRecord?.propertyId).toBeNull();
+  });
+
+  it('lets a newly scoped checkpoint supersede the same older APN-only search record', () => {
+    const older: PropertyInspectionRecord = {
+      ...empty(),
+      parcelUrl: 'https://landportal.com/',
+      parcelUrlRecord: {
+        url: 'https://landportal.com/', source: 'provider:landportal_search_result_verified_on_screen',
+        capturedAt: '2026-08-30T23:00:00.000Z', propertyCardId: 91, dealCardId: 109,
+        verifiedSubject: true, apn: '023 003.02', fips: null, propertyId: null,
+      },
+      parcelFacts: { 'Parcel ID': '023 003.02' },
+    };
+    const scoped: PropertyInspectionRecord = {
+      ...older,
+      parcelUrlRecord: {
+        ...older.parcelUrlRecord!, capturedAt: '2026-08-31T00:00:00.000Z',
+        verifiedCounty: 'Hamilton', verifiedState: 'TN',
+      },
+    };
+
+    const merged = mergePropertyInspections([older, scoped]);
+    expect(merged?.parcelUrlRecord).toMatchObject({ verifiedCounty: 'Hamilton', verifiedState: 'TN' });
+  });
+
   it('retains a rich LandPortal capture when a later county gap-fill has no visuals or comps', () => {
     const rich: PropertyInspectionRecord = {
       ...empty(),

@@ -124,13 +124,18 @@ function fieldsFromArgs(args: LpResolveArgs | null, rawText: string, intake: Str
   // explicit apn that differs, keep it at the head of the list.
   const distinctParcels = apnCands.parcels.slice();
   const parcels = a.apn && !distinctParcels.includes(a.apn) ? [a.apn, ...distinctParcels] : distinctParcels;
+  const county = a.county ?? intake.county ?? area.county;
+  const parsedCity = a.city ?? intake.city ?? area.city;
+  const cityEchoesCounty = !!county && !!parsedCity
+    && parsedCity.replace(/\s+(?:co\.?|county)$/i, '').trim().toLowerCase() === county.trim().toLowerCase();
+  const qualifiedLocality = rawText.match(/\b(?:[Nn]ear|[Aa]round|[Oo]utside(?:\s+[Oo]f)?)\s+([A-Z][A-Za-z.'’\-]+)(?=\s*(?:,|[A-Z]{2}\b))/)?.[1];
   return {
     rawInput: intake.rawInput,
     address: a.address ?? intake.address,
-    city: a.city ?? intake.city ?? area.city,
+    city: cityEchoesCounty ? qualifiedLocality : parsedCity ?? qualifiedLocality,
     state: a.state ?? intake.state ?? area.state,
     zip: a.zip ?? intake.zip,
-    county: a.county ?? intake.county ?? area.county,
+    county,
     fips: a.fips,
     apn,
     owner: a.owner ?? intake.owner,

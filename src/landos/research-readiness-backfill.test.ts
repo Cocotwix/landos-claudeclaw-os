@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestLandosDb } from './db.js';
 import { createDealCard, linkPropertyToDeal } from './deal-card.js';
-import { upsertPropertyCard } from './property-card.js';
+import { savePropertyInspection, upsertPropertyCard } from './property-card.js';
 import { reconcileResearchReadiness, isReconcileError } from './research-readiness-reconcile.js';
 import { runResearchReadinessBackfill } from './research-readiness-backfill.js';
 import type { CapabilityInvocationRequest, CapabilityResult } from './capability-contract.js';
@@ -79,9 +79,85 @@ describe('research readiness reconciliation — retained state only', () => {
     const result = reconcileResearchReadiness(deal.id, NOW);
     expect(isReconcileError(result)).toBe(true);
   });
+
+  it('does not promote a provider-backed parcel match to an official government record', () => {
+    const deal = createDealCard({ entity: 'TY_LAND_BIZ', title: 'Provider-resolved lead' });
+    const { card } = upsertPropertyCard({
+      entity: 'TY_LAND_BIZ',
+      activeInputAddress: 'Parcel 023.003-02',
+      county: 'Hamilton',
+      state: 'TN',
+      apn: '023 003.02',
+      acres: 40.5,
+      verified: false,
+      verificationSource: 'provider:landportal_search_result_verified_on_screen; County sources were attempted',
+    });
+    linkPropertyToDeal({ dealCardId: deal.id, cardId: card.id, role: 'subject' });
+    savePropertyInspection(card.id, {
+      parcelUrl: 'https://landportal.com/',
+      parcelUrlRecord: {
+        url: 'https://landportal.com/',
+        source: 'provider:landportal_search_result_verified_on_screen',
+        capturedAt: NOW,
+        propertyCardId: card.id,
+        dealCardId: deal.id,
+        verifiedSubject: true,
+        apn: '023 003.02',
+        fips: null,
+        propertyId: null,
+        verifiedCounty: 'Hamilton',
+        verifiedState: 'TN',
+      },
+      comparablesUrl: null,
+      parcelFacts: { 'Parcel ID': '023 003.02', Acres: '40.500' },
+      assets: [], overlays: [], visualObservations: [], comparables: [],
+      sources: [], evidence: [], discoveryQuestions: [], missingInformation: [],
+    });
+
+    const manifest = reconcileResearchReadiness(deal.id, NOW);
+    if (isReconcileError(manifest)) throw new Error(manifest.error);
+
+    const official = manifest.items.find((item) => item.id === 'official_parcel_record');
+    const provider = manifest.items.find((item) => item.id === 'landportal_research');
+    expect(provider?.status).toBe('green');
+    expect(provider?.reason).toMatch(/authenticated exact-subject checkpoint/);
+    expect(official?.status).toBe('red');
+    expect(official?.reason).toBe('No official parcel or GIS record has been retrieved for this parcel.');
+  });
 });
 
 describe('targeted backfill — bounded invocation', () => {
+  it('starts prerequisite-safe capability targets concurrently while preserving report order', async () => {
+    const { dealCardId } = oldLead();
+    const manifest = reconcileResearchReadiness(dealCardId, NOW);
+    if (isReconcileError(manifest)) throw new Error(manifest.error);
+    const expected = [...new Set(manifest.items
+      .filter((item) => item.status === 'red' && item.machineBackfillAllowed)
+      .map((item) => item.owner.capabilityId)
+      .filter((id): id is string => id != null))];
+    const invoked: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = runResearchReadinessBackfill(dealCardId, 'TY_LAND_BIZ', {}, {
+      now: () => NOW,
+      invoke: async (request) => {
+        invoked.push(request.capabilityId);
+        await gate;
+        return fakeResult(request);
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      expect(invoked).toEqual(expected);
+    } finally {
+      release?.();
+    }
+    const report = await pending;
+    if ('error' in report) throw new Error(report.error);
+    expect(report.ran.map((run) => run.capabilityId)).toEqual(expected);
+  });
+
   it('invokes only the capabilities the manifest selected, once each', async () => {
     const { dealCardId } = oldLead();
     const invoked: string[] = [];

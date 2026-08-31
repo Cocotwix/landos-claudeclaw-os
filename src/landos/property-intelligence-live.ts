@@ -844,6 +844,9 @@ async function collectParcelIdentityUnlocked(
       sourceLabel: 'LandPortal authenticated parcel panel',
       sourceNote: inspection.sources.find((item) => item.provider === 'LandPortal')?.note ?? null,
       verifiedSubject: landPortalSubjectVerified,
+      verifiedSubjectApn: inspection.parcelUrlRecord?.apn ?? null,
+      verifiedSubjectCounty: inspection.parcelUrlRecord?.verifiedCounty ?? null,
+      verifiedSubjectState: inspection.parcelUrlRecord?.verifiedState ?? null,
     } : null,
     official: {
       status: verified ? 'matched' : 'unavailable',
@@ -871,6 +874,10 @@ async function collectParcelIdentityUnlocked(
   // neighbor/context geometry. Keep it in history, but do not let it feed the
   // current subject record until either the canonical LandPortal URL or an
   // official parcel record proves the association.
+  const retainedSubjectAcres = num(discovery.patch.acres) ?? num(property.acres);
+  const retainedProviderAcres = landPortalSubjectVerified
+    ? num(inspection?.parcelFacts.Acres) ?? num(inspection?.parcelFacts['Calc Acres'])
+    : null;
   const record = buildOperatorPropertyRecord(
     landPortalSubjectVerified || verified ? run : null,
     {
@@ -880,7 +887,8 @@ async function collectParcelIdentityUnlocked(
     state: str(discovery.patch.state) ?? str(property.state),
     apn: str(discovery.patch.apn) ?? str(property.apn),
     owner: str(discovery.patch.owner) ?? str(property.owner),
-    assessedAcres: num(discovery.patch.acres) ?? num(property.acres),
+    assessedAcres: verified ? retainedSubjectAcres : null,
+    providerAcres: retainedProviderAcres,
     surveyedAcres: retainedSurveyedAcres(ctx.dealCardId),
     coordinates: discovery.patch.coordinates ?? (num(property.lat) != null && property.lng != null
       ? { lat: Number(property.lat), lng: Number(property.lng) }
@@ -1404,7 +1412,9 @@ export function operatorRecordFor(dealCardId: number): OperatorPropertyRecord | 
   // capture may still have a coordinate, overlay, or soil result, but those
   // belong to context until the subject URL is canonically verified (or an
   // official parcel card is already accepted).
-  if (!hasVerifiedPropertyCard(property) && !hasVerifiedLandPortalSubject(inspection)) return null;
+  const officiallyVerified = hasVerifiedPropertyCard(property);
+  const providerVerified = hasVerifiedLandPortalSubject(inspection);
+  if (!officiallyVerified && !providerVerified) return null;
   const run = new PublicIntelligenceStore().load(dealCardId)?.run ?? null;
   if (!run) return null;
   return buildOperatorPropertyRecord(run, {
@@ -1414,9 +1424,12 @@ export function operatorRecordFor(dealCardId: number): OperatorPropertyRecord | 
     state: str(property.state),
     apn: str(property.apn),
     owner: str(property.owner),
-    assessedAcres: num(property.acres),
+    assessedAcres: officiallyVerified ? num(property.acres) : null,
+    providerAcres: providerVerified
+      ? num(inspection?.parcelFacts.Acres) ?? num(inspection?.parcelFacts['Calc Acres'])
+      : null,
     coordinates: num(property.lat) != null && property.lng != null ? { lat: Number(property.lat), lng: Number(property.lng) } : null,
-    parcelVerified: String(property.verification_status ?? '') === 'verified_property',
+    parcelVerified: officiallyVerified,
     compCount: 0,
     valuationReady: false,
     marketPulseAvailable: false,

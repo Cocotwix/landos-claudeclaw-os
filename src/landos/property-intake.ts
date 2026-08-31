@@ -105,6 +105,19 @@ function findState(text: string): { raw: string; normalized: string; index: numb
 function findCounty(text: string): string | undefined {
   const labeled = text.match(/\bcounty\s*[:=-]\s*([A-Za-z][A-Za-z .'’\-]{0,60}?)(?=\s*(?:[,;\n]|$))/i)?.[1];
   if (labeled && !/^(?:road|rd|route|highway)$/i.test(labeled.trim())) return clean(labeled);
+  // Real lead notes routinely abbreviate the jurisdiction as "Hamilton Co."
+  // A dotted Co. is accepted only beside property/jurisdiction context, so an
+  // unrelated business name such as "Acme Co." is not promoted to a county.
+  const abbreviated = [...text.matchAll(/\b([A-Z][A-Za-z.'’\-]*(?:\s+[A-Z][A-Za-z.'’\-]*)?)\s+(?:Co\.(?!\w)|Co(?=\s*(?:[,;\n]|[A-Z]{2}\b|Tennessee\b|$)))/g)].at(-1);
+  if (abbreviated) {
+    const contextStart = Math.max(0, (abbreviated.index ?? 0) - 80);
+    const contextEnd = Math.min(text.length, (abbreviated.index ?? 0) + abbreviated[0].length + 80);
+    const context = text.slice(contextStart, contextEnd);
+    if (/\b(?:apn|parcel|property|acre|state|TN|Tennessee|county)\b/i.test(context)) {
+      const value = clean(abbreviated[1]);
+      if (value && !/^(?:road|rd|route|highway|land)$/i.test(value)) return value;
+    }
+  }
   const lastCounty = text.lastIndexOf('County');
   if (lastCounty < 0) return undefined;
   const segment = text.slice(0, lastCounty).trim();

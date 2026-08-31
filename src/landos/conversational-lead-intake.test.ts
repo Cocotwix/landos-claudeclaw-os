@@ -52,6 +52,24 @@ describe('conversational lead intake', () => {
     expect(intake.zip).toBeNull();
   });
 
+  it('normalizes a county abbreviation and locality qualifier in messy seller notes', () => {
+    const intake = parseConversationalLeadIntake(
+      'Talked with Jamie — might sell the forty-ish acre place off Hwy sixty near Birchwood TN, Hamilton Co. Parcel notation looks like 023.003-02.',
+    );
+    expect(intake).toMatchObject({
+      apn: '023.003-02', city: 'Birchwood', county: 'Hamilton', state: 'TN',
+    });
+  });
+
+  it('keeps an undotted county abbreviation ahead of the trailing state', () => {
+    const intake = parseConversationalLeadIntake(
+      'Spoke with Casey about the tract near Highway 60 outside Birchwood, Hamilton Co TN. Parcel note says 023.003-02.',
+    );
+    expect(intake).toMatchObject({
+      apn: '023.003-02', city: 'Birchwood', county: 'Hamilton', state: 'TN',
+    });
+  });
+
   it('never keeps a parser fragment as the city', () => {
     const intake = parseConversationalLeadIntake(
       'Seller is Maria Hernandez, 704-555-0182. She inherited about 7 acres near 1180 Old Mill Road in Rowan County, NC. APN may be 123-45-678.',

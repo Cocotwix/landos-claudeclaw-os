@@ -36,6 +36,11 @@ export interface DiscoveryLandPortalEvidence {
   sourceNote?: string | null;
   /** Explicit subject association proof from the retained canonical URL record. */
   verifiedSubject?: boolean;
+  /** Exact APN and jurisdiction scope retained from a passed SPA search-result
+   * checkpoint when the provider did not expose a canonical parcel URL. */
+  verifiedSubjectApn?: string | null;
+  verifiedSubjectCounty?: string | null;
+  verifiedSubjectState?: string | null;
 }
 
 export interface DiscoveryOfficialParcelEvidence {
@@ -306,6 +311,17 @@ export function reconcileDiscoveryIdentity(input: {
   // durable association signal; legacy test/fixture callers that do not provide
   // the field retain their previous behavior.
   const landPortalSubjectVerified = input.landPortal?.verifiedSubject !== false;
+  const requestedApn = compactApn(operatorPatch.apn);
+  const verifiedSearchMatch = input.landPortal?.verifiedSubject === true
+    && !lpCanonical
+    && !!requestedApn
+    && apnSameParcel(operatorPatch.apn, input.landPortal.verifiedSubjectApn)
+    && apnSameParcel(lpPatch.apn, input.landPortal.verifiedSubjectApn)
+    && !!countyKey(operatorPatch.county)
+    && countyKey(operatorPatch.county) === countyKey(input.landPortal.verifiedSubjectCounty)
+    && !!stateKey(operatorPatch.state)
+    && stateKey(operatorPatch.state) === stateKey(input.landPortal.verifiedSubjectState);
+  const lpEvidenceUrl = lpUrl ?? (verifiedSearchMatch ? text(input.landPortal?.parcelUrl) : null);
   const officialPatch: PropertyPatch = input.official?.parcel ? {
     address: text(input.official.parcel.address) ?? undefined,
     city: text(input.official.parcel.city) ?? undefined,
@@ -320,7 +336,6 @@ export function reconcileDiscoveryIdentity(input: {
   } : {};
 
   const conflicts: string[] = [];
-  const requestedApn = compactApn(operatorPatch.apn);
   const compare = (label: string, expected: string, observed: string, source: string): void => {
     if (expected && observed && expected !== observed) {
       conflicts.push(`${source} ${label} does not match the supplied subject (${String(observed)} vs ${String(expected)}).`);
@@ -399,7 +414,8 @@ export function reconcileDiscoveryIdentity(input: {
     && (!!countyKey(lpPatch.county) || !!lpCanonical?.fips)
     && !!stateKey(lpPatch.state)
     && (!stateKey(operatorPatch.state) || stateKey(lpPatch.state) === stateKey(operatorPatch.state));
-  const landPortalExact = landPortalSubjectVerified && !!lpUrl && (landPortalApnMatch || landPortalAddressMatch);
+  const landPortalExact = landPortalSubjectVerified
+    && ((!!lpUrl && (landPortalApnMatch || landPortalAddressMatch)) || verifiedSearchMatch);
 
   const lpSource = input.landPortal?.sourceLabel?.trim() || 'LandPortal authenticated parcel panel';
   const officialSource = input.official?.source?.trim() || 'Official parcel source';
@@ -435,10 +451,10 @@ export function reconcileDiscoveryIdentity(input: {
       patch,
       evidence: [
         ...evidenceFor(officialPatch, officialSource, input.official?.sourceUrl ?? null, 'high', 'official_record'),
-        ...evidenceFor(lpPatch, lpSource, lpUrl, 'medium', 'marketplace_parcel_panel'),
+        ...evidenceFor(lpPatch, lpSource, lpEvidenceUrl, 'medium', 'marketplace_parcel_panel'),
       ],
       retainedLandPortalFacts: landPortalSubjectVerified ? curatedFacts(lpFacts) : curatedEstimateFacts(lpFacts),
-      visualSourceUrl: lpUrl,
+      visualSourceUrl: lpEvidenceUrl,
       visualAssetCount: Math.max(0, input.landPortal?.assetCount ?? 0),
       limitations,
       conflicts,
@@ -458,17 +474,19 @@ export function reconcileDiscoveryIdentity(input: {
       // panel printed no county, the parcel URL's own county FIPS is cited —
       // never a county name that no source supplied.
       discoveryBasis: `Subject established for discovery: ${matchDescription} agrees with the authenticated LandPortal parcel panel for APN ${lpPatch.apn ?? lpCanonical?.apn} in ${
-        text(lpPatch.county) ? `${lpPatch.county}, ${lpPatch.state}` : `county FIPS ${lpCanonical?.fips}${lpPatch.state ? ` (${lpPatch.state})` : ''}`
+        verifiedSearchMatch
+          ? `${input.landPortal?.verifiedSubjectCounty} County, ${input.landPortal?.verifiedSubjectState} (verified search scope)`
+          : text(lpPatch.county) ? `${lpPatch.county}, ${lpPatch.state}` : `county FIPS ${lpCanonical?.fips}${lpPatch.state ? ` (${lpPatch.state})` : ''}`
       }. County sources were attempted; their current coverage limitation remains noted while the full analysis proceeds from this parcel match.`,
       discoverySources: [...sources],
       confidence: 'medium',
       patch,
       evidence: [
         ...evidenceFor(operatorPatch, 'Operator input', null, 'medium', 'operator_input'),
-        ...evidenceFor(lpPatch, lpSource, lpUrl, 'medium', 'marketplace_parcel_panel'),
+        ...evidenceFor(lpPatch, lpSource, lpEvidenceUrl, 'medium', 'marketplace_parcel_panel'),
       ],
       retainedLandPortalFacts: landPortalSubjectVerified ? curatedFacts(lpFacts) : curatedEstimateFacts(lpFacts),
-      visualSourceUrl: lpUrl,
+      visualSourceUrl: lpEvidenceUrl,
       visualAssetCount: Math.max(0, input.landPortal?.assetCount ?? 0),
       limitations,
       conflicts,

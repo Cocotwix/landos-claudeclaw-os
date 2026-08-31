@@ -14,6 +14,70 @@ function fakeService(ev: BrowserEvidence): BrowserService {
 }
 
 describe('Property Inspection capability', () => {
+  it('retains a verified SPA search result without claiming the root URL is a canonical parcel link', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {},
+      // The live direct-panel path can return the verified parcel table before
+      // it projects the APN into this generic fact array.
+      facts: [],
+      sourcesUsed: [{ type: 'landportal', url: 'https://landportal.com/', origin: 'landportal', confidence: 0.9 }],
+      screenshots: [], blocked: [], sourceUrls: ['https://landportal.com/'], note: 'Exact parcel panel verified.',
+      visualCheckpoints: [{ kind: 'parcel_selected', passed: true, confirmed: ['APN', 'locality'], blockers: [], unverified: [], screenshotPath: null }],
+      inspection: {
+        parcelUrl: 'https://landportal.com/', comparablesUrl: null,
+        parcelFacts: { 'Owner Name': 'CAMERON', 'Parcel ID': '023 003.02', 'Parcel Address': '5170 HIGHWAY 60', Acres: '40.500' },
+        assets: [], overlays: [], visualObservations: [], comparables: [],
+      },
+    } satisfies BrowserEvidence;
+
+    const result = await runPropertyInspection({
+      cardId: 91,
+      dealCardId: 109,
+      searchKey: { apn: '023.003-02', county: 'Hamilton', state: 'TN' },
+      existingEvidence: [landportal],
+      timeoutMs: 1000,
+    }, { landPortalBrowser: fakeService(landportal), googleVisualConfigured: false });
+
+    expect(result.inspection.parcelUrlRecord).toEqual(expect.objectContaining({
+      url: 'https://landportal.com/',
+      source: 'provider:landportal_search_result_verified_on_screen',
+      verifiedSubject: true,
+      apn: '023 003.02',
+      fips: null,
+      propertyId: null,
+      propertyCardId: 91,
+      dealCardId: 109,
+      verifiedCounty: 'Hamilton',
+      verifiedState: 'TN',
+    }));
+  });
+
+  it('upgrades an older verified SPA record with the newly checked search scope', async () => {
+    const landportal = {
+      service: 'landportal', mode: 'workflow', status: 'retrieved', patch: {}, fields: {}, facts: [],
+      sourcesUsed: [], screenshots: [], blocked: [], sourceUrls: ['https://landportal.com/'], note: 'Exact parcel panel verified again.',
+      inspection: {
+        parcelUrl: 'https://landportal.com/',
+        parcelUrlRecord: {
+          url: 'https://landportal.com/', source: 'provider:landportal_search_result_verified_on_screen',
+          capturedAt: '2026-08-31T00:00:00.000Z', propertyCardId: 91, dealCardId: 109,
+          verifiedSubject: true, apn: '023 003.02', fips: null, propertyId: null,
+        },
+        comparablesUrl: null,
+        parcelFacts: { 'Parcel ID': '023 003.02', 'Parcel Address': '5170 HIGHWAY 60' },
+        assets: [], overlays: [], visualObservations: [], comparables: [],
+      },
+    } satisfies BrowserEvidence;
+
+    const result = await runPropertyInspection({
+      cardId: 91, dealCardId: 109,
+      searchKey: { apn: '023.003-02', county: 'Hamilton', state: 'TN' },
+      existingEvidence: [landportal], timeoutMs: 1000,
+    }, { landPortalBrowser: fakeService(landportal), googleVisualConfigured: false });
+
+    expect(result.inspection.parcelUrlRecord).toMatchObject({ verifiedCounty: 'Hamilton', verifiedState: 'TN' });
+  });
+
   it('reuses a LandPortal inspection package and derives concise questions', async () => {
     const landportal = {
       service: 'landportal',

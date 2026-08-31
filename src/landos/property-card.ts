@@ -1127,11 +1127,33 @@ export function mergePropertyInspections(records: Array<PropertyInspectionRecord
   // which is the association this field exists to state. Dropping it left a
   // verified parcel reading as unverified.
   const canonicalRecords = usable.flatMap((record) => [record.parcelUrlRecord ?? null])
-    .filter((record): record is LandPortalParcelUrlRecord => !!record && record.verifiedSubject
-      && (isVerifiedLandPortalSubjectUrl(record.url) || operatorLandPortalEntryUrl(record.url) !== null));
+    .filter((record): record is LandPortalParcelUrlRecord => {
+      if (!record?.verifiedSubject) return false;
+      if (isVerifiedLandPortalSubjectUrl(record.url) || operatorLandPortalEntryUrl(record.url) !== null) return true;
+      // LandPortal's SPA can verify a searched parcel without changing its
+      // root URL. That URL is provenance, never a canonical parcel key. Admit
+      // only the record shape written by the passed on-screen checkpoint, and
+      // only when it carries the opened panel's own APN on the trusted origin.
+      if (record.source !== 'provider:landportal_search_result_verified_on_screen' || !record.apn) return false;
+      try {
+        const parsed = new URL(record.url);
+        return parsed.protocol === 'https:' && /^(?:www\.)?landportal\.com$/i.test(parsed.hostname);
+      } catch {
+        return false;
+      }
+    });
   let latestCanonical: LandPortalParcelUrlRecord | null = null;
   for (const record of canonicalRecords) {
-    if (!latestCanonical || sameLandPortalParcel(
+    const sameVerifiedSearchParcel = latestCanonical?.source === 'provider:landportal_search_result_verified_on_screen'
+      && record.source === 'provider:landportal_search_result_verified_on_screen'
+      && !!latestCanonical.apn
+      && !!record.apn
+      && apnIdentifiersEquivalent(latestCanonical.apn, record.apn)
+      && (!latestCanonical.verifiedCounty || !record.verifiedCounty
+        || latestCanonical.verifiedCounty.toLowerCase() === record.verifiedCounty.toLowerCase())
+      && (!latestCanonical.verifiedState || !record.verifiedState
+        || latestCanonical.verifiedState.toLowerCase() === record.verifiedState.toLowerCase());
+    if (!latestCanonical || sameVerifiedSearchParcel || sameLandPortalParcel(
       { fips: latestCanonical.fips, apn: latestCanonical.apn, propertyId: latestCanonical.propertyId },
       { fips: record.fips, apn: record.apn, propertyId: record.propertyId },
     )) latestCanonical = record;

@@ -208,6 +208,13 @@ describe('apnSearchVariants (exact-search recovery, never changes core digits)',
     expect(apnSearchVariants('08-2518')).toContain('082518');
     expect(apnSearchVariants('')).toEqual([]);
   });
+  it('recovers mixed-punctuation county formats without changing the identifier groups', () => {
+    const v = apnSearchVariants('023.003-02');
+    expect(v).toEqual(expect.arrayContaining([
+      '023.003-02', '023 003.02', '023-003.02', '023 003 02', '02300302',
+    ]));
+    expect(v.every((candidate) => (candidate.match(/\d/g) ?? []).join('') === '02300302')).toBe(true);
+  });
 });
 
 describe('ownerSearchVariants (name forms only, never broadens beyond name)', () => {

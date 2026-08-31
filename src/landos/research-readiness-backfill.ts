@@ -111,20 +111,17 @@ export async function runResearchReadinessBackfill(
   if (isReconcileError(before)) return before;
 
   const selection = selectResearchBackfill(before, request);
-  const ran: BackfillRunItem[] = [];
-
-  for (const target of selection.targets) {
+  const runTarget = async (target: (typeof selection.targets)[number]): Promise<BackfillRunItem> => {
     // A blue item is a refresh; a red item may still legitimately reuse a
     // result the store already holds under the same key. Asking for `refresh`
     // in both cases is the honest reading of "this item has no usable answer".
     const mode: CapabilityInvocationMode = 'refresh';
     if (deps.signal?.aborted || (deps.runId && deps.isRunAuthoritative && !deps.isRunAuthoritative(deps.runId))) {
-      ran.push({
+      return {
         capabilityId: target.capabilityId, itemIds: target.itemIds, labels: target.labels,
         status: 'failed', invocationId: null,
         summary: 'The parent run was cancelled or superseded before this capability started.',
-      });
-      continue;
+      };
     }
     try {
       const result = await invoke({
@@ -143,27 +140,35 @@ export async function runResearchReadinessBackfill(
           ...(deps.runId ? { runId: deps.runId } : {}),
         },
       }, runtime);
-      ran.push({
+      return {
         capabilityId: target.capabilityId,
         itemIds: target.itemIds,
         labels: target.labels,
         status: result.status === 'SUCCEEDED' ? 'succeeded' : result.status === 'NEEDS_INPUT' ? 'needs_input' : 'failed',
         invocationId: result.invocationId,
         summary: result.warnings[0] ?? `${target.labels.join(' and ')} ran through ${target.capabilityId}.`,
-      });
+      };
     } catch (error) {
       // A capability that refuses to run is a recorded failure, not a reason to
       // abandon the remaining targets.
-      ran.push({
+      return {
         capabilityId: target.capabilityId,
         itemIds: target.itemIds,
         labels: target.labels,
         status: 'failed',
         invocationId: null,
         summary: error instanceof Error ? error.message : String(error),
-      });
+      };
     }
-  }
+  };
+
+  // Every target in one selection already has its declared prerequisites met;
+  // the coverage cycle creates another pass when later evidence unlocks more.
+  // Start these independent capabilities together so a slow browser/provider
+  // lane cannot prevent assessor, zoning, utilities, or comps from making
+  // progress. Promise.all preserves the deterministic selection order in the
+  // report even when capabilities settle in a different order.
+  const ran = await Promise.all(selection.targets.map(runTarget));
 
   const after = reconcileResearchReadiness(dealCardId, now());
   return {

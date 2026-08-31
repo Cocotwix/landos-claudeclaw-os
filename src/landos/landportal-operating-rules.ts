@@ -24,6 +24,10 @@ export interface LandPortalParcelUrlRecord {
   apn: string | null;
   fips: string | null;
   propertyId: string | null;
+  /** Search scope that the on-screen parcel checkpoint verified. These are
+   * provenance for a SPA search result, not fields decoded from `url`. */
+  verifiedCounty?: string | null;
+  verifiedState?: string | null;
 }
 
 export type ThreeDCaptureDecision = 'eligible' | 'not_applicable' | 'unknown';

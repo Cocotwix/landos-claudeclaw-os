@@ -17,10 +17,11 @@
 
 import { getLandosDb } from './db.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
-import { resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
+import { isOfficialPropertyVerificationSource, resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
 import { CapabilityInvocationStore } from './capability-store.js';
 import { PropertyResearchStore, type CanonicalPropertyResearchRecord } from './property-research-store.js';
 import { loadEligibleCardVisualCapture, loadPropertyInspection } from './property-card.js';
+import { sameApn } from './parcel-scope-context.js';
 import { listComps } from './comps.js';
 import { buildCompsValuationView } from './comps-valuation.js';
 import { buildRetainedLandUseIntelligenceView } from './land-use-view.js';
@@ -262,11 +263,17 @@ function landPortalProbe(ctx: ReconcileContext): ResearchReadinessProbe {
   const lane = ctx.research?.lanes?.landportal_subject ?? ctx.research?.lanes?.hermes_landportal_subject ?? null;
   const laneRan = !!lane;
   const laneRetained = lane?.retainedStatus === 'verified';
+  const inspection = loadPropertyInspection(ctx.propertyCardId);
+  const checkpoint = inspection?.parcelUrlRecord ?? null;
+  const checkpointRetained = checkpoint?.verifiedSubject === true
+    && sameApn(checkpoint.apn, ctx.card.apn)
+    && String(checkpoint.verifiedCounty ?? '').trim().toLowerCase() === String(ctx.card.county ?? '').trim().toLowerCase()
+    && String(checkpoint.verifiedState ?? '').trim().toUpperCase() === String(ctx.card.state ?? '').trim().toUpperCase();
   const attempted = !!reading.result || laneRan;
   // "record_returned" is the capability's own usable outcome; a retained
   // LandPortal id plus a verified subject lane is the same fact for a card
   // whose research predates the capability.
-  const usable = reading.outcome === 'record_returned' || (!!lpId && laneRetained);
+  const usable = reading.outcome === 'record_returned' || (!!lpId && laneRetained) || checkpointRetained;
   return {
     itemId: 'landportal_research',
     attempted,
@@ -274,9 +281,9 @@ function landPortalProbe(ctx: ReconcileContext): ResearchReadinessProbe {
     usableEvidence: usable,
     unresolved: true,
     lastAttemptAt: reading.completedAt ?? lane?.latestAttemptAt ?? null,
-    lastSuccessAt: usable ? reading.completedAt ?? lane?.retainedAt ?? null : null,
+    lastSuccessAt: usable ? reading.completedAt ?? lane?.retainedAt ?? checkpoint?.capturedAt ?? null : null,
     reason: usable
-      ? `LandPortal parcel record retained${lpId ? ` (property ${lpId})` : ''}.`
+      ? `LandPortal parcel record retained${lpId ? ` (property ${lpId})` : checkpointRetained ? ' (authenticated exact-subject checkpoint)' : ''}.`
       : attempted
         ? `The LandPortal lane ran and no parcel record was retained.${failureNote(reading)}`
         : 'LandPortal Research has not run for this parcel.',
@@ -382,8 +389,12 @@ function officialParcelRecordProbe(ctx: ReconcileContext): ResearchReadinessProb
       return String(row?.basis ?? '');
     } catch { return ''; }
   })();
-  const OFFICIAL_RECORD = /official|assessor|appraiser|cadastral|county|government|gis|parcel layer|recorded/i;
-  const officialSource = OFFICIAL_RECORD.test(source) || OFFICIAL_RECORD.test(identityBasis);
+  // A provider result may mention a county, GIS attempts, or public records in
+  // its narrative without itself being an official record.  Keep the test
+  // intentionally authority-specific so operational subject resolution does
+  // not silently become assessor verification in the readiness checklist.
+  const officialSource = isOfficialPropertyVerificationSource(source)
+    || isOfficialPropertyVerificationSource(identityBasis);
   const usable = gisMatched || officialSource;
   return {
     itemId: 'official_parcel_record',

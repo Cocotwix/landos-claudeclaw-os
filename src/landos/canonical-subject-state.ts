@@ -75,15 +75,26 @@ function normalizeApn(value: string | null): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+/** Only an authority-specific government/assessor source can satisfy the
+ * stronger official-verification axis.  A provider panel may establish the
+ * working subject, even when a legacy card carries `verified_property`, but it
+ * never becomes an official record by virtue of that status string alone. */
+export function isOfficialPropertyVerificationSource(value: unknown): boolean {
+  const text = String(value ?? '').trim();
+  if (!text || /landportal|provider:|realie|regrid|propertyradar|attom|data ?tree/i.test(text)) return false;
+  return /official|assessor|property[ -]?appraiser|cadastral|government|(?:county|state|municipal).{0,32}(?:gis|parcel (?:map|layer|record)|property record)|(?:gis|parcel (?:map|layer)).{0,32}(?:county|state|municipal)/i.test(text);
+}
+
 function cardExtras(propertyCardId: number | null): { fips: string | null; officiallyVerified: boolean } {
   if (propertyCardId == null) return { fips: null, officiallyVerified: false };
   try {
     const row = getLandosDb()
-      .prepare('SELECT fips, verification_status FROM landos_property_card WHERE id = ?')
-      .get(propertyCardId) as { fips?: string | null; verification_status?: string | null } | undefined;
+      .prepare('SELECT fips, verification_status, verification_source FROM landos_property_card WHERE id = ?')
+      .get(propertyCardId) as { fips?: string | null; verification_status?: string | null; verification_source?: string | null } | undefined;
     return {
       fips: typeof row?.fips === 'string' && row.fips.trim() ? row.fips.trim() : null,
-      officiallyVerified: row?.verification_status === 'verified_property',
+      officiallyVerified: row?.verification_status === 'verified_property'
+        && isOfficialPropertyVerificationSource(row?.verification_source),
     };
   } catch {
     return { fips: null, officiallyVerified: false };

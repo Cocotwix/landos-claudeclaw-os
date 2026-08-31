@@ -369,6 +369,9 @@ export function evaluateResolverIdentity(subject: ResolverSubject): ResolverEval
       sourceLabel: 'LandPortal authenticated parcel panel',
       sourceNote: inspection.sources.find((item) => item.provider === 'LandPortal')?.note ?? null,
       verifiedSubject: inspection.parcelUrlRecord?.verifiedSubject === true,
+      verifiedSubjectApn: inspection.parcelUrlRecord?.apn ?? null,
+      verifiedSubjectCounty: inspection.parcelUrlRecord?.verifiedCounty ?? null,
+      verifiedSubjectState: inspection.parcelUrlRecord?.verifiedState ?? null,
     } : null,
     official: {
       status: subject.verified ? 'matched' : 'unavailable',

@@ -54,6 +54,7 @@ import { isOperatorEntryOnlyLandPortalUrl, operatorLandPortalEntryUrl, validateL
 // accepted and no screenshot is persisted without them.
 import {
   verifySearchConfiguration, verifyResultSelection, verifyParcelSelected, assessScreenshotQuality,
+  landPortalSubjectStreet,
   apnIdentifiersEquivalent,
   type LandPortalSubject, type LandPortalSearchMode, type VisualCheckpoint,
   type SearchConfigurationFrame, type ParcelDetailFrame, type CaptureFrame, type CaptureIntent,
@@ -1100,7 +1101,8 @@ async function runLandPortalAgentic(
     // "094-020.08" vs spaced "094 02008 000"); each attempt is scoped State→County.
     // A present address still cross-checks the resolved parcel (consistency) even
     // when it did not lead the search.
-    const ranked = rankSearchMethods({ apn: key.apn, address: key.address, owner: key.owner });
+    const subjectStreet = landPortalSubjectStreet(key);
+    const ranked = rankSearchMethods({ apn: key.apn, address: subjectStreet, owner: key.owner });
     const attempts: Array<{ method: string; value: string }> = [];
     for (const r of ranked) {
       if (r.method === 'apn' && key.apn) {
@@ -1111,7 +1113,7 @@ async function runLandPortalAgentic(
           }
         }
       } else if (r.method === 'address') {
-        const fullAddress = addressSearchValue(key);
+        const fullAddress = addressSearchValue({ ...key, address: subjectStreet });
         if (fullAddress && !attempts.some((a) => a.method === 'address')) attempts.push({ method: 'address', value: fullAddress });
       } else if (r.method === 'owner' && key.owner) {
         attempts.push({ method: 'owner', value: key.owner });
@@ -1121,8 +1123,8 @@ async function runLandPortalAgentic(
     // Distinctive street word(s) from the known address, used to confirm the
     // selected parcel is actually the subject property (guards against an APN that
     // is wrong / belongs to a different same-numbered parcel).
-    const streetTokens = key.address
-      ? searchableAddress(key.address).toLowerCase().split(/\s+/).filter((w) => w.length > 3 && !/^\d+$/.test(w))
+    const streetTokens = subjectStreet
+      ? searchableAddress(subjectStreet).toLowerCase().split(/\s+/).filter((w) => w.length > 3 && !/^\d+$/.test(w))
       : [];
     const matchesKnownAddress = (o: PageObservation): boolean => {
       if (!streetTokens.length) return true; // nothing to cross-check
@@ -1363,7 +1365,7 @@ async function runLandPortalAgentic(
         : ` No result option could be confidently selected to open a parcel detail page; provide/confirm the exact parcel identifier.`;
       ev.visualCheckpoints = checkpoints;
       ev.captureVerdicts = captureVerdicts;
-      ev.note = `Searched LandPortal by ${attempts.map((a) => a.method).join('/')} but reached no parcel that both verified AND matched ${key.address || key.apn} (no weak-match, no false facts).${diagNote} Trace: ${trace.join(' | ')}`;
+      ev.note = `Searched LandPortal by ${attempts.map((a) => a.method).join('/')} but reached no parcel that both verified AND matched ${subjectStreet || key.apn} (no weak-match, no false facts).${diagNote} Trace: ${trace.join(' | ')}`;
       rememberPlatform(LANDPORTAL_BROWSER_BASE, { classification: understanding.platformClass, searchMethods: understanding.availableSearchMethods, authRequired: true, taskBoundary, used: true, navPatterns: trace.join(' | '), knownLimitations: ['no verified parcel consistent with the provided address'] });
       return ev;
     }

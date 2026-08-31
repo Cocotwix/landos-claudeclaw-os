@@ -104,6 +104,7 @@ import {
   upsertPropertyCard,
 } from './property-card.js';
 import { isOperatorEntryOnlyLandPortalUrl, isVerifiedLandPortalSubjectUrl, landPortalIdentityFromUrl, operatorLandPortalEntryUrl, sameLandPortalParcel } from './landportal-operating-rules.js';
+import { stateFromCountyFips } from './landportal-canonical-identity.js';
 import { listIntakeLinks, operatorLandPortalEntryUrlForDeal, recordIntakeLinks } from './intake-links.js';
 import { operatorSuppliedSubjectFor } from './operator-supplied-subject.js';
 import { isAcceptedLandPortalVisualForProperty } from './landportal-evidence-validation.js';
@@ -1950,9 +1951,17 @@ export function registerLandosRoutes(app: Hono): void {
     });
     const rawInput = conversationalRaw ?? legacyRaw;
     const parsed = conversationalRaw !== null ? parseConversationalLeadIntake(rawInput) : null;
+    const smartIntakeLandPortalUrl = buildSmartIntake(rawInput).fields.lpUrl?.trim() || null;
+    const operatorLandPortalUrl = suppliedLandPortalUrl || smartIntakeLandPortalUrl;
+    // A canonical LandPortal URL deterministically carries the operator-supplied
+    // parcel key. Decode that key at intake so an exact pointer does not become
+    // an identity-empty card when the live browser lane is unavailable. These
+    // values remain unverified operator hints; the normal discovery gate still
+    // requires the opened parcel panel or an official source to corroborate them.
+    const operatorLandPortalIdentity = landPortalIdentityFromUrl(operatorLandPortalUrl);
     const sellerName = parsed?.sellerName ?? (str(body.sellerName)?.trim() || null);
     const address = parsed?.address ?? (str(body.address)?.trim() || null);
-    const apn = parsed?.apn ?? (str(body.apn)?.trim() || null);
+    const apn = parsed?.apn ?? (str(body.apn)?.trim() || null) ?? operatorLandPortalIdentity?.apn ?? null;
     if (conversationalRaw === null && !sellerName) return c.json({ error: 'sellerName is required' }, 400);
     if (conversationalRaw === null && !address && !apn) return c.json({ error: 'address or APN is required' }, 400);
     const source = parsed?.leadSource ?? (str(body.leadSource)?.trim() || 'manual');
@@ -1960,7 +1969,8 @@ export function registerLandosRoutes(app: Hono): void {
     const acresRaw = parsed?.acreage ?? (typeof body.acreage === 'number' ? body.acreage : Number(str(body.acreage)));
     const city = parsed?.city ?? (str(body.city)?.trim() || null);
     const county = parsed?.county ?? (str(body.county)?.trim() || null);
-    const state = parsed?.state ?? (str(body.state)?.trim() || null);
+    const state = parsed?.state ?? (str(body.state)?.trim() || null)
+      ?? stateFromCountyFips(operatorLandPortalIdentity?.fips) ?? null;
     const zip = parsed?.zip ?? (str(body.zip)?.trim() || null);
     // Whichever intake shape was used, the link the operator actually supplied
     // is the one stored: an explicit field wins, otherwise the link the parser
@@ -1968,8 +1978,6 @@ export function registerLandosRoutes(app: Hono): void {
     // identity — so the LandPortal lanes can open the record instead of
     // rediscovering it, while the parcel itself is still confirmed by what the
     // opened record shows.
-    const operatorLandPortalUrl =
-      suppliedLandPortalUrl || buildSmartIntake(rawInput).fields.lpUrl?.trim() || null;
     // A lead with no property reference still needs its OWN property card, so
     // the placeholder carries a unique suffix. It is an internal storage handle;
     // `isPlaceholderPropertyLabel` keeps it off every owner-facing surface.
@@ -1982,6 +1990,8 @@ export function registerLandosRoutes(app: Hono): void {
       state: state ?? undefined,
       zip: zip ?? undefined,
       apn: apn ?? undefined,
+      fips: operatorLandPortalIdentity?.fips ?? undefined,
+      lpPropertyId: operatorLandPortalIdentity?.propertyId ?? undefined,
       lpUrl: operatorLandPortalUrl ?? undefined,
       // The seller/lead name is NEVER written here. `owner` is the owner OF
       // RECORD, established only by an official source; seeding it from an
@@ -2098,8 +2108,8 @@ export function registerLandosRoutes(app: Hono): void {
       researchStatus: opportunity.researchStatus,
       extraction: parsed ? {
         sellerName: parsed.sellerName, phone: parsed.phone, email: parsed.email,
-        leadSource: parsed.leadSource, address: parsed.address, apn: parsed.apn,
-        city: parsed.city, county: parsed.county, state: parsed.state, acreage: parsed.acreage,
+        leadSource: parsed.leadSource, address: parsed.address, apn,
+        city: parsed.city, county: parsed.county, state, acreage: parsed.acreage,
         dealIntelligence: parsed.dealIntelligence,
       } : null,
     }, 201);
@@ -5000,6 +5010,11 @@ export function registerLandosRoutes(app: Hono): void {
         ? 0
         : null;
 
+    const operatorRetainedAcres = parseAcresValue(fact('acres')) ?? subjectAcres;
+    const operatorProviderAcres = report.landportalInspection?.factSheet?.acres
+      ?? parseAcresValue(inspectionForVisuals?.parcelFacts.Acres)
+      ?? parseAcresValue(inspectionForVisuals?.parcelFacts['Calc Acres']);
+    const operatorOfficiallyVerified = String(prop0.verification_status ?? '') === 'verified_property';
     const operatorRecord = buildOperatorPropertyRecord(publicRun, {
       // The SUBJECT PROPERTY CARD is the identity of record for this Deal Card.
       // The deal TITLE is a human label and is never an address: falling back to
@@ -5017,7 +5032,11 @@ export function registerLandosRoutes(app: Hono): void {
       apn: (fact('apn') as string | null) ?? str(prop0.apn) ?? null,
       owner: (fact('owner') as string | null) ?? str(prop0.owner) ?? null,
       // Shared acreage parser: "1.15 ac" is a value, never NaN → "? ac".
-      assessedAcres: parseAcresValue(fact('acres')) ?? subjectAcres,
+      // A LandPortal-backed working identity is sufficient to continue
+      // discovery, but it is not an assessor roll.  Attribute its acreage to
+      // the provider until an official parcel source returns an acreage.
+      assessedAcres: operatorOfficiallyVerified ? operatorRetainedAcres : null,
+      providerAcres: operatorProviderAcres,
       acreageDisputed: !!report.reconciliation?.acreage?.conflict,
       coordinates: subjectCoords,
       reconciledWetlandPct,
@@ -7321,6 +7340,9 @@ export function registerLandosRoutes(app: Hono): void {
           assetCount: inspection.assets.length,
           sourceLabel: 'LandPortal authenticated parcel panel',
           verifiedSubject: inspection.parcelUrlRecord?.verifiedSubject === true,
+          verifiedSubjectApn: inspection.parcelUrlRecord?.apn ?? null,
+          verifiedSubjectCounty: inspection.parcelUrlRecord?.verifiedCounty ?? null,
+          verifiedSubjectState: inspection.parcelUrlRecord?.verifiedState ?? null,
         } : null,
         official: {
           status: lookup.status,
