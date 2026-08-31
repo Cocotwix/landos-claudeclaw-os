@@ -54,11 +54,12 @@ describe('lead-card design system layer', () => {
   it('renders the persistent deal sidebar with the seven deal pages', () => {
     expect(PAGE_SRC).toMatch(/PAGE_DOMAINS/);
     expect(PAGE_SRC).toMatch(/data-domain=\{PAGE_DOMAINS\[entry\.slug\]\}/);
-    expect(PAGE_SRC).toContain('awv2-deal-sidebar');
+    expect(PAGE_SRC).toContain('awv2-deal-tabs');
+    expect(PAGE_SRC).toContain('data-testid="deal-sidebar"');
     // The old horizontal deal navigation is gone.
     expect(PAGE_SRC).not.toContain('awv2-workspace-nav');
     expect(PAGE_SRC).not.toContain('Soon');
-    expect(DESIGN_CSS).toMatch(/\.awv2-deal-sidebar\s*\{/);
+    expect(DESIGN_CSS).toMatch(/\.awv2-deal-tabs\s*\{/);
   });
 
   it('keeps the header parcel identity chips (APN, acreage, county) canonical', () => {
@@ -172,13 +173,15 @@ describe('ws1 QA repairs stay repaired', () => {
 describe('ws2 Overview redesign', () => {
   const OVERVIEW_SRC = read('web/src/components/AcquisitionWorkspaceV2Overview.tsx');
 
-  it('leads with the decision band and key metrics before any evidence surface', () => {
-    const decisionAt = OVERVIEW_SRC.indexOf('awv2-overview-decisionband');
+  it('keeps subject, valuation, and decision context ahead of public marketing evidence', () => {
     const heroAt = OVERVIEW_SRC.indexOf('awv2-overview-hero');
     const listingAt = OVERVIEW_SRC.indexOf('awv2-overview-listing ');
     const valuationAt = OVERVIEW_SRC.indexOf('awv2-overview-valuation"');
-    expect(decisionAt).toBeGreaterThan(-1);
-    expect(decisionAt).toBeLessThan(heroAt);
+    const decisionAt = OVERVIEW_SRC.indexOf('awv2-overview-decision"');
+    expect(heroAt).toBeGreaterThan(-1);
+    expect(valuationAt).toBeGreaterThan(heroAt);
+    expect(decisionAt).toBeGreaterThan(valuationAt);
+    expect(listingAt).toBeGreaterThan(decisionAt);
     expect(valuationAt).toBeLessThan(listingAt);
   });
 

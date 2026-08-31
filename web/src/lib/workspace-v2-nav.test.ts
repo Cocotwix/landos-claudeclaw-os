@@ -20,7 +20,7 @@ describe('workspace V2 deal-page navigation', () => {
     ]);
     expect(DEAL_PAGES.map((p) => p.label)).toEqual([
       'Overview', 'Property', 'Market', 'Comps & Valuation',
-      'Strategy & Underwriting', 'Seller & Activity', 'Documents',
+      'Strategy & Underwriting', 'Seller & Activity', 'Documents & Uploads',
     ]);
   });
 

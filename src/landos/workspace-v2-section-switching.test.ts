@@ -23,15 +23,15 @@ const OVERVIEW_SRC = fs.readFileSync(
   path.join(process.cwd(), 'web/src/components/AcquisitionWorkspaceV2Overview.tsx'),
   'utf8',
 );
-const SECTION_SWITCH_SRC = PAGE_SRC.match(
-  /const switchSection = \(e: MouseEvent, slug: string\) => \{[\s\S]*?^  \};/m,
+const PAGE_NAV_SRC = PAGE_SRC.match(
+  /const navigateToPage = \(slug: string\) => \{[\s\S]*?^  \};/m,
 )?.[0] ?? '';
 
 describe('V2 section switching is client-side over one loaded record', () => {
   it('switches sections with pushState instead of full document navigation', () => {
     expect(PAGE_SRC).toMatch(/history\.pushState/);
     expect(PAGE_SRC).toMatch(/e\.preventDefault\(\)/);
-    expect(PAGE_SRC).toMatch(/useState<WorkspaceV2Section>/);
+    expect(PAGE_SRC).toMatch(/useState<WorkspaceV2Page>/);
   });
 
   it('keeps back/forward working by re-deriving the section on popstate', () => {
@@ -69,9 +69,9 @@ describe('V2 section switching is client-side over one loaded record', () => {
     // not section navigation. Scope this guard to the actual navigation
     // handler so adding a legitimate button elsewhere cannot weaken or falsely
     // fail the client-side switching contract.
-    expect(SECTION_SWITCH_SRC).not.toBe('');
-    expect(SECTION_SWITCH_SRC).not.toMatch(/apiPost|apiPut|apiDelete|method:\s*'POST'/);
-    expect(SECTION_SWITCH_SRC).not.toMatch(/\/research|\/rerun|\/run\b/);
-    expect(SECTION_SWITCH_SRC).toMatch(/history\.pushState/);
+    expect(PAGE_NAV_SRC).not.toBe('');
+    expect(PAGE_NAV_SRC).not.toMatch(/apiPost|apiPut|apiDelete|method:\s*'POST'/);
+    expect(PAGE_NAV_SRC).not.toMatch(/\/research|\/rerun|\/run\b/);
+    expect(PAGE_NAV_SRC).toMatch(/history\.pushState/);
   });
 });

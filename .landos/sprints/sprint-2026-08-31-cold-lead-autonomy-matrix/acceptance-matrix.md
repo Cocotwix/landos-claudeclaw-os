@@ -104,6 +104,7 @@ Runtime: managed LandOS at `http://localhost:3141`
 - Successful research missions measured 87.0–108.7 seconds for the first four matrix cases.
 - The final pre-fix diagnostic Deal 112 completed its mission in 6m14s and its full analyst cascade in approximately 23m38s, exposing the duplicate critical-gap retry. The final accepted-build Deal 113 completed its mission in 4m10s and settled in approximately 14m38s without that retry.
 - Focused regression: 345 passed across 16 files after the final repair; the exact LandPortal route scenario passed in isolation. A broader earlier route run had one recurrent async discovery-package hash race, recorded rather than hidden.
+- Post-commit Control policy surfaced three stale Workspace V2 source-contract files. Their assertions were aligned to the accepted routed UI, and both mandatory capability suites passed without a product-code change.
 - Broad repository regression: 7,998 passed / 43 failed / 3 skipped across 576 files. Failures were outside this sprint's accepted change surface and included existing source-contract drift, timeout-sensitive browser/report tests, and repository-wide baseline assertions; the full failing inventory remains in the terminal evidence rather than being represented as green.
 - Standalone typecheck passed.
 - Production build passed after the expected sandbox-only esbuild directory restriction was rerun with approved access.
