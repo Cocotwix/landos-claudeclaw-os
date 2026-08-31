@@ -105,3 +105,20 @@ describe('the canonical parcel-equivalence contract answers the Bradford spellin
     expect(apnEquivalent('00083-A-03400 1.5', '00083-A-03400')).toBe(false);
   });
 });
+
+// The live Deal 114 paste came out of a rendered page, so its word gaps are
+// NO-BREAK SPACE (U+00A0), not spaces. A `[ \t]` class never matched them, the
+// acreage unit was invisible, and the corrupted parcel number stood.
+describe('a no-break space is still a space beside a parcel number', () => {
+  const NB = '\u00a0';
+
+  it('separates a run-together acreage across no-break spaces', () => {
+    expect(extractApnCandidates(`Owner of record HILL EUGENE WAPN${NB}00083-A-034001.5${NB}ACBRADFORD COUNTY, FL`).primary)
+      .toBe('00083-A-03400');
+  });
+
+  it('separates a spaced acreage across no-break spaces', () => {
+    expect(extractApnCandidates(`APN${NB}00083-A-03400${NB}1.5${NB}AC BRADFORD COUNTY, FL`).primary)
+      .toBe('00083-A-03400');
+  });
+});

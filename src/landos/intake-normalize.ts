@@ -144,12 +144,17 @@ const APN_DECIMAL_RE = /\b\d{2,6}\.\d{1,4}\b/g;
 // WHITESPACE (a "-" or "." joins segments INSIDE one parcel number, so
 // "094-020.08" is untouched), it must be a plain quantity, and an acreage unit
 // must follow it in the source text. Nothing else is removed.
-const ACREAGE_UNIT_WORD_RE = /^[ \t]*(?:acs?|acres?)(?![a-z])/i;
+// A lead pasted out of a rendered page carries NO-BREAK SPACE (U+00A0) between
+// its words, which is what defeated this rule on the live Deal 114 text: a space
+// class of `[ \t]` never matched it, so the acreage unit was invisible and the
+// corrupted parcel number stood.
+const HORIZONTAL_SPACE = ' \\t\\u00a0';
+const ACREAGE_UNIT_WORD_RE = new RegExp(`^[${HORIZONTAL_SPACE}]*(?:acs?|acres?)(?![a-z])`, 'i');
 // The SAME lead with its line breaks lost runs the unit into the next line:
 // "...1.5 ACBRADFORD COUNTY, FL". A case transition from "AC" straight into
 // another capitalised word is that signature, and it is deliberately
 // case-SENSITIVE so ordinary lowercase prose can never trip it.
-const ACREAGE_UNIT_GLUED_RE = /^[ \t]*AC(?=[A-Z])/;
+const ACREAGE_UNIT_GLUED_RE = new RegExp(`^[${HORIZONTAL_SPACE}]*AC(?=[A-Z])`);
 const MEASUREMENT_TOKEN_RE = /^\d{1,4}(?:\.\d{1,4})?$/;
 /** The identifier must remain a substantial parcel number after the trim. */
 const MIN_REMAINING_APN_DIGITS = 5;
@@ -191,7 +196,7 @@ function splitGluedAcreage(raw: string): string | null {
  */
 export function dropTrailingMeasurement(raw: string, following: string): string {
   if (!acreageUnitFollows(following)) return raw;
-  const split = raw.match(/^(.*\S)[ \t]+(\S+)$/);
+  const split = raw.match(new RegExp(`^(.*\\S)[${HORIZONTAL_SPACE}]+(\\S+)$`));
   if (split) {
     const [, head, tail] = split as unknown as [string, string, string];
     if (MEASUREMENT_TOKEN_RE.test(tail) && head.replace(/[^0-9]/g, '').length >= MIN_REMAINING_APN_DIGITS) return head;
