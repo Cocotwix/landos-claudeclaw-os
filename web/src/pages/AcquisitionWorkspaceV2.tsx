@@ -37,6 +37,10 @@ import {
   type ExactAddressListingsView,
   type VisualBuyerNarrativeView, type ResearchStatusView, type ParcelFactSheetView, type TaxStatusView,
 } from '../components/AcquisitionWorkspaceV2PropertyIntelligence';
+import {
+  PropertyStoryPanel, MarketStoryPanel,
+  type PropertyStoryView, type MarketStoryView, type ResearchStabilityView,
+} from '../components/AcquisitionWorkspaceV2Stories';
 import { ParcelScopePanel, type ParcelScopeView } from '@/components/DealCard';
 import { SubjectUnderstandingPanel, type SubjectUnderstandingView } from '@/components/SubjectUnderstanding';
 import {
@@ -269,6 +273,10 @@ interface IntelResp {
     taxStatus?: TaxStatusView | null;
     evidenceAcreage?: EvidenceAcreageView | null;
   };
+  /** Stage 3 readings, produced automatically when research settles. */
+  propertyStory?: PropertyStoryView | null;
+  marketStory?: MarketStoryView | null;
+  researchStability?: ResearchStabilityView | null;
   marketContext?: MarketContextView;
   landPortalFacts?: ParcelFactSheetView | null;
 }
@@ -392,6 +400,10 @@ export function AcquisitionWorkspaceV2() {
 
   const [deal, setDeal] = useState<DealResp | null>(null);
   const [market, setMarket] = useState<MarketContextView | null>(null);
+  // Stage 3: the two readings LandOS forms the moment research settles.
+  const [propertyStory, setPropertyStory] = useState<PropertyStoryView | null>(null);
+  const [marketStory, setMarketStory] = useState<MarketStoryView | null>(null);
+  const [researchStability, setResearchStability] = useState<ResearchStabilityView | null>(null);
   // The one accepted subject for this Deal Card. Every panel on this page reads
   // its identity and acreage from here so they cannot drift apart on one load.
   const [acceptedSubject, setAcceptedSubject] = useState<SubjectProjectionView | null>(null);
@@ -561,6 +573,9 @@ export function AcquisitionWorkspaceV2() {
         setLandPortalFacts(i?.propertyIntelligence?.landPortalFacts ?? i?.landPortalFacts ?? null);
         setTaxStatus(i?.propertyIntelligence?.taxStatus ?? null);
         setFirstPaintAcreage(i?.propertyIntelligence?.evidenceAcreage ?? null);
+        setPropertyStory(i?.propertyStory ?? null);
+        setMarketStory(i?.marketStory ?? null);
+        setResearchStability(i?.researchStability ?? null);
         // Overview is usable from the canonical Deal, Property and Acquisition
         // reads above. Research Readiness and the specialist stack are
         // secondary persisted projections; let them hydrate immediately after
@@ -1305,6 +1320,7 @@ export function AcquisitionWorkspaceV2() {
                 </button>
               </section>
             )}
+            <PropertyStoryPanel story={propertyStory} stability={researchStability} />
             <PropertyIntelligenceSection subject={acceptedSubject} snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} landPortalFacts={landPortalFacts} taxStatus={taxStatus} showMarket={false}
               acquisitionIntelligence={{
                 read: aiRead,
@@ -1328,6 +1344,7 @@ export function AcquisitionWorkspaceV2() {
                 <MarketReadCard product={marketIntelRead} stale={specialistStale?.market === true} full />
               </section>
             )}
+            <MarketStoryPanel story={marketStory} stability={researchStability} />
             <MarketIntelligencePanel market={market} aiRead={aiRead} />
           </main>
         )}

@@ -1,0 +1,134 @@
+/* LandOS Property Story and Market Story.
+   The outcome leads; the evidence behind it stays legible and attributed. */
+
+.awv2-story .awv2-story-headline {
+  margin: 8px 0 12px;
+  font-size: 15px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+
+.awv2-story-stale {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
+  font-size: 12px;
+}
+
+.awv2-story-subject {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 12px;
+}
+.awv2-story-subject .awv2-story-verification { flex-basis: 100%; opacity: 0.85; }
+
+.awv2-story-boundaries,
+.awv2-story-drivers,
+.awv2-story-visuals,
+.awv2-story-guardrails,
+.awv2-story-limits,
+.awv2-story-conflicts,
+.awv2-story-pulse,
+.awv2-story-pulse-claims {
+  margin-top: 14px;
+  font-size: 12px;
+}
+.awv2-story small {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.awv2-story ul { margin: 0; padding-left: 16px; }
+.awv2-story li { margin: 3px 0; line-height: 1.45; }
+
+.awv2-story-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+  font-size: 12px;
+}
+
+.awv2-story-drivers li b { display: block; }
+.awv2-story-drivers li span { opacity: 0.8; }
+
+.awv2-story-diligence {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.awv2-story-topic {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 12px;
+}
+.awv2-story-topic[data-tone='green'] { border-left: 3px solid #34d399; }
+.awv2-story-topic[data-tone='yellow'] { border-left: 3px solid #fbbf24; }
+.awv2-story-topic[data-tone='red'] { border-left: 3px solid #f87171; }
+.awv2-story-topic-status { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.7; }
+.awv2-story-topic-gap { opacity: 0.85; }
+.awv2-story-verify { opacity: 0.75; }
+
+.awv2-story-claims { list-style: none; padding-left: 0; }
+.awv2-story-claim { display: grid; gap: 2px; padding: 5px 0; border-top: 1px solid rgba(148, 163, 184, 0.14); }
+.awv2-story-claim-standing {
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+.awv2-story-claim[data-standing='official_legal_fact'] .awv2-story-claim-standing { color: #34d399; }
+.awv2-story-claim[data-standing='visual_observation'] .awv2-story-claim-standing { color: #60a5fa; }
+.awv2-story-claim[data-standing='analytical_hypothesis'] .awv2-story-claim-standing { color: #fbbf24; }
+.awv2-story-claim[data-standing='verification_need'] .awv2-story-claim-standing { color: #f87171; }
+.awv2-story-claim-source { font-size: 11px; opacity: 0.72; }
+
+.awv2-story-conflicts li[data-resolution='unresolved'] b { color: #f87171; }
+.awv2-story-conflicts li[data-resolution='resolved'] b { color: #34d399; }
+
+.awv2-story-market-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.awv2-story-market-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 12px;
+}
+.awv2-story-market-card[data-role='most_liquid_band'] { border-style: dashed; opacity: 0.92; }
+.awv2-story-market-card[data-available='no'] { border-color: rgba(248, 113, 113, 0.35); }
+.awv2-story-market-card b { font-size: 14px; }
+.awv2-story-market-where { font-size: 11px; opacity: 0.75; }
+.awv2-story-basis { font-size: 11px; opacity: 0.7; }
+.awv2-story-market-limits { font-size: 11px; opacity: 0.8; }
+
+.awv2-story-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 10px; margin: 4px 0 0; }
+.awv2-story-metrics div { display: flex; justify-content: space-between; gap: 8px; }
+.awv2-story-metrics dt { font-size: 11px; opacity: 0.72; }
+.awv2-story-metrics dd { margin: 0; font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.awv2-story-reads p { margin: 4px 0; font-size: 12px; line-height: 1.5; }
+
+.awv2-story-pulse ul { list-style: none; padding-left: 0; }
+.awv2-story-pulse li { display: grid; gap: 2px; padding: 6px 0; border-top: 1px solid rgba(148, 163, 184, 0.14); }
+.awv2-story-pulse-status { font-size: 9px; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.7; }
+.awv2-story-pulse li[data-status='answered'] .awv2-story-pulse-status { color: #34d399; }
+.awv2-story-pulse-question { opacity: 0.92; }

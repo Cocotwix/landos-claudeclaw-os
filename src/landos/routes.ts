@@ -577,6 +577,12 @@ import { loadSubjectListingDetail, reprojectSubjectListingDetail } from './subje
 import { resolveCanonicalIdentity, supersessionLabel } from './canonical-identity.js';
 import { canonicalSubjectProjection, isCurrentForSubject, resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
 import { readSubjectUnderstanding, runSubjectUnderstanding } from './subject-understanding-capability.js';
+import {
+  ensureResearchStableIntelligence,
+  readMarketResearchAndPulse,
+  readPropertyEvidenceSynthesis,
+  readResearchStability,
+} from './research-stable-intelligence.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -5727,11 +5733,21 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     try {
       const run = await runSubjectUnderstanding(id, { actor: 'operator:subject-understanding' });
+      // A lead BECOMING research-ready is a real state transition, so this is a
+      // legitimate write site. It produces ONLY when the run has landed on an
+      // already-stable research state — `assessResearchStability` is the gate,
+      // and an unsettled parcel or an empty file returns `not_stable` and
+      // writes nothing. The coverage cycle remains the lifecycle that refreshes
+      // these readings as research itself moves.
+      const intelligence = produceResearchStableIntelligence(id, 'operator:subject-understanding');
       return c.json({
         subjectVersion: run.subjectVersion,
         understanding: run.result,
         persistence: run.persistence,
         promotion: run.promotion,
+        researchStableIntelligence: intelligence
+          ? { outcome: intelligence.outcome, stability: intelligence.stability, sellerIntelligence: intelligence.sellerIntelligence }
+          : null,
       });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
@@ -9185,6 +9201,9 @@ export function registerLandosRoutes(app: Hono): void {
     // graph decides what may run behind it.
     subjectUnderstanding: async (id: number) => {
       const run = await runSubjectUnderstanding(id, { actor: `mission:subject-understanding:${resolutionCaller}` });
+      // Same transition through the mission lane, behind the same stability
+      // gate. Non-throwing by construction.
+      produceResearchStableIntelligence(id, `mission:subject-understanding:${resolutionCaller}`);
       // Acceptance is exactly the event the coverage cycle already reacts to —
       // the same loop an evidence upload triggers. Detached, so the lane is not
       // held open by recovery, and failures never fail the acceptance.
@@ -10861,6 +10880,31 @@ export function registerLandosRoutes(app: Hono): void {
           // the parcel change size on load.
           evidenceAcreage: evidenceAcreageFor(id),
         },
+        // Stage 3: the Property Story and the Market Story.
+        //
+        // READ ONLY. This returns the retained current readings and NOTHING
+        // else — it cannot create, supersede, refresh or rewrite a snapshot.
+        // Producing them is the completion lifecycle's job (`runDealCoverageCycle`),
+        // so opening the workspace is never what makes intelligence exist, and
+        // a page load can never write a row, spend a model call or move a
+        // version. `researchStabilityFor` below is a pure SELECT that
+        // explains an absent reading; it writes nothing either.
+        ...(() => {
+          const property = readPropertyEvidenceSynthesis(id);
+          const market = readMarketResearchAndPulse(id);
+          const stability = researchStabilityFor(id);
+          return {
+            propertyStory: property
+              ? { ...property.value, correlation: property.correlation, retainedAt: property.retainedAt }
+              : null,
+            marketStory: market
+              ? { ...market.value, correlation: market.correlation, retainedAt: market.retainedAt }
+              : null,
+            // Why there is, or is not, a story to read. Never a silent absence.
+            researchStability: stability,
+            sellerIntelligence: stability?.sellerIntelligence ?? null,
+          };
+        })(),
         subject: canonicalSubjectProjection(id),
         // The prior read, preserved whole for the history surface. Present only
         // when the current view withheld it.
@@ -11163,6 +11207,51 @@ export function registerLandosRoutes(app: Hono): void {
       visuals,
       visualObservations: groundedVisualObservations,
     };
+  };
+
+  /**
+   * Produce Property and Market Intelligence when research has settled.
+   *
+   * WRITES. Called only from a genuine completion or state transition — the
+   * research coverage cycle's close, and a Subject Understanding run that has
+   * just landed on an already-stable research state. Never from a read.
+   *
+   * Both readings are pure functions over the retained property file (no model,
+   * no browser, no network) and the derived-snapshot seam dedupes on the input
+   * hash, so repeating a completion over unchanged evidence supersedes nothing
+   * and creates no new version.
+   *
+   * Never throws into a caller: a synthesis failure must not fail the research
+   * cycle that had already succeeded.
+   */
+  const produceResearchStableIntelligence = (
+    dealCardId: number,
+    actor: string,
+    runId: string | null = null,
+  ): ReturnType<typeof ensureResearchStableIntelligence> | null => {
+    try {
+      return ensureResearchStableIntelligence(dealCardId, {
+        readPropertyFile: acquisitionPropertyFile,
+        actor,
+        runId,
+      });
+    } catch (error) {
+      logger.warn(
+        { dealCardId, err: (error as Error).message },
+        'research_stable_intelligence_failed',
+      );
+      return null;
+    }
+  };
+
+  /** PURE SELECT. Why a Deal Card has, or has not, a story to show. */
+  const researchStabilityFor = (dealCardId: number) => {
+    try {
+      return readResearchStability(dealCardId, { readPropertyFile: acquisitionPropertyFile });
+    } catch (error) {
+      logger.warn({ dealCardId, err: (error as Error).message }, 'research_stability_read_failed');
+      return null;
+    }
   };
 
   /**
@@ -12837,7 +12926,33 @@ export function registerLandosRoutes(app: Hono): void {
       log: (event, detail) => logger.info(detail, event),
       });
       if ('error' in result) failure = result.error;
-      else researchCoverageCycles.set(id, result);
+      else {
+        researchCoverageCycles.set(id, result);
+        // ── Stage 3: the completion boundary ────────────────────────────────
+        // Research has just reconciled, backfilled and cascaded. THIS is the
+        // moment a Working Acquisition Subject is research-ready over a settled
+        // retained record, so this is where the Property Story and the Market
+        // Story are formed — not on a button, and not on a page load.
+        //
+        // Every trigger the coverage cycle already has therefore refreshes them:
+        // an operator re-run, a research mission completing, an evidence upload
+        // that moved the file, an intake, and a subject promotion. Both builders
+        // are deterministic and the seam dedupes on the input hash, so a cycle
+        // that changed nothing supersedes nothing.
+        const stories = produceResearchStableIntelligence(id, `coverage:${trigger}`, runId);
+        if (stories) {
+          logger.info({
+            dealCardId: id,
+            runId,
+            outcome: stories.outcome,
+            stable: stories.stability?.stable ?? false,
+            reason: stories.stability?.reason ?? null,
+            sellerIntelligence: stories.sellerIntelligence,
+            propertySnapshotWritten: stories.persistence.property.written,
+            marketSnapshotWritten: stories.persistence.market.written,
+          }, 'research_stable_intelligence_cycle');
+        }
+      }
       return result;
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
