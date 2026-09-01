@@ -28,6 +28,7 @@
 import { getLandosDb, landosAudit, type LandosEntity } from './db.js';
 import { getComp, listComps, enrichCompCoordinates, geocodeAddressesToCache, type CompRow } from './comps.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
+import { resolveSubjectAcreage } from './subject-acreage.js';
 import { loadPropertyInspection, currentComparables, type LandPortalComparableRecord } from './property-card.js';
 import { PropertyResearchStore } from './property-research-store.js';
 import { GLOBAL_MIN_NET_PROFIT_USD, FLIP_STANDARD_BAND } from './offer-engine.js';
@@ -438,6 +439,26 @@ export interface LandPortalEstimate {
   perAcre: number | null;
   source: string;
   note: string;
+}
+
+/**
+ * The accepted subject's governing acreage for this Deal Card.
+ *
+ * One read, shared by the valuation view and the operator include/restore path,
+ * so a comp cannot be judged against a different subject size than the one the
+ * valuation prices. Falls back to the property card only for a card with no
+ * retained measurement at all.
+ */
+function governingSubjectAcres(dealCardId: number, subjectCard: Record<string, unknown> | null): number | null {
+  const cardAcres = subjectCard && typeof subjectCard.acres === 'number' && subjectCard.acres > 0
+    ? subjectCard.acres
+    : null;
+  try {
+    const cardId = subjectCard && Number.isInteger(Number(subjectCard.id)) ? Number(subjectCard.id) : null;
+    return resolveSubjectAcreage(dealCardId, cardId).governing.value ?? cardAcres;
+  } catch {
+    return cardAcres;
+  }
 }
 
 export interface CompsValuationView {
@@ -2450,7 +2471,13 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const subjectResolution = resolveSubjectPropertyCard(deal);
   const subjectCard = subjectResolution.card as Record<string, unknown> | null;
   const propertyCardId = subjectResolution.cardId;
-  const subjectAcres = subjectCard && typeof subjectCard.acres === 'number' && subjectCard.acres > 0 ? subjectCard.acres : null;
+  // The accepted subject's governing acreage, not this lane's own lookup.
+  // Reading `property_card.acres` directly is what made Valuation and Strategy
+  // report "the subject acreage is not established" on a Deal whose header,
+  // evidence store and Documents tab all carried a settled size: the column is
+  // only written by an operator-run extent reconciliation, so on most cards it
+  // is null while three retained measurements sit beside it.
+  const subjectAcres = governingSubjectAcres(dealCardId, subjectCard);
 
   const db = getLandosDb();
   const cacheGet = db.prepare('SELECT lat, lng, provider, created_at FROM landos_geocode_cache WHERE address_key = ?');
@@ -2949,7 +2976,7 @@ export function setCompValuationSelection(opts: {
   if (opts.action === 'include' || opts.action === 'restore') {
     const deal = getDealCard(opts.dealCardId);
     const subjectCard = resolveSubjectPropertyCard(deal).card as Record<string, unknown> | null;
-    const subjectAcres = subjectCard && typeof subjectCard.acres === 'number' && subjectCard.acres > 0 ? subjectCard.acres : null;
+    const subjectAcres = governingSubjectAcres(opts.dealCardId, subjectCard);
     // The same identity gate the view applies: an operator include must not be
     // able to put the subject parcel into its own valuation set either.
     const subjectIdentity: SubjectParcelIdentity = {

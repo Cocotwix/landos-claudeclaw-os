@@ -13,6 +13,8 @@ import {
   resolveCanonicalAcreage,
   resolveValuationScope,
   type SnapshotIdentity,
+  gateSnapshotToCurrentSubject,
+  type PropertyIntelligenceSnapshot,
   type SnapshotJoinInput,
   type SnapshotSpecialistRecord,
 } from './property-intelligence-snapshot.js';
@@ -524,5 +526,187 @@ describe('valuation scope labelling', () => {
     expect(scope.figureKind).toBe('whole_property_recommendation');
     expect(scope.wholeProperty.state).toBe('established');
     expect(scope.landOnlyLabel).toBe('Land-only component');
+  });
+});
+
+// ── Stage 1.1: the subject-currentness gate ──────────────────────────────────
+// A snapshot is a DERIVED read of one run. When that run answered about a
+// different subject, its conclusions must not reach the operator as current
+// posture, valuation reasons, strategy blockers, risks or next actions — while
+// the stored read stays intact as history.
+describe('gateSnapshotToCurrentSubject', () => {
+  const CURRENT = 'iv:137:v2#ac:1.5:operator_accepted';
+
+  const staleGuidance = (subjectVersion: string | null | undefined) => joinPropertyIntelligence(joinInput({
+    subjectVersion,
+    valuation: {
+      priceable: false,
+      range: null, pricePerAcreRange: null, likelyRetail: null, dispositionRange: null,
+      basis: '', adjustments: [], confidence: 'none', uncertainty: [], materialGaps: [],
+      notPriceableReason: 'The subject acreage is not established, so a per-acre band cannot be converted into a parcel value.',
+      nextActionToPrice: 'Establish the governing acreage from the deed, plat or official parcel record, then re-run Property Intelligence.',
+    },
+    recommendation: {
+      preferredStrategy: 'Hold',
+      why: 'Strategy selection is pending valuation evidence.',
+      whatWouldChangeIt: ['Establish the governing acreage from the deed, plat or official parcel record.'],
+      posture: 'hold',
+      postureWhy: 'Hold. The subject acreage is not established.',
+    },
+  }));
+
+  it('withholds every derived guidance field from an UNCORRELATED run', () => {
+    // No recorded subject version cannot be assumed to describe this subject.
+    const gated = gateSnapshotToCurrentSubject(staleGuidance(null), CURRENT)!;
+    expect(gated.currentness.stale).toBe(true);
+    expect(gated.currentness.ranAgainst).toBeNull();
+
+    expect(gated.snapshot.strategies).toEqual([]);
+    expect(gated.snapshot.blockers).toEqual([]);
+    expect(gated.snapshot.nextActions).toEqual([]);
+    expect(gated.snapshot.missingInformation).toEqual([]);
+    expect(gated.snapshot.dueDiligence).toEqual([]);
+    expect(gated.snapshot.headline.topRisks).toEqual([]);
+    expect(gated.snapshot.headline.keyOpportunity).toBe('');
+    expect(gated.snapshot.recommendation.preferredStrategy).toBeNull();
+    expect(gated.snapshot.recommendation.whatWouldChangeIt).toEqual([]);
+    expect(gated.snapshot.valuation.priceable).toBe(false);
+    expect(gated.snapshot.valuation.notPriceableReason).toBeNull();
+    expect(gated.snapshot.operatorAnalysis).toBeUndefined();
+  });
+
+  it('withholds guidance from an OLDER subject version', () => {
+    const gated = gateSnapshotToCurrentSubject(staleGuidance('iv:137:v2#ac:none'), CURRENT)!;
+    expect(gated.currentness.stale).toBe(true);
+    expect(gated.currentness.ranAgainst).toBe('iv:137:v2#ac:none');
+    expect(gated.snapshot.recommendation.postureWhy).toBe('');
+    expect(gated.snapshot.valuation.nextActionToPrice ?? null).not.toBe(
+      'Establish the governing acreage from the deed, plat or official parcel record, then re-run Property Intelligence.',
+    );
+  });
+
+  it('never leaks the withheld phrases into the CURRENT view', () => {
+    const gated = gateSnapshotToCurrentSubject(staleGuidance(null), CURRENT)!;
+    const currentText = JSON.stringify({
+      strategies: gated.snapshot.strategies,
+      recommendation: gated.snapshot.recommendation,
+      valuation: gated.snapshot.valuation,
+      dueDiligence: gated.snapshot.dueDiligence,
+      headline: gated.snapshot.headline,
+      blockers: gated.snapshot.blockers,
+      missingInformation: gated.snapshot.missingInformation,
+      nextActions: gated.snapshot.nextActions,
+      operatorAnalysis: gated.snapshot.operatorAnalysis ?? null,
+    });
+    expect(currentText).not.toMatch(/acreage is not established/i);
+    expect(currentText).not.toMatch(/Establish the governing acreage/i);
+  });
+
+  it('preserves the stored read intact as history, and never touches evidence', () => {
+    const stored = staleGuidance(null);
+    const gated = gateSnapshotToCurrentSubject(stored, CURRENT)!;
+    // The untouched stored snapshot comes back whole.
+    expect(gated.historical).toBe(stored);
+    expect(gated.historical!.valuation.notPriceableReason).toMatch(/acreage is not established/i);
+    expect(gated.historical!.recommendation.preferredStrategy).toBe('Hold');
+    // Retained evidence is never withheld — only derived opinion is.
+    expect(gated.snapshot.identity).toEqual(stored.identity);
+    expect(gated.snapshot.facts).toEqual(stored.facts);
+    expect(gated.snapshot.governmentRecords).toEqual(stored.governmentRecords);
+    expect(gated.snapshot.comps).toEqual(stored.comps);
+    expect(gated.snapshot.evidence).toEqual(stored.evidence);
+    expect(gated.snapshot.specialists).toEqual(stored.specialists);
+  });
+
+  it('passes a MATCHING subject version through untouched', () => {
+    const current = staleGuidance(CURRENT);
+    const gated = gateSnapshotToCurrentSubject(current, CURRENT)!;
+    expect(gated.currentness.stale).toBe(false);
+    expect(gated.historical).toBeNull();
+    expect(gated.snapshot).toBe(current);
+    expect(gated.snapshot.recommendation.preferredStrategy).toBe('Hold');
+  });
+
+  it('is idempotent, so a second projection cannot re-admit withheld guidance', () => {
+    // Both projections over the stored snapshot apply this gate; re-applying it
+    // to an already-gated snapshot must not change the answer.
+    const once = gateSnapshotToCurrentSubject(staleGuidance(null), CURRENT)!;
+    const twice = gateSnapshotToCurrentSubject(once.snapshot, CURRENT)!;
+    expect(twice.snapshot.strategies).toEqual([]);
+    expect(twice.snapshot.valuation.notPriceableReason).toBeNull();
+    expect(twice.currentness.stale).toBe(true);
+  });
+});
+
+// Stage 1.1 final: a stale run must be unable to contribute ANY current
+// operator action — not merely unable to contribute one known sentence.
+describe('gateSnapshotToCurrentSubject — current operator actions', () => {
+  const CURRENT = 'iv:137:v2#ac:1.5:operator_accepted';
+
+  /** Every field this view serves as a current operator instruction. */
+  const currentActionsOf = (s: PropertyIntelligenceSnapshot): string[] => [
+    ...s.nextActions,
+    ...s.blockers,
+    ...s.missingInformation,
+    ...s.recommendation.whatWouldChangeIt,
+    ...(s.valuation.nextActionToPrice ? [s.valuation.nextActionToPrice] : []),
+    ...(s.valuation.notPriceableReason ? [s.valuation.notPriceableReason] : []),
+    ...s.headline.topRisks,
+    ...(s.operatorAnalysis?.overall?.nextBestActions ?? []),
+  ];
+
+  const withGuidance = (subjectVersion: string | null) => joinPropertyIntelligence(joinInput({
+    subjectVersion,
+    valuation: {
+      priceable: false, range: null, pricePerAcreRange: null, likelyRetail: null, dispositionRange: null,
+      basis: '', adjustments: [], confidence: 'none', uncertainty: [], materialGaps: [],
+      notPriceableReason: 'The subject acreage is not established.',
+      nextActionToPrice: 'Establish the governing acreage from the deed, plat or official parcel record, then re-run Property Intelligence.',
+    },
+    recommendation: {
+      preferredStrategy: 'Hold', why: 'Pending valuation evidence.',
+      whatWouldChangeIt: ['Establish the governing acreage.', 'Obtain one closed in-band sale.'],
+      posture: 'hold', postureWhy: 'Hold pending value basis.',
+    },
+  }));
+
+  it('a stale run contributes NO current operator action at all', () => {
+    // Behavioural, not textual: the whole current-action surface must be empty,
+    // so a stale run cannot contribute an instruction of any wording.
+    const gated = gateSnapshotToCurrentSubject(withGuidance(null), CURRENT)!;
+    expect(currentActionsOf(gated.snapshot)).toEqual([]);
+    const older = gateSnapshotToCurrentSubject(withGuidance('iv:137:v2#ac:none'), CURRENT)!;
+    expect(currentActionsOf(older.snapshot)).toEqual([]);
+  });
+
+  it('a matching subject version still produces its legitimate current actions', () => {
+    const gated = gateSnapshotToCurrentSubject(withGuidance(CURRENT), CURRENT)!;
+    const actions = currentActionsOf(gated.snapshot);
+    expect(actions.length).toBeGreaterThan(0);
+    expect(actions).toContain('Obtain one closed in-band sale.');
+    expect(gated.currentness.stale).toBe(false);
+  });
+
+  it('keeps the stale run whole as history, actions included', () => {
+    const stored = withGuidance(null);
+    const gated = gateSnapshotToCurrentSubject(stored, CURRENT)!;
+    expect(currentActionsOf(gated.historical!)).toContain(
+      'Establish the governing acreage from the deed, plat or official parcel record, then re-run Property Intelligence.',
+    );
+    expect(gated.historical).toBe(stored);
+  });
+
+  it('gates only Property Intelligence guidance, never independently current actions', () => {
+    // Seller-contact and other actions are produced by their own live sources
+    // (the acquisition record), never by this snapshot. Gating the snapshot must
+    // not be able to remove them, so it must not touch anything outside the
+    // declared guidance fields.
+    const stored = withGuidance(null);
+    const gated = gateSnapshotToCurrentSubject(stored, CURRENT)!;
+    for (const key of ['identity', 'facts', 'governmentRecords', 'comps', 'evidence', 'specialists'] as const) {
+      expect(gated.snapshot[key]).toEqual(stored[key]);
+    }
+    expect(gated.snapshot.runId).toBe(stored.runId);
+    expect(gated.snapshot.status).toBe(stored.status);
   });
 });

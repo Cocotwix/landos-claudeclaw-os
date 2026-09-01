@@ -67,6 +67,11 @@ export interface CanonicalIdentityView {
    *  accepted identity — a reconciliation is owed, but the accepted identity is
    *  still authoritative for every projection right now. */
   versionPending: boolean;
+  /** Row id of the durable identity version this view was built from, when one
+   *  exists. The stable correlation key every consumer reports back. */
+  versionId: number | null;
+  /** Monotonic version number of that identity version. */
+  versionNumber: number | null;
 }
 
 interface PropertyCardRow {
@@ -130,6 +135,8 @@ function fromVersion(version: PropertyIdentityVersion, legacy: ParcelIdentityRec
     sourceRefs: version.sourceRefs,
     confirmedAt: legacy?.confirmedAt ?? null,
     versionPending: false,
+    versionId: version.id,
+    versionNumber: version.version,
   };
 }
 
@@ -175,6 +182,11 @@ export function resolveCanonicalIdentity(dealCardId: number): CanonicalIdentityV
       sourceRefs: legacy.evidenceRefs,
       confirmedAt: legacy.confirmedAt,
       versionPending: true,
+      // No durable version row exists yet, so there is no version id to report.
+      // Consumers correlate on the subject-version token instead, which stays
+      // stable for this accepted verdict until the version is built.
+      versionId: null,
+      versionNumber: null,
     };
   }
 
@@ -196,6 +208,8 @@ export function resolveCanonicalIdentity(dealCardId: number): CanonicalIdentityV
     sourceRefs: legacy?.evidenceRefs ?? [],
     confirmedAt: null,
     versionPending: false,
+    versionId: null,
+    versionNumber: null,
   };
 }
 

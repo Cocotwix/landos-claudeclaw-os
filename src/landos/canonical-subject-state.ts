@@ -25,7 +25,8 @@
 import { getLandosDb } from './db.js';
 import { getAcquisition } from './acquisitions.js';
 import { loadSellerStatedFacts } from './seller-stated-facts.js';
-import { governingAcreageOf, type GoverningAcreage } from './acreage-basis.js';
+import { buildAcreageBasis, governingAcreageOf, supersededAcreageOf, type GoverningAcreage } from './acreage-basis.js';
+import { resolveSubjectAcreage, type SubjectAcreageResolution } from './subject-acreage.js';
 import {
   resolveCanonicalIdentity,
   type CanonicalIdentitySource,
@@ -57,9 +58,33 @@ export interface CanonicalSubjectState {
   fips: string | null;
   zip: string | null;
   owner: string | null;
+  /**
+   * The correlation token every consumer must report back.
+   *
+   * Consumers agreeing on values today is not the same as consumers agreeing on
+   * the SUBJECT. A lane that ran against an older subject can coincidentally
+   * carry matching acreage and still be answering about a different parcel, and
+   * a lane whose values look wrong may simply be older. This token is what makes
+   * that difference visible instead of guessable.
+   */
+  subjectVersion: string;
+  /** Row id of the durable identity version behind the token, when one exists. */
+  subjectVersionId: number | null;
   /** THE single governing acreage conclusion. Alternate measurements remain
    *  reference evidence on the shared acreage basis record. */
   governingAcreage: GoverningAcreage;
+  /**
+   * Measurements the governing basis has retired: real records with their
+   * original source and date, kept as history. Never a current alternative and
+   * never a conflict for the operator to resolve.
+   */
+  supersededAcreage: Array<{
+    kind: string;
+    value: number;
+    source: string | null;
+    observedAt: string | null;
+    reason: string;
+  }>;
   /** Seller communications or seller-stated facts exist for this deal, so
    *  seller-scoped research has its prerequisite regardless of parcel state. */
   sellerCommunicationsAvailable: boolean;
@@ -116,15 +141,147 @@ function sellerCommunicationsAvailable(dealCardId: number, propertyCardId: numbe
  *  reads. When the reconciled operator record is unavailable (no public run
  *  yet), the canonical identity's acreage stands in with an unknown basis —
  *  a working figure, never presented as a settled measurement. */
-function governingAcreageFor(dealCardId: number, view: CanonicalIdentityView): GoverningAcreage {
+function governingAcreageFor(dealCardId: number, view: CanonicalIdentityView): SubjectAcreageResolution {
+  // The shared resolver first: it reads every store that can carry a
+  // measurement, so it answers on cards where the reconciled operator record
+  // does not exist yet. Reading the operator record first is what left the
+  // canonical side reporting "not established" while typed acreage evidence
+  // sat in the store unread.
+  try {
+    const resolved = resolveSubjectAcreage(dealCardId, view.propertyCardId);
+    if (resolved.governing.value != null) return resolved;
+  } catch { /* evidence unreadable — the reconciled record may still answer */ }
+
   try {
     const record = operatorRecordFor(dealCardId);
     if (record) {
       const governing = record.identity.governingAcreage ?? governingAcreageOf(record.identity.acreageBasis);
-      if (governing.value != null) return governing;
+      if (governing.value != null) {
+        return {
+          governing,
+          reconciliation: record.identity.acreageBasis,
+          superseded: supersededAcreageOf(record.identity.acreageBasis),
+          signals: [],
+        };
+      }
     }
   } catch { /* the reconciled record is a refinement, not a prerequisite */ }
-  return { value: view.acreage, kind: null, source: null, disputed: false };
+
+  // Nothing retained. The identity version's own figure stands in as a working
+  // number with an unknown basis — never presented as a settled measurement.
+  return {
+    governing: { value: view.acreage, kind: null, source: null, disputed: false, observedAt: null },
+    reconciliation: buildAcreageBasis({}),
+    superseded: [],
+    signals: [],
+  };
+}
+
+/**
+ * The stable correlation token for an accepted subject.
+ *
+ * Built from the durable identity version when one exists. When the version has
+ * not been built yet the accepted legacy verdict still needs a token, so it is
+ * derived from the facts that define that verdict — it stays stable across
+ * reads and changes when the accepted identity changes, which is exactly what
+ * consumers correlate on.
+ */
+function subjectVersionToken(view: CanonicalIdentityView, acreage: GoverningAcreage): string {
+  const identity = view.versionId != null
+    ? `iv:${view.versionId}:v${view.versionNumber ?? 0}`
+    : view.confirmed
+      ? `legacy:${view.propertyCardId ?? 'none'}:${view.confirmedAt ?? 0}`
+      : `unresolved:${view.dealCardId}:${view.status}`;
+  // The governing acreage is part of the SUBJECT, not a detail hanging off it.
+  //
+  // Correlating on the identity row alone made the token unable to answer the
+  // question consumers actually ask. A lane that ran when the acreage was
+  // unestablished carries the same identity token as one that ran after a
+  // survey settled it, so its conclusion ("no per-acre band can be converted
+  // into a parcel value") kept rendering as current beside a header showing the
+  // settled size. Same token, different governing facts, contradictory page.
+  const acres = acreage.value != null ? `${acreage.value}:${acreage.kind ?? 'unknown'}` : 'none';
+  return `${identity}#ac:${acres}`;
+}
+
+/**
+ * The subject block every Deal Card consumer returns, verbatim.
+ *
+ * One shape, one producer. A consumer that builds its own subject block from
+ * whatever fields it happens to hold is the failure this exists to end: the
+ * fields may agree today and still be answering about different subject
+ * versions, and nothing on the wire would show it.
+ */
+export interface CanonicalSubjectProjection {
+  dealCardId: number;
+  subjectVersion: string;
+  subjectVersionId: number | null;
+  subjectResolved: boolean;
+  officiallyVerified: boolean;
+  status: PropertyIdentityStatus;
+  apn: string | null;
+  address: string | null;
+  city: string | null;
+  county: string | null;
+  state: string | null;
+  fips: string | null;
+  zip: string | null;
+  owner: string | null;
+  acreage: {
+    value: number | null;
+    basis: string | null;
+    source: string | null;
+    observedAt: string | null;
+    /** A genuine unsettled disagreement between current measurements. */
+    disputed: boolean;
+    /** Retained measurements this basis has retired. History, not alternatives. */
+    superseded: CanonicalSubjectState['supersededAcreage'];
+  };
+  basis: string;
+  confidence: number;
+}
+
+export function canonicalSubjectProjection(dealCardId: number): CanonicalSubjectProjection {
+  const subject = resolveCanonicalSubjectState(dealCardId);
+  return {
+    dealCardId,
+    subjectVersion: subject.subjectVersion,
+    subjectVersionId: subject.subjectVersionId,
+    subjectResolved: subject.subjectResolved,
+    officiallyVerified: subject.officiallyVerified,
+    status: subject.status,
+    apn: subject.apn,
+    address: subject.address,
+    city: subject.city,
+    county: subject.county,
+    state: subject.state,
+    fips: subject.fips,
+    zip: subject.zip,
+    owner: subject.owner,
+    acreage: {
+      value: subject.governingAcreage.value,
+      basis: subject.governingAcreage.kind,
+      source: subject.governingAcreage.source,
+      observedAt: subject.governingAcreage.observedAt,
+      disputed: subject.governingAcreage.disputed,
+      superseded: subject.supersededAcreage,
+    },
+    basis: subject.basis,
+    confidence: subject.confidence,
+  };
+}
+
+/**
+ * Is a result that ran against `ranAgainst` still current?
+ *
+ * A result correlated to an older subject version stays visible as history and
+ * is never presented as a current conclusion. An uncorrelated result (no version
+ * recorded) is treated as NOT current: it cannot prove which subject it answered
+ * about, and assuming it answered about this one is the substitution this whole
+ * contract exists to prevent.
+ */
+export function isCurrentForSubject(ranAgainst: string | null | undefined, current: string): boolean {
+  return typeof ranAgainst === 'string' && ranAgainst.length > 0 && ranAgainst === current;
 }
 
 /** Does the working subject satisfy ONE declared prerequisite? */
@@ -166,6 +323,7 @@ export function unmetPrerequisites(
 export function resolveCanonicalSubjectState(dealCardId: number): CanonicalSubjectState {
   const view = resolveCanonicalIdentity(dealCardId);
   const extras = cardExtras(view.propertyCardId);
+  const acreage = governingAcreageFor(dealCardId, view);
   return {
     dealCardId,
     propertyCardId: view.propertyCardId,
@@ -185,7 +343,16 @@ export function resolveCanonicalSubjectState(dealCardId: number): CanonicalSubje
     fips: extras.fips,
     zip: view.zip,
     owner: view.owner,
-    governingAcreage: governingAcreageFor(dealCardId, view),
+    subjectVersion: subjectVersionToken(view, acreage.governing),
+    subjectVersionId: view.versionId,
+    governingAcreage: acreage.governing,
+    supersededAcreage: acreage.superseded.map((entry) => ({
+      kind: entry.kind,
+      value: entry.value as number,
+      source: entry.source,
+      observedAt: entry.observedAt,
+      reason: entry.supersededReason,
+    })),
     sellerCommunicationsAvailable: sellerCommunicationsAvailable(dealCardId, view.propertyCardId),
     basis: view.basis,
     confidence: view.confidence,

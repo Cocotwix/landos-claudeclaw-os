@@ -298,6 +298,7 @@ import type {
   SpecialistOutcome,
 } from './property-intelligence-collector-types.js';
 import {
+  gateSnapshotToCurrentSubject,
   jurisdictionLocalApnVariants,
   presentPropertyIntelligenceSnapshot,
   rederiveSpecialistDelivery,
@@ -574,7 +575,7 @@ import {
 } from './exact-address-web-discovery.js';
 import { loadSubjectListingDetail, reprojectSubjectListingDetail } from './subject-listing-store.js';
 import { resolveCanonicalIdentity, supersessionLabel } from './canonical-identity.js';
-import { resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
+import { canonicalSubjectProjection, isCurrentForSubject, resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -4691,11 +4692,19 @@ export function registerLandosRoutes(app: Hono): void {
       const rawInput = getOpportunityByDealCardId(d.id as number).rawInput ?? '';
       return extractZipCandidate(rawInput.split(/\r?\n/)[0] ?? '');
     };
+    // The ONE accepted subject, not this lane's own re-derivation. Reading
+    // `pc.acres` directly is what selected the market band from a column the
+    // acreage was never written back to: the header showed the subject's real
+    // size while Market reported that no band could be resolved for it, and the
+    // county's fastest-selling band took the vacated subject slot on screen.
+    const subject = Number.isInteger(d.id) ? resolveCanonicalSubjectState(d.id as number) : null;
     return propertyMarketContextFor({
-      county: sv(pc.fips) ?? sv(pc.county) ?? lpFact('Parcel Address County') ?? null,
-      state: sv(pc.state) ?? lpFact('Parcel Address State') ?? null,
-      zip: sv(pc.zip) ?? extractZipCandidate(sv(pc.active_input_address) ?? sv(d.title)) ?? rawLeadZip() ?? null,
-      acres: typeof pc.acres === 'number' && pc.acres > 0 ? pc.acres : null,
+      county: subject?.fips ?? subject?.county
+        ?? sv(pc.fips) ?? sv(pc.county) ?? lpFact('Parcel Address County') ?? null,
+      state: subject?.state ?? sv(pc.state) ?? lpFact('Parcel Address State') ?? null,
+      zip: subject?.zip ?? sv(pc.zip) ?? extractZipCandidate(sv(pc.active_input_address) ?? sv(d.title)) ?? rawLeadZip() ?? null,
+      acres: subject?.governingAcreage.value ?? (typeof pc.acres === 'number' && pc.acres > 0 ? pc.acres : null),
+      subjectVersion: subject?.subjectVersion ?? null,
     });
   };
 
@@ -5910,10 +5919,14 @@ export function registerLandosRoutes(app: Hono): void {
       playbook: acquisitionPlaybook(),
       trainingReadiness: acquisitionTrainingReadiness(),
     };
-    if (options.includeDeepWorkspaceData === false) return core;
+    // The accepted subject, on every read of this Deal Card. Consumers render
+    // and correlate from THIS, not from their own field lookups.
+    const subjectProjection = canonicalSubjectProjection(id);
+    if (options.includeDeepWorkspaceData === false) return { ...core, subject: subjectProjection };
     const inspection = propertyCardId ? loadPropertyInspection(propertyCardId) : null;
     return {
       ...core,
+      subject: subjectProjection,
       canonicalState: canonicalDealStateFor(id),
       subjectListing: propertyCardId ? loadSubjectListingDetail(propertyCardId) : null,
       landPortalFacts: inspection ? buildParcelFactSheet(inspection.parcelFacts) : null,
@@ -7781,11 +7794,26 @@ export function registerLandosRoutes(app: Hono): void {
     dealCardId: number,
     snapshotOverride?: ReturnType<typeof presentPropertyIntelligenceSnapshot> | null,
   ): CanonicalDealState | null => {
-    const snapshot = snapshotOverride
-      ?? (() => {
-        const stored = propertyIntelligenceStore.primaryRun(dealCardId)?.snapshot ?? null;
-        return stored ? presentPropertyIntelligenceSnapshot(stored) : null;
-      })();
+    // The SECOND projection over the same stored snapshot.
+    //
+    // `propertyIntelligenceView` gates its read; this one read the store
+    // directly, so a run that answered about an earlier subject kept feeding
+    // current posture, valuation reasons, strategy blockers and operator
+    // actions into `canonicalState` — the Overview and Strategy surfaces served
+    // by the deal-card and lead-workspace routes. Both projections now pass
+    // through the SAME gate, so no path can serve guidance the other withheld.
+    //
+    // Callers that already gated their snapshot pass it as the override; the
+    // gate is idempotent, so re-applying it here changes nothing for them.
+    const snapshot = (() => {
+      const source = snapshotOverride
+        ?? (() => {
+          const stored = propertyIntelligenceStore.primaryRun(dealCardId)?.snapshot ?? null;
+          return stored ? presentPropertyIntelligenceSnapshot(stored) : null;
+        })();
+      return gateSnapshotToCurrentSubject(source, canonicalSubjectProjection(dealCardId).subjectVersion)?.snapshot
+        ?? source;
+    })();
     const compsView = buildCompsValuationView(dealCardId);
     if (!snapshot || !compsView) return null;
     const toSnapshotComp = (comp: (typeof compsView.comps)[number], lane: 'sold' | 'active') => ({
@@ -9440,6 +9468,24 @@ export function registerLandosRoutes(app: Hono): void {
       : null;
     let snapshot = presentedSource ? presentPropertyIntelligenceSnapshot(presentedSource) : null;
     if (snapshot && acreageSettledBySurvey) snapshot = withoutSettledAcreageConflict(snapshot);
+    // ── The currentness gate, applied ONCE for every consumer ────────────────
+    // Derived guidance from a run that answered about a different subject is
+    // withheld from the current view and handed back separately as history. The
+    // stored run record is untouched, nothing is regenerated, and no
+    // replacement conclusion is invented — an empty guidance field is what lets
+    // each surface say honestly that no current read exists yet.
+    const currentSubjectVersion = canonicalSubjectProjection(dealCardId).subjectVersion;
+    // Named, because this view RE-DERIVES the snapshot from `presentedSource`
+    // further down (strategy synthesis) and that re-derivation silently threw
+    // the gated read away — restoring the prior run's valuation instruction and
+    // next actions into the CURRENT payload after they had been withheld. Every
+    // assignment to `snapshot` from an ungated source must go through here.
+    const applySubjectGate = (value: typeof snapshot): typeof snapshot =>
+      gateSnapshotToCurrentSubject(value, currentSubjectVersion)?.snapshot ?? value;
+    const gated = gateSnapshotToCurrentSubject(snapshot, currentSubjectVersion);
+    const snapshotCurrentness = gated?.currentness ?? null;
+    const historicalSnapshot = gated?.historical ?? null;
+    if (gated) snapshot = gated.snapshot;
     const dealForUtilities = getDealCard(dealCardId);
     const utilityPropertyCardId = dealForUtilities ? subjectCardId(dealForUtilities) : null;
     const utilityRecord = utilityPropertyCardId ? loadUtilityAvailabilityRecord(utilityPropertyCardId) : null;
@@ -9482,10 +9528,13 @@ export function registerLandosRoutes(app: Hono): void {
         identityState: snapshot.identity.state,
         discoveryIdentityUsable: snapshot.identity.discoveryUsable,
         identityBasis: snapshot.identity.discoveryBasis ?? snapshot.identity.explanation,
-        // Canonical current acreage outranks the retained mission snapshot's
-        // figure: strategy reasoning must never continue from a superseded
-        // subject size after an acreage/extent adoption.
-        subjectAcres: canonicalExtentAcres ?? snapshot.identity.acres,
+        // The ACCEPTED subject's governing acreage. The extent-reconciliation
+        // record and the run snapshot's identity are both narrower sources that
+        // are null on most cards, so this rebuild kept concluding "the governing
+        // acreage is unknown" and blocking a split strategy on a parcel whose
+        // size is settled and displayed one panel above.
+        subjectAcres: canonicalSubjectProjection(dealCardId).acreage.value
+          ?? canonicalExtentAcres ?? snapshot.identity.acres,
         valuation: snapshot.valuation,
         dueDiligence: snapshot.dueDiligence,
         zoning: zoning?.headline ?? zoning?.detail ?? null,
@@ -9500,11 +9549,11 @@ export function registerLandosRoutes(app: Hono): void {
         activeListingCount: snapshot.comps.active.length,
         missionBlockers: currentBlockers,
       });
-      snapshot = presentPropertyIntelligenceSnapshot(presentedSource!, {
+      snapshot = applySubjectGate(presentPropertyIntelligenceSnapshot(presentedSource!, {
         strategies: synthesized.strategies,
         recommendation: synthesized.recommendation,
         extraBlockers: currentBlockers,
-      });
+      }))!;
       // The confirmed situs is often street-only. The operator's accepted lead
       // input retains the full address; when that input extends the confirmed
       // street it is exposed for display, together with the canonical
@@ -10445,6 +10494,11 @@ export function registerLandosRoutes(app: Hono): void {
     })();
     return {
       snapshot,
+      // Whether the snapshot's derived guidance describes the CURRENT subject,
+      // and the untouched prior read when it does not. History is preserved and
+      // labelled; it is never served as current guidance.
+      snapshotCurrentness,
+      historicalSnapshot,
       subjectParcel,
       streetView: streetViewProjection,
       missingDiligence,
@@ -10729,12 +10783,27 @@ export function registerLandosRoutes(app: Hono): void {
           // the parcel change size on load.
           evidenceAcreage: evidenceAcreageFor(id),
         },
+        subject: canonicalSubjectProjection(id),
+        // The prior read, preserved whole for the history surface. Present only
+        // when the current view withheld it.
+        historicalSnapshot: propertyIntelligence.historicalSnapshot ?? null,
+        // Whether the persisted snapshot above still describes the CURRENT
+        // subject. A run that answered about an older subject stays visible as
+        // history; it never presents its conclusions as current.
+        snapshotSubject: (() => {
+          // The same verdict the gate above already reached — reported, never
+          // recomputed, so the banner and the withheld cards can never disagree.
+          const fallbackCurrent = canonicalSubjectProjection(id).subjectVersion;
+          return propertyIntelligence.snapshotCurrentness
+            ?? { current: fallbackCurrent, ranAgainst: null, stale: false, reason: '' };
+        })(),
         marketContext: marketContextFor(deal),
         landPortalFacts: propertyIntelligence.landPortalFacts,
       });
     }
     return c.json({
       propertyIntelligence,
+      subject: canonicalSubjectProjection(id),
       // Historical uploads and retained evidence remain available without
       // reviving the obsolete operational-report projection.
       documentRegistry: documentRegistryForCard(cardId, { dealCardId: id }),
@@ -11390,6 +11459,7 @@ export function registerLandosRoutes(app: Hono): void {
           stale: state.stale.deal,
         }
         : null,
+      subject: canonicalSubjectProjection(id),
       guidance: dealBrain.thread,
       dealBrainFreshness: {
         staleReplyCount: dealBrain.staleReplies.length,
@@ -11792,6 +11862,10 @@ export function registerLandosRoutes(app: Hono): void {
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
     const projection = currentDealBrainProjection(id);
     return c.json({
+      // Deal Brain's INPUT uses the shared subject now, even though automatic
+      // synthesis stays deferred: whenever it does answer, it must be answering
+      // about the same subject version every other consumer is showing.
+      subject: canonicalSubjectProjection(id),
       thread: projection.thread,
       freshness: {
         staleReplyCount: projection.staleReplies.length,
@@ -12725,6 +12799,7 @@ export function registerLandosRoutes(app: Hono): void {
           basis: subject.basis,
         };
       })(),
+      subject: canonicalSubjectProjection(id),
       coverage,
       evidenceRequirements: specialistEvidenceRequirements(coverage, manifest),
       lastCycle: researchCoverageCycles.get(id) ?? null,

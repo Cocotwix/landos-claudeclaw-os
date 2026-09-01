@@ -28,7 +28,7 @@ function matrixResolution(overrides: Partial<MarketMatrixResolution>): MarketMat
   return {
     matchLevel: 'unavailable', available: false,
     geography: {}, resolvedKey: null, resolvedKeyLabel: null,
-    acreageBandRequested: 'all', acreageBandUsed: null, side: 'sold', period: null,
+    acreageBandRequested: 'all', acreageBandUsed: null, bandFallback: null, side: 'sold', period: null,
     confidence: null, source: null, provider: null,
     staleness: { label: 'unknown', quartersOld: null, isStale: false },
     facts: { pricePerAcre: null, daysOnMarket: null, sellThroughRate: null, populationGrowth: null, liquidity: null },

@@ -66,6 +66,12 @@ export interface MarketContextMetrics {
 }
 
 export interface MarketContextRecord {
+  /**
+   * What this record IS. Consumers must render by this, never by position in a
+   * list: filtering an unavailable record out of a positional list silently
+   * promotes the next one into its heading, which is how a county's
+   * fastest-selling band came to be displayed as a 1.5-acre subject's own band.
+   */
   scope: 'county' | 'zip' | 'subject_band' | 'fastest_band' | 'small_lot_band';
   label: string;
   available: boolean;
@@ -76,6 +82,11 @@ export interface MarketContextRecord {
   provider: string | null;
   metrics: MarketContextMetrics | null;
   note: string;
+  /**
+   * Set when this record answered from something other than what was asked for.
+   * Null means the exact requested band/geography carried it.
+   */
+  fallback: { from: string | null; to: string; why: string } | null;
 }
 
 /** One decision-useful market number, already formatted. */
@@ -151,6 +162,9 @@ export interface PropertyMarketContext {
     acres: number | null;
     subjectBand: AcreageBand | null;
   };
+  /** The accepted subject version these market facts were resolved for. Lets a
+   *  consumer prove it is reading the same subject as every other consumer. */
+  subjectVersion: string | null;
   county: MarketContextRecord;
   zip: MarketContextRecord;
   subjectBand: MarketContextRecord;
@@ -347,6 +361,7 @@ function unavailable(
     acreageBand: band,
     acreageBandLabel: band ? ACREAGE_BAND_LABEL[band] : null,
     period: null, snapshotDate: null, provider: null, metrics: null, note,
+    fallback: null,
   };
 }
 
@@ -354,6 +369,7 @@ function fromDrilldownSnapshot(
   scope: MarketContextRecord['scope'],
   label: string,
   snapshot: CountyDrilldownSnapshot,
+  fallback: MarketContextRecord['fallback'] = null,
 ): MarketContextRecord {
   return {
     scope, label, available: true,
@@ -364,6 +380,7 @@ function fromDrilldownSnapshot(
     provider: snapshot.provider || null,
     metrics: toContextMetrics(snapshot.metrics),
     note: `LandOS Market Research county record (${snapshot.period}).`,
+    fallback,
   };
 }
 
@@ -548,6 +565,8 @@ export function propertyMarketContextFor(input: {
   state: string | null;
   zip: string | null;
   acres: number | null;
+  /** The accepted subject version these facts were resolved for. */
+  subjectVersion?: string | null;
 }): PropertyMarketContext {
   const state = input.state ? input.state.toUpperCase() : null;
   const { fips, countyName } = resolveCountyFips(input.county, state);
@@ -586,7 +605,22 @@ export function propertyMarketContextFor(input: {
     return undefined;
   })();
   const subjectBand: MarketContextRecord = subjectSnapshot
-    ? fromDrilldownSnapshot('subject_band', `${countyLabel} — subject band ${ACREAGE_BAND_LABEL[subjectSnapshot.acreageBand]}`, subjectSnapshot)
+    ? fromDrilldownSnapshot(
+      'subject_band',
+      `${countyLabel} — subject band ${ACREAGE_BAND_LABEL[subjectSnapshot.acreageBand]}`,
+      subjectSnapshot,
+      // The subject's PRIMARY band is the one its acreage falls in. Another
+      // containing band answering is still a record about this subject, but it
+      // is a different population and must say so rather than pass as the
+      // primary read.
+      subjectBandKey != null && subjectSnapshot.acreageBand !== subjectBandKey
+        ? {
+          from: ACREAGE_BAND_LABEL[subjectBandKey],
+          to: ACREAGE_BAND_LABEL[subjectSnapshot.acreageBand],
+          why: `No ${countyLabel} record exists for the subject's ${ACREAGE_BAND_LABEL[subjectBandKey]} band. This ${ACREAGE_BAND_LABEL[subjectSnapshot.acreageBand]} record also contains the subject's acreage, so it answered instead.`,
+        }
+        : null,
+    )
     : unavailable('subject_band',
       subjectBandKey ? `${countyLabel} — subject band ${ACREAGE_BAND_LABEL[subjectBandKey]}` : `${countyLabel} — subject band`,
       subjectBandKey
@@ -641,6 +675,13 @@ export function propertyMarketContextFor(input: {
       provider: zipResolution.provider,
       metrics: toContextMetrics(zipResolution.metrics),
       note: `LandOS Market Research ZIP record (${ACREAGE_BAND_LABEL[zipBandUsed]}, ${zipResolution.period}).`,
+      fallback: zipResolution.bandFallback
+        ? {
+          from: zipResolution.bandFallback.from ? ACREAGE_BAND_LABEL[zipResolution.bandFallback.from] : null,
+          to: ACREAGE_BAND_LABEL[zipResolution.bandFallback.to],
+          why: zipResolution.bandFallback.why,
+        }
+        : null,
     }
     : unavailable('zip', input.zip ? zipLabel('all') : 'ZIP record', input.zip
       ? `No LandOS Market Research record exists for ZIP ${input.zip} under any acreage band; no other ZIP was substituted.`
@@ -684,6 +725,7 @@ export function propertyMarketContextFor(input: {
       acres,
       subjectBand: subjectBandKey,
     },
+    subjectVersion: input.subjectVersion ?? null,
     county,
     zip,
     subjectBand,

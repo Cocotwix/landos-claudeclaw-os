@@ -56,6 +56,16 @@ export interface AcreageBasisEntry {
   permittedUses: AcreageUse[];
   /** Plain limitation an operator must keep in mind ("tax roll lags survey", …). */
   limitation: string;
+  /** When this measurement was observed at its source, where known. */
+  observedAt: string | null;
+  /**
+   * This measurement predates the settling basis (survey / operator acceptance)
+   * and has been overtaken by it. It stays as retained history with its original
+   * source and date; it is NEVER a current alternative and never a conflict.
+   */
+  superseded: boolean;
+  /** Why it is superseded, in operator language. Empty when it is not. */
+  supersededReason: string;
 }
 
 export interface AcreageConsistencyIssue {
@@ -90,6 +100,27 @@ export interface AcreageReconciliation {
 export interface AcreageSignal {
   value: number | null | undefined;
   source?: string | null;
+  /**
+   * When this measurement was observed at its source (ISO-8601), where known.
+   *
+   * Two bases can disagree because they measured different things, or because
+   * one of them is simply OLDER. A county roll and a provider aggregation lag a
+   * new survey by a cycle or more, so the stale figure is not a competing
+   * current measurement — it is history that has not caught up. Without this
+   * date the two cases are indistinguishable and a superseded number keeps
+   * presenting itself as a live alternative.
+   */
+  observedAt?: string | null;
+  /**
+   * This record has been explicitly retired by the settling basis.
+   *
+   * Needed because a retrieval timestamp is NOT an observation date: an
+   * aggregator fetched this minute can still be serving a figure from an
+   * earlier county cycle, so date comparison alone cannot retire it. When the
+   * settling evidence names which records it supersedes, that naming is the
+   * fact, and it is carried here with its reason.
+   */
+  retiredBySettlingBasis?: { reason: string } | null;
 }
 
 export interface AcreageBasisInput {
@@ -116,6 +147,18 @@ const DEFAULT_ABS_TOL = 0.1;
 function num(sig: AcreageSignal | null | undefined): number | null {
   const v = sig?.value;
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function obs(sig: AcreageSignal | null | undefined): string | null {
+  const v = sig?.observedAt;
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
+/** Epoch ms for an ISO observation date, or null when it is absent/unparseable. */
+function observedMs(value: string | null): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function round2(n: number): number {
@@ -214,6 +257,8 @@ export interface GoverningAcreage {
   /** The governing value materially disagrees with another trusted basis and
    *  no survey/plat/operator acceptance has settled it. */
   disputed: boolean;
+  /** When the governing measurement was observed at its source, where known. */
+  observedAt: string | null;
 }
 
 export function governingAcreageOf(basis: AcreageReconciliation | null | undefined): GoverningAcreage {
@@ -224,39 +269,40 @@ export function governingAcreageOf(basis: AcreageReconciliation | null | undefin
     kind,
     source: entry?.source ?? null,
     disputed: basis?.tylerDecisionRequired ?? false,
+    observedAt: entry?.observedAt ?? null,
   };
+}
+
+/**
+ * Measurements this reconciliation has retired: real, correctly sourced records
+ * that predate the governing basis. Consumers render these as history with their
+ * original source and date — never as a current alternative and never as a
+ * conflict the operator must resolve.
+ */
+export function supersededAcreageOf(basis: AcreageReconciliation | null | undefined): AcreageBasisEntry[] {
+  return (basis?.entries ?? []).filter((e) => e.superseded && e.value != null);
 }
 
 export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliation {
   const relTol = input.materialRelTolerance ?? DEFAULT_REL_TOL;
   const absTol = input.materialAbsTolerance ?? DEFAULT_ABS_TOL;
 
-  const raw: Array<{ kind: Exclude<AcreageBasisKind, 'valuation' | 'spatial_overlay'>; value: number | null; source: string | null }> = [
-    { kind: 'operator_accepted', value: num(input.operatorAccepted), source: input.operatorAccepted?.source ?? 'Operator accepted' },
-    { kind: 'surveyed', value: num(input.surveyed), source: input.surveyed?.source ?? 'Recorded survey/plat' },
-    { kind: 'deeded', value: num(input.deeded), source: input.deeded?.source ?? 'Recorded deed' },
-    { kind: 'assessed', value: num(input.assessed), source: input.assessed?.source ?? 'County assessor roll' },
-    { kind: 'gis_geometry', value: num(input.gisGeometry), source: input.gisGeometry?.source ?? 'County GIS geometry' },
-    { kind: 'provider', value: num(input.provider), source: input.provider?.source ?? 'Data provider' },
+  const retired = (sig: AcreageSignal | null | undefined): string | null => {
+    const reason = sig?.retiredBySettlingBasis?.reason;
+    return typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+  };
+  const raw: Array<{
+    kind: Exclude<AcreageBasisKind, 'valuation' | 'spatial_overlay'>;
+    value: number | null; source: string | null; observedAt: string | null; retiredReason: string | null;
+  }> = [
+    { kind: 'operator_accepted', value: num(input.operatorAccepted), source: input.operatorAccepted?.source ?? 'Operator accepted', observedAt: obs(input.operatorAccepted), retiredReason: null },
+    { kind: 'surveyed', value: num(input.surveyed), source: input.surveyed?.source ?? 'Recorded survey/plat', observedAt: obs(input.surveyed), retiredReason: null },
+    { kind: 'deeded', value: num(input.deeded), source: input.deeded?.source ?? 'Recorded deed', observedAt: obs(input.deeded), retiredReason: retired(input.deeded) },
+    { kind: 'assessed', value: num(input.assessed), source: input.assessed?.source ?? 'County assessor roll', observedAt: obs(input.assessed), retiredReason: retired(input.assessed) },
+    { kind: 'gis_geometry', value: num(input.gisGeometry), source: input.gisGeometry?.source ?? 'County GIS geometry', observedAt: obs(input.gisGeometry), retiredReason: retired(input.gisGeometry) },
+    { kind: 'provider', value: num(input.provider), source: input.provider?.source ?? 'Data provider', observedAt: obs(input.provider), retiredReason: retired(input.provider) },
   ];
   const present = raw.filter((r) => r.value != null);
-
-  // Trusted bases for dispute detection: official / recorded / operator (never provider-only).
-  const trusted = present.filter((r) => CONFIDENCE_RANK[CONFIDENCE_OF[r.kind]] >= CONFIDENCE_RANK.provider + 1);
-
-  // Material dispute: any two trusted bases disagree past tolerance.
-  let disputed = false;
-  const disputePairs: string[] = [];
-  for (let i = 0; i < trusted.length; i += 1) {
-    for (let j = i + 1; j < trusted.length; j += 1) {
-      const a = trusted[i];
-      const b = trusted[j];
-      if (a.value != null && b.value != null && materiallyDifferentAcres(a.value, b.value, relTol, absTol)) {
-        disputed = true;
-        disputePairs.push(`${a.source} ${a.value} ac vs ${b.source} ${b.value} ac`);
-      }
-    }
-  }
 
   const acceptedEntry = present.find((r) => r.kind === 'operator_accepted') ?? null;
   const operatorAccepted = acceptedEntry != null;
@@ -269,6 +315,54 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
   // exists. A survey governs here the same way an operator acceptance does.
   const surveyedEntry = present.find((r) => r.kind === 'surveyed' && r.value != null) ?? null;
   const settled = operatorAccepted || surveyedEntry != null;
+
+  // ── Supersession, decided BEFORE dispute detection ────────────────────────
+  // A measurement taken before the settling basis is history, not a competing
+  // opinion. Deciding this first is the whole point: a superseded record must
+  // never enter the dispute loop, or ordinary county/aggregator update lag
+  // becomes a permanent "acreage conflict" that no evidence can ever clear.
+  const settlingEntry = acceptedEntry ?? surveyedEntry;
+  const settlingMs = observedMs(settlingEntry?.observedAt ?? null);
+  const settlingLabel = settlingEntry
+    ? (settlingEntry.kind === 'operator_accepted' ? 'the operator-accepted governing acreage' : 'the recorded survey/plat')
+    : '';
+  const isSuperseded = (
+    kind: Exclude<AcreageBasisKind, 'valuation' | 'spatial_overlay'>,
+    observedAt: string | null,
+    retiredReason: string | null,
+  ): boolean => {
+    if (!settled || settlingEntry == null) return false;
+    if (kind === settlingEntry.kind || kind === 'operator_accepted' || kind === 'surveyed') return false;
+    // The settling evidence explicitly named this record as one it retires.
+    if (retiredReason) return true;
+    const rowMs = observedMs(observedAt);
+    // Otherwise both dates are required. Without them the row stays an ordinary
+    // non-governing reference rather than being labelled superseded on an
+    // assumption — a retrieval timestamp is not an observation date.
+    return settlingMs != null && rowMs != null && rowMs < settlingMs;
+  };
+  const supersessionReasonFor = (r: { source: string | null; observedAt: string | null; retiredReason: string | null }): string =>
+    r.retiredReason
+      ?? `Observed ${r.observedAt} at ${r.source ?? 'its source'}, before ${settlingLabel}${settlingEntry?.observedAt ? ` (${settlingEntry.observedAt})` : ''}.`;
+
+  // Trusted bases for dispute detection: official / recorded / operator (never
+  // provider-only), and never a superseded record.
+  const trusted = present.filter((r) => CONFIDENCE_RANK[CONFIDENCE_OF[r.kind]] >= CONFIDENCE_RANK.provider + 1
+    && !isSuperseded(r.kind, r.observedAt, r.retiredReason));
+
+  // Material dispute: any two trusted, current bases disagree past tolerance.
+  let disputed = false;
+  const disputePairs: string[] = [];
+  for (let i = 0; i < trusted.length; i += 1) {
+    for (let j = i + 1; j < trusted.length; j += 1) {
+      const a = trusted[i];
+      const b = trusted[j];
+      if (a.value != null && b.value != null && materiallyDifferentAcres(a.value, b.value, relTol, absTol)) {
+        disputed = true;
+        disputePairs.push(`${a.source} ${a.value} ac vs ${b.source} ${b.value} ac`);
+      }
+    }
+  }
 
   // Governing basis for a use = highest-confidence present basis permitted for it.
   // Overlays are ALWAYS bound to the GIS geometry that was actually queried, never
@@ -294,8 +388,22 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
 
   const assessed = present.find((r) => r.kind === 'assessed');
   const gisEntry = present.find((r) => r.kind === 'gis_geometry');
+  const supersededEntries = present.filter((r) => isSuperseded(r.kind, r.observedAt, r.retiredReason));
   let explanation = '';
-  if (assessed?.value != null && gisEntry?.value != null && materiallyDifferentAcres(assessed.value, gisEntry.value, relTol, absTol)) {
+  if (supersededEntries.length > 0 && settlingEntry != null) {
+    // The honest story when the only disagreement is update lag: name the
+    // governing basis, then name what has not caught up yet. This is NOT a
+    // discrepancy the operator has to resolve.
+    explanation =
+      `${settlingEntry.value} ac governs, from ${settlingEntry.source ?? settlingLabel}` +
+      `${settlingEntry.observedAt ? ` (${settlingEntry.observedAt})` : ''}. ` +
+      `${supersededEntries.map((e) => `${e.source ?? e.kind} recorded ${e.value} ac${e.observedAt ? ` on ${e.observedAt}` : ''}`).join('; ')}. ` +
+      `Those predate the governing basis or have not completed their normal update cycle. ` +
+      `They are retained as history, not as a current alternative, and no operator decision is required.`;
+  } else if (assessed?.value != null && gisEntry?.value != null
+    && !isSuperseded('assessed', assessed.observedAt, assessed.retiredReason)
+    && !isSuperseded('gis_geometry', gisEntry.observedAt, gisEntry.retiredReason)
+    && materiallyDifferentAcres(assessed.value, gisEntry.value, relTol, absTol)) {
     const bigger = assessed.value > gisEntry.value ? 'assessed' : 'mapped';
     explanation =
       `Assessed acreage (${assessed.value} ac, ${assessed.source}) and mapped GIS geometry (${gisEntry.value} ac, ${gisEntry.source}) disagree. ` +
@@ -332,16 +440,27 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
     }
   };
 
-  const entries: AcreageBasisEntry[] = present.map((r) => ({
-    kind: r.kind,
-    value: r.value,
-    source: r.source,
-    confidence: CONFIDENCE_OF[r.kind],
-    disputed: disputed && trusted.some((t) => t.kind === r.kind),
-    operatorAccepted: r.kind === 'operator_accepted',
-    permittedUses: permittedUsesFor(r.kind),
-    limitation: DEFAULT_LIMITATION[r.kind],
-  }));
+  const entries: AcreageBasisEntry[] = present.map((r) => {
+    const superseded = isSuperseded(r.kind, r.observedAt, r.retiredReason);
+    return {
+      kind: r.kind,
+      value: r.value,
+      source: r.source,
+      confidence: CONFIDENCE_OF[r.kind],
+      disputed: disputed && trusted.some((t) => t.kind === r.kind),
+      operatorAccepted: r.kind === 'operator_accepted',
+      // A superseded record drives nothing. It is retained history with its
+      // original source and date, never a permitted input to display, overlay,
+      // valuation or strategy math.
+      permittedUses: superseded ? [] : permittedUsesFor(r.kind),
+      limitation: DEFAULT_LIMITATION[r.kind],
+      observedAt: r.observedAt,
+      superseded,
+      supersededReason: superseded
+        ? `${supersessionReasonFor(r)} Retained as history; not a current measurement of this subject.`
+        : '',
+    };
+  });
 
   // Synthetic entries recording which basis each downstream use resolves to, so
   // the audit and UI can show "valuation uses <basis>" and "overlays use <basis>".
@@ -358,6 +477,9 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
       limitation: disputed && !operatorAccepted
         ? `Valuation size is disputed and not operator-accepted — shown for context only; not a defensible offer basis until Tyler resolves the acreage.`
         : `Valuation uses the ${valuationBasis.replace(/_/g, ' ')} basis.`,
+      observedAt: src?.observedAt ?? null,
+      superseded: false,
+      supersededReason: '',
     });
   }
   if (overlayBasis) {
@@ -371,6 +493,12 @@ export function buildAcreageBasis(input: AcreageBasisInput): AcreageReconciliati
       operatorAccepted: false,
       permittedUses: ['overlay'],
       limitation: `Overlays (flood/wetlands/soils/slope) are sampled against the ${overlayBasis.replace(/_/g, ' ')} area.`,
+      observedAt: src?.observedAt ?? null,
+      // The overlay basis stays bound to the geometry the overlays were actually
+      // sampled against, even when a newer survey governs the reported size, so
+      // overlay percentages still reconcile with the map they came from.
+      superseded: false,
+      supersededReason: '',
     });
   }
 

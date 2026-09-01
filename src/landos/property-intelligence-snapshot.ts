@@ -337,6 +337,16 @@ export interface PropertyIntelligenceSnapshot {
   snapshotVersion: number;
   dealCardId: number;
   runId: string;
+  /**
+   * The accepted subject version this run actually executed against.
+   *
+   * A snapshot is a point-in-time DERIVED read. Without this, a snapshot taken
+   * when the acreage was unestablished renders its conclusions ("no per-acre
+   * band can be converted into a parcel value") as current beside a header
+   * showing the settled size. Absent on snapshots written before this contract,
+   * which are therefore treated as uncorrelated and not current.
+   */
+  subjectVersion?: string | null;
   /** Monotonic per Deal Card. The newest is primary. */
   sequence: number;
   isPrimary: boolean;
@@ -431,6 +441,8 @@ export interface PropertyIntelligenceProgress {
 export interface SnapshotJoinInput {
   dealCardId: number;
   runId: string;
+  /** The accepted subject version this run executed against. */
+  subjectVersion?: string | null;
   sequence: number;
   startedAt: string;
   completedAt: string | null;
@@ -936,6 +948,9 @@ export function joinPropertyIntelligence(input: SnapshotJoinInput): PropertyInte
     snapshotVersion: PROPERTY_INTELLIGENCE_SNAPSHOT_VERSION,
     dealCardId: input.dealCardId,
     runId: input.runId,
+    // Stamp the subject this run answered about, so a later read can tell
+    // whether these conclusions are still about the current subject.
+    subjectVersion: input.subjectVersion ?? null,
     sequence: input.sequence,
     isPrimary: true,
     status,
@@ -970,6 +985,115 @@ export function joinPropertyIntelligence(input: SnapshotJoinInput): PropertyInte
  * the canonical read coherent after a presentation-policy correction while the
  * stored mission record remains an immutable account of what ran.
  */
+/**
+ * The snapshot fields that are DERIVED OPERATOR GUIDANCE rather than retained
+ * evidence: conclusions, recommendations, blockers, risks and next actions.
+ *
+ * Everything not listed here — identity, facts, government records, comps,
+ * evidence, specialists, visuals, retained URLs — is preserved untouched. This
+ * gate withholds an out-of-date OPINION; it never withholds a retained fact.
+ */
+const DERIVED_GUIDANCE_FIELDS = [
+  'strategies', 'recommendation', 'valuation', 'dueDiligence',
+  'headline', 'blockers', 'missingInformation', 'nextActions', 'operatorAnalysis',
+] as const;
+
+export interface SubjectCurrentness {
+  /** The accepted subject version this snapshot's guidance is valid for. */
+  current: string;
+  /** What the run recorded, or null when it recorded nothing. */
+  ranAgainst: string | null;
+  stale: boolean;
+  reason: string;
+}
+
+export interface GatedPropertyIntelligenceSnapshot {
+  /** Safe to render as CURRENT operator guidance. */
+  snapshot: PropertyIntelligenceSnapshot;
+  /** The unmodified stored read, for the history surface. Null when current. */
+  historical: PropertyIntelligenceSnapshot | null;
+  currentness: SubjectCurrentness;
+}
+
+/**
+ * Withhold derived guidance that answered about a different subject.
+ *
+ * A page-level "prior research read" banner is not enough: the operator reads
+ * the CARDS. A strategy card saying an exit is BLOCKED because the acreage is
+ * not established, sitting under a header that shows the settled acreage, is
+ * still current-looking guidance derived from a subject that no longer exists —
+ * and it tells the operator to redo work that is already done.
+ *
+ * So the guidance fields are emptied rather than rendered, and the untouched
+ * stored snapshot is handed back separately as history. Nothing is deleted,
+ * nothing is regenerated, and no replacement conclusion is invented: an empty
+ * field is what lets each surface state honestly that no current read exists
+ * yet for the accepted subject.
+ */
+export function gateSnapshotToCurrentSubject(
+  snapshot: PropertyIntelligenceSnapshot | null,
+  currentSubjectVersion: string,
+): GatedPropertyIntelligenceSnapshot | null {
+  if (!snapshot) return null;
+  const ranAgainst = typeof snapshot.subjectVersion === 'string' && snapshot.subjectVersion.length > 0
+    ? snapshot.subjectVersion
+    : null;
+  const stale = ranAgainst == null || ranAgainst !== currentSubjectVersion;
+  const currentness: SubjectCurrentness = {
+    current: currentSubjectVersion,
+    ranAgainst,
+    stale,
+    reason: !stale
+      ? ''
+      : ranAgainst == null
+        ? 'This research run did not record which subject it answered about, so its conclusions cannot be confirmed as current.'
+        : 'This research run answered about an earlier version of this subject.',
+  };
+  if (!stale) return { snapshot, historical: null, currentness };
+
+  const gated: PropertyIntelligenceSnapshot = {
+    ...snapshot,
+    strategies: [],
+    recommendation: {
+      ...snapshot.recommendation,
+      preferredStrategy: null,
+      why: '',
+      whatWouldChangeIt: [],
+      postureWhy: '',
+      shouldPursue: 'undetermined',
+      worth: null,
+      targetBuyRange: null,
+    },
+    valuation: {
+      ...snapshot.valuation,
+      priceable: false,
+      range: null,
+      pricePerAcreRange: null,
+      likelyRetail: null,
+      dispositionRange: null,
+      basis: '',
+      adjustments: [],
+      confidence: 'none',
+      uncertainty: [],
+      materialGaps: [],
+      // The reason a value cannot be stated is now the SUBJECT changing, not
+      // whatever the prior run concluded about a different subject — and the
+      // action it prescribed is withheld with it. `nextActionToPrice` is an
+      // OPERATOR INSTRUCTION: left populated it told the operator to go
+      // establish an acreage that is already settled and displayed above.
+      notPriceableReason: null,
+      nextActionToPrice: null,
+    },
+    dueDiligence: [],
+    headline: { keyOpportunity: '', topRisks: [], confidence: 'none', confidenceWhy: '' },
+    blockers: [],
+    missingInformation: [],
+    nextActions: [],
+    operatorAnalysis: undefined,
+  };
+  return { snapshot: gated, historical: snapshot, currentness };
+}
+
 export function presentPropertyIntelligenceSnapshot(
   snapshot: PropertyIntelligenceSnapshot,
   overrides: {
@@ -981,6 +1105,10 @@ export function presentPropertyIntelligenceSnapshot(
   const presented = joinPropertyIntelligence({
     dealCardId: snapshot.dealCardId,
     runId: snapshot.runId,
+    // Presentation must carry the run's own subject version through unchanged.
+    // Re-joining without it would silently launder a stale snapshot into one
+    // that looks uncorrelated-but-fresh.
+    subjectVersion: snapshot.subjectVersion ?? null,
     sequence: snapshot.sequence,
     startedAt: snapshot.startedAt,
     completedAt: snapshot.completedAt,

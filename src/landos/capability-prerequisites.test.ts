@@ -31,7 +31,9 @@ function subjectWith(overrides: Partial<CanonicalSubjectState>): CanonicalSubjec
     dealCardId: 1, propertyCardId: null, subjectResolved: false, officiallyVerified: false,
     status: 'unresolved', source: 'none', apn: null, apnNormalized: null, address: null,
     city: null, county: null, state: null, fips: null, zip: null, owner: null,
-    governingAcreage: { value: null, kind: null, source: null, disputed: false },
+    subjectVersion: 'unresolved:1:unresolved', subjectVersionId: null,
+    governingAcreage: { value: null, kind: null, source: null, disputed: false, observedAt: null },
+    supersededAcreage: [],
     sellerCommunicationsAvailable: false, basis: '', confidence: 0, sourceRefs: [], confirmedAt: null,
     ...overrides,
   };

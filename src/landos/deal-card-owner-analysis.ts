@@ -173,7 +173,10 @@ export function loadOwnerMarketResearch(input: {
   const countyName = (input.county ?? '').replace(/\s+county$/i, '').trim();
   const zip = (input.zip ?? '').trim();
   const fips = (input.fips ?? '').trim() || (state && countyName ? resolveFips(state, countyName) : '');
-  const band = acreageBandForAcres(input.acres);
+  // An unknown subject size has no band. The all-acreage read is the honest
+  // stand-in here, and `bandKnown` keeps the label from implying otherwise.
+  const subjectBand = acreageBandForAcres(input.acres);
+  const band: AcreageBand = subjectBand ?? 'all';
   const query = { state, fips, county: countyName, zip, band };
   const countyStored = state && (fips || countyName) ? lookup({ ...query, level: 'county' }) : null;
   const zipStored = state && zip ? lookup({ ...query, level: 'zip' }) : null;
@@ -189,7 +192,9 @@ export function loadOwnerMarketResearch(input: {
   return {
     available: !!county || !!zipRow,
     band,
-    bandLabel: ACREAGE_BAND_LABEL[band],
+    bandLabel: subjectBand
+      ? ACREAGE_BAND_LABEL[subjectBand]
+      : `${ACREAGE_BAND_LABEL.all} (subject acreage unknown, so no subject band)`,
     period: newest?.quarter ?? null,
     source: newest ? `${newest.provider} · Sold Land · trailing 12 months` : null,
     county,

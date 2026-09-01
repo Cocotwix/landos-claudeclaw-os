@@ -245,6 +245,13 @@
 .awv2-dx-band .awv2-dx-metrics { grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); margin-bottom: 0; }
 .awv2-dx-band .awv2-dx-metric { padding: 9px 11px; }
 .awv2-dx-band .awv2-dx-metric b { font-size: 15px; margin-top: 0; }
+/* An unavailable band keeps its own slot and says why, rather than letting the
+   next record inherit its heading. */
+.awv2-dx-band b.awv2-dx-band-none { color: var(--awv2-bone-faint); font-size: 15px; font-weight: 500; }
+.awv2-dx-band-fallback {
+  display: block; margin-top: 6px;
+  color: var(--awv2-bone-faint); font-size: 11.5px; line-height: 1.45;
+}
 
 /* ── Zoning & subdivision: concise fields, not 27 ordinance quotes ──────
    The lane retains every rule it read. The grid promotes the handful an

@@ -83,13 +83,19 @@ describe('resolveMarketMatrix (Property Card consumption)', () => {
     expect(currentPeriod(new Date('2026-11-15T00:00:00Z'))).toBe('2026-Q4');
   });
 
-  it('acreageBandForAcres maps acres → band (default 2-5)', () => {
+  it('acreageBandForAcres maps acres → the band the subject is actually in', () => {
     expect(acreageBandForAcres(3)).toBe('2-5');
     expect(acreageBandForAcres(7)).toBe('5-10');
     expect(acreageBandForAcres(15)).toBe('10-20');
     expect(acreageBandForAcres(80)).toBe('50+');
-    expect(acreageBandForAcres(null)).toBe('2-5');
-    expect(acreageBandForAcres(1)).toBe('2-5'); // below 5 → closest supported band
+    // Unknown acreage selects NO band. It used to select '2-5', which reads as
+    // a positive claim about a subject whose size nobody knows.
+    expect(acreageBandForAcres(null)).toBeNull();
+    // The sub-2-acre bands are reachable. Collapsing everything under 5 acres
+    // into '2-5' reported small subjects against the wrong comparables while
+    // their own band sat unread in the collection.
+    expect(acreageBandForAcres(1)).toBe('1-2');
+    expect(acreageBandForAcres(0.4)).toBe('0-1');
   });
 
   it('buildMarketMatrixReportSection formats the operator section from ONE resolver (no dup logic)', () => {
@@ -132,8 +138,9 @@ describe('resolveMarketMatrix — a missed lookup key is not a missing record', 
     expect(acreageBandsForAcres(60)).toEqual(['50+', '50-100']);
     expect(acreageBandsForAcres(120)).toEqual(['50+', '100+']);
     expect(acreageBandsForAcres(3)).toEqual(['2-5']);
-    expect(acreageBandsForAcres(1.5)).toEqual(['2-5', '1-2']);
-    expect(acreageBandsForAcres(null)).toEqual(['2-5']);
+    // 1.5 acres belongs to 1-2 and to nothing else; it is not a 2-5 property.
+    expect(acreageBandsForAcres(1.5)).toEqual(['1-2']);
+    expect(acreageBandsForAcres(null)).toEqual([]);
     expect(acreageBandsForAcres(60)).not.toContain('20-50');
     expect(acreageBandsForAcres(60)[0]).toBe(acreageBandForAcres(60));
   });

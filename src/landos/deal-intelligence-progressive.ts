@@ -23,6 +23,7 @@
 //
 // Pure. No database, no clock beyond the injected `now`, no I/O.
 
+import { resolveCanonicalSubjectState } from './canonical-subject-state.js';
 import { DEAL_INTELLIGENCE_CHILDREN } from './deal-intelligence-mission.js';
 import { assembleDealIntelligencePackage } from './deal-intelligence-assembly.js';
 import { joinMissionChildren, type MissionChildState } from './mission-graph.js';
@@ -43,6 +44,13 @@ const SETTLED_STATUSES: readonly string[] = [
 ];
 
 /** True when a child has reached a terminal state and a partial is worth rebuilding. */
+
+/** The accepted subject version, or null when it cannot be read. Stamping is a
+ *  correlation aid; it must never be able to fail a research run. */
+function safeSubjectVersion(dealCardId: number): string | null {
+  try { return resolveCanonicalSubjectState(dealCardId).subjectVersion; } catch { return null; }
+}
+
 export function isSettledChildStatus(status: string): boolean {
   return SETTLED_STATUSES.includes(status);
 }
@@ -76,6 +84,9 @@ export function assembleProgressiveDealIntelligence(
   // `completedAt: null` is the honesty seam: the joined status computes to
   // `running`, so the partial can never present itself as a finished read.
   const joined = joinPropertyIntelligence({
+    // The subject this run is answering about, stamped so a later read can tell
+    // whether the conclusions below still describe the current subject.
+    subjectVersion: safeSubjectVersion(input.dealCardId),
     dealCardId,
     runId,
     sequence,

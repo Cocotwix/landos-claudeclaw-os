@@ -82,6 +82,26 @@ import '../styles/workspace-v2-lead-design.css';
 // ── Minimal read-model types (fields this view consumes) ───────────────
 
 /** The server's derived read of the evidence this Deal already retained. */
+/** The accepted subject, exactly as the server projects it. One shape, one
+ *  producer; the workspace never rebuilds it from loose fields. */
+export type SubjectProjectionView = {
+  dealCardId: number;
+  subjectVersion: string;
+  subjectVersionId: number | null;
+  subjectResolved: boolean;
+  officiallyVerified: boolean;
+  status: string;
+  apn: string | null; address: string | null; city: string | null;
+  county: string | null; state: string | null; fips: string | null;
+  zip: string | null; owner: string | null;
+  acreage: {
+    value: number | null; basis: string | null; source: string | null;
+    observedAt: string | null; disputed: boolean;
+    superseded: Array<{ kind: string; value: number; source: string | null; observedAt: string | null; reason: string }>;
+  };
+  basis: string; confidence: number;
+};
+
 type EvidenceAcreageView = {
   entries: Array<{ acres: number; basis: string; label: string; source: string }>;
   workingAcres: number | null; workingBasis: string | null; reason: string; bothLegitimate: boolean;
@@ -208,6 +228,7 @@ interface SnapshotView extends OverviewSnapshotView {
   missingInformation?: unknown[];
 }
 interface DealResp {
+  subject?: SubjectProjectionView | null;
   parcelScope?: ParcelScopeView | null;
   dealCard?: {
     id: number; title?: string; asking_price?: number | null;
@@ -227,6 +248,8 @@ interface AcqResp {
 }
 interface ActivityResp { events?: { kind: string; summary: string; createdAt: number }[] }
 interface IntelResp {
+  subject?: SubjectProjectionView | null;
+  snapshotSubject?: { current: string; ranAgainst: string | null; stale: boolean; reason: string } | null;
   propertyIntelligence?: {
     snapshot?: SnapshotView;
     streetView?: StreetViewView | null;
@@ -368,6 +391,12 @@ export function AcquisitionWorkspaceV2() {
 
   const [deal, setDeal] = useState<DealResp | null>(null);
   const [market, setMarket] = useState<MarketContextView | null>(null);
+  // The one accepted subject for this Deal Card. Every panel on this page reads
+  // its identity and acreage from here so they cannot drift apart on one load.
+  const [acceptedSubject, setAcceptedSubject] = useState<SubjectProjectionView | null>(null);
+  // Whether the persisted research snapshot still describes the current
+  // subject. A snapshot that answered about an earlier subject is history.
+  const [snapshotSubject, setSnapshotSubject] = useState<IntelResp['snapshotSubject']>(null);
   const [snapState, setSnap] = useState<SnapshotView | null>(null);
   const [acq, setAcq] = useState<AcqResp | null>(null);
   const [activity, setActivity] = useState<ActivityResp | null>(null);
@@ -492,6 +521,8 @@ export function AcquisitionWorkspaceV2() {
         ]);
         if (dead) return;
         setDeal(d); setSnap(i?.propertyIntelligence?.snapshot ?? null); setMarket(i?.marketContext ?? null); setAcq(a); setActivity(act);
+        setAcceptedSubject(i?.subject ?? d?.subject ?? null);
+        setSnapshotSubject(i?.snapshotSubject ?? null);
         setSoils(bu?.soilDetails ?? null);
         setStreetView(i?.propertyIntelligence?.streetView ?? null);
         setVba(i?.propertyIntelligence?.visualBuyerAnalysis ?? null);
@@ -821,24 +852,25 @@ export function AcquisitionWorkspaceV2() {
   const locality = addrParts.slice(1).join(',').trim();
   const zip = matchNum(address, /\b(\d{5})\s*$/) || deal?.dealCard?.propertyCards?.[0]?.zip || '';
   const owner = subject.owner;
-  // The reconciled canonical acreage governs the header when the official-
-  // record reconciliation resolved it; the identity snapshot and property
-  // card figures are the fallbacks (and converge with it after adoption).
-  const acreageDecision = acreageExtent?.decision ?? null;
-  const acreageResolved = acreageDecision?.status === 'resolved_current_canonical'
-    || acreageDecision?.status === 'resolved_current_vs_historical_extent';
-  // The reconciled working acreage is the shared answer: the same evidence
-  // read Documents & Uploads shows, chosen by which basis measured the parcel
-  // rather than by which surface asked. Taking the identity snapshot first is
-  // what let the header report a GIS polygon area (1.846) while Documents
-  // reported the surveyed 1.50 on the same Deal. This is a read of the
-  // reconciliation, not a preference: no acreage is named here.
-  const acres = (acreageResolved ? acreageDecision?.canonicalAcres : null)
-    ?? evidenceRead?.acreage?.workingAcres
-    // Present from the first read, so the header never shows the snapshot's
-    // GIS acreage while the deeper evidence projection is still in flight.
-    ?? firstPaintAcreage?.workingAcres
-    ?? id.acres ?? deal?.dealCard?.propertyCards?.[0]?.acres ?? null;
+  // ── ONE acreage, from the accepted subject ────────────────────────────────
+  // The header used to run its own precedence chain over the acreage-extent
+  // decision, the evidence projection, the identity snapshot and the property
+  // card. Property, Valuation, Strategy and Market ran a different one. Both
+  // were sincere and they disagreed: the header showed 1.5 AC while Strategy
+  // said the acreage was not established, on the same Deal, on the same load.
+  //
+  // Now there is one answer, produced server-side by the shared canonical
+  // subject, and the header reads it. The remaining fallbacks exist only for a
+  // response that predates this contract; they are never a second opinion about
+  // a subject the server already answered for.
+  const acres = acceptedSubject
+    ? acceptedSubject.acreage.value
+    : (evidenceRead?.acreage?.workingAcres
+      ?? firstPaintAcreage?.workingAcres
+      ?? id.acres ?? deal?.dealCard?.propertyCards?.[0]?.acres ?? null);
+  // How that acreage is held, for the one place the operator needs to see it.
+  const acreageBasisSource = acceptedSubject?.acreage.source ?? null;
+  const acreageSuperseded = acceptedSubject?.acreage.superseded ?? [];
 
   // Hero preference: widest capture that still reads as the parcel. The tight
   // close crop is LAST — it is the one most likely to clip a long/narrow
@@ -974,6 +1006,26 @@ export function AcquisitionWorkspaceV2() {
           {acres != null && <span class="mono">{acres} AC</span>}
           {subject.county && <span class="mono">{subject.county.toUpperCase()}, {subject.state}</span>}
         </div>
+        {/* Provenance for the one number every other panel is also using. A
+            field may be shown here only if it can say where it came from. */}
+        {acres != null && acreageBasisSource && (
+          <div class="awv2-acreage-basis">
+            <span>Governing basis: {acreageBasisSource}
+              {acceptedSubject?.acreage.observedAt ? ` (${acceptedSubject.acreage.observedAt})` : ''}</span>
+            {acreageSuperseded.length > 0 && (
+              <span class="awv2-acreage-superseded">
+                Superseded, retained as history: {acreageSuperseded
+                  .map((entry) => `${entry.value} AC — ${entry.source ?? entry.kind}${entry.observedAt ? ` (${entry.observedAt})` : ''}`)
+                  .join('; ')}. Not a current alternative and not an open conflict.
+              </span>
+            )}
+            {acceptedSubject?.acreage.disputed && (
+              <span class="awv2-acreage-disputed">
+                Current measurements disagree and nothing has settled it — confirm the governing size before pricing.
+              </span>
+            )}
+          </div>
+        )}
 
         {pendingResolution && (
           <div class="awv2-pending" role="status">
@@ -1048,6 +1100,21 @@ export function AcquisitionWorkspaceV2() {
         {/* Strategy & Underwriting opens with the deterministic Napkin
             Underwriting screen: Acquisition Napkin on the canonical supported
             FMV, then Strategy Napkins. Rendering runs no model or research. */}
+        {snapshotSubject?.stale && (
+          <div class="awv2-stale-subject" role="status">
+            <b>No current read for the accepted subject</b>
+            <span>
+              {acres != null
+                ? `Strategy, valuation, risks and next actions have not yet been generated for the accepted ${acres}-acre subject.`
+                : 'Strategy, valuation, risks and next actions have not yet been generated for the accepted subject.'}
+              {' '}{snapshotSubject.reason} The prior read is preserved below under Prior research read (history); it is not current guidance.
+            </span>
+            <span class="awv2-stale-subject-detail">
+              Current subject: {snapshotSubject.current}
+              {snapshotSubject.ranAgainst ? ` · prior read: ${snapshotSubject.ranAgainst}` : ' · prior read recorded no subject'}
+            </span>
+          </div>
+        )}
         {page === 'strategy' && (
           <NapkinUnderwriting
             compsValuation={compsValuation}
@@ -1201,7 +1268,7 @@ export function AcquisitionWorkspaceV2() {
                 </button>
               </section>
             )}
-            <PropertyIntelligenceSection snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} landPortalFacts={landPortalFacts} taxStatus={taxStatus} showMarket={false}
+            <PropertyIntelligenceSection subject={acceptedSubject} snap={snap} market={market} soils={soils} streetView={streetView} vba={vba} missingDiligence={missingDiligence} accessView={accessView} soilsSeptic={soilsSeptic} narrative={narrative} dealId={dealId} officialParcelGis={officialParcelGis} landUse={landUse} landUseIntelligence={landUseIntelligence} exactAddressListings={exactAddressListings} valuationSummary={canonicalValuationSummary} landPortalFacts={landPortalFacts} taxStatus={taxStatus} showMarket={false}
               acquisitionIntelligence={{
                 read: aiRead,
                 readiness: aiReadiness,

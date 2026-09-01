@@ -17,8 +17,16 @@
 //
 // Pure. No database, no clock, no I/O.
 
+import { resolveCanonicalSubjectState } from './canonical-subject-state.js';
 import { joinPropertyIntelligence, type PropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
 import type { DealIntelligenceInputPackage } from './deal-intelligence-assembly.js';
+
+
+/** The accepted subject version, or null when it cannot be read. Stamping is a
+ *  correlation aid; it must never be able to fail a research run. */
+function safeSubjectVersion(dealCardId: number): string | null {
+  try { return resolveCanonicalSubjectState(dealCardId).subjectVersion; } catch { return null; }
+}
 
 export interface AnalyseDealIntelligenceInput {
   package: DealIntelligenceInputPackage;
@@ -54,6 +62,9 @@ export function analyseDealIntelligence(input: AnalyseDealIntelligenceInput): Pr
   }
 
   const snapshot = joinPropertyIntelligence({
+    // The subject this run is answering about, stamped so a later read can tell
+    // whether the conclusions below still describe the current subject.
+    subjectVersion: safeSubjectVersion(pkg.dealCardId),
     dealCardId: pkg.dealCardId,
     runId: input.runId,
     sequence: input.sequence,

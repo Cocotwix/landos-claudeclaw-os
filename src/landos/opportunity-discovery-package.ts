@@ -566,7 +566,16 @@ function buildFromCanonical(opportunity: OpportunityRecord, deal: DealCardDetail
 }
 
 function withHash(value: Omit<DiscoveryPackage, 'contentHash'>): DiscoveryPackage {
-  const contentHash = createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  // The CONTENT hash covers the content, not the freshness stamp.
+  //
+  // `sourceUpdatedAt` is the newest row timestamp behind the package, so two
+  // rebuilds of an identical package produced different "content" hashes
+  // whenever a source row was touched between them — which the rebuild route
+  // does to itself, by writing the discovery status after it builds. A hash
+  // that changes when nothing in the package changed cannot answer the one
+  // question it exists for: has this package actually changed?
+  const { sourceUpdatedAt: _sourceUpdatedAt, ...content } = value;
+  const contentHash = createHash('sha256').update(JSON.stringify(content)).digest('hex');
   return { ...value, contentHash };
 }
 

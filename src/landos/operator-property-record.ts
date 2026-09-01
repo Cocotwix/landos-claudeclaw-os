@@ -11,7 +11,7 @@ import { sanitizeAccessLanguage } from './evidence-language.js';
 import { formatCountyLabel } from './fact-format.js';
 import { streetReferenceFrom } from './lead-identity.js';
 import { computePricingGate, type PricingGate } from './strategy-readiness.js';
-import { buildAcreageBasis, checkOverlayConsistency, governingAcreageOf, pinOverlayAcresToGeometry, type AcreageReconciliation, type GoverningAcreage } from './acreage-basis.js';
+import { buildAcreageBasis, checkOverlayConsistency, governingAcreageOf, pinOverlayAcresToGeometry, type AcreageBasisInput, type AcreageReconciliation, type AcreageSignal, type GoverningAcreage } from './acreage-basis.js';
 import { computeResearchCompleteness, type LaneSignal, type ResearchCompleteness } from './research-completeness.js';
 import type {
   CountyRecordsFinding,
@@ -24,6 +24,12 @@ import type {
   WetlandsFinding,
   ZoningLandUseFinding,
 } from './public-property-intelligence.js';
+
+/** The numeric value of an acreage signal, or null. */
+function numberOf(signal: AcreageSignal | null | undefined): number | null {
+  const value = signal?.value;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
 
 export type Verdict = 'good' | 'caution' | 'risk' | 'unknown';
 export type SepticOutlook = 'favorable' | 'mixed' | 'poor' | 'unknown';
@@ -212,6 +218,17 @@ export interface OperatorRecordContext {
   providerAcres?: number | null;
   /** The acreage Tyler has explicitly accepted as governing, if any. */
   operatorAcceptedAcres?: number | null;
+  /**
+   * Acreage signals read from the typed evidence store, complete with source
+   * names, stated vintages and supersession.
+   *
+   * When supplied this REPLACES the loose per-basis numbers above. Those were
+   * scraped from one public-intelligence run's findings payload, so a card whose
+   * collectors wrote typed evidence but no `county_records` finding produced an
+   * empty basis and a "subject acreage is not established" verdict on a card
+   * that demonstrably had three measurements retained.
+   */
+  acreageSignals?: AcreageBasisInput | null;
   marketPulseAvailable: boolean;
   visualsCaptured: number;
   landPortalCaptured: boolean;
@@ -550,24 +567,32 @@ export function buildOperatorPropertyRecord(rawRun: PublicIntelligenceRun | null
   const utilities = findingOf<UtilitiesFinding>(run, 'utilities');
   const county = findingOf<CountyRecordsFinding>(run, 'county_records');
 
-  const mappedAcres = factNumber(county, 'GIS mapped acreage');
-  // The OFFICIAL county assessed acreage outranks a provider-derived figure —
-  // both are preserved (assessed + mapped render side by side when different);
-  // a provider value never silently shadows the official record.
-  const assessedAcres = factNumber(county, 'Assessed acreage') ?? context.assessedAcres;
-  const providerAcres = context.providerAcres ?? factNumber(county, 'Provider acreage');
   // Shared canonical acreage & spatial basis. Every downstream use (display,
   // overlay, valuation, strategy math) resolves its basis from THIS record, so
   // the header, the overlays, and the valuation can never silently use three
   // different acreages. Overlays are pinned to the queried GIS geometry.
-  const acreageBasis = buildAcreageBasis({
-    assessed: { value: assessedAcres, source: `${formatCountyLabel(context.county) || 'County'} assessor roll` },
-    gisGeometry: { value: mappedAcres, source: `${formatCountyLabel(context.county) || 'County'} GIS geometry` },
+  //
+  // The typed evidence signals govern when the caller supplied them; the loose
+  // findings-payload numbers remain the fallback for callers that have not been
+  // moved over, so no existing surface loses its acreage in the transition.
+  const acreageInput: AcreageBasisInput = context.acreageSignals ?? {
+    assessed: { value: factNumber(county, 'Assessed acreage') ?? context.assessedAcres, source: `${formatCountyLabel(context.county) || 'County'} assessor roll` },
+    gisGeometry: { value: factNumber(county, 'GIS mapped acreage'), source: `${formatCountyLabel(context.county) || 'County'} GIS geometry` },
     deeded: context.deededAcres != null ? { value: context.deededAcres, source: 'Recorded deed' } : null,
     surveyed: context.surveyedAcres != null ? { value: context.surveyedAcres, source: 'Recorded survey/plat' } : null,
-    provider: providerAcres != null ? { value: providerAcres, source: 'Data provider' } : null,
+    provider: (context.providerAcres ?? factNumber(county, 'Provider acreage')) != null
+      ? { value: context.providerAcres ?? factNumber(county, 'Provider acreage'), source: 'Data provider' }
+      : null,
     operatorAccepted: context.operatorAcceptedAcres != null ? { value: context.operatorAcceptedAcres, source: 'Tyler accepted' } : null,
-  });
+  };
+  const acreageBasis = buildAcreageBasis(acreageInput);
+  // Overlays stay pinned to the geometry they were actually sampled against, so
+  // these two keep reading the queried GIS/assessed figures regardless of which
+  // basis governs the reported size.
+  const mappedAcres = factNumber(county, 'GIS mapped acreage')
+    ?? numberOf(acreageInput.gisGeometry);
+  const assessedAcres = factNumber(county, 'Assessed acreage') ?? context.assessedAcres
+    ?? numberOf(acreageInput.assessed);
   // A material, unresolved acreage basis IS a reconciliation conflict — the same
   // signal the pricing gate and land score already consume, now with an explicit
   // basis record and a discrete Tyler decision.

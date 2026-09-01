@@ -23,6 +23,7 @@ import { readZoningLandUseForDeal, synchronizeZoningLandUseForDeal } from './zon
 import { parseLandPortalCompRows } from './comp-extraction.js';
 import { documentRegistryForCard } from './deal-card-canonical.js';
 import { listComps } from './comps.js';
+import { subjectAcreageBasisInput } from './subject-acreage.js';
 import { getLandosDb } from './db.js';
 import { distinctApnIdentities, type SnapshotDueDiligenceItem, type SnapshotEvidenceItem, type SnapshotFact, type SnapshotIdentity } from './property-intelligence-snapshot.js';
 import { officialParcelSourceCoverage } from './public-property-intelligence-live.js';
@@ -1428,6 +1429,10 @@ export function operatorRecordFor(dealCardId: number): OperatorPropertyRecord | 
     providerAcres: providerVerified
       ? num(inspection?.parcelFacts.Acres) ?? num(inspection?.parcelFacts['Calc Acres'])
       : null,
+    // Every retained measurement, from the typed evidence store, with its source
+    // name and stated vintage. This is what lets the canonical side see the
+    // acreage the header was already showing.
+    acreageSignals: subjectAcreageBasisInput(dealCardId, Number.isInteger(cardId) ? cardId : null),
     coordinates: num(property.lat) != null && property.lng != null ? { lat: Number(property.lat), lng: Number(property.lng) } : null,
     parcelVerified: officiallyVerified,
     compCount: 0,

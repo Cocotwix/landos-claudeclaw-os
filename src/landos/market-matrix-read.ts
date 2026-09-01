@@ -47,8 +47,18 @@ export interface MarketMatrixResolution {
   resolvedKey: string | null;
   /** Compact operator label for `resolvedKey`, e.g. "<County> County (50–100 acres)". */
   resolvedKeyLabel: string | null;
-  acreageBandRequested: AcreageBand;
+  /** The band the SUBJECT is in. Null when its acreage is unknown. */
+  acreageBandRequested: AcreageBand | null;
   acreageBandUsed: AcreageBand | null;
+  /**
+   * Set whenever the answer did not come from the subject's own band.
+   *
+   * A resolution that quietly widened to another band, another geography or the
+   * all-acreage read is still an answer about a DIFFERENT population than the
+   * one asked about, and the operator has to be told which. Null means the
+   * subject's own band answered.
+   */
+  bandFallback: { from: AcreageBand | null; to: AcreageBand; why: string } | null;
   side: MarketSide;
   period: string | null;
   confidence: Confidence | null;
@@ -136,7 +146,8 @@ function money(n: number | null): string | null { return n === null ? null : `$$
 /** Build 2–3 talking points that reference ONLY the displayed facts. */
 function buildTalkingPoints(res: MarketMatrixResolution, countyLabel: string): string[] {
   const pts: string[] = [];
-  const bandTxt = ACREAGE_BAND_LABEL[res.acreageBandUsed ?? res.acreageBandRequested].toLowerCase();
+  const bandKey = res.acreageBandUsed ?? res.acreageBandRequested ?? 'all';
+  const bandTxt = ACREAGE_BAND_LABEL[bandKey].toLowerCase();
   const scope = res.matchLevel === 'state' ? `${res.geography.state} statewide` : countyLabel;
   if (res.facts.pricePerAcre !== null) {
     pts.push(`${scope} ${res.side === 'sold' ? 'sold' : 'for-sale'} land (${bandTxt}) is reading around ${money(res.facts.pricePerAcre)}/acre (${res.period}, ${MATCH_LEVEL_LABEL[res.matchLevel].toLowerCase()}).`);
@@ -177,7 +188,11 @@ export function resolveMarketMatrix(input: {
 }): MarketMatrixResolution {
   const db = getLandosDb();
   const state = input.state ? input.state.toUpperCase() : undefined;
-  const band = input.acreageBand ?? '2-5';
+  // The subject's own band, or null when its acreage is unknown. An unknown
+  // size asks for the all-acreage read EXPLICITLY rather than defaulting into a
+  // band the subject may not belong to.
+  const requestedBand: AcreageBand | null = input.acreageBand ?? null;
+  const band: AcreageBand = requestedBand ?? 'all';
   const side: MarketSide = input.side ?? 'sold';
   const nowPeriod = input.nowPeriod ?? currentPeriod();
   const fips = resolveFips(input.county, state);
@@ -196,7 +211,7 @@ export function resolveMarketMatrix(input: {
     matchLevel: 'unavailable', available: false,
     geography: { state, county: countyName || undefined, fips, zip: input.zip },
     resolvedKey: null, resolvedKeyLabel: null,
-    acreageBandRequested: band, acreageBandUsed: null, side, period: null, confidence: null,
+    acreageBandRequested: requestedBand, acreageBandUsed: null, bandFallback: null, side, period: null, confidence: null,
     source: null, provider: null,
     staleness: { label: 'No snapshot', quartersOld: null, isStale: false },
     facts: { pricePerAcre: null, daysOnMarket: null, sellThroughRate: null, populationGrowth: null, liquidity: null },
@@ -222,6 +237,13 @@ export function resolveMarketMatrix(input: {
     const res: MarketMatrixResolution = {
       ...base,
       matchLevel, available: true, acreageBandUsed: bandUsed,
+      bandFallback: bandUsed === requestedBand ? null : {
+        from: requestedBand,
+        to: bandUsed,
+        why: requestedBand == null
+          ? 'The subject acreage is unknown, so no subject band could be requested; this is the all-acreage read for the geography.'
+          : `No ${MATCH_LEVEL_LABEL[matchLevel].toLowerCase()} record carried real activity for the subject's ${ACREAGE_BAND_LABEL[requestedBand].toLowerCase()} band, so the ${ACREAGE_BAND_LABEL[bandUsed].toLowerCase()} record answered instead.`,
+      },
       resolvedKey: resolved.key,
       resolvedKeyLabel: `${resolved.label} (${ACREAGE_BAND_LABEL[bandUsed].toLowerCase()})`,
       period: row.period, confidence: row.confidence as Confidence,
@@ -370,8 +392,19 @@ export function resolveMarketMatrix(input: {
  *  Below 5 ac → 2–5 (the closest supported band); otherwise the natural band.
  *  null → 2–5 (the default operating band). The resolver's fallback chain then
  *  fills in from County/State when a band is missing — never fabricates. */
-export function acreageBandForAcres(acres: number | null | undefined): AcreageBand {
-  if (typeof acres !== 'number' || !Number.isFinite(acres) || acres <= 0) return '2-5';
+export function acreageBandForAcres(acres: number | null | undefined): AcreageBand | null {
+  // Unknown acreage selects NO band. It previously selected '2-5', which reads
+  // as a positive claim about a subject whose size nobody knows, and which the
+  // resolver then answered with real numbers for a band the subject may not be
+  // in. The caller must decide what to do about an unknown size; this function
+  // will not decide it for them.
+  if (typeof acres !== 'number' || !Number.isFinite(acres) || acres <= 0) return null;
+  // Every band is reachable by its own span. '0-1' and '1-2' were previously
+  // unreachable — anything under 5 acres collapsed into '2-5' — so a 1.5-acre
+  // subject was reported against 2-5-acre comparables while its real 1-2 record
+  // sat unread in the collection.
+  if (acres < 1) return '0-1';
+  if (acres < 2) return '1-2';
   if (acres < 5) return '2-5';
   if (acres < 10) return '5-10';
   if (acres < 20) return '10-20';
@@ -402,6 +435,9 @@ const ACREAGE_BAND_SPAN: Record<Exclude<AcreageBand, 'all'>, { min: number; max:
  */
 export function acreageBandsForAcres(acres: number | null | undefined): AcreageBand[] {
   const primary = acreageBandForAcres(acres);
+  // No acreage, no bands. An empty list is what tells the resolver to ask for
+  // the all-acreage read explicitly rather than implying a band.
+  if (primary == null) return [];
   const out: AcreageBand[] = [primary];
   if (typeof acres !== 'number' || !Number.isFinite(acres) || acres <= 0) return out;
   // An open-ended band ("50+", "100+") is the widest possible span; keep the
@@ -477,7 +513,7 @@ export function buildMarketMatrixReportSection(res: MarketMatrixResolution): Mar
     coverageLabel: MATCH_LEVEL_LABEL[res.matchLevel],
     resolvedKey: res.resolvedKey,
     resolvedKeyLabel: res.resolvedKeyLabel,
-    acreageBandRequested: ACREAGE_BAND_LABEL[res.acreageBandRequested],
+    acreageBandRequested: res.acreageBandRequested ? ACREAGE_BAND_LABEL[res.acreageBandRequested] : 'Not requested (subject acreage unknown)',
     acreageBandUsed: res.acreageBandUsed ? ACREAGE_BAND_LABEL[res.acreageBandUsed] : null,
     side: res.side,
     period: res.period,
@@ -505,7 +541,7 @@ export function resolveMarketMatrixSection(input: {
   const acres = input.acres ?? null;
   const res = resolveMarketMatrix({
     state: input.state, county: input.county, zip: input.zip,
-    acreageBand: acreageBandForAcres(acres),
+    acreageBand: acreageBandForAcres(acres) ?? undefined,
     acreageBands: acreageBandsForAcres(acres),
     side: input.side ?? 'sold', nowPeriod: input.nowPeriod,
   });

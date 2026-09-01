@@ -72,14 +72,25 @@ export interface MarketContextMetricsView {
   medianPrice: number | null; medianPricePerAcre: number | null;
   population: number | null; populationGrowth: number | null;
 }
+/** The accepted subject's governing facts, as the workspace receives them. */
+export interface SubjectAcreageView {
+  subjectVersion: string;
+  acreage: { value: number | null; basis: string | null; source: string | null; observedAt: string | null; disputed: boolean };
+}
+
 export interface MarketContextRecordView {
   scope: string; label: string; available: boolean;
   acreageBand: string | null; acreageBandLabel: string | null;
   period: string | null; snapshotDate: string | null; provider: string | null;
   metrics: MarketContextMetricsView | null; note: string;
+  /** Disclosed when the record answered from a band/geography other than the
+   *  one asked for. Null means the exact request carried it. */
+  fallback?: { from: string | null; to: string; why: string } | null;
 }
 export interface MarketContextView {
   source: string;
+  /** The accepted subject version these market facts were resolved for. */
+  subjectVersion?: string | null;
   geography: { county: string | null; fips: string | null; state: string | null; zip: string | null; acres: number | null; subjectBand: string | null };
   county: MarketContextRecordView; zip: MarketContextRecordView;
   subjectBand: MarketContextRecordView; fastestBand: MarketContextRecordView;
@@ -582,24 +593,48 @@ export function MarketIntelligencePanel({ market, aiRead }: {
                 acreage band beside the fastest-moving one. Four headline
                 numbers alone never say whether the subject's band is the
                 liquid one. Collector diagnostics stay collapsed below. */}
+            {/* Each slot is bound to its OWN record by role. Filtering first and
+                labelling by array position is what put the county's
+                fastest-selling 10-20 acre band under the "Subject band" heading
+                on a 1.5-acre parcel: the unavailable subject record dropped out
+                and the next record inherited its label. An unavailable record
+                now states why it is unavailable and nothing is promoted. */}
             <div class="awv2-dx-bands" aria-label="Acreage band comparison">
-              {[market.subjectBand, market.fastestBand]
-                .filter((record): record is MarketContextRecordView => !!record?.available && !!record.metrics)
-                .map((record, index) => (
-                  <div class="awv2-dx-band" data-role={index === 0 ? 'subject' : 'liquid'}>
-                    <small>{index === 0 ? 'Subject band' : 'Most liquid band'}</small>
-                    <b>{record.acreageBandLabel || record.acreageBand || record.label}</b>
-                    <MetricRow
-                      label={`${record.label} figures`}
-                      metrics={[
-                        { label: '$ / acre', value: fmtMetric('medianPricePerAcre', record.metrics!.medianPricePerAcre) ?? '' },
-                        { label: 'Median DOM', value: fmtMetric('medianDaysOnMarket', record.metrics!.medianDaysOnMarket) ?? '' },
-                        { label: 'Sell-through', value: fmtMetric('sellThroughRate', record.metrics!.sellThroughRate) ?? '' },
-                        { label: 'Months supply', value: fmtMetric('monthsOfSupply', record.metrics!.monthsOfSupply) ?? '' },
-                      ]}
-                    />
-                  </div>
-                ))}
+              {([
+                { role: 'subject', heading: 'Subject band', record: market.subjectBand },
+                { role: 'liquid', heading: 'Most liquid band', record: market.fastestBand },
+              ] as const).map(({ role, heading, record }) => (
+                <div class="awv2-dx-band" data-role={role} data-scope={record?.scope ?? 'none'}>
+                  <small>{heading}</small>
+                  {record?.available && record.metrics ? (
+                    <>
+                      <b>{record.acreageBandLabel || record.acreageBand || record.label}</b>
+                      {record.fallback && (
+                        <span class="awv2-dx-band-fallback">
+                          Fallback used: {record.fallback.to}
+                          {record.fallback.from ? ` instead of ${record.fallback.from}` : ''}. {record.fallback.why}
+                        </span>
+                      )}
+                      <MetricRow
+                        label={`${record.label} figures`}
+                        metrics={[
+                          { label: '$ / acre', value: fmtMetric('medianPricePerAcre', record.metrics.medianPricePerAcre) ?? '' },
+                          { label: 'Median DOM', value: fmtMetric('medianDaysOnMarket', record.metrics.medianDaysOnMarket) ?? '' },
+                          { label: 'Sell-through', value: fmtMetric('sellThroughRate', record.metrics.sellThroughRate) ?? '' },
+                          { label: 'Months supply', value: fmtMetric('monthsOfSupply', record.metrics.monthsOfSupply) ?? '' },
+                        ]}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <b class="awv2-dx-band-none">Not available</b>
+                      <span class="awv2-dx-band-fallback">
+                        {record?.note || 'No LandOS Market Research record was returned for this band.'}
+                      </span>
+                    </>
+                  )}
+                </div>
+              ))}
             </div>
             <WhatItMeans read={aiRead ?? null} topic="market" heading="What it means for this property" />
             <Disclosure label="Market records, methodology and collector diagnostics">
@@ -619,7 +654,10 @@ export function MarketIntelligencePanel({ market, aiRead }: {
   );
 }
 
-export function PropertyIntelligenceSection({ snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus, acquisitionIntelligence, developmentIntelligence, showMarket = true }: {
+export function PropertyIntelligenceSection({ subject, snap, market, soils, streetView, vba, missingDiligence, accessView, soilsSeptic, narrative, dealId, officialParcelGis, landUse, landUseIntelligence, exactAddressListings, researchStatus: researchStatusProp, valuationSummary, landPortalFacts, taxStatus, acquisitionIntelligence, developmentIntelligence, showMarket = true }: {
+  /** The accepted subject. Identity and governing facts come from HERE, never
+   *  from the run snapshot's own identity block. */
+  subject?: SubjectAcreageView | null;
   snap: PiSnapshot;
   /**
    * The persisted Acquisition Intelligence read and its controls.
@@ -773,7 +811,12 @@ export function PropertyIntelligenceSection({ snap, market, soils, streetView, v
   const buildPct = num(terrain?.headline, /([\d.]+)%\s*buildability/);
   const wetPct = num(wetlands?.headline, /([\d.]+)%/);
   const floodPct = num(flood?.headline, /(\d+(?:\.\d+)?)/);
-  const acres = id.acres ?? null;
+  // The accepted subject's governing acreage, not the run snapshot's identity
+  // block. The snapshot carries whatever acreage that run happened to resolve —
+  // frequently none — so reading it here printed "Not supplied by retained
+  // sources" in the subject panel while the header above it showed the settled
+  // size, on the same page, on the same load.
+  const acres = subject?.acreage.value ?? id.acres ?? null;
 
   const evidence = (snap.evidence || []).filter((e) => e.viewUrl);
   const byId = new Map(evidence.map((e) => [e.id, e]));
