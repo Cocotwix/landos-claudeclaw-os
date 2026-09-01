@@ -16,6 +16,7 @@ import {
   readDerivedSnapshot,
   readDerivedSnapshotHistory,
   writeDerivedSnapshot,
+  readDerivedSnapshotForParcel,
 } from './derived-intelligence-store.js';
 import type { PropertyBackstory } from './property-backstory.js';
 
@@ -67,8 +68,19 @@ export function persistPropertyBackstory(input: {
   };
 }
 
-/** The current backstory for this Deal Card. A pure SELECT. */
+/**
+ * The current backstory for this Deal Card. A pure SELECT.
+ *
+ * A backstory researched about a different parcel is that parcel's story, not
+ * this one's. A promotion or punctuation change is not a different parcel.
+ */
 export function readPropertyBackstory(dealCardId: number): PropertyBackstory | null {
+  const row = readDerivedSnapshotForParcel<PropertyBackstory>(dealCardId, PROPERTY_BACKSTORY_SNAPSHOT_TYPE);
+  return row && row.correlation === 'equivalent' ? row.value : null;
+}
+
+/** The retained backstory whatever parcel it answered about. History only. */
+export function readRetainedPropertyBackstory(dealCardId: number): PropertyBackstory | null {
   return readDerivedSnapshot<PropertyBackstory>(dealCardId, PROPERTY_BACKSTORY_SNAPSHOT_TYPE);
 }
 

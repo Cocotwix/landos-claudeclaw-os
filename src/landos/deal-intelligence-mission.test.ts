@@ -12,6 +12,7 @@ import {
   type StrategyHandback,
   type SubjectResearchHandback,
   type ValuationHandback,
+  dealIntelligenceChildrenForCaller,
 } from './deal-intelligence-mission.js';
 import { evaluateMissionAcceptance } from './mission-acceptance.js';
 import { missionChildIdentity, planMissionWaves, upstreamContributions, type MissionChildState } from './mission-graph.js';
@@ -83,10 +84,10 @@ const caps = (overrides: Partial<DealIntelligenceCapabilities> = {}): DealIntell
 
 describe('Deal Intelligence mission definition', () => {
   it('lays out in dependency waves with every Item 19 specialist declared', () => {
-    const waves = planMissionWaves(DEAL_INTELLIGENCE_CHILDREN);
+    const waves = planMissionWaves(dealIntelligenceChildrenForCaller(null));
     expect(waves[0]).toEqual(['parcel_identity']);
     expect(dealIntelligenceChildSpec('parcel_identity').timeoutMs).toBe(420_000);
-    const keys = DEAL_INTELLIGENCE_CHILDREN.map((spec) => spec.key);
+    const keys = dealIntelligenceChildrenForCaller(null).map((spec) => spec.key);
     for (const required of [
       'parcel_identity', 'government_records', 'zoning_land_use', 'environmental_terrain',
       'access_utilities', 'comparables', 'market_intelligence', 'evidence_visuals', 'valuation', 'strategy',
@@ -96,7 +97,7 @@ describe('Deal Intelligence mission definition', () => {
   });
 
   it('runs strategy in the LAST wave, after every research lane and the valuation', () => {
-    const waves = planMissionWaves(DEAL_INTELLIGENCE_CHILDREN);
+    const waves = planMissionWaves(dealIntelligenceChildrenForCaller(null));
     const waveOf = (key: string): number => waves.findIndex((wave) => wave.includes(key));
     const strategyWave = waveOf('strategy');
     expect(strategyWave).toBe(waves.length - 1);
@@ -153,7 +154,7 @@ describe('Deal Intelligence mission definition', () => {
 
   it('assigns every child a roster specialist, a group and a unique contribution slot', () => {
     const slots = new Set<string>();
-    for (const spec of DEAL_INTELLIGENCE_CHILDREN) {
+    for (const spec of dealIntelligenceChildrenForCaller(null)) {
       expect(spec.agentKey, `${spec.key} has no specialist`).toBeTruthy();
       expect(spec.group, `${spec.key} has no group`).toBeTruthy();
       const identity = missionChildIdentity(spec, 'm1');
@@ -164,7 +165,7 @@ describe('Deal Intelligence mission definition', () => {
   });
 
   it('declares every lane deterministic, so no lane names a provider or implies spend', () => {
-    for (const spec of DEAL_INTELLIGENCE_CHILDREN) {
+    for (const spec of dealIntelligenceChildrenForCaller(null)) {
       expect(spec.provider?.mode, `${spec.key}`).toBe('deterministic');
     }
   });
@@ -172,7 +173,7 @@ describe('Deal Intelligence mission definition', () => {
   it('builds a definition the runner can consume', () => {
     const definition = dealIntelligenceMissionDefinition(caps());
     expect(definition.kind).toBe(DEAL_INTELLIGENCE_KIND);
-    for (const spec of DEAL_INTELLIGENCE_CHILDREN) {
+    for (const spec of dealIntelligenceChildrenForCaller(null)) {
       expect(typeof definition.executors[spec.key]).toBe('function');
     }
   });

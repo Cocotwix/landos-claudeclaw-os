@@ -17,7 +17,7 @@
 //      same claim as "no history exists".
 import { useState } from 'preact/hooks';
 
-import { apiPost } from '@/lib/api';
+import { apiPost, operatorErrorMessage } from '@/lib/api';
 import { useCanonicalParcelGate } from '@/lib/useCanonicalParcelGate';
 
 interface HistoryEvent {
@@ -86,7 +86,7 @@ export function PropertyDevelopmentHistoryPanel({ dealId }: { dealId?: number })
       );
       setResult(response.result);
     } catch (caught) {
-      setError((caught as Error)?.message ?? 'Property Development History could not run.');
+      setError(operatorErrorMessage(caught));
     } finally {
       setRunning(false);
     }

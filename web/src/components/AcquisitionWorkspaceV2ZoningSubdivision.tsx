@@ -14,7 +14,7 @@
 //      and the official source stays one click away.
 import { useEffect, useState } from 'preact/hooks';
 
-import { apiGet, apiPost } from '@/lib/api';
+import { apiGet, apiPost, operatorErrorMessage } from '@/lib/api';
 import { useCanonicalParcelGate } from '@/lib/useCanonicalParcelGate';
 
 interface ZoningSubdivisionRunResult {
@@ -145,7 +145,7 @@ export function ZoningSubdivisionCapabilityRun({ dealId }: { dealId?: number }) 
       );
       setResult(response.result);
     } catch (caught) {
-      setError((caught as Error)?.message ?? 'Zoning & Subdivision could not run.');
+      setError(operatorErrorMessage(caught));
     } finally {
       setRunning(false);
     }

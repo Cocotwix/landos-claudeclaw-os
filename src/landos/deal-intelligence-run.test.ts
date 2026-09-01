@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { _initTestLandosDb } from './db.js';
 import { autoLaunchDealIntelligenceForIntake, researchStatusForOutcome, type IntakeLifecycleHooks } from './deal-intelligence-intake.js';
 import { runDealIntelligenceMission, launchDealIntelligenceMission } from './deal-intelligence-run.js';
-import { DEAL_INTELLIGENCE_CHILDREN, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, type DealIntelligenceCapabilities } from './deal-intelligence-mission.js';
+import { DEAL_INTELLIGENCE_CHILDREN, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, type DealIntelligenceCapabilities,
+  dealIntelligenceChildrenForCaller,
+} from './deal-intelligence-mission.js';
 import { MissionGraphStore, resetMissionGraphStoreCache } from './mission-graph-store.js';
 import { PropertyIntelligenceStore, resetPropertyIntelligenceStoreCache } from './property-intelligence-store.js';
 import type { PropertyIntelligenceCollectors, SpecialistOutcome } from './property-intelligence-collector-types.js';
@@ -137,7 +139,7 @@ describe('Deal Intelligence run lifecycle', () => {
     expect(mission).toBeTruthy();
     expect(mission!.scopeId).toBe(32);
     const children = missionStore.listChildren(mission!.missionId);
-    expect(children).toHaveLength(DEAL_INTELLIGENCE_CHILDREN.length);
+    expect(children).toHaveLength(dealIntelligenceChildrenForCaller(null).length);
     expect(children.every((child) => ['completed', 'partial', 'blocked'].includes(child.status))).toBe(true);
     expect(children.filter((child) => child.status === 'blocked').map((child) => child.key).sort()).toEqual([
       'property_backstory',
@@ -166,7 +168,7 @@ describe('Deal Intelligence run lifecycle', () => {
     expect(snapshot.facts.some((fact) => fact.key === 'market_matrix')).toBe(true);
     expect(snapshot.facts.some((fact) => fact.key === 'market_pulse')).toBe(true);
     // Every child shows as a specialist row on the snapshot.
-    expect(snapshot.specialists).toHaveLength(DEAL_INTELLIGENCE_CHILDREN.length);
+    expect(snapshot.specialists).toHaveLength(dealIntelligenceChildrenForCaller(null).length);
   });
 
   it('refuses a second mission while one is in flight', async () => {
@@ -284,7 +286,7 @@ describe('Deal Intelligence run lifecycle', () => {
     expect(primary.snapshot!.strategies).toHaveLength(5);
     const mission = missionsAfterRestart.latestMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, 32)!;
     expect(mission.missionId).toBe(primary.runId);
-    expect(missionsAfterRestart.listChildren(mission.missionId)).toHaveLength(DEAL_INTELLIGENCE_CHILDREN.length);
+    expect(missionsAfterRestart.listChildren(mission.missionId)).toHaveLength(dealIntelligenceChildrenForCaller(null).length);
   });
 
   it('keeps two Deal Cards completely isolated', async () => {
@@ -534,7 +536,7 @@ describe('Automatic launch from New Lead intake', () => {
     const mission = missionStore.latestMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, 32)!;
     expect(mission.missionId).toBe(launch!.missionId);
     expect(mission.trigger).toBe('automatic_manual_intake');
-    expect(missionStore.listChildren(mission.missionId)).toHaveLength(DEAL_INTELLIGENCE_CHILDREN.length);
+    expect(missionStore.listChildren(mission.missionId)).toHaveLength(dealIntelligenceChildrenForCaller(null).length);
 
     const terminal = research[research.length - 1];
     expect(['complete', 'partial']).toContain(terminal.status);

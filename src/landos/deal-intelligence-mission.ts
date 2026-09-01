@@ -334,9 +334,24 @@ export interface StrategyHandback {
 
 // ── Injected capabilities ───────────────────────────────────────────────────
 
+export interface SubjectUnderstandingLaneResult {
+  outcome: 'research_ready' | 'candidate_set' | 'needs_targeted_input';
+  promotion: { status: string; reason: string } | null;
+  subjectVersion: string;
+  question: { question: string } | null;
+  reasoningTurns: number;
+}
+
 export interface DealIntelligenceCapabilities {
   /** The EXISTING live collectors. Phase 5 reuses them unchanged. */
   collectors: PropertyIntelligenceCollectors;
+  /**
+   * The New Lead front door: bounded review of the resolved candidate, then
+   * promotion through the existing accepted-subject writer. Injected so the
+   * mission graph owns ORDERING and this module stays free of the capability's
+   * own dependencies.
+   */
+  subjectUnderstanding?: (dealCardId: number) => Promise<SubjectUnderstandingLaneResult>;
   /** Market Matrix + Market Pulse for the subject market. */
   marketPulse?: (dealCardId: number) => Promise<{
     marketMatrix: unknown;
@@ -485,6 +500,62 @@ export const DEAL_INTELLIGENCE_CHILDREN: MissionChildSpec[] = [
         },
       ],
       expectedFields: ['county', 'state'],
+    },
+  },
+  {
+    // ── The New Lead front door ───────────────────────────────────────────
+    //
+    // Deterministic resolution proposes a parcel; this decides whether LandOS
+    // may act on it. It sits between `parcel_identity` and every
+    // parcel-dependent lane so that "we resolved something" and "this is the
+    // subject" stop being the same event.
+    //
+    // On the fresh New Lead path, `parcel_identity` persists its result as a
+    // CANDIDATE. This lane runs the bounded LLM review, and only a validated
+    // `research_ready` result promoted through the existing accepted-subject
+    // writer completes it. Any other outcome — a candidate set, one targeted
+    // question, a stale subject version, a refused promotion — returns
+    // `blocked`, and the existing `dependsOn` mechanics skip every parcel-
+    // dependent lane behind it. No new ordering system: the graph is the
+    // ordering owner it already was.
+    key: 'subject_understanding',
+    label: 'Subject understanding and acceptance',
+    purpose: 'Review the resolved candidate against every retained statement about the lead, then accept one Working Acquisition Subject or return exactly one question.',
+    role: 'required',
+    dependsOn: [],
+    // ORDERING, not requirement. Resolution failing to find a parcel is exactly
+    // the lead this front door exists for: an address-only lead has no
+    // candidate to promote, and the operator still needs the one targeted
+    // question that unblocks it. `dependsOn` would SKIP this lane whenever
+    // resolution blocked, which is the one case where its answer matters most.
+    awaits: ['parcel_identity'],
+    // One bounded reasoning turn, plus at most four evidence checks.
+    timeoutMs: 300_000,
+    group: DEAL_INTELLIGENCE_GROUPS.subjectIdentity,
+    assignedRole: 'Accepted Working Acquisition Subject',
+    agentKey: 'dd_bot',
+    contributionSlot: 'subject_understanding',
+    provider: DETERMINISTIC('The accepted subject, a ranked candidate set, or one targeted question'),
+    acceptance: {
+      requiredFields: ['outcome', 'promotion.status'],
+      checks: [
+        SCOPE,
+        {
+          id: 'subject_promoted',
+          requirement: 'A validated research-ready subject was accepted through the existing subject writer.',
+          severity: 'required',
+          evaluate: (handback) => {
+            const row = handback as { outcome?: string; promotion?: { status?: string } };
+            const promoted = row.promotion?.status === 'promoted' || row.promotion?.status === 'already_accepted';
+            return {
+              passed: row.outcome === 'research_ready' && promoted,
+              detail: row.outcome === 'research_ready' && promoted
+                ? 'The subject is accepted; parcel-dependent research may run.'
+                : `Outcome ${row.outcome ?? 'none'} / promotion ${row.promotion?.status ?? 'none'}; parcel-dependent research is held.`,
+            };
+          },
+        },
+      ],
     },
   },
   {
@@ -1372,6 +1443,33 @@ export function dealIntelligenceExecutors(
     // Resolves the subject parcel against the official sources and the
     // authenticated LandPortal record. This is the mission's root lane, so it
     // does ONLY the work the rest of the mission genuinely needs.
+    // The New Lead front door. Completes only on an accepted subject; every
+    // other honest outcome blocks, and the graph's own `dependsOn` mechanics
+    // hold the parcel-dependent lanes behind it.
+    subject_understanding: async (ctx) => {
+      if (!capabilities.subjectUnderstanding) {
+        return { status: 'blocked', summary: 'No subject-understanding capability is bound for this caller.' };
+      }
+      const run = await capabilities.subjectUnderstanding(ctx.scopeId);
+      const promoted = run.promotion?.status === 'promoted' || run.promotion?.status === 'already_accepted';
+      const result = {
+        outcome: run.outcome,
+        promotion: run.promotion ?? { status: 'not_attempted' },
+        subjectVersion: run.subjectVersion,
+        question: run.question ?? null,
+        reasoningTurns: run.reasoningTurns,
+      };
+      if (run.outcome === 'research_ready' && promoted) {
+        return { status: 'completed', summary: `Subject accepted (${run.promotion?.status}).`, result };
+      }
+      return {
+        status: 'blocked',
+        summary: run.question?.question
+          ?? `Subject not accepted: ${run.outcome} / ${run.promotion?.status ?? 'no promotion'}. Parcel-dependent research is held.`,
+        result,
+      };
+    },
+
     parcel_identity: async (ctx) => {
       const outcome = await collectors.parcel_identity(dealScoped(ctx));
       const data = outcome.data;
@@ -1925,14 +2023,45 @@ export type LanePrerequisiteEvaluator = (
  * slow or failed parcel resolution. Lanes without a declaration are
  * parcel-scoped and keep their edges — invariants 2-4 are untouched.
  */
+/**
+ * The children for ONE caller.
+ *
+ * Only the fresh New Lead front door carries `subject_understanding`. Every
+ * other caller — Tools, the Deal Card, an internal workflow — gets exactly the
+ * child list it had before, because for them the subject is already accepted
+ * and re-reviewing it would be a second front door, not a safer one.
+ *
+ * For New Lead, every lane that waited on `parcel_identity` waits on
+ * `subject_understanding` instead. Deterministic resolution still runs and
+ * still hands back its candidate; what changes is that "we resolved something"
+ * no longer releases parcel-dependent research on its own.
+ */
+export function dealIntelligenceChildrenForCaller(caller: string | null | undefined): MissionChildSpec[] {
+  if (caller !== 'new_lead') {
+    return DEAL_INTELLIGENCE_CHILDREN.filter((spec) => spec.key !== SUBJECT_UNDERSTANDING_LANE);
+  }
+  return DEAL_INTELLIGENCE_CHILDREN.map((spec) => {
+    if (spec.key === SUBJECT_UNDERSTANDING_LANE || spec.key === 'parcel_identity') return spec;
+    if (!spec.dependsOn.includes('parcel_identity')) return spec;
+    return {
+      ...spec,
+      dependsOn: spec.dependsOn.map((dep) => (dep === 'parcel_identity' ? SUBJECT_UNDERSTANDING_LANE : dep)),
+    };
+  });
+}
+
+export const SUBJECT_UNDERSTANDING_LANE = 'subject_understanding';
+
 export function dealIntelligenceChildrenForSubject(
   unmetPrerequisitesFor: LanePrerequisiteEvaluator | null,
+  caller?: string | null,
 ): MissionChildSpec[] {
-  if (!unmetPrerequisitesFor) return DEAL_INTELLIGENCE_CHILDREN;
-  return DEAL_INTELLIGENCE_CHILDREN.map((spec) => {
+  const base = dealIntelligenceChildrenForCaller(caller);
+  if (!unmetPrerequisitesFor) return base;
+  return base.map((spec) => {
     if (!spec.prerequisites || spec.dependsOn.length === 0) return spec;
     if (unmetPrerequisitesFor(spec.prerequisites).length > 0) return spec;
-    const dependsOn = spec.dependsOn.filter((dep) => dep !== 'parcel_identity');
+    const dependsOn = spec.dependsOn.filter((dep) => dep !== 'parcel_identity' && dep !== SUBJECT_UNDERSTANDING_LANE);
     if (dependsOn.length === spec.dependsOn.length) return spec;
     return { ...spec, dependsOn };
   });
@@ -1944,13 +2073,15 @@ export function dealIntelligenceMissionDefinition(
   options: {
     /** Evaluates declared lane prerequisites against the canonical subject. */
     unmetPrerequisitesFor?: LanePrerequisiteEvaluator;
+    /** Which caller launched this mission; only `new_lead` gets the front door. */
+    caller?: string | null;
   } = {},
 ): FanOutMissionDefinition {
   return {
     kind: DEAL_INTELLIGENCE_KIND,
     label: 'Deal Intelligence',
     scope: DEAL_INTELLIGENCE_SCOPE,
-    children: dealIntelligenceChildrenForSubject(options.unmetPrerequisitesFor ?? null),
+    children: dealIntelligenceChildrenForSubject(options.unmetPrerequisitesFor ?? null, options.caller ?? null),
     executors: dealIntelligenceExecutors(capabilities),
   };
 }

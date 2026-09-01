@@ -1,20 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { History, Landmark, Map, Ruler, Scale, Search, Wrench } from 'lucide-preact';
 
-import { ApiError, apiGet, apiPost } from '@/lib/api';
-
-/** The server's plain operator message (e.g. a missing prerequisite) beats the
- *  developer-style "failed: 400" wrapper whenever it exists. */
-function plainErrorMessage(caught: unknown): string {
-  if (caught instanceof ApiError) {
-    const body = caught.body as { error?: unknown } | null;
-    if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
-  }
-  // A network-level fetch failure ("Failed to fetch") is a transport hiccup,
-  // not something the operator can act on as-is.
-  if (caught instanceof TypeError) return 'The request did not reach LandOS. Try again; if it keeps happening, check the server.';
-  return caught instanceof Error ? caught.message : String(caught);
-}
+import { apiGet, apiPost, operatorErrorMessage } from '@/lib/api';
 
 interface ResolutionResult {
   invocationId: string;
@@ -397,7 +384,7 @@ export function Tools() {
       if (response.resolution) setResult(response.resolution);
       setAssessor(response.result);
     } catch (caught) {
-      setAssessorError(plainErrorMessage(caught));
+      setAssessorError(operatorErrorMessage(caught));
     } finally {
       setAssessorRunning(false);
     }
@@ -417,7 +404,7 @@ export function Tools() {
       if (response.resolution) setResult(response.resolution);
       setLandPortal(response.result);
     } catch (caught) {
-      setLandPortalError(plainErrorMessage(caught));
+      setLandPortalError(operatorErrorMessage(caught));
     } finally {
       setLandPortalRunning(false);
     }
@@ -437,7 +424,7 @@ export function Tools() {
       if (response.resolution) setResult(response.resolution);
       setCompsValuation(response.result);
     } catch (caught) {
-      setCompsError(plainErrorMessage(caught));
+      setCompsError(operatorErrorMessage(caught));
     } finally {
       setCompsRunning(false);
     }
@@ -458,7 +445,7 @@ export function Tools() {
       if (response.resolution) setResult(response.resolution);
       setZoning(response.result);
     } catch (caught) {
-      setZoningError(plainErrorMessage(caught));
+      setZoningError(operatorErrorMessage(caught));
     } finally {
       setZoningRunning(false);
     }
@@ -479,7 +466,7 @@ export function Tools() {
       if (response.resolution) setResult(response.resolution);
       setHistory(response.result);
     } catch (caught) {
-      setHistoryError(plainErrorMessage(caught));
+      setHistoryError(operatorErrorMessage(caught));
     } finally {
       setHistoryRunning(false);
     }
@@ -498,7 +485,7 @@ export function Tools() {
       );
       setLpToolResults((prior) => ({ ...prior, [tool]: response.result }));
     } catch (caught) {
-      setLpToolError(plainErrorMessage(caught));
+      setLpToolError(operatorErrorMessage(caught));
     } finally {
       setLpToolRunning(null);
     }
@@ -529,7 +516,7 @@ export function Tools() {
       );
       setMarketResults((prior) => ({ ...prior, [tool]: response.result }));
     } catch (caught) {
-      setMarketError(plainErrorMessage(caught));
+      setMarketError(operatorErrorMessage(caught));
     } finally {
       setMarketRunning(null);
     }

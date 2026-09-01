@@ -126,6 +126,44 @@ export class ApiError extends Error {
   }
 }
 
+/** The message a prerequisite wait shows. Not an error: LandOS is mid-decision. */
+export const WAITING_FOR_SUBJECT_MESSAGE =
+  'Waiting for LandOS to confirm the acquisition subject before this tool can run.';
+
+/**
+ * True when a failure is the structured `waiting_prerequisite` 409.
+ *
+ * That response is not a fault — it means the subject is still being confirmed
+ * and the tool will run once it is. Every other 409 stays an ordinary error.
+ */
+export function isWaitingForPrerequisite(caught: unknown): boolean {
+  if (!(caught instanceof ApiError) || caught.status !== 409) return false;
+  const body = caught.body as { error?: unknown; outcome?: unknown } | null;
+  return body?.error === 'waiting_prerequisite' || body?.outcome === 'waiting_prerequisite';
+}
+
+/**
+ * One operator-facing message for any failed API call.
+ *
+ * A raw endpoint and `failed: 409` tell an operator nothing they can act on.
+ * This is the shared seam every tool call site formats through, so a
+ * prerequisite wait reads as a wait everywhere and ordinary failures keep the
+ * server's own words.
+ */
+export function operatorErrorMessage(caught: unknown): string {
+  if (isWaitingForPrerequisite(caught)) return WAITING_FOR_SUBJECT_MESSAGE;
+  if (caught instanceof ApiError) {
+    const body = caught.body as { error?: unknown } | null;
+    if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
+  }
+  // A network-level fetch failure is a transport hiccup, not something the
+  // operator can act on as-is.
+  if (caught instanceof TypeError) {
+    return 'The request did not reach LandOS. Try again; if it keeps happening, check the server.';
+  }
+  return caught instanceof Error ? caught.message : String(caught);
+}
+
 export async function apiGet<T = unknown>(path: string): Promise<T> {
   await dashboardSessionReady;
   const res = await fetch(authenticatedUrl(path), { method: 'GET', credentials: 'same-origin' });

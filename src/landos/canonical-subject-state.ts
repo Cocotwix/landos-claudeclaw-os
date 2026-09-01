@@ -44,6 +44,14 @@ export interface CanonicalSubjectState {
   /** An official assessor/county parcel record confirms the subject.
    *  NEVER implied by `subjectResolved`. */
   officiallyVerified: boolean;
+  /**
+   * The official source string behind `officiallyVerified`, verbatim.
+   *
+   * A claim that an official record confirms this parcel is a claim about a
+   * specific record, and a surface that prints the claim must be able to print
+   * the record. Null whenever `officiallyVerified` is false.
+   */
+  officialVerificationSource: string | null;
   status: PropertyIdentityStatus;
   source: CanonicalIdentitySource;
   apn: string | null;
@@ -110,19 +118,21 @@ export function isOfficialPropertyVerificationSource(value: unknown): boolean {
   return /official|assessor|property[ -]?appraiser|cadastral|government|(?:county|state|municipal).{0,32}(?:gis|parcel (?:map|layer|record)|property record)|(?:gis|parcel (?:map|layer)).{0,32}(?:county|state|municipal)/i.test(text);
 }
 
-function cardExtras(propertyCardId: number | null): { fips: string | null; officiallyVerified: boolean } {
-  if (propertyCardId == null) return { fips: null, officiallyVerified: false };
+function cardExtras(propertyCardId: number | null): { fips: string | null; officiallyVerified: boolean; officialVerificationSource: string | null } {
+  if (propertyCardId == null) return { fips: null, officiallyVerified: false, officialVerificationSource: null };
   try {
     const row = getLandosDb()
       .prepare('SELECT fips, verification_status, verification_source FROM landos_property_card WHERE id = ?')
       .get(propertyCardId) as { fips?: string | null; verification_status?: string | null; verification_source?: string | null } | undefined;
+    const officiallyVerified = row?.verification_status === 'verified_property'
+      && isOfficialPropertyVerificationSource(row?.verification_source);
     return {
       fips: typeof row?.fips === 'string' && row.fips.trim() ? row.fips.trim() : null,
-      officiallyVerified: row?.verification_status === 'verified_property'
-        && isOfficialPropertyVerificationSource(row?.verification_source),
+      officiallyVerified,
+      officialVerificationSource: officiallyVerified ? String(row?.verification_source ?? '').trim() || null : null,
     };
   } catch {
-    return { fips: null, officiallyVerified: false };
+    return { fips: null, officiallyVerified: false, officialVerificationSource: null };
   }
 }
 
@@ -332,6 +342,7 @@ export function resolveCanonicalSubjectState(dealCardId: number): CanonicalSubje
     // written is still an established subject. The reverse never holds.
     subjectResolved: view.confirmed || extras.officiallyVerified,
     officiallyVerified: extras.officiallyVerified,
+    officialVerificationSource: extras.officialVerificationSource,
     status: view.status,
     source: view.source,
     apn: view.apn,

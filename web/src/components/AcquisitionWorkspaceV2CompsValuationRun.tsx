@@ -11,7 +11,7 @@
 // place owns the mutation call.
 import { useState } from 'preact/hooks';
 
-import { apiPost } from '@/lib/api';
+import { apiPost, operatorErrorMessage } from '@/lib/api';
 import { useCanonicalParcelGate } from '@/lib/useCanonicalParcelGate';
 
 interface CompsValuationRunResult {
@@ -87,7 +87,7 @@ export function CompsValuationCapabilityRun({ dealId }: { dealId?: number }) {
       );
       setResult(response.result);
     } catch (caught) {
-      setError((caught as Error)?.message ?? 'Comps & Valuation could not run.');
+      setError(operatorErrorMessage(caught));
     } finally {
       setRunning(false);
     }

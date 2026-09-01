@@ -883,6 +883,15 @@ export function interpretDealEvidence(input: {
   const unreadable: DealEvidenceInterpretation['unreadable'] = [];
   const pageParcel = new Map<number, { relationship: ClaimParcelRelationship; statedApn: string }>();
 
+  interface PendingPage {
+    artifact: RetainedEvidenceArtifact;
+    provenance: EvidenceClaimProvenance;
+    raw: Array<Omit<EvidenceClaim, 'relation' | 'reason' | 'parcelRelationship'>>;
+    relationship: ClaimParcelRelationship;
+    statedApn: string | null;
+  }
+  const pending: PendingPage[] = [];
+
   for (const artifact of input.artifacts) {
     const documentKind = kindOf.get(artifact.artifactId) ?? 'unknown';
     if (documentKind === 'unreadable') {
@@ -910,14 +919,44 @@ export function interpretDealEvidence(input: {
     const raw = claimsFromArtifact(artifact, provenance);
     const { relationship, statedApn } = classifyPageParcelRelationship(raw, input.state.apn);
     if (statedApn) pageParcel.set(artifact.artifactId, { relationship, statedApn });
+    pending.push({ artifact, provenance, raw, relationship, statedApn });
+  }
+
+  // A multi-page instrument states its parcel ONCE.
+  //
+  // A survey stamps the parcel number on its face sheet; page 2 carries the
+  // metes and bounds, the acreage and the flood zone and names no parcel at
+  // all. Classifying that page on its own made every fact it carries read as
+  // "a parcel other than the subject", which is the opposite of true — and it
+  // is how a survey's own acreage failed to reach the subject that survey
+  // describes. So a page that names NO parcel inherits the parcel its own
+  // document group named, and only when the group named exactly one. A bundle
+  // holding two different instruments inherits nothing and stays unresolved,
+  // because there is no single answer to inherit.
+  const statedByGroup = new Map<string, Set<string>>();
+  for (const page of pending) {
+    if (!page.statedApn) continue;
+    const key = page.provenance.groupLabel;
+    statedByGroup.set(key, (statedByGroup.get(key) ?? new Set()).add(normalizeApn(page.statedApn)));
+  }
+  for (const page of pending) {
+    if (page.statedApn) continue;
+    const stated = statedByGroup.get(page.provenance.groupLabel);
+    if (!stated || stated.size !== 1) continue;
+    const donor = pending.find((other) => other.statedApn && normalizeApn(other.statedApn) === [...stated][0]);
+    if (donor) page.relationship = donor.relationship;
+  }
+
+  for (const page of pending) {
     // Only the subject's own pages describe the subject's boundary. A related
     // parcel's legal description is retained on its own page and never folded
     // into the subject's frame — invariant 4, in the geometry.
-    if (relationship === 'subject' && (documentKind === 'survey' || documentKind === 'deed')) {
-      subjectSegments.push(...readBoundarySegments(artifact.exactText));
+    if (page.relationship === 'subject'
+        && (page.provenance.documentKind === 'survey' || page.provenance.documentKind === 'deed')) {
+      subjectSegments.push(...readBoundarySegments(page.artifact.exactText));
     }
-    for (const item of raw) {
-      claims.push(reconcileClaim(item, input.state, relationship));
+    for (const item of page.raw) {
+      claims.push(reconcileClaim(item, input.state, page.relationship));
     }
   }
 

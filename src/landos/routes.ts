@@ -576,6 +576,7 @@ import {
 import { loadSubjectListingDetail, reprojectSubjectListingDetail } from './subject-listing-store.js';
 import { resolveCanonicalIdentity, supersessionLabel } from './canonical-identity.js';
 import { canonicalSubjectProjection, isCurrentForSubject, resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
+import { readSubjectUnderstanding, runSubjectUnderstanding } from './subject-understanding-capability.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -2092,6 +2093,10 @@ export function registerLandosRoutes(app: Hono): void {
       autoLaunchDealIntelligenceForIntake({
         dealCardId: deal.id,
         opportunityId: opportunity.id,
+        // The fresh New Lead front door: deterministic resolution proposes a
+        // candidate, Subject Understanding reviews and accepts it, and only
+        // then do the parcel-dependent lanes release.
+        caller: 'new_lead',
         capabilities: dealIntelligenceCapabilities(deal.id, 'new_lead', 'reuse'),
         missionStore: missionGraphStore,
         snapshotStore: propertyIntelligenceStore,
@@ -5686,6 +5691,53 @@ export function registerLandosRoutes(app: Hono): void {
     }
   });
 
+  // Subject Understanding — the front door's own read.
+  //
+  // A GET never writes, so this returns the LIVE deterministic reading over
+  // whatever the lead currently carries, plus the retained reading and whether
+  // it still answers about the current subject. The bounded model-led loop runs
+  // only from the POST below.
+  app.get('/api/landos/deal-cards/:id/subject-understanding', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    try {
+      const subject = resolveCanonicalSubjectState(id);
+      // A page load is not a fresh subject decision: no model call, no
+      // promotion, no write. `planner: null` is what makes that structural.
+      const live = await runSubjectUnderstanding(id, { persist: false, promote: false, planner: null });
+      const retained = readSubjectUnderstanding(id);
+      return c.json({
+        subjectVersion: subject.subjectVersion,
+        understanding: live.result,
+        retained: retained
+          ? {
+              outcome: retained.outcome,
+              ranAgainstSubjectVersion: retained.ranAgainstSubjectVersion ?? null,
+              current: isCurrentForSubject(retained.ranAgainstSubjectVersion, subject.subjectVersion),
+            }
+          : null,
+      });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post('/api/landos/deal-cards/:id/subject-understanding/run', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
+    try {
+      const run = await runSubjectUnderstanding(id, { actor: 'operator:subject-understanding' });
+      return c.json({
+        subjectVersion: run.subjectVersion,
+        understanding: run.result,
+        persistence: run.persistence,
+        promotion: run.promotion,
+      });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
   app.get('/api/landos/deal-cards/:id/documents/uploads', (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
@@ -9128,6 +9180,32 @@ export function registerLandosRoutes(app: Hono): void {
     resolutionMode: 'reuse' | 'refresh' = 'reuse',
   ): DealIntelligenceCapabilities => ({
     collectors: propertyIntelligenceCollectors(dealCardId, resolutionCaller, resolutionMode),
+    // The New Lead front door, as a mission lane. It runs the production
+    // planner and promotes through the existing accepted-subject writer; the
+    // graph decides what may run behind it.
+    subjectUnderstanding: async (id: number) => {
+      const run = await runSubjectUnderstanding(id, { actor: `mission:subject-understanding:${resolutionCaller}` });
+      // Acceptance is exactly the event the coverage cycle already reacts to —
+      // the same loop an evidence upload triggers. Detached, so the lane is not
+      // held open by recovery, and failures never fail the acceptance.
+      if (run.promotion?.status === 'promoted') {
+        const deal = getDealCard(id);
+        if (deal && process.env.NODE_ENV !== 'test') {
+          void runDealCoverageCycle(id, deal.entity as CapabilityEntity, 'automatic')
+            .catch((error) => logger.warn(
+              { dealCardId: id, err: (error as Error).message },
+              'subject_promotion_coverage_cycle_failed',
+            ));
+        }
+      }
+      return {
+        outcome: run.result.outcome,
+        promotion: run.promotion ? { status: run.promotion.status, reason: run.promotion.reason } : null,
+        subjectVersion: run.subjectVersion,
+        question: run.result.question ? { question: run.result.question.question } : null,
+        reasoningTurns: run.result.audit.reasoning.turns,
+      };
+    },
     // New Lead's valuation lane executes inside the Comps & Valuation
     // Capability. The computation it runs is the mission's own shared one.
     compsValuation: (input) => throughMissionValuation(dealCardId, resolutionCaller, input),

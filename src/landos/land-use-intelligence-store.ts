@@ -23,6 +23,7 @@ import {
   appendDerivedEvidence,
   readDerivedEvidence,
   readDerivedSnapshot,
+  readDerivedSnapshotForParcel,
   readDerivedSnapshotHistory,
   writeDerivedSnapshot,
   type DerivedEvidenceInput,
@@ -366,24 +367,53 @@ export function persistZoningStandards(input: {
 
 // ── Reading it back ─────────────────────────────────────────────────────────
 
+/**
+ * A land-use determination speaks for the parcel it was made about.
+ *
+ * These five drive current zoning, controlling authority, subdivision rules and
+ * the by-right conclusion built on them — and `projectZoningSubdivisionWithCurrentTruth`
+ * will even delete the limitation lines when one of them claims a district. So
+ * a determination made about a DIFFERENT parcel must not reach a current
+ * surface. A promotion or a punctuation change is not a different parcel and
+ * never withholds anything; `readDerivedSnapshotForParcel` owns that judgement.
+ *
+ * The stored row is untouched and still reachable through `readRetainedLandUse`.
+ */
+function currentForParcel<T>(dealCardId: number, snapshotType: string): T | null {
+  const row = readDerivedSnapshotForParcel<T>(dealCardId, snapshotType);
+  return row && row.correlation === 'equivalent' ? row.value : null;
+}
+
 export function readControllingAuthority(dealCardId: number): ControllingLandUseAuthority | null {
-  return readDerivedSnapshot<ControllingLandUseAuthority>(dealCardId, LAND_USE_AUTHORITY_SNAPSHOT_TYPE);
+  return currentForParcel<ControllingLandUseAuthority>(dealCardId, LAND_USE_AUTHORITY_SNAPSHOT_TYPE);
 }
 
 export function readCurrentZoning(dealCardId: number): CurrentZoningDetermination | null {
-  return readDerivedSnapshot<CurrentZoningDetermination>(dealCardId, CURRENT_ZONING_SNAPSHOT_TYPE);
+  return currentForParcel<CurrentZoningDetermination>(dealCardId, CURRENT_ZONING_SNAPSHOT_TYPE);
 }
 
 export function readZoningStandards(dealCardId: number): ZoningStandardsResult | null {
-  return readDerivedSnapshot<ZoningStandardsResult>(dealCardId, ZONING_STANDARDS_SNAPSHOT_TYPE);
+  return currentForParcel<ZoningStandardsResult>(dealCardId, ZONING_STANDARDS_SNAPSHOT_TYPE);
 }
 
 export function readSubdivisionRegulations(dealCardId: number): SubdivisionRegulations | null {
-  return readDerivedSnapshot<SubdivisionRegulations>(dealCardId, SUBDIVISION_REGULATIONS_SNAPSHOT_TYPE);
+  return currentForParcel<SubdivisionRegulations>(dealCardId, SUBDIVISION_REGULATIONS_SNAPSHOT_TYPE);
 }
 
 export function readPropertySubdivisionRead(dealCardId: number): PropertySubdivisionRead | null {
-  return readDerivedSnapshot<PropertySubdivisionRead>(dealCardId, SUBDIVISION_PROPERTY_READ_SNAPSHOT_TYPE);
+  return currentForParcel<PropertySubdivisionRead>(dealCardId, SUBDIVISION_PROPERTY_READ_SNAPSHOT_TYPE);
+}
+
+/** The retained read whatever parcel it answered about. History surfaces only;
+ *  never a current statement, blocker, valuation or Operator Action input. */
+export function readRetainedLandUse<T>(dealCardId: number, snapshotType: string): T | null {
+  return readDerivedSnapshot<T>(dealCardId, snapshotType);
+}
+
+/** The retained read ONLY when it answered about a different parcel. */
+export function readPriorParcelLandUse<T>(dealCardId: number, snapshotType: string): T | null {
+  const row = readDerivedSnapshotForParcel<T>(dealCardId, snapshotType);
+  return row && row.correlation !== 'equivalent' ? row.value : null;
 }
 
 export function readCurrentZoningHistory(dealCardId: number): CurrentZoningDetermination[] {

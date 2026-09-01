@@ -27,6 +27,13 @@ vi.mock('./derived-intelligence-store.js', () => ({
     return { snapshotId: writes.length, reused: false, propertyIdentityVersionId: 1, skippedReason: null };
   },
   readDerivedSnapshot: (dealCardId: number, snapshotType: string) => current.get(`${dealCardId}:${snapshotType}`) ?? null,
+  // Parcel correlation is exercised by `parcel-correlation.test.ts`; these
+  // fixtures are about the stack, so a retained read is the current parcel's.
+  readDerivedSnapshotForParcel: (dealCardId: number, snapshotType: string) => {
+    const value = current.get(`${dealCardId}:${snapshotType}`);
+    return value === undefined ? null : { value, correlation: 'equivalent' };
+  },
+  correlateIdentityVersions: () => 'equivalent',
   readDerivedSnapshotHistory: () => [],
 }));
 

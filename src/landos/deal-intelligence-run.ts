@@ -76,6 +76,8 @@ export interface BrowserCleanupResult {
 export interface LaunchDealIntelligenceOptions {
   dealCardId: number;
   trigger?: string;
+  /** Which entry point launched this. Only `new_lead` gets the subject gate. */
+  caller?: string | null;
   capabilities: DealIntelligenceCapabilities;
   missionStore?: MissionGraphStore;
   snapshotStore?: PropertyIntelligenceStore;
@@ -238,7 +240,12 @@ export function launchDealIntelligenceMission(options: LaunchDealIntelligenceOpt
       const subjectState = resolveCanonicalSubjectState(dealCardId);
       subjectEvaluator = (clauses) => unmetPrerequisites(subjectState, clauses);
     } catch { subjectEvaluator = undefined; }
-    const definition = dealIntelligenceMissionDefinition(options.capabilities, { unmetPrerequisitesFor: subjectEvaluator });
+    const definition = dealIntelligenceMissionDefinition(options.capabilities, {
+      unmetPrerequisitesFor: subjectEvaluator,
+      // The fresh New Lead front door is the only caller that gets the
+      // subject-understanding gate; everyone else keeps today's child list.
+      caller: options.capabilities.subjectUnderstanding ? options.caller ?? null : null,
+    });
     launched = runInBrowserWorkflowScope(browserScope, () => launchFanOutMission({
         definition,
         scopeId: dealCardId,

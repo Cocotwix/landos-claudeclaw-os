@@ -22,13 +22,16 @@ import {
   researchItemPrerequisites,
 } from './research-readiness.js';
 import { planResearchCoverage } from './research-coverage-cycle.js';
-import { dealIntelligenceChildrenForSubject, DEAL_INTELLIGENCE_CHILDREN } from './deal-intelligence-mission.js';
+import { dealIntelligenceChildrenForSubject, DEAL_INTELLIGENCE_CHILDREN,
+  dealIntelligenceChildrenForCaller,
+} from './deal-intelligence-mission.js';
 import { reconcileResearchReadiness, isReconcileError } from './research-readiness-reconcile.js';
 import { _initTestLandosDb, getLandosDb } from './db.js';
 
 function subjectWith(overrides: Partial<CanonicalSubjectState>): CanonicalSubjectState {
   return {
     dealCardId: 1, propertyCardId: null, subjectResolved: false, officiallyVerified: false,
+    officialVerificationSource: null,
     status: 'unresolved', source: 'none', apn: null, apnNormalized: null, address: null,
     city: null, county: null, state: null, fips: null, zip: null, owner: null,
     subjectVersion: 'unresolved:1:unresolved', subjectVersionId: null,
@@ -154,8 +157,12 @@ describe('mission graph — county-known market lane is not held behind parcel r
     expect(children.find((c) => c.key === 'market_intelligence')!.dependsOn).toContain('parcel_identity');
   });
 
+  // Without an evaluator the accelerator changes nothing. The caller shaping is
+  // a separate axis: only the fresh New Lead front door carries the
+  // subject-understanding lane, so the conservative list for every other caller
+  // is `dealIntelligenceChildrenForCaller(null)`.
   it('without an evaluator the definition is byte-for-byte the conservative one', () => {
-    expect(dealIntelligenceChildrenForSubject(null)).toBe(DEAL_INTELLIGENCE_CHILDREN);
+    expect(dealIntelligenceChildrenForSubject(null)).toEqual(dealIntelligenceChildrenForCaller(null));
   });
 });
 

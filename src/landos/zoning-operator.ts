@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { getLandosDb, landosAudit } from './db.js';
+import { correlateIdentityVersions } from './derived-intelligence-store.js';
 import {
   createPropertyIdentityVersion,
   readCurrentPropertyIdentity,
@@ -1096,11 +1097,20 @@ export function getZoningReadModel(dealCardId: number): ZoningReadModel | null {
   const db = getLandosDb();
   const identity = readCurrentPropertyIdentity(dealCardId);
   if (!identity) return null;
-  const snapshot = db.prepare(`
+  // The retained read is current only when it is PROVEN to be about the parcel
+  // this Deal Card now holds. A candidate promoted to confirmed and an APN
+  // punctuation change are the same parcel and keep it; a different parcel, or
+  // identity evidence too thin to prove either way, withholds it from this
+  // current read model. The row is untouched and stays queryable as history.
+  const snapshotRow = db.prepare(`
     SELECT * FROM landos_deal_intelligence_snapshot
     WHERE deal_card_id=? AND snapshot_type='${ZONING_SNAPSHOT_TYPE}' AND status='current'
     LIMIT 1
   `).get(dealCardId) as SnapshotRow | undefined;
+  const snapshot = snapshotRow
+    && correlateIdentityVersions(snapshotRow.property_identity_version_id ?? null, dealCardId) === 'equivalent'
+    ? snapshotRow
+    : undefined;
   const domainList = ZONING_DOMAINS.map((domain) => `'${domain}'`).join(',');
   const evidenceCount = (db.prepare(`
     SELECT COUNT(*) AS count FROM landos_property_evidence_item

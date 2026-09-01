@@ -64,6 +64,12 @@ import {
   type PropertyResolutionRuntime,
 } from './property-resolution-capability.js';
 import {
+  SUBJECT_UNDERSTANDING_CAPABILITY,
+  SUBJECT_UNDERSTANDING_CAPABILITY_ID,
+  SUBJECT_UNDERSTANDING_SKILL,
+  type SubjectUnderstandingRuntime,
+} from './subject-understanding-capability.js';
+import {
   UTILITY_SERVICE_SCREEN_CAPABILITY,
   UTILITY_SERVICE_SCREEN_CAPABILITY_ID,
   type UtilityServiceScreenRuntime,
@@ -79,10 +85,17 @@ export type RuntimeCapabilityRuntime = PropertyResolutionRuntime & AssessorTaxRu
   & CompsValuationRuntime & ZoningSubdivisionRuntime & PropertyDevelopmentHistoryRuntime
   & UtilityServiceScreenRuntime & AcquisitionIntelligenceRuntimeDeps
   & LandPortalPropertyCharacteristicsRuntime & LandPortalVisualCaptureRuntime & LandPortalCompSearchRuntime
-  & MarketGeographyRuntime;
+  & MarketGeographyRuntime & SubjectUnderstandingRuntime;
 
 const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
   [PROPERTY_RESOLUTION_CAPABILITY_ID, PROPERTY_RESOLUTION_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
+  // The front door, sitting BEFORE resolution: it decides what acquisition
+  // interest the lead is about, and property-resolution then establishes the
+  // parcel it names. Registration order is presentation, not precedence.
+  [
+    SUBJECT_UNDERSTANDING_CAPABILITY_ID,
+    SUBJECT_UNDERSTANDING_CAPABILITY as unknown as LandosCapability<JsonObject, never>,
+  ],
   [ASSESSOR_TAX_CAPABILITY_ID, ASSESSOR_TAX_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   [LANDPORTAL_RESEARCH_CAPABILITY_ID, LANDPORTAL_RESEARCH_CAPABILITY as unknown as LandosCapability<JsonObject, never>],
   // The LandPortal three-tool split: property characteristics, visual capture
@@ -147,6 +160,8 @@ const CAPABILITIES = new Map<string, LandosCapability<JsonObject, never>>([
 // is the capability that ESTABLISHES the working subject from raw input.
 const CAPABILITY_PREREQUISITES: Record<string, CapabilityPrerequisiteClause[]> = {
   [PROPERTY_RESOLUTION_CAPABILITY_ID]: [],
+  // Nothing: it reads whatever evidence the lead carries, including none.
+  [SUBJECT_UNDERSTANDING_CAPABILITY_ID]: [],
   [ASSESSOR_TAX_CAPABILITY_ID]: ['parcel'],
   [LANDPORTAL_RESEARCH_CAPABILITY_ID]: ['parcel'],
   [LANDPORTAL_PROPERTY_CHARACTERISTICS_CAPABILITY_ID]: ['parcel'],
@@ -175,6 +190,12 @@ export function capabilityPrerequisites(capabilityId: string): CapabilityPrerequ
 // caller already reads. A capability with no entry is not operator-facing.
 const PROPERTY_INPUT_HINT = 'An address, APN, owner + county, LandPortal URL, or an existing Deal.';
 const CAPABILITY_OPERATOR_MANIFEST: Record<string, CapabilityOperatorManifest> = {
+  [SUBJECT_UNDERSTANDING_CAPABILITY_ID]: {
+    manualInvocation: true, runsWithoutDeal: false, writesAuthoritativeEvidence: false,
+    inputHint: 'Runs from a Deal Card over whatever the lead already carries.',
+    skill: SUBJECT_UNDERSTANDING_SKILL,
+    recovery: 'A bounded, audited evidence loop with a small action limit; a spent budget still returns a subject, a candidate set, or one targeted question.',
+  },
   [PROPERTY_RESOLUTION_CAPABILITY_ID]: {
     manualInvocation: true, runsWithoutDeal: true, writesAuthoritativeEvidence: false,
     inputHint: 'Any raw property reference — address, APN, owner + county, coordinates, or a messy description.',

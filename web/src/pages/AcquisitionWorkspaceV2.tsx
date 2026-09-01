@@ -38,6 +38,7 @@ import {
   type VisualBuyerNarrativeView, type ResearchStatusView, type ParcelFactSheetView, type TaxStatusView,
 } from '../components/AcquisitionWorkspaceV2PropertyIntelligence';
 import { ParcelScopePanel, type ParcelScopeView } from '@/components/DealCard';
+import { SubjectUnderstandingPanel, type SubjectUnderstandingView } from '@/components/SubjectUnderstanding';
 import {
   CompsValuationSection, type CompsValuationViewData,
 } from '../components/AcquisitionWorkspaceV2CompsValuation';
@@ -428,6 +429,9 @@ export function AcquisitionWorkspaceV2() {
   // no model, and re-reads no file — which is why a hard refresh reproduces the
   // same grouping, claims and provenance rather than losing them.
   const [evidenceRead, setEvidenceRead] = useState<EvidenceInterpretationView | null>(null);
+  const [subjectUnderstanding, setSubjectUnderstanding] = useState<SubjectUnderstandingView | null>(null);
+  const [subjectUnderstandingRunning, setSubjectUnderstandingRunning] = useState(false);
+  const [subjectUnderstandingError, setSubjectUnderstandingError] = useState<string | null>(null);
   // The reconciled acreage as it arrives on the FIRST read, before the deeper
   // evidence projection lands. Same server-side answer, same shape; holding it
   // separately is what keeps the header from painting the GIS figure first.
@@ -507,6 +511,24 @@ export function AcquisitionWorkspaceV2() {
     return () => { dead = true; };
   }, [dealId]);
 
+  const runSubjectUnderstanding = async () => {
+    if (dealId == null) return;
+    setSubjectUnderstandingRunning(true);
+    setSubjectUnderstandingError(null);
+    try {
+      const resp = await apiPost<{ understanding?: SubjectUnderstandingView; error?: string }>(
+        `/api/landos/deal-cards/${dealId}/subject-understanding/run`,
+        {},
+      );
+      if (resp?.understanding) setSubjectUnderstanding(resp.understanding);
+      if (resp?.error) setSubjectUnderstandingError(resp.error);
+    } catch (e) {
+      setSubjectUnderstandingError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubjectUnderstandingRunning(false);
+    }
+  };
+
   useEffect(() => {
     if (dealId == null) return;
     let dead = false;
@@ -545,7 +567,7 @@ export function AcquisitionWorkspaceV2() {
         // first paint instead of keeping the entire workspace behind their
         // expensive staleness/read-model rebuilds.
         setLoading(false);
-        const [rr, ai, up, ev] = await Promise.all([
+        const [rr, ai, up, ev, su] = await Promise.all([
           apiGet<{ manifest?: ResearchReadinessManifestView }>(
             `/api/landos/deal-cards/${dealId}/research-readiness`,
           ).catch(() => null),
@@ -556,10 +578,16 @@ export function AcquisitionWorkspaceV2() {
           apiGet<{ interpretation?: EvidenceInterpretationView }>(
             `/api/landos/deal-cards/${dealId}/evidence/interpretation`,
           ).catch(() => null),
+          // The front door's own read. SELECT-only: it runs no reasoning turn
+          // and no evidence check, so opening the card costs nothing.
+          apiGet<{ understanding?: SubjectUnderstandingView }>(
+            `/api/landos/deal-cards/${dealId}/subject-understanding`,
+          ).catch(() => null),
         ]);
         if (dead) return;
         setDealUploads((up?.uploads ?? []) as typeof dealUploads);
         setEvidenceRead(ev?.interpretation ?? null);
+        setSubjectUnderstanding(su?.understanding ?? null);
         setReadiness(rr?.manifest ?? null);
         setAiRead(ai?.products?.deal ?? null);
         setPersistedDealStrategies(ai?.persistedDealStrategies ?? null);
@@ -1219,6 +1247,15 @@ export function AcquisitionWorkspaceV2() {
           <main class="awv2-main awv2-property-market" data-testid="property-page">
             {/* Which parcel this Deal is actually buying, and which retained
                 parcels belong to the sellers or to somebody else entirely. */}
+            {/* Before "which parcel", the prior question: what acquisition
+                interest is this lead about at all? A supported subject, a
+                ranked candidate set, or one precise question — never silence. */}
+            <SubjectUnderstandingPanel
+              view={subjectUnderstanding}
+              running={subjectUnderstandingRunning}
+              error={subjectUnderstandingError}
+              onRun={runSubjectUnderstanding}
+            />
             <ParcelScopePanel scope={deal?.parcelScope ?? null} />
             {/* The Property page owns the full Property Intelligence specialist
                 read, including the complete persisted expert review. Rendering

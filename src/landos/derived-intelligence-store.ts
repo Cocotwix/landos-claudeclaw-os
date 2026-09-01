@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto';
 import { getLandosDb, landosAudit } from './db.js';
 import { IntelligenceStackRunStore } from './intelligence-stack-run-store.js';
 import { readCurrentPropertyIdentity } from './property-summary-slice.js';
+import { apnIdentifiersCorroborate } from './apn-identity.js';
 
 export const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 export const stableJson = (value: unknown): string => JSON.stringify(value ?? null);
@@ -305,6 +306,150 @@ export function readDerivedSnapshot<T>(dealCardId: number, snapshotType: string)
   `).get(dealCardId, snapshotType) as { summary_json: string } | undefined;
   if (!row) return null;
   try { return JSON.parse(row.summary_json) as T; } catch { return null; }
+}
+
+/**
+ * Is a derived read still about the parcel this Deal Card is now about?
+ *
+ * Three honest answers, because there are three real situations:
+ *
+ *   equivalent    — the stored and accepted identities are AFFIRMATIVELY proven
+ *                   to be one parcel. The read may stand as current.
+ *   different     — they affirmatively name different parcels. Withheld from
+ *                   every current surface, preserved as history.
+ *   uncorrelated  — LandOS cannot prove either way from what it retained. Also
+ *                   withheld from current surfaces: parcel-specific zoning,
+ *                   subdivision, backstory and record-risk conclusions may only
+ *                   be presented as current truth when the parcel is PROVEN, and
+ *                   the Stage 1 rule that an absent correlation is uncorrelated
+ *                   rather than current is the same rule.
+ *
+ * Equivalence is never inferred from identity-version row equality: a version
+ * bumps for a candidate→confirmed promotion and for APN punctuation
+ * normalization, neither of which moves the subject.
+ *
+ * Jurisdiction is established from the strongest retained evidence available,
+ * and an APN is never corroborated across a conflicting one.
+ */
+export type ParcelCorrelation = 'equivalent' | 'different' | 'uncorrelated';
+
+interface IdentityFacts {
+  apn: string | null;
+  lpPropertyId: string | null;
+  fips: string | null;
+  county: string | null;
+  state: string | null;
+  propertyCardId: number | null;
+}
+
+const clean = (value: unknown): string | null => {
+  const text = String(value ?? '').trim();
+  return text && text !== '-' ? text : null;
+};
+const lower = (value: string | null): string | null => (value == null ? null : value.toLowerCase());
+const countyKey = (value: string | null): string | null =>
+  lower(value)?.replace(/\s+county$/, '').replace(/\s+/g, ' ').trim() || null;
+
+/** Identity facts for one version row, enriched from its property card — the
+ *  version table carries no FIPS or provider id, and both are stronger
+ *  jurisdiction evidence than a county name. */
+function identityFactsForVersion(versionId: number): IdentityFacts | null {
+  const row = getLandosDb().prepare(`
+    SELECT v.apn, v.county, v.state, v.property_card_id, pc.fips, pc.lp_property_id
+    FROM landos_property_identity_version v
+    LEFT JOIN landos_property_card pc ON pc.id = v.property_card_id
+    WHERE v.id = ?
+  `).get(versionId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    apn: clean(row.apn),
+    lpPropertyId: clean(row.lp_property_id),
+    fips: clean(row.fips),
+    county: clean(row.county),
+    state: clean(row.state),
+    propertyCardId: Number.isInteger(Number(row.property_card_id)) ? Number(row.property_card_id) : null,
+  };
+}
+
+/**
+ * Do two identities describe the same jurisdiction?
+ *
+ * `true` / `false` are affirmative; `null` means the retained evidence does not
+ * establish it either way.
+ *
+ * The version row's OWN county and state lead, because they are what that
+ * version actually recorded. County FIPS is the stronger identifier in general,
+ * but it lives on the shared property card rather than on the version, so for
+ * two versions of one Deal Card it is the SAME value on both sides and can
+ * neither confirm nor deny that the subject moved. It is therefore used only
+ * where it is genuinely per-side evidence — when the two versions point at
+ * different property cards — and otherwise as a fallback when a version states
+ * no county or state of its own.
+ */
+function sameJurisdiction(a: IdentityFacts, b: IdentityFacts): boolean | null {
+  const aState = lower(a.state);
+  const bState = lower(b.state);
+  const aCounty = countyKey(a.county);
+  const bCounty = countyKey(b.county);
+  if (aState && bState && aCounty && bCounty) return aState === bState && aCounty === bCounty;
+  if (aState && bState && aState !== bState) return false;
+  // A version that recorded no jurisdiction of its own: fall back to FIPS,
+  // which is only informative when the two sides carry different cards.
+  if (a.fips && b.fips && a.propertyCardId !== b.propertyCardId) return a.fips === b.fips;
+  return null;
+}
+
+/** Correlate the identity a derived read answered about against the accepted one. */
+export function correlateIdentityVersions(
+  wroteAgainstVersionId: number | null,
+  dealCardId: number,
+): ParcelCorrelation {
+  // An absent correlation stamp is uncorrelated, never current.
+  if (wroteAgainstVersionId == null) return 'uncorrelated';
+  const current = readCurrentPropertyIdentity(dealCardId);
+  if (!current) return 'uncorrelated';
+  if (wroteAgainstVersionId === current.id) return 'equivalent';
+
+  const wrote = identityFactsForVersion(wroteAgainstVersionId);
+  const accepted = identityFactsForVersion(current.id);
+  // The historical identity row is gone: nothing left to prove equivalence with.
+  if (!wrote || !accepted) return 'uncorrelated';
+
+  const jurisdiction = sameJurisdiction(wrote, accepted);
+  if (jurisdiction === false) return 'different';
+
+  // Strongest identifier first: a provider parcel id is exact, so it decides
+  // on its own once jurisdiction is not in conflict.
+  if (wrote.lpPropertyId && accepted.lpPropertyId) {
+    if (wrote.lpPropertyId !== accepted.lpPropertyId) return 'different';
+    return jurisdiction === true ? 'equivalent' : 'uncorrelated';
+  }
+
+  if (!wrote.apn || !accepted.apn) return 'uncorrelated';
+  if (!apnIdentifiersCorroborate(wrote.apn, accepted.apn)) return 'different';
+  // Corroborating identifiers still need their jurisdiction proven: the same
+  // parcel number exists in many counties.
+  return jurisdiction === true ? 'equivalent' : 'uncorrelated';
+}
+
+/**
+ * The current derived read of this type with its parcel correlation.
+ *
+ * Returns null when no current read of this type exists at all.
+ */
+export function readDerivedSnapshotForParcel<T>(
+  dealCardId: number,
+  snapshotType: string,
+): { value: T; correlation: ParcelCorrelation } | null {
+  const row = getLandosDb().prepare(`
+    SELECT summary_json, property_identity_version_id FROM landos_deal_intelligence_snapshot
+    WHERE deal_card_id=? AND snapshot_type=? AND status='current' LIMIT 1
+  `).get(dealCardId, snapshotType) as
+    { summary_json: string; property_identity_version_id: number | null } | undefined;
+  if (!row) return null;
+  let value: T;
+  try { value = JSON.parse(row.summary_json) as T; } catch { return null; }
+  return { value, correlation: correlateIdentityVersions(row.property_identity_version_id, dealCardId) };
 }
 
 /** Superseded reads of this type, oldest first. Retained as history. */

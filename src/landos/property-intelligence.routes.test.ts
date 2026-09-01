@@ -13,7 +13,9 @@ import { _initTestLandosDb } from './db.js';
 import { createDealCard } from './deal-card.js';
 import { PropertyIntelligenceStore, resetPropertyIntelligenceStoreCache } from './property-intelligence-store.js';
 import { initialSpecialistRecords, type PropertyIntelligenceSnapshot } from './property-intelligence-snapshot.js';
-import { DEAL_INTELLIGENCE_CHILDREN, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE } from './deal-intelligence-mission.js';
+import { DEAL_INTELLIGENCE_CHILDREN, DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE,
+  dealIntelligenceChildrenForCaller,
+} from './deal-intelligence-mission.js';
 import { MissionGraphStore } from './mission-graph-store.js';
 
 const TOKEN = 'test-contract-token';
@@ -211,13 +213,13 @@ describe('Property Intelligence API', () => {
     expect(body.launch.alreadyRunning).toBe(false);
     // One id for the parent mission AND the versioned snapshot run.
     expect(body.launch.missionId).toBe(body.launch.runId);
-    expect(body.launch.childCount).toBe(DEAL_INTELLIGENCE_CHILDREN.length);
+    expect(body.launch.childCount).toBe(dealIntelligenceChildrenForCaller(null).length);
 
     const store = new MissionGraphStore();
     const mission = store.latestMission(DEAL_INTELLIGENCE_KIND, DEAL_INTELLIGENCE_SCOPE, deal.id)!;
     expect(mission.missionId).toBe(body.launch.missionId);
     const children = store.listChildren(mission.missionId);
-    expect(children.map((child) => child.key)).toEqual(DEAL_INTELLIGENCE_CHILDREN.map((spec) => spec.key));
+    expect(children.map((child) => child.key)).toEqual(dealIntelligenceChildrenForCaller(null).map((spec) => spec.key));
     // Declared identity is written WITH the child row, before the lane runs.
     const strategy = children.find((child) => child.key === 'strategy')!;
     expect(strategy.identity.agentName).toBeTruthy();

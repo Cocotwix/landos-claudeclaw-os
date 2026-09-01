@@ -209,6 +209,15 @@ function publishResolvedSubjectIdentity(
   propertyCardId: number | null,
   universal: UniversalResolutionResult,
   invocationId: string,
+  /**
+   * The fresh New Lead front door persists a CANDIDATE, not an accepted
+   * subject. Resolution still does all of its work and still hands its result
+   * back; what changes is that "we resolved something" stops being the same
+   * event as "this is the subject". Subject Understanding reviews the
+   * candidate and promotes it through the existing accepted-subject writer.
+   * Every other caller is unchanged and still writes `confirmed` here.
+   */
+  state: 'candidate' | 'confirmed' = 'confirmed',
 ): void {
   const subject = universal.subject;
   if (!hasStrongParcelIdentity({
@@ -224,7 +233,7 @@ function publishResolvedSubjectIdentity(
   if (universal.winner) refs.add(`resolution lane: ${universal.winner}`);
   writeParcelIdentity(dealCardId, {
     subjectCardId: propertyCardId,
-    state: 'confirmed',
+    state,
     basis: universal.discoveryBasis
       || 'Property Resolution established this subject from a parcel-level identifier and its jurisdiction.',
     confidence: universal.identityState === 'confirmed' ? 0.95 : 0.8,
@@ -327,7 +336,13 @@ export const PROPERTY_RESOLUTION_CAPABILITY: LandosCapability<PropertyResolution
 
     const subjectResolution = statusOf(universal);
     if (subjectResolution === 'RESOLVED' && dealCardId) {
-      publishResolvedSubjectIdentity(dealCardId, propertyCardId ?? null, universal, environment.invocationId);
+      publishResolvedSubjectIdentity(
+        dealCardId,
+        propertyCardId ?? null,
+        universal,
+        environment.invocationId,
+        request.caller.type === 'new_lead' ? 'candidate' : 'confirmed',
+      );
     }
     const existingPropertyId = request.subject.kind === 'raw_property'
       ? request.subject.target?.propertyCardId ?? resolveExistingProperty(universal.subject, request.subject.entity)
