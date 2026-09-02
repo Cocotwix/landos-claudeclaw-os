@@ -591,8 +591,16 @@ import {
   readDealBrainDecision,
   readDealBrainDecisionHistory,
   readSellerDiscovery,
+  type FreshDevelopmentPath,
   type FreshStories,
 } from './deal-brain-decision.js';
+import {
+  developmentPathStatus,
+  ensureDevelopmentPath,
+  listDealsAwaitingDevelopmentPath,
+  readDevelopmentPath,
+  readDevelopmentPathHistory,
+} from './development-path-lifecycle.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -10925,6 +10933,8 @@ export function registerLandosRoutes(app: Hono): void {
           // with their parcel correlation, and nothing produced on a read.
           const decision = readDealBrainDecision(id);
           const sellerDiscovery = readSellerDiscovery(id);
+          // Stage 5: the Development Path, SELECTed with its parcel correlation.
+          const developmentPath = readDevelopmentPath(id);
           // One status per Stage 3 artifact, from the same retained rows and
           // the same mapping the current decision recorded as its inputs, so
           // the Overview cards and the Deal Brain cannot disagree.
@@ -10937,6 +10947,11 @@ export function registerLandosRoutes(app: Hono): void {
           return {
             stage3Status,
             sellerReadStatus,
+            developmentPathStatus: developmentPathStatus(developmentPath, { dealCardId: id, consumedSnapshotId: consumed?.developmentPathSnapshotId ?? null, subjectVersion: consumed?.subjectVersion ?? null }),
+            developmentPath: developmentPath
+              ? { ...developmentPath.value, correlation: developmentPath.correlation, retainedAt: developmentPath.retainedAt, snapshotId: developmentPath.snapshotId }
+              : null,
+            developmentPathHistory: readDevelopmentPathHistory(id, 6),
             propertyStory: property
               ? { ...property.value, correlation: property.correlation, retainedAt: property.retainedAt, snapshotId: property.snapshotId }
               : null,
@@ -11293,6 +11308,13 @@ export function registerLandosRoutes(app: Hono): void {
       );
       return null;
     }
+    // ── Stage 5: the Development Path over the settled Property Story ───
+    // The local jurisdiction's rules are applied the moment the story settles,
+    // ahead of the decision, so the Deal Brain consumes the path just formed.
+    // Its own material gate decides whether anything is written.
+    const developmentPath = stories.property
+      ? produceDevelopmentPath(dealCardId, actor, runId, { property: stories.property, propertySnapshotId: stories.persistence.property.snapshotId })
+      : null;
     // ── Stage 4: the decision above the two readings ────────────────────
     // The moment both stories have settled is the moment a posture can be
     // formed on them, so the Deal Brain runs behind the same trigger with the
@@ -11304,9 +11326,52 @@ export function registerLandosRoutes(app: Hono): void {
         market: stories.market,
         propertySnapshotId: stories.persistence.property.snapshotId,
         marketSnapshotId: stories.persistence.market.snapshotId,
-      });
+      }, developmentPath);
     }
     return stories;
+  };
+
+  /**
+   * Form the Development Path (Stage 5).
+   *
+   * WRITES, behind a material gate. Reached from the Stage 3 completion
+   * boundary above, from a land-use capability rerun, and once on start for
+   * settled records that hold none. A workspace read never calls it. Pure
+   * over the retained land-use products, the Property Story and the accepted
+   * subject; the seam dedupes on the input hash; superseded only when a
+   * material dimension moved. Never throws into a caller.
+   */
+  const produceDevelopmentPath = (
+    dealCardId: number,
+    cause: string,
+    runId: string | null = null,
+    propertyStory: { property: NonNullable<ReturnType<typeof ensureResearchStableIntelligence>['property']>; propertySnapshotId: number | null } | null = null,
+  ): FreshDevelopmentPath | null => {
+    try {
+      const result = ensureDevelopmentPath(dealCardId, {
+        readPropertyFile: acquisitionPropertyFile,
+        propertyStory,
+        cause,
+        actor: cause,
+        runId,
+      });
+      logger.info({
+        dealCardId,
+        cause,
+        outcome: result.outcome,
+        reason: result.reason,
+        authority: result.developmentPath?.authority.zoning.name ?? null,
+        authorityConflict: !!result.developmentPath?.authority.conflict,
+        district: result.developmentPath?.zoning.districtCode ?? null,
+        paths: result.developmentPath?.paths.map((path) => `${path.kind}=${path.applicability}`) ?? [],
+        written: result.persistence.written,
+        changes: result.changes.map((change) => change.dimension),
+      }, 'development_path');
+      return result.developmentPath ? { developmentPath: result.developmentPath, snapshotId: result.persistence.snapshotId } : null;
+    } catch (error) {
+      logger.warn({ dealCardId, cause, err: (error as Error).message }, 'development_path_failed');
+      return null;
+    }
   };
 
   /**
@@ -11329,11 +11394,13 @@ export function registerLandosRoutes(app: Hono): void {
     cause: string,
     runId: string | null = null,
     stories: FreshStories | null = null,
+    developmentPath: FreshDevelopmentPath | null = null,
   ): ReturnType<typeof ensureDealBrainDecision> | null => {
     try {
       const result = ensureDealBrainDecision(dealCardId, {
         readPropertyFile: acquisitionPropertyFile,
         stories,
+        developmentPath,
         cause,
         actor: cause,
         runId,
@@ -11363,6 +11430,10 @@ export function registerLandosRoutes(app: Hono): void {
   // path; idempotent through the material gate.
   const reconcileSettledDecisions = setTimeout(() => {
     try {
+      // Stage 5 first, so a decision reconciled below consumes the path.
+      const awaitingPaths = listDealsAwaitingDevelopmentPath();
+      for (const dealCardId of awaitingPaths) produceDevelopmentPath(dealCardId, 'startup:settled_intelligence');
+      if (awaitingPaths.length) logger.info({ dealCardIds: awaitingPaths }, 'development_path_startup_reconcile');
       const awaiting = listDealsAwaitingDecision();
       for (const dealCardId of awaiting) produceDealBrainDecision(dealCardId, 'startup:settled_intelligence');
       if (awaiting.length) logger.info({ dealCardIds: awaiting }, 'deal_brain_decision_startup_reconcile');
@@ -12880,6 +12951,11 @@ export function registerLandosRoutes(app: Hono): void {
         parameters: { lane: body.research === false ? 'retained_rules' : 'research' },
         context: { surface: 'deal_card', dealCardId: id },
       }, { runLandUseResearch: landUseResearchLane });
+      // A land-use rerun is a real land-use event: the Development Path is
+      // re-applied over the products it just retained, and the Deal Brain
+      // consumes the result. Both stay behind their material gates.
+      const developmentPath = produceDevelopmentPath(id, 'capability:zoning-subdivision');
+      produceDealBrainDecision(id, 'capability:zoning-subdivision', null, null, developmentPath);
       return c.json({ capability: ZONING_SUBDIVISION_CAPABILITY_ID, propertyCardId: subject.cardId, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);

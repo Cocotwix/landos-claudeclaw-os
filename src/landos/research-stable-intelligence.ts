@@ -588,7 +588,10 @@ export interface RetainedReading<T> {
   snapshotId: number | null;
 }
 
-function readRetainedReading<T>(dealCardId: number, snapshotType: string): RetainedReading<T> | null {
+/** The current retained row of one derived product, with its parcel
+ *  correlation and row id. Shared by every stage that consumes a retained
+ *  reading, so each names the exact row it used. A SELECT. */
+export function readRetainedReading<T>(dealCardId: number, snapshotType: string): RetainedReading<T> | null {
   const read = readDerivedSnapshotForParcel<T>(dealCardId, snapshotType);
   if (!read) return null;
   const row = getLandosDb().prepare(`

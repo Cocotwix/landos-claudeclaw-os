@@ -2033,7 +2033,7 @@ export interface QuickFlipUnderwriting {
   confidenceNote: string;
 }
 
-const QUICK_FLIP = {
+export const QUICK_FLIP = {
   sellingCostPct: 0.07,
   sellerClosingPct: 0.02,
   carryingCostPct: 0.015,

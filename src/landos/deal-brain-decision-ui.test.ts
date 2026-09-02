@@ -141,10 +141,12 @@ describe('the trigger map', () => {
       'seller:stated_fact_recorded',
     ]);
     // The completion boundary, the start-up reconcile of already-settled
-    // intelligence, and the seven seller events: exactly nine call sites. The
-    // definition reads `= (` and does not match.
+    // intelligence, the seven seller events, and (Stage 5) the land-use
+    // capability rerun that re-applies the Development Path: exactly ten call
+    // sites. The definition reads `= (` and does not match.
     expect(ROUTES_SRC).toContain("produceDealBrainDecision(dealCardId, 'startup:settled_intelligence')");
-    expect([...ROUTES_SRC.matchAll(/produceDealBrainDecision\(/g)]).toHaveLength(9);
+    expect(ROUTES_SRC).toContain("produceDealBrainDecision(id, 'capability:zoning-subdivision', null, null, developmentPath)");
+    expect([...ROUTES_SRC.matchAll(/produceDealBrainDecision\(/g)]).toHaveLength(10);
   });
 
   it('answers the workspace read with SELECTs only', () => {

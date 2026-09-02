@@ -47,8 +47,9 @@ import {
   type SellerDiscoverySynthesis,
 } from './seller-discovery.js';
 import type { ClaimStanding, ClaimWeight } from './source-aware-synthesis.js';
+import type { PathKind, ZoningDevelopmentIntelligence } from './zoning-development-intelligence.js';
 
-export const DEAL_DECISION_SYNTHESIS_VERSION = '1.4.1';
+export const DEAL_DECISION_SYNTHESIS_VERSION = '1.5.2';
 export const DEAL_DECISION_SNAPSHOT = 'deal_decision_synthesis_v1';
 export const DEAL_DECISION_SKILL = 'landos-deal-decision-synthesis';
 
@@ -127,6 +128,94 @@ export interface ValueGuidance {
   askingPriceSource: string | null;
   askingVsGuidance: string | null;
   noPriceRationale: string | null;
+}
+
+// ── Stage 5: exit scenarios and the strategy comparison ─────────────────────
+
+export type ScenarioId =
+  | 'as_is_quick_flip'
+  | 'light_improvement'
+  | 'minor_subdivision'
+  | 'major_subdivision_entitlement'
+  | 'land_home_manufactured'
+  | 'novation_double_close'
+  | 'owner_finance';
+
+export type ScenarioStatus = 'viable' | 'conditional' | 'not_supported' | 'unknown';
+
+export interface CostLine {
+  key: string;
+  label: string;
+  /** Null when the input is missing; never a placeholder number. */
+  amount: number | null;
+  basis: string;
+  source: 'landos_operating_assumption' | 'retained_source' | 'operator_supplied' | 'market_record' | 'missing';
+}
+
+export interface ExitScenario {
+  id: ScenarioId;
+  label: string;
+  strategyId: StrategyId | null;
+  pathKind: PathKind | null;
+  /** What the scenario actually sells: the whole parcel, N lots, a home site. */
+  subjectScope: string;
+  status: ScenarioStatus;
+  confidence: ClaimWeight;
+  statusWhy: string;
+  grossExit: { amount: number; basis: string; asOf: string | null } | null;
+  purchasePriceCapacity: { low: number; high: number; lowPct: number; highPct: number; basis: string; confirmed: boolean } | null;
+  directCosts: CostLine[];
+  softCosts: CostLine[];
+  capitalAtRisk: { amount: number; basis: string } | null;
+  timeToExit: { statement: string; basis: string } | null;
+  keyApprovals: string[];
+  /** Only when gross exit, purchase price and every cost line are visible. */
+  returnMetrics: {
+    purchasePrice: number;
+    purchasePriceBasis: string;
+    totalCost: number;
+    netProfit: number;
+    returnOnCapital: number;
+    minimumNet: number;
+    meetsMinimumNet: boolean;
+    basis: string;
+  } | null;
+  missingInputs: string[];
+  complexity: 'low' | 'medium' | 'high';
+  buyerDemand: string;
+  risks: string[];
+  nextDecisiveAction: string;
+}
+
+export interface PriceSensitivityPoint {
+  label: 'low' | 'base' | 'high';
+  price: number;
+  /** Scenarios whose purchase-price capacity still covers this price. */
+  plausible: ScenarioId[];
+  /** Scenarios not ruled out, but with no capacity to test the price against. */
+  undetermined: ScenarioId[];
+  /** Scenarios whose capacity the price exceeds. */
+  exceeded: ScenarioId[];
+  statement: string;
+}
+
+export interface PriceSensitivity {
+  mode: 'no_price' | 'asking_price' | 'seller_range';
+  source: string | null;
+  points: PriceSensitivityPoint[];
+  statement: string;
+  missingInputs: string[];
+}
+
+export interface StrategyComparison {
+  developmentPathStatus: 'current' | 'pending';
+  scenarios: ExitScenario[];
+  priceSensitivity: PriceSensitivity;
+  ranking: Array<{ id: ScenarioId; rank: number; why: string }>;
+  criteria: string[];
+  statement: string;
+  /** Always true: LandOS never auto-selects the highest gross profit. */
+  notAutoSelected: true;
 }
 
 export interface NextAction {
@@ -257,6 +346,10 @@ export interface DealDecisionSynthesis {
   risks: RankedItem[];
   opportunities: RankedItem[];
   exitStrategies: ExitStrategyRead[];
+  /** Stage 5: every relevant exit scenario over the Development Path, the
+   *  seller's price as a sensitivity, and a transparent, non-selecting
+   *  comparison. */
+  strategyComparison: StrategyComparison;
   value: ValueGuidance;
   nextActions: { landos: NextAction; operator: NextAction };
   recommendation: { kind: RecommendationKind; label: string; statement: string; rationale: string[] };
@@ -925,6 +1018,377 @@ function exitStrategiesFor(
   return strategies;
 }
 
+// ── Stage 5: exit scenarios and the strategy comparison ─────────────────────
+
+/**
+ * The as-is cost assumptions Comps & Valuation's quick-flip underwriting
+ * uses, restated here so the pure synthesis carries no database import. A
+ * test pins them to `QUICK_FLIP` in comps-valuation.ts.
+ */
+export const AS_IS_COST_ASSUMPTIONS = {
+  sellingCostPct: 0.07,
+  sellerClosingPct: 0.02,
+  carryingCostPct: 0.015,
+  riskReservePct: 0.05,
+} as const;
+
+const SCENARIO_LABEL: Record<ScenarioId, string> = {
+  as_is_quick_flip: 'As-is resale / quick flip',
+  light_improvement: 'Light improvement, then flip',
+  minor_subdivision: 'Minor subdivision / lot split',
+  major_subdivision_entitlement: 'Major subdivision / entitlement',
+  land_home_manufactured: 'Land-home or manufactured-home package',
+  novation_double_close: 'Novation or double close',
+  owner_finance: 'Owner-finance exit',
+};
+
+const COMPLEXITY_RANK: Record<ExitScenario['complexity'], number> = { low: 0, medium: 1, high: 2 };
+const SCENARIO_STATUS_RANK: Record<ScenarioStatus, number> = { viable: 0, conditional: 1, unknown: 2, not_supported: 3 };
+
+const missingLine = (key: string, label: string, basis: string): CostLine => ({ key, label, amount: null, basis, source: 'missing' });
+
+/** A seller price claim's numbers, when it states any. */
+function sellerPriceNumbers(claim: DecisionSellerStatus['claims'][number] | undefined): number[] {
+  if (!claim) return [];
+  const text = `${claim.value ?? ''} ${claim.statement}`;
+  const amounts = [...text.matchAll(/\$\s?([\d,]+(?:\.\d+)?)\s*(k|thousand)?/gi)]
+    .map((match) => Math.round(Number(match[1].replace(/,/g, '')) * (match[2] ? 1000 : 1)))
+    .filter((amount) => Number.isFinite(amount) && amount >= 1000);
+  return [...new Set(amounts)].sort((a, b) => a - b);
+}
+
+function strategyComparisonFor(
+  developmentPath: ZoningDevelopmentIntelligence | null,
+  property: PropertyEvidenceSynthesis | null,
+  market: MarketResearchAndPulse | null,
+  dossier: AcquisitionDossier,
+  value: ValueGuidance,
+  seller: DecisionSellerStatus,
+  subject: DecisionSubject,
+): StrategyComparison {
+  const pathOf = (kind: PathKind) => developmentPath?.paths.find((path) => path.kind === kind) ?? null;
+  const useOf = (key: string) => developmentPath?.uses.find((use) => use.key === key) ?? null;
+  const gateActions = (kinds: PathKind[]) => (developmentPath?.criticalGates ?? []).filter((gate) => gate.blocks.some((kind) => kinds.includes(kind))).map((gate) => gate.gate);
+  const accessEstablished = !guardOf(property, 'Legal access');
+  const septic = topicOf(property, 'well_septic')?.status === 'established';
+  const districtEstablished = developmentPath?.zoning.established ?? (topicOf(property, 'zoning')?.status === 'established');
+  const dwelling = useOf('single_family_dwelling');
+  const manufactured = useOf('manufactured_home');
+  const acres = subject.acres ?? dossier.identity.acres;
+  const band = market?.subjectBand;
+  const liquidity = band?.available
+    ? `${band.bandUsedLabel ?? 'Subject band'}: ${band.sampleCount ?? '?'} sales, ${band.daysOnMarket != null ? `${Math.round(band.daysOnMarket)} days on market` : 'days on market not stated'}${band.monthsOfSupply != null ? `, ${band.monthsOfSupply} months of supply` : ''} (${band.source ?? 'retained market record'}).`
+    : 'No retained market record for the subject band; buyer demand is not established.';
+  const timeFromMarket: ExitScenario['timeToExit'] = band?.available && band.daysOnMarket != null
+    ? { statement: `About ${Math.round(band.daysOnMarket)} days median list-to-sale in the ${band.bandUsedLabel ?? 'subject'} band plus roughly 45 days to close; ${band.monthsOfSupply != null && band.monthsOfSupply >= 12 ? 'months of supply say the realistic hold is longer' : 'supply does not contradict it'}.`, basis: `${band.source ?? 'Retained market record'} · ${band.resolvedKeyLabel ?? ''} · ${band.period ?? ''}`.replace(/\s·\s$/, '').trim() }
+    : null;
+
+  // The seller's price, as a sensitivity input only.
+  const askingPrice = value.askingPrice;
+  const priceClaim = seller.claims.find((claim) => claim.dimension === 'price');
+  const claimNumbers = sellerPriceNumbers(priceClaim);
+  const purchase: { price: number; basis: string } | null = askingPrice != null
+    ? { price: askingPrice, basis: value.askingPriceSource ?? 'Deal Card asking price' }
+    : claimNumbers.length
+      ? { price: claimNumbers.length > 1 ? Math.round((claimNumbers[0] + claimNumbers[claimNumbers.length - 1]) / 2) : claimNumbers[0], basis: `Seller communication: ${priceClaim!.statement} (${priceClaim!.source})` }
+      : null;
+
+  const scenarios: ExitScenario[] = [];
+
+  // ── As-is / quick flip ──
+  {
+    const flip = strategyParams('quick_flip');
+    const asIs = pathOf('as_is');
+    const exit = value.status === 'supported' ? { amount: value.fmv!.central, basis: `${value.basis ?? 'Accepted closed sales'}; ${value.acceptedCompCount} accepted sale(s)`, asOf: null } : null;
+    const capacity = exit ? { low: Math.round(exit.amount * flip.offerPctLowOfEv! / 100), high: Math.round(exit.amount * flip.offerPctHighOfEv! / 100), lowPct: flip.offerPctLowOfEv!, highPct: flip.offerPctHighOfEv!, basis: `${flip.label} band, ${flip.offerPctLowOfEv}–${flip.offerPctHighOfEv}% of expected value`, confirmed: flip.confirmed } : null;
+    const direct: CostLine[] = exit
+      ? [
+        { key: 'selling', label: 'Selling costs', amount: Math.round(exit.amount * AS_IS_COST_ASSUMPTIONS.sellingCostPct), basis: '7% of sale price', source: 'landos_operating_assumption' },
+        { key: 'seller_closing', label: 'Seller-side closing', amount: Math.round(exit.amount * AS_IS_COST_ASSUMPTIONS.sellerClosingPct), basis: '2% of sale price', source: 'landos_operating_assumption' },
+      ]
+      : [missingLine('selling', 'Selling and closing costs', 'Computed as a share of the sale price once a supported value exists.')];
+    const soft: CostLine[] = exit
+      ? [
+        { key: 'carrying', label: 'Carrying costs', amount: Math.round(exit.amount * AS_IS_COST_ASSUMPTIONS.carryingCostPct), basis: '1.5% of sale price across the marketing period', source: 'landos_operating_assumption' },
+        { key: 'reserve', label: 'Risk reserve', amount: Math.round(exit.amount * AS_IS_COST_ASSUMPTIONS.riskReservePct), basis: '5% of sale price', source: 'landos_operating_assumption' },
+        missingLine('purchase_closing', 'Purchase-side closing and title', 'No operator figure; typically title, recording and closing fees at acquisition.'),
+      ]
+      : [missingLine('carrying', 'Carrying costs and risk reserve', 'Computed once a supported value exists.')];
+    const costTotal = [...direct, ...soft].filter((line) => line.amount != null).reduce((sum, line) => sum + (line.amount ?? 0), 0);
+    const allCostsVisible = [...direct, ...soft].every((line) => line.amount != null);
+    const missing: string[] = [];
+    if (!exit) missing.push(value.noPriceRationale ?? 'A supported fair market value from accepted closed sales.');
+    if (!purchase) missing.push('A purchase price: no Deal Card asking price and no retained seller price statement.');
+    if (!allCostsVisible && exit) missing.push('Purchase-side closing and title cost (operator figure).');
+    if (!timeFromMarket) missing.push('A retained subject-band days-on-market record for time to exit.');
+    const metrics: ExitScenario['returnMetrics'] = exit && purchase && allCostsVisible
+      ? (() => {
+        const totalCost = purchase.price + costTotal;
+        const net = exit.amount - totalCost;
+        return { purchasePrice: purchase.price, purchasePriceBasis: purchase.basis, totalCost, netProfit: net, returnOnCapital: Number((net / (purchase.price + costTotal - direct.reduce((sum, line) => sum + (line.amount ?? 0), 0))).toFixed(3)), minimumNet: flip.minNetProfitUsd, meetsMinimumNet: net >= flip.minNetProfitUsd, basis: `Expected value ${usd(exit.amount)} less the purchase price and every cost line above; LandOS operating assumptions pending operator confirmation.` };
+      })()
+      : null;
+    const status: ScenarioStatus = exit && accessEstablished && districtEstablished ? 'viable' : exit || band?.available ? 'conditional' : 'unknown';
+    scenarios.push({
+      id: 'as_is_quick_flip', label: SCENARIO_LABEL.as_is_quick_flip, strategyId: 'quick_flip', pathKind: 'as_is',
+      subjectScope: `The whole ${acres ?? '?'} ac parcel, sold as vacant land without division.`,
+      status, confidence: exit ? (accessEstablished ? 'well_supported' : 'likely') : 'unresolved',
+      statusWhy: exit
+        ? (accessEstablished && districtEstablished ? 'Value, access and the district are supported; this is the base exit.' : `Value is supported but ${[!accessEstablished && 'legal access', !districtEstablished && 'the current district'].filter(Boolean).join(' and ')} ${!accessEstablished && !districtEstablished ? 'are' : 'is'} not established.`)
+        : band?.available ? 'The subject band is moving, but no subject value exists to price the flip against.' : 'Neither a subject value nor a subject-band record is established.',
+      grossExit: exit,
+      purchasePriceCapacity: capacity,
+      directCosts: direct, softCosts: soft,
+      capitalAtRisk: purchase && exit ? { amount: purchase.price + (soft.find((line) => line.key === 'carrying')?.amount ?? 0), basis: 'Purchase price plus carrying costs until resale.' } : null,
+      timeToExit: timeFromMarket,
+      keyApprovals: asIs?.approvalSteps.length ? asIs.approvalSteps : ['None beyond title and recorded access; no subdivision review.'],
+      returnMetrics: metrics,
+      missingInputs: missing,
+      complexity: 'low',
+      buyerDemand: liquidity,
+      risks: gateActions(['as_is']),
+      nextDecisiveAction: !exit ? 'Admit qualified closed sales through Comps & Valuation to support a value.' : asIs?.decisiveVerification.action ?? 'Record legal access.',
+    });
+  }
+
+  // ── Light improvement, then flip ──
+  {
+    const params = strategyParams('improvement_play');
+    const asIs = pathOf('as_is');
+    const status: ScenarioStatus = districtEstablished && dwelling?.standing === 'by_right' && accessEstablished ? 'conditional' : dwelling?.standing === 'prohibited' ? 'not_supported' : 'unknown';
+    scenarios.push({
+      id: 'light_improvement', label: SCENARIO_LABEL.light_improvement, strategyId: 'improvement_play', pathKind: 'as_is',
+      subjectScope: 'The whole parcel, sold as a prepared home site (cleared, driveway, well/septic or utility taps as the market expects).',
+      status, confidence: status === 'conditional' ? 'likely' : 'unresolved',
+      statusWhy: status === 'conditional'
+        ? 'A dwelling is by right and access is established, so a home-site product is possible; the improved-lot resale value and the improvement quotes are not retained.'
+        : status === 'not_supported' ? `${dwelling!.label} is prohibited; there is no home-site product to prepare.` : `A home-site product needs ${[!districtEstablished && 'the current district', dwelling?.standing !== 'by_right' && 'a by-right dwelling use', !accessEstablished && 'recorded access'].filter(Boolean).join(', ')} before it can be read.`,
+      grossExit: null,
+      purchasePriceCapacity: null,
+      directCosts: [missingLine('clearing', 'Clearing and driveway', 'Operator or contractor quote.'), missingLine('well_septic', 'Well and septic (or utility taps)', 'Contractor quote after the health-department evaluation.')],
+      softCosts: [missingLine('permits', 'Driveway, septic and building-site permits', `${asIs?.authority ?? 'Jurisdiction'} fee schedule, not retained.`), missingLine('carrying', 'Carrying costs across the improvement and marketing period', 'Computed once an improved-lot value and a timeline exist.')],
+      capitalAtRisk: null,
+      timeToExit: null,
+      keyApprovals: [...(asIs?.approvalSteps ?? []), ...(septic ? [] : ['Health-department septic site evaluation.'])],
+      returnMetrics: null,
+      missingInputs: ['Improved-lot resale comparables (prepared home sites in the same band).', 'Improvement quotes: clearing, driveway, well/septic or taps.', 'Permit fees and a build-out timeline.'],
+      complexity: 'medium',
+      buyerDemand: liquidity,
+      risks: gateActions(['as_is']),
+      nextDecisiveAction: septic ? 'Obtain contractor quotes for clearing, driveway and well/septic, then admit prepared-lot comparables.' : 'Order the health-department septic site evaluation; every improvement quote depends on it.',
+    });
+    void params;
+  }
+
+  // ── Minor subdivision ──
+  {
+    const params = strategyParams('subdivision_minor_split');
+    const path = pathOf('minor_subdivision');
+    const lots = developmentPath?.subjectScreen.theoreticalLotCount.value ?? null;
+    const minLot = developmentPath?.subjectScreen.minimumLotAcres ?? null;
+    const status: ScenarioStatus = !path ? 'unknown' : path.applicability === 'applies' ? 'viable' : path.applicability === 'may_apply' ? 'conditional' : path.applicability === 'not_applicable' ? 'not_supported' : 'unknown';
+    const fee = path?.costAndTime?.estimatedCost ?? null;
+    scenarios.push({
+      id: 'minor_subdivision', label: SCENARIO_LABEL.minor_subdivision, strategyId: 'subdivision_minor_split', pathKind: 'minor_subdivision',
+      subjectScope: lots != null ? `${lots} theoretical lot(s)${minLot != null ? ` at a ${minLot} ac minimum` : ''} out of ${acres ?? '?'} ac; arithmetic, not an approved yield.` : `Division of the ${acres ?? '?'} ac parcel into lots; the count is not yet computable.`,
+      status, confidence: path?.weight ?? 'unresolved',
+      statusWhy: path ? `${path.applicabilityWhy}` : 'No Development Path is retained; the local lot-split path cannot be read.',
+      grossExit: null,
+      purchasePriceCapacity: null,
+      directCosts: [
+        missingLine('survey_plat', 'Boundary survey and plat', 'Surveyor quote; the regulation names the plat and survey the review body accepts.'),
+        ...(path?.requirements.some((row) => row.kind === 'road' || row.kind === 'access') ? [missingLine('road_access', 'Road or access improvements the regulation requires', path.requirements.filter((row) => row.kind === 'road' || row.kind === 'access').map((row) => row.requirement).join(' ').slice(0, 220))] : []),
+        ...(path?.requirements.some((row) => row.kind === 'utilities') ? [missingLine('utilities', 'Utility, well or septic provisions per lot', path.requirements.filter((row) => row.kind === 'utilities').map((row) => row.requirement).join(' ').slice(0, 220))] : []),
+      ],
+      softCosts: [
+        fee ? { key: 'review_fee', label: 'Review fee', amount: null, basis: fee, source: 'retained_source' } : missingLine('review_fee', 'Review and recording fees', 'Not stated in the retained regulation.'),
+        missingLine('carrying', 'Carrying costs through review and lot marketing', 'Computed once a timeline and per-lot value exist.'),
+      ],
+      capitalAtRisk: null,
+      timeToExit: path?.costAndTime?.estimatedTime ? { statement: path.costAndTime.estimatedTime, basis: path.costAndTime.basis } : null,
+      keyApprovals: path?.approvalSteps.length ? path.approvalSteps : path ? [path.decisiveVerification.action] : [],
+      returnMetrics: null,
+      missingInputs: [
+        'Per-lot resale value from qualified sales of lots at the resulting size.',
+        ...(path?.missingInputs ?? []),
+        ...(path?.costAndTime ? [] : ['Review, survey, plat and improvement costs, and the review timeline (no retained source or operator figure).']),
+      ],
+      complexity: 'medium',
+      buyerDemand: band?.available ? `${liquidity} Lot-sized demand is inferred from the band, not from lot sales.` : liquidity,
+      risks: gateActions(['minor_subdivision']),
+      nextDecisiveAction: path?.decisiveVerification.action ?? 'Obtain the local subdivision regulation.',
+    });
+    void params;
+  }
+
+  // ── Major subdivision / entitlement ──
+  {
+    const path = pathOf('major_subdivision_entitlement');
+    const status: ScenarioStatus = !path ? 'unknown' : path.applicability === 'applies' ? 'viable' : path.applicability === 'may_apply' ? 'conditional' : path.applicability === 'not_applicable' ? 'not_supported' : 'unknown';
+    scenarios.push({
+      id: 'major_subdivision_entitlement', label: SCENARIO_LABEL.major_subdivision_entitlement, strategyId: 'subdivision_minor_split', pathKind: 'major_subdivision_entitlement',
+      subjectScope: `A platted subdivision or an entitlement of the ${acres ?? '?'} ac parcel beyond the local minor threshold.`,
+      status, confidence: path?.weight ?? 'unresolved',
+      statusWhy: path ? path.applicabilityWhy : 'No Development Path is retained; the local major path cannot be read.',
+      grossExit: null,
+      purchasePriceCapacity: null,
+      directCosts: [missingLine('engineering', 'Civil engineering, roads, stormwater and utilities', path?.requirements.filter((row) => row.kind === 'road' || row.kind === 'environmental' || row.kind === 'utilities').map((row) => row.requirement).join(' ').slice(0, 220) || 'Not stated in the retained regulation.')],
+      softCosts: [
+        missingLine('entitlement', 'Entitlement, hearing, study and bonding costs', path?.requirements.filter((row) => row.kind === 'bonding_or_dedication' || row.kind === 'fee').map((row) => row.requirement).join(' ').slice(0, 220) || 'Not stated in the retained regulation.'),
+        missingLine('carrying', 'Carrying costs across a multi-stage approval', 'Computed once a timeline exists.'),
+      ],
+      capitalAtRisk: null,
+      timeToExit: path?.costAndTime?.estimatedTime ? { statement: path.costAndTime.estimatedTime, basis: path.costAndTime.basis } : null,
+      keyApprovals: path?.approvalSteps.length ? path.approvalSteps : path ? [path.decisiveVerification.action] : [],
+      returnMetrics: null,
+      missingInputs: ['Finished-lot or entitled-land values.', ...(path?.missingInputs ?? []), 'Engineering, infrastructure, study and bonding costs and the approval timeline.'],
+      complexity: 'high',
+      buyerDemand: liquidity,
+      risks: gateActions(['major_subdivision_entitlement']),
+      nextDecisiveAction: path?.decisiveVerification.action ?? 'Obtain the local subdivision regulation.',
+    });
+  }
+
+  // ── Land-home / manufactured-home package ──
+  {
+    const params = strategyParams('land_home_package');
+    const status: ScenarioStatus = manufactured?.standing === 'prohibited' ? 'not_supported' : manufactured?.standing === 'by_right' || manufactured?.standing === 'conditional' ? 'conditional' : 'unknown';
+    scenarios.push({
+      id: 'land_home_manufactured', label: SCENARIO_LABEL.land_home_manufactured, strategyId: 'land_home_package', pathKind: 'as_is',
+      subjectScope: 'The parcel with a manufactured or modular home placed and sold as a finished package.',
+      status, confidence: status === 'not_supported' ? 'confirmed' : status === 'conditional' ? 'likely' : 'unresolved',
+      statusWhy: manufactured
+        ? manufactured.standing === 'not_established'
+          ? `${manufactured.statement} ${params.notes}`
+          : `${manufactured.statement} ${status === 'conditional' ? `Gate: ${params.notes}` : ''}`.trim()
+        : `Whether a manufactured home is permitted is not established. ${params.notes}`,
+      grossExit: null,
+      purchasePriceCapacity: null,
+      directCosts: [missingLine('home', 'Home purchase, transport, set-up and skirting', 'Dealer quote.'), missingLine('site', 'Site prep, well/septic or taps, driveway', 'Contractor quote after the septic evaluation.')],
+      softCosts: [missingLine('permits', 'Placement permits and impact fees', 'Jurisdiction fee schedule, not retained.'), missingLine('carrying', 'Carrying and financing across set-up and sale', 'Computed once a package value and timeline exist.')],
+      capitalAtRisk: null,
+      timeToExit: null,
+      keyApprovals: [...(manufactured?.standing === 'conditional' ? ['Conditional-use or special-exception approval for the home placement.'] : []), ...(septic ? [] : ['Health-department septic site evaluation.']), 'Placement and building permits.'],
+      returnMetrics: null,
+      missingInputs: ['Verified manufactured-home package sales at $200k–$300k+ in this market.', 'Home and set-up quotes.', ...(manufactured?.standing === 'not_established' ? ['Whether the district permits manufactured housing.'] : [])],
+      complexity: 'medium',
+      buyerDemand: 'Package demand rests on verified manufactured-home sales, which are not retained.',
+      risks: gateActions(['as_is']),
+      nextDecisiveAction: manufactured?.standing === 'not_established' || !manufactured ? 'Read the district\'s manufactured-home provision from the adopted code.' : 'Search for closed manufactured-home package sales in the market.',
+    });
+  }
+
+  // ── Novation / double close ──
+  {
+    const params = strategyParams('wholesale_assignment');
+    const exit = value.status === 'supported' ? { amount: value.fmv!.central, basis: `${value.basis ?? 'Accepted closed sales'}; ${value.acceptedCompCount} accepted sale(s)`, asOf: null } : null;
+    const capacity = exit && params.offerPctLowOfEv != null ? { low: Math.round(exit.amount * params.offerPctLowOfEv / 100), high: Math.round(exit.amount * params.offerPctHighOfEv! / 100), lowPct: params.offerPctLowOfEv, highPct: params.offerPctHighOfEv!, basis: `${params.label} band, ${params.offerPctLowOfEv}–${params.offerPctHighOfEv}% of expected value (draft, unconfirmed)`, confirmed: params.confirmed } : null;
+    scenarios.push({
+      id: 'novation_double_close', label: SCENARIO_LABEL.novation_double_close, strategyId: 'wholesale_assignment', pathKind: 'as_is',
+      subjectScope: 'The whole parcel, contracted and resold to an end buyer with little or no capital deployed.',
+      status: exit ? 'conditional' : 'unknown', confidence: exit ? 'likely' : 'unresolved',
+      statusWhy: exit ? 'A supported value sets the resale target; the end buyer, the contract terms and the assignment band are not confirmed.' : 'No supported value to set a resale target against.',
+      grossExit: exit,
+      purchasePriceCapacity: capacity,
+      directCosts: [missingLine('double_close', 'Double-close or novation transaction costs', 'Title and attorney fees for the second closing; operator figure.')],
+      softCosts: [missingLine('marketing', 'Buyer-finding and marketing', 'Operator figure.')],
+      capitalAtRisk: purchase ? { amount: 0, basis: 'Earnest money only when the end buyer closes concurrently; the full price if the double close funds first.' } : null,
+      timeToExit: timeFromMarket,
+      keyApprovals: ['Assignability or novation language in the purchase contract.'],
+      returnMetrics: null,
+      missingInputs: ['A committed end buyer and their price.', 'Transaction costs for the second closing.', ...(exit ? [] : ['A supported fair market value.'])],
+      complexity: 'low',
+      buyerDemand: liquidity,
+      risks: gateActions(['as_is']),
+      nextDecisiveAction: exit ? 'Confirm the assignment band with the operator and identify an end buyer.' : 'Admit qualified closed sales through Comps & Valuation.',
+    });
+  }
+
+  // ── Owner-finance exit ──
+  {
+    const exit = value.status === 'supported' ? { amount: value.fmv!.central, basis: `${value.basis ?? 'Accepted closed sales'}; ${value.acceptedCompCount} accepted sale(s)`, asOf: null } : null;
+    scenarios.push({
+      id: 'owner_finance', label: SCENARIO_LABEL.owner_finance, strategyId: 'owner_finance_exit', pathKind: 'as_is',
+      subjectScope: 'The whole parcel, sold on terms with a note retained or sold.',
+      status: exit && accessEstablished ? 'conditional' : 'unknown', confidence: exit ? 'likely' : 'unresolved',
+      statusWhy: exit ? (accessEstablished ? 'Terms-based; a supported value prices the note, and a hold or note-sale plan is still needed.' : 'A note cannot be written on a parcel without recorded legal access.') : 'No supported value to price a note against.',
+      grossExit: exit,
+      purchasePriceCapacity: null,
+      directCosts: [missingLine('closing', 'Closing and note-servicing set-up', 'Operator figure.')],
+      softCosts: [missingLine('hold', 'Capital held in the note', 'Depends on down payment and term; operator plan.')],
+      capitalAtRisk: purchase ? { amount: purchase.price, basis: 'The full purchase price stays deployed until the note pays or sells.' } : null,
+      timeToExit: null,
+      keyApprovals: ['Clear title and recorded access before any note is written.'],
+      returnMetrics: null,
+      missingInputs: ['Down payment, rate and term the market bears.', 'A note-buyer price or a hold plan.', ...(exit ? [] : ['A supported fair market value.'])],
+      complexity: 'medium',
+      buyerDemand: liquidity,
+      risks: gateActions(['as_is']),
+      nextDecisiveAction: accessEstablished ? 'Set terms with the operator and price the note against the supported value.' : 'Record legal access first.',
+    });
+  }
+
+  // ── Price sensitivity ──
+  const live = scenarios.filter((scenario) => scenario.status !== 'not_supported');
+  const pointFor = (label: PriceSensitivityPoint['label'], price: number): PriceSensitivityPoint => {
+    const plausible = live.filter((scenario) => scenario.purchasePriceCapacity && scenario.purchasePriceCapacity.high >= price).map((scenario) => scenario.id);
+    const exceeded = live.filter((scenario) => scenario.purchasePriceCapacity && scenario.purchasePriceCapacity.high < price).map((scenario) => scenario.id);
+    const undetermined = live.filter((scenario) => !scenario.purchasePriceCapacity).map((scenario) => scenario.id);
+    return {
+      label, price, plausible, undetermined, exceeded,
+      statement: `At ${usd(price)}: ${plausible.length ? `${plausible.map((id) => SCENARIO_LABEL[id]).join(', ')} remain inside their purchase-price capacity` : 'no scenario with a computed capacity covers the price'}${exceeded.length ? `; ${exceeded.map((id) => SCENARIO_LABEL[id]).join(', ')} exceeded` : ''}${undetermined.length ? `; ${undetermined.length} scenario(s) have no capacity yet` : ''}.`,
+    };
+  };
+  let priceSensitivity: PriceSensitivity;
+  if (askingPrice == null && claimNumbers.length === 0) {
+    priceSensitivity = {
+      mode: 'no_price', source: null, points: [],
+      statement: `No seller price is retained. Feasible paths: ${live.filter((scenario) => scenario.status !== 'unknown').map((scenario) => scenario.label).join(', ') || 'none yet established'}. ${live.filter((scenario) => scenario.status === 'unknown').length ? `${live.filter((scenario) => scenario.status === 'unknown').length} scenario(s) cannot be read until their inputs arrive.` : ''}`.trim(),
+      missingInputs: [...new Set(live.flatMap((scenario) => scenario.missingInputs))].slice(0, 8),
+    };
+  } else if (claimNumbers.length > 1 && askingPrice == null) {
+    const low = claimNumbers[0];
+    const high = claimNumbers[claimNumbers.length - 1];
+    priceSensitivity = {
+      mode: 'seller_range', source: `Seller communication: ${priceClaim!.statement} (${priceClaim!.source})`,
+      points: [pointFor('low', low), pointFor('base', Math.round((low + high) / 2)), pointFor('high', high)],
+      statement: `The seller stated a range of ${usd(low)}–${usd(high)}; each point is tested against every scenario's purchase-price capacity.`,
+      missingInputs: [...new Set(live.flatMap((scenario) => scenario.missingInputs))].slice(0, 8),
+    };
+  } else {
+    const base = purchase!.price;
+    priceSensitivity = {
+      mode: 'asking_price', source: purchase!.basis,
+      points: [pointFor('low', Math.round(base * 0.85)), pointFor('base', base), pointFor('high', Math.round(base * 1.15))],
+      statement: `Base is the stated ${usd(base)}; low and high are a ±15% LandOS sensitivity band around it, not seller statements.`,
+      missingInputs: [...new Set(live.flatMap((scenario) => scenario.missingInputs))].slice(0, 8),
+    };
+  }
+
+  // ── The comparison: transparent, multi-criteria, never auto-selecting ──
+  const ranked = [...scenarios].sort((a, b) =>
+    SCENARIO_STATUS_RANK[a.status] - SCENARIO_STATUS_RANK[b.status]
+    || COMPLEXITY_RANK[a.complexity] - COMPLEXITY_RANK[b.complexity]
+    || a.keyApprovals.length - b.keyApprovals.length
+    || Number(!a.timeToExit) - Number(!b.timeToExit)
+    || a.missingInputs.length - b.missingInputs.length);
+  const ranking = ranked.map((scenario, index) => ({
+    id: scenario.id,
+    rank: index + 1,
+    why: `${scenario.status.replace(/_/g, ' ')}; ${scenario.complexity} complexity; ${scenario.keyApprovals.length} approval step(s); ${scenario.timeToExit ? 'time to exit sourced' : 'time to exit not sourced'}; ${scenario.returnMetrics ? `net ${usd(scenario.returnMetrics.netProfit)} on ${usd(scenario.returnMetrics.purchasePrice)}` : `return not computable (${scenario.missingInputs.length} missing input(s))`}; ${scenario.capitalAtRisk ? `capital at risk ${usd(scenario.capitalAtRisk.amount)}` : 'capital at risk not computable'}.`,
+  }));
+
+  return {
+    developmentPathStatus: developmentPath ? 'current' : 'pending',
+    scenarios,
+    priceSensitivity,
+    ranking,
+    criteria: ['Expected return, only when every input is visible', 'Time to exit', 'Capital at risk', 'Approval risk', 'Execution complexity', 'Buyer demand and liquidity'],
+    statement: `Ordered by evidence status, then execution complexity, approval exposure, sourced time and open inputs. ${developmentPath ? `Local rules applied from ${developmentPath.authority.zoning.name ?? 'the controlling authority (unresolved)'}.` : 'No local subdivision rule is applied yet: the Development Path is pending.'} LandOS does not pick the highest gross profit; the operator chooses with return, time, capital, approval risk and complexity side by side.`,
+    notAutoSelected: true,
+  };
+}
+
 // ── Next actions and recommendation ────────────────────────────────────────
 
 function nextActionsFor(
@@ -935,6 +1399,7 @@ function nextActionsFor(
   subject: DecisionSubject,
   value: ValueGuidance,
   mode: DecisionMode,
+  developmentPath: ZoningDevelopmentIntelligence | null = null,
 ): { landos: NextAction; operator: NextAction } {
   const row = (key: EvidenceKey) => evidence.find((entry) => entry.key === key)!;
 
@@ -948,9 +1413,14 @@ function nextActionsFor(
       unlocks: 'A supported fair market value and the 40–60% flip band.',
     };
   } else if (row('zoning').status !== 'sufficient') {
+    // The Development Path names the smallest decisive step, and when the
+    // governing authority itself is in conflict, that conflict comes first.
+    const asIs = developmentPath?.paths.find((path) => path.kind === 'as_is') ?? null;
     landos = {
-      action: `Establish the parcel's zoning district from ${subject.county ?? 'the county'} County's adopted zoning map or a written determination.`,
-      why: row('zoning').statement,
+      action: developmentPath?.authority.conflict?.decisiveVerification
+        ?? asIs?.decisiveVerification.action
+        ?? `Establish the parcel's zoning district from ${subject.county ?? 'the county'} County's adopted zoning map or a written determination.`,
+      why: developmentPath?.authority.conflict ? developmentPath.authority.conflict.statement : row('zoning').statement,
       capabilityId: 'zoning-subdivision',
       unlocks: 'The exit product, the comparable set and every subdivision question.',
     };
@@ -1091,6 +1561,8 @@ function materialDimensionsFor(
   seller: DecisionSellerStatus,
   value: ValueGuidance,
   strategies: ExitStrategyRead[],
+  developmentPath: ZoningDevelopmentIntelligence | null,
+  comparison: StrategyComparison,
 ): Record<string, string> {
   const dims: Record<string, string> = {};
   dims.subject = `${subject.subjectVersion ?? 'none'} · ${subject.acres ?? '?'} ac · ${subject.confidence}`;
@@ -1116,6 +1588,11 @@ function materialDimensionsFor(
     dims[`seller.${dimension}`] = latest ? latest.statement : 'unknown';
   }
   dims.strategy = strategies.map((strategy) => `${strategy.id}=${strategy.status}`).join(' ');
+  dims.developmentPath = developmentPath
+    ? `${developmentPath.authority.zoning.name ?? 'authority unresolved'}${developmentPath.authority.conflict ? ' (conflict)' : ''} · ${developmentPath.zoning.established ? developmentPath.zoning.districtCode : 'district not established'} · ${developmentPath.paths.map((path) => `${path.kind}=${path.applicability}`).join(' ')}`
+    : 'pending';
+  dims.scenarios = comparison.scenarios.map((scenario) => `${scenario.id}=${scenario.status}`).join(' ');
+  dims.priceSensitivity = comparison.priceSensitivity.mode;
   return dims;
 }
 
@@ -1131,6 +1608,9 @@ export interface DealDecisionSynthesisInput {
   /** The retained record behind the subject's identity, read by the
    *  lifecycle; null when the reader cannot reach one. */
   identityEvidence?: IdentityEvidenceInput | null;
+  /** The current subject-equivalent Development Path (Stage 5); null when
+   *  none is retained, in which case the comparison says so. */
+  developmentPath?: ZoningDevelopmentIntelligence | null;
 }
 
 export function buildDealDecisionSynthesis(input: DealDecisionSynthesisInput): DealDecisionSynthesis {
@@ -1149,7 +1629,9 @@ export function buildDealDecisionSynthesis(input: DealDecisionSynthesisInput): D
   const risks = rankedRisks(property, market, seller, value, subject);
   const opportunities = rankedOpportunities(property, market, seller, dossier);
   const exitStrategies = exitStrategiesFor(property, market, dossier, value, seller);
-  const nextActions = nextActionsFor(evidence, property, market, seller, subject, value, mode);
+  const developmentPath = input.developmentPath ?? null;
+  const strategyComparison = strategyComparisonFor(developmentPath, property, market, dossier, value, seller, subject);
+  const nextActions = nextActionsFor(evidence, property, market, seller, subject, value, mode, developmentPath);
   const recommendation = recommendationFor(mode, evidence, value, seller, nextActions);
 
   const limitations: string[] = [];
@@ -1162,14 +1644,17 @@ export function buildDealDecisionSynthesis(input: DealDecisionSynthesisInput): D
     limitations.push('No exit strategy with confirmed economic parameters is yet supported; every band shown is a basis, not an underwriting number.');
   }
   limitations.push('Seller claims come only from retained communications; nothing about the seller is inferred from the property.');
+  if (!developmentPath) limitations.push('The Development Path is pending: no current subject-equivalent Stage 5 read is retained, so the strategy comparison rests on the Property Story alone and no local subdivision rule is applied.');
+  limitations.push('The strategy comparison never auto-selects the highest gross profit; return metrics appear only when every input is visible, and cost or time figures come only from a retained source or the operator.');
   if (!market) limitations.push('The full current Market Story is pending: no current subject-equivalent Market Story is retained, so market liquidity, demand and the subject band are not decision inputs yet.');
 
-  const materialDimensions = materialDimensionsFor(subject, property, market, seller, value, exitStrategies);
+  const materialDimensions = materialDimensionsFor(subject, property, market, seller, value, exitStrategies, developmentPath, strategyComparison);
   const materialFingerprint = sha256(JSON.stringify(materialDimensions));
   const inputFingerprint = sha256(JSON.stringify({
     property: property?.inputFingerprint ?? null,
     market: market?.inputFingerprint ?? null,
     seller: input.sellerDiscovery?.inputFingerprint ?? null,
+    developmentPath: developmentPath?.inputFingerprint ?? null,
     subject: subject.subjectVersion,
     materialFingerprint,
   }));
@@ -1217,6 +1702,7 @@ export function buildDealDecisionSynthesis(input: DealDecisionSynthesisInput): D
     risks,
     opportunities,
     exitStrategies,
+    strategyComparison,
     value,
     nextActions,
     recommendation,

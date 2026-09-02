@@ -44,6 +44,7 @@ import {
 import {
   SellerDiscoveryPanel, SellerReadStatusLine,
   type DealDecisionView, type DealDecisionHistoryView, type SellerDiscoveryView, type SellerReadStatusView,
+  type DevelopmentPathView, type DevelopmentPathHistoryView,
 } from '../components/AcquisitionWorkspaceV2DealBrain';
 import type { Stage3StatusView } from '../components/AcquisitionWorkspaceV2IntelligenceStack';
 import { ParcelScopePanel, type ParcelScopeView } from '@/components/DealCard';
@@ -284,6 +285,10 @@ interface IntelResp {
   researchStability?: ResearchStabilityView | null;
   dealDecision?: DealDecisionView | null;
   dealDecisionHistory?: DealDecisionHistoryView[] | null;
+  /** Stage 5: the Development Path, its status and history. */
+  developmentPath?: DevelopmentPathView | null;
+  developmentPathHistory?: DevelopmentPathHistoryView[] | null;
+  developmentPathStatus?: Stage3StatusView | null;
   sellerDiscovery?: SellerDiscoveryView | null;
   stage3Status?: { property?: Stage3StatusView | null; market?: Stage3StatusView | null } | null;
   sellerReadStatus?: SellerReadStatusView | null;
@@ -417,6 +422,10 @@ export function AcquisitionWorkspaceV2() {
   // Stage 4: the decision above the two readings, and the seller discovery.
   const [dealDecision, setDealDecision] = useState<DealDecisionView | null>(null);
   const [dealDecisionHistory, setDealDecisionHistory] = useState<DealDecisionHistoryView[]>([]);
+  // Stage 5: the Development Path the Deal Brain's comparison was formed on.
+  const [developmentPath, setDevelopmentPath] = useState<DevelopmentPathView | null>(null);
+  const [developmentPathHistory, setDevelopmentPathHistory] = useState<DevelopmentPathHistoryView[]>([]);
+  const [developmentPathStatus, setDevelopmentPathStatus] = useState<Stage3StatusView | null>(null);
   const [sellerDiscovery, setSellerDiscovery] = useState<SellerDiscoveryView | null>(null);
   // One Stage 3 status per artifact and one seller read status, from the same
   // retained rows the Deal Brain consumed; every card on the page reads these.
@@ -596,6 +605,9 @@ export function AcquisitionWorkspaceV2() {
         setResearchStability(i?.researchStability ?? null);
         setDealDecision(i?.dealDecision ?? null);
         setDealDecisionHistory(i?.dealDecisionHistory ?? []);
+        setDevelopmentPath(i?.developmentPath ?? null);
+        setDevelopmentPathHistory(i?.developmentPathHistory ?? []);
+        setDevelopmentPathStatus(i?.developmentPathStatus ?? null);
         setSellerDiscovery(i?.sellerDiscovery ?? null);
         setStage3Status(i?.stage3Status ?? null);
         setSellerReadStatus(i?.sellerReadStatus ?? null);
@@ -1265,6 +1277,7 @@ export function AcquisitionWorkspaceV2() {
               onAsk: askDealBrain,
             }}
             dealDecision={{ decision: dealDecision, history: dealDecisionHistory, stability: researchStability, stage3: stage3Status, sellerReadStatus }}
+            developmentPath={{ path: developmentPath, status: developmentPathStatus, history: developmentPathHistory }}
             compsValuation={compsValuation}
             valuationBasisLabel={valuationBasisLabel}
             landBasisOpeningReference={landBasisOpeningReference}

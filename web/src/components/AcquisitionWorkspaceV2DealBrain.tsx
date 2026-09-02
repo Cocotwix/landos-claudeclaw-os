@@ -77,6 +77,108 @@ export interface DecisionSellerClaimView {
   at?: string | null;
 }
 
+// ── Stage 5: the Development Path and the strategy comparison ─────────────
+
+export interface DevelopmentSourceView {
+  label?: string; url?: string | null; tier?: string; effectiveOrAsOf?: string | null; retrievedAt?: string | null;
+  section?: string | null; excerpt?: string | null; carries?: string;
+}
+
+export interface DevelopmentPathItemView {
+  kind?: string; label?: string;
+  localDefinition?: { term?: string; definition?: string; section?: string | null; source?: DevelopmentSourceView } | null;
+  trigger?: string;
+  threshold?: { statement?: string; maxLots?: number | null; basis?: string };
+  authority?: string | null; reviewBody?: string | null;
+  materials?: Array<{ item?: string; requirement?: string; section?: string | null }>;
+  requirements?: Array<{ kind?: string; requirement?: string; section?: string | null; source?: string | null }>;
+  approvalSteps?: string[]; parcelGates?: string[];
+  applicability?: string; applicabilityWhy?: string; weight?: string;
+  costAndTime?: { estimatedCost?: string | null; estimatedTime?: string | null; basis?: string } | null;
+  missingInputs?: string[];
+  decisiveVerification?: { action?: string; why?: string; askOf?: string | null };
+  sources?: DevelopmentSourceView[];
+}
+
+export interface DevelopmentPathView {
+  correlation?: string;
+  retainedAt?: string | null;
+  snapshotId?: number | null;
+  contractVersion?: string;
+  confidence?: string;
+  subject?: { apn?: string | null; county?: string | null; state?: string | null; acres?: number | null; subjectVersion?: string | null };
+  authority?: {
+    state?: string | null; county?: string | null; municipalityOrTownship?: string | null; incorporationStatus?: string;
+    zoning?: { name?: string | null; level?: string; weight?: string; basis?: string };
+    subdivision?: { name?: string | null; level?: string; weight?: string; basis?: string };
+    planningBody?: string | null;
+    etjOrPlanningArea?: { status?: string; statement?: string };
+    specialAuthorities?: string[];
+    boundaryEvidence?: { sourceLabel?: string; incorporationStatus?: string; controllingAuthorityName?: string | null; mailingCityDiffersFromAuthority?: boolean; basis?: string } | null;
+    conflict?: { statement?: string; sides?: Array<{ claim?: string; source?: string; url?: string | null; retrievedAt?: string | null; applicability?: string; weight?: string }>; decisiveVerification?: string } | null;
+    nonQualifyingClaims?: Array<{ claim?: string; level?: string; source?: string; url?: string | null; retrievedAt?: string | null; reason?: string }>;
+    postalLocality?: { city?: string | null; statement?: string };
+    sources?: DevelopmentSourceView[];
+  };
+  zoning?: {
+    established?: boolean; districtCode?: string | null; districtName?: string | null; overlays?: string[]; evidenceKind?: string | null;
+    parcelMatchBasis?: string | null; effectiveOrAsOf?: string | null; weight?: string; statement?: string; source?: DevelopmentSourceView | null;
+    historicalReferences?: Array<{ kind?: string | null; value?: string | null; asOf?: string | null }>; limitations?: string[];
+  };
+  uses?: Array<{ key?: string; label?: string; standing?: string; finding?: string | null; section?: string | null; source?: DevelopmentSourceView | null; strategies?: string[]; statement?: string }>;
+  standards?: Array<{ key?: string; label?: string; status?: string; value?: string | null; section?: string | null; source?: DevelopmentSourceView | null; gap?: string | null }>;
+  subjectScreen?: {
+    acres?: number | null; frontageFt?: number | null; roadName?: string | null; accessEstablished?: boolean; accessStatement?: string;
+    wetlandsPct?: number | null; floodZone?: string | null; wellSepticStatus?: string; utilitiesStatus?: string; minimumLotAcres?: number | null;
+    theoreticalLotCount?: { value?: number | null; calculation?: string; approvedYield?: false };
+    frontageCeiling?: { status?: string; maxLots?: number | null; detail?: string };
+    statements?: string[];
+  };
+  paths?: DevelopmentPathItemView[];
+  criticalGates?: Array<{ key?: string; gate?: string; why?: string; decisiveVerification?: string; blocks?: string[]; weight?: string }>;
+  unknowns?: string[];
+  sourceLineage?: DevelopmentSourceView[];
+  currentness?: { effectiveDates?: Array<{ source?: string; date?: string }>; latestRetrievedAt?: string | null; statement?: string; refreshOn?: string[] };
+  limitations?: string[];
+  inputStatus?: Record<string, string>;
+  basedOn?: Record<string, number | string | null>;
+  refresh?: { cause?: string; kind?: string; changes?: Array<{ dimension?: string; before?: string | null; after?: string }>; priorSnapshotId?: number | null };
+}
+
+export interface DevelopmentPathHistoryView {
+  snapshotId?: number; version?: number; retainedAt?: string | null; authority?: string | null; district?: string | null;
+  paths?: Record<string, string>; refresh?: { cause?: string; kind?: string; changes?: Array<{ dimension?: string }> };
+}
+
+export interface CostLineView { key?: string; label?: string; amount?: number | null; basis?: string; source?: string }
+
+export interface ExitScenarioView {
+  id?: string; label?: string; strategyId?: string | null; pathKind?: string | null; subjectScope?: string;
+  status?: string; confidence?: string; statusWhy?: string;
+  grossExit?: { amount?: number; basis?: string; asOf?: string | null } | null;
+  purchasePriceCapacity?: { low?: number; high?: number; lowPct?: number; highPct?: number; basis?: string; confirmed?: boolean } | null;
+  directCosts?: CostLineView[]; softCosts?: CostLineView[];
+  capitalAtRisk?: { amount?: number; basis?: string } | null;
+  timeToExit?: { statement?: string; basis?: string } | null;
+  keyApprovals?: string[];
+  returnMetrics?: { purchasePrice?: number; purchasePriceBasis?: string; totalCost?: number; netProfit?: number; returnOnCapital?: number; minimumNet?: number; meetsMinimumNet?: boolean; basis?: string } | null;
+  missingInputs?: string[]; complexity?: string; buyerDemand?: string; risks?: string[]; nextDecisiveAction?: string;
+}
+
+export interface StrategyComparisonView {
+  developmentPathStatus?: string;
+  scenarios?: ExitScenarioView[];
+  priceSensitivity?: {
+    mode?: string; source?: string | null;
+    points?: Array<{ label?: string; price?: number; plausible?: string[]; undetermined?: string[]; exceeded?: string[]; statement?: string }>;
+    statement?: string; missingInputs?: string[];
+  };
+  ranking?: Array<{ id?: string; rank?: number; why?: string }>;
+  criteria?: string[];
+  statement?: string;
+  notAutoSelected?: boolean;
+}
+
 export interface DealDecisionView {
   correlation?: string;
   retainedAt?: string | null;
@@ -99,7 +201,7 @@ export interface DealDecisionView {
     caveats?: string[];
   };
   /** The one status per Stage 3 input, recorded with the decision. */
-  inputs?: { property?: Stage3StatusView | null; market?: Stage3StatusView | null } | null;
+  inputs?: { property?: Stage3StatusView | null; market?: Stage3StatusView | null; developmentPath?: Stage3StatusView | null } | null;
   propertyStory?: { headline?: string; strengths?: string[]; risks?: string[]; opportunities?: string[]; establishedTopics?: number; totalTopics?: number } | null;
   marketStory?: {
     headline?: string; liquidityRead?: string; demandRead?: string; competitionRead?: string;
@@ -116,6 +218,7 @@ export interface DealDecisionView {
   risks?: DecisionRankedView[];
   opportunities?: DecisionRankedView[];
   exitStrategies?: DecisionStrategyView[];
+  strategyComparison?: StrategyComparisonView | null;
   value?: {
     status?: string;
     fmv?: { central?: number } | null;
@@ -130,7 +233,7 @@ export interface DealDecisionView {
   nextActions?: { landos?: DecisionNextActionView; operator?: DecisionNextActionView };
   recommendation?: { kind?: string; label?: string; statement?: string; rationale?: string[] };
   refresh?: { cause?: string; kind?: string; changes?: Array<{ dimension?: string; before?: string | null; after?: string }>; priorSnapshotId?: number | null };
-  basedOn?: { propertySnapshotId?: number | null; marketSnapshotId?: number | null; subjectVersion?: string | null };
+  basedOn?: { propertySnapshotId?: number | null; marketSnapshotId?: number | null; developmentPathSnapshotId?: number | null; subjectVersion?: string | null };
   limitations?: string[];
 }
 
@@ -256,6 +359,15 @@ const DIMENSION_LABEL: Record<string, string> = {
 const STATUS_TONE: Record<string, string> = {
   sufficient: 'green', partial: 'yellow', missing: 'red',
   supported: 'green', conditional: 'yellow', not_supported: 'red', unknown: 'grey',
+  viable: 'green', applies: 'green', may_apply: 'yellow', not_applicable: 'red', not_established: 'grey',
+  by_right: 'green', prohibited: 'red', established: 'green',
+};
+
+const USE_STANDING_LABEL: Record<string, string> = {
+  by_right: 'By right', conditional: 'Conditional / special exception', prohibited: 'Prohibited', not_established: 'Not established',
+};
+const APPLICABILITY_LABEL: Record<string, string> = {
+  applies: 'Applies', may_apply: 'May apply', not_applicable: 'Not applicable', not_established: 'Not established',
 };
 
 const usd = (value: number | null | undefined): string =>
@@ -265,6 +377,7 @@ const when = (iso: string | null | undefined): string =>
   iso ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 
 const words = (value: string | null | undefined): string => (value ?? '').replace(/_/g, ' ');
+
 
 type DiscoveryClaimView = NonNullable<SellerDiscoveryView['claims']>[number];
 /** The seller's current positions: what the operator may act on. Negated and
@@ -311,13 +424,15 @@ function Stage3InputLine({ input }: { input: Stage3StatusView | null | undefined
   );
 }
 
-export function DealBrainDecisionPanel({ decision, stability, history, stage3, sellerReadStatus }: {
+export function DealBrainDecisionPanel({ decision, stability, history, stage3, sellerReadStatus, developmentPath }: {
   decision: DealDecisionView | null | undefined;
   stability?: DecisionStabilityView | null;
   history?: DealDecisionHistoryView[] | null;
   /** The live shared Stage 3 status (same rows, same mapping as the score cards). */
   stage3?: { property?: Stage3StatusView | null; market?: Stage3StatusView | null } | null;
   sellerReadStatus?: SellerReadStatusView | null;
+  /** Stage 5: the retained Development Path and its live status. */
+  developmentPath?: { path: DevelopmentPathView | null; status: Stage3StatusView | null; history: DevelopmentPathHistoryView[] } | null;
 }) {
   const subject = decision?.subject;
   const value = decision?.value;
@@ -326,6 +441,9 @@ export function DealBrainDecisionPanel({ decision, stability, history, stage3, s
   // The live status wins; the status the decision recorded is the fallback.
   const propertyInput = stage3?.property ?? decision?.inputs?.property ?? null;
   const marketInput = stage3?.market ?? decision?.inputs?.market ?? null;
+  const pathInput = developmentPath?.status ?? decision?.inputs?.developmentPath ?? null;
+  const path = developmentPath?.path?.correlation === 'equivalent' ? developmentPath.path : null;
+  const comparison = decision?.strategyComparison ?? null;
   return (
     <section data-domain="strategy" class="awv2-panel awv2-brain" id="deal-brain-decision" data-testid="deal-brain-decision">
       <div class="awv2-panel-title">
@@ -496,6 +614,10 @@ export function DealBrainDecisionPanel({ decision, stability, history, stage3, s
             </div>
           </div>
 
+          <DevelopmentPathSection path={path} status={pathInput} history={developmentPath?.history ?? []} retained={developmentPath?.path ?? null} />
+
+          {comparison && <StrategyComparisonSection comparison={comparison} />}
+
           <div class="awv2-brain-strategies" data-testid="deal-decision-strategies">
             <small>Exit strategies — status, key requirement, critical gate, economic basis</small>
             <div class="awv2-brain-strategy-grid">
@@ -555,6 +677,303 @@ export function DealBrainDecisionPanel({ decision, stability, history, stage3, s
         </>
       )}
     </section>
+  );
+}
+
+// ── Stage 5: Development Path ──────────────────────────────────────────────
+
+function SourceLine({ source }: { source: DevelopmentSourceView | null | undefined }) {
+  if (!source) return null;
+  return (
+    <span class="awv2-brain-muted awv2-dev-source">
+      {source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.label}</a> : source.label}
+      {source.section ? ` · ${source.section}` : ''}
+      {source.effectiveOrAsOf ? ` · as of ${source.effectiveOrAsOf}` : ''}
+      {source.tier ? ` · ${words(source.tier)}` : ''}
+    </span>
+  );
+}
+
+function DevelopmentPathSection({ path, status, history, retained }: {
+  path: DevelopmentPathView | null;
+  status: Stage3StatusView | null;
+  history: DevelopmentPathHistoryView[];
+  retained: DevelopmentPathView | null;
+}) {
+  const authority = path?.authority;
+  return (
+    <div class="awv2-brain-devpath" data-testid="deal-decision-development-path" data-status={status?.status ?? undefined} data-snapshot-id={status?.snapshotId ?? undefined}>
+      <small>Development Path — the local jurisdiction's rules applied to this parcel</small>
+      {status && (
+        <span class="awv2-brain-muted" data-testid="deal-decision-development-path-status">
+          {stage3Lineage(status)}{status.consumedByDealBrain ? ' · consumed by this decision' : ''}
+        </span>
+      )}
+      {!path && (
+        <p class="awv2-pi-note" data-testid="deal-decision-development-path-pending">
+          {retained && retained.correlation !== 'equivalent'
+            ? 'The retained Development Path answered about another parcel version; it is history, and the current path is pending.'
+            : 'The Development Path is pending: LandOS applies the local zoning and subdivision rules the moment the Property Story settles.'}
+        </p>
+      )}
+      {path && (
+        <>
+          <div class="awv2-brain-grid">
+            <div class="awv2-brain-block" data-testid="deal-decision-governing-authority" data-conflict={String(!!authority?.conflict)}>
+              <small>Governing authority</small>
+              <b>{authority?.zoning?.name ?? 'Not established'}{authority?.zoning?.level ? ` · ${words(authority.zoning.level)}` : ''}{authority?.zoning?.weight ? ` · ${words(authority.zoning.weight)}` : ''}</b>
+              <span>{[authority?.state, authority?.county, authority?.municipalityOrTownship].filter(Boolean).join(' · ')} · {words(authority?.incorporationStatus)}</span>
+              <span class="awv2-brain-muted">{authority?.zoning?.basis}</span>
+              {authority?.subdivision?.name && authority.subdivision.name !== authority.zoning?.name && (
+                <span class="awv2-brain-muted">Subdivision authority: {authority.subdivision.name} ({words(authority.subdivision.weight)}).</span>
+              )}
+              {authority?.planningBody && <span class="awv2-brain-muted">Planning body: {authority.planningBody}</span>}
+              <span class="awv2-brain-muted">ETJ / planning area: {authority?.etjOrPlanningArea?.statement}</span>
+              {!!authority?.specialAuthorities?.length && (
+                <span class="awv2-brain-muted">Special authorities referenced: {authority.specialAuthorities.join(' · ')}</span>
+              )}
+              {authority?.conflict && (
+                <div class="awv2-dev-conflict" data-testid="deal-decision-authority-conflict">
+                  <b>Authority conflict</b>
+                  <span>{authority.conflict.statement}</span>
+                  <ul>{(authority.conflict.sides ?? []).map((side) => (
+                    <li><b>{side.claim}</b> — {side.url ? <a href={side.url} target="_blank" rel="noreferrer">{side.source}</a> : side.source}{side.retrievedAt ? ` · retrieved ${side.retrievedAt.slice(0, 10)}` : ''}{side.applicability ? ` · ${side.applicability}` : ''} ({side.weight})</li>
+                  ))}</ul>
+                  <span><i>Decisive verification:</i> {authority.conflict.decisiveVerification}</span>
+                </div>
+              )}
+              {!!authority?.nonQualifyingClaims?.length && (
+                <div class="awv2-dev-nonqualifying" data-testid="deal-decision-authority-non-qualifying">
+                  <b>Retained claims that do not qualify at parcel level</b>
+                  <ul>{authority.nonQualifyingClaims.map((claim) => (
+                    <li><b>{claim.claim}</b> — {claim.url ? <a href={claim.url} target="_blank" rel="noreferrer">{claim.source}</a> : claim.source}{claim.retrievedAt ? ` · retrieved ${claim.retrievedAt.slice(0, 10)}` : ''}. {claim.reason}</li>
+                  ))}</ul>
+                </div>
+              )}
+              {authority?.postalLocality?.statement && <span class="awv2-brain-muted" data-testid="deal-decision-postal-locality">{authority.postalLocality.statement}</span>}
+              {(authority?.sources ?? []).slice(0, 3).map((source) => <SourceLine source={source} />)}
+            </div>
+
+            <div class="awv2-brain-block" data-testid="deal-decision-current-zoning" data-established={String(!!path.zoning?.established)}>
+              <small>Current zoning</small>
+              <b>{path.zoning?.established ? `${path.zoning.districtCode}${path.zoning.districtName ? ` · ${path.zoning.districtName}` : ''}` : 'District not established'}{path.zoning?.weight ? ` · ${words(path.zoning.weight)}` : ''}</b>
+              <span>{path.zoning?.statement}</span>
+              {!!path.zoning?.overlays?.length && <span class="awv2-brain-muted">Overlays: {path.zoning.overlays.join(', ')}</span>}
+              <SourceLine source={path.zoning?.source} />
+              {!!path.zoning?.historicalReferences?.length && (
+                <span class="awv2-brain-muted">Historical references (never the current district): {path.zoning.historicalReferences.map((ref) => `${ref.value ?? ref.kind ?? '?'}${ref.asOf ? ` (${ref.asOf})` : ''}`).join('; ')}</span>
+              )}
+            </div>
+
+            <div class="awv2-brain-block" data-testid="deal-decision-subject-screen">
+              <small>Subject screen</small>
+              <ul class="awv2-brain-caveats">{(path.subjectScreen?.statements ?? []).map((line) => <li>{line}</li>)}</ul>
+              <span class="awv2-brain-muted">Well/septic: {path.subjectScreen?.wellSepticStatus} · Utilities: {path.subjectScreen?.utilitiesStatus}</span>
+            </div>
+          </div>
+
+          <div class="awv2-dev-uses" data-testid="deal-decision-uses">
+            <small>Uses relevant to company strategies — by right, conditional, prohibited, or not established</small>
+            <div class="awv2-brain-evidence-grid">
+              {(path.uses ?? []).map((use) => (
+                <div class="awv2-brain-evidence-row" data-standing={use.standing} data-tone={STATUS_TONE[use.standing ?? ''] ?? 'grey'}>
+                  <b>{use.label}</b>
+                  <span class="awv2-brain-evidence-status">{USE_STANDING_LABEL[use.standing ?? ''] ?? words(use.standing)}</span>
+                  <span>{use.statement}</span>
+                  <SourceLine source={use.source} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div class="awv2-dev-standards" data-testid="deal-decision-standards">
+            <small>Dimensional standards — each traced to its section</small>
+            <div class="awv2-brain-evidence-grid">
+              {(path.standards ?? []).map((row) => (
+                <div class="awv2-brain-evidence-row" data-key={row.key} data-tone={row.status === 'established' ? 'green' : 'grey'}>
+                  <b>{row.label}</b>
+                  <span class="awv2-brain-evidence-status">{words(row.status)}</span>
+                  <span>{row.value ?? row.gap}</span>
+                  <SourceLine source={row.source} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div class="awv2-dev-paths" data-testid="deal-decision-paths">
+            <small>Paths — in the jurisdiction's own words; cost and time only when a source or the operator states them</small>
+            <div class="awv2-brain-strategy-grid">
+              {(path.paths ?? []).map((item) => (
+                <div class="awv2-brain-strategy awv2-dev-path" data-path={item.kind} data-applicability={item.applicability} data-tone={STATUS_TONE[item.applicability ?? ''] ?? 'grey'}>
+                  <b>{item.label}</b>
+                  <span class="awv2-brain-strategy-status">{APPLICABILITY_LABEL[item.applicability ?? ''] ?? words(item.applicability)} · {words(item.weight)}</span>
+                  <span>{item.applicabilityWhy}</span>
+                  {item.localDefinition && (
+                    <span class="awv2-dev-local"><i>Local definition ({item.localDefinition.term}{item.localDefinition.section ? `, ${item.localDefinition.section}` : ''}):</i> "{item.localDefinition.definition}"</span>
+                  )}
+                  <span><i>Trigger:</i> {item.trigger}</span>
+                  <span><i>Threshold:</i> {item.threshold?.statement}</span>
+                  <span><i>Authority / review body:</i> {item.authority ?? 'not established'}{item.reviewBody ? ` · ${item.reviewBody}` : ''}</span>
+                  {!!item.materials?.length && <span><i>Materials:</i> {item.materials.map((m) => `${m.item}: ${m.requirement}`).join(' · ')}</span>}
+                  {!!item.requirements?.length && (
+                    <ul class="awv2-brain-caveats">{item.requirements.map((req) => <li><b>{words(req.kind)}</b> {req.requirement}{req.section ? ` (${req.section})` : ''}</li>)}</ul>
+                  )}
+                  {!!item.approvalSteps?.length && <span><i>Approval steps:</i> {item.approvalSteps.join(' → ')}</span>}
+                  {!!item.parcelGates?.length && <span><i>Parcel gates:</i> {item.parcelGates.join(' ')}</span>}
+                  <span data-testid={`deal-decision-path-cost-${item.kind}`}><i>Cost / time:</i> {item.costAndTime ? `${item.costAndTime.estimatedCost ?? 'cost not stated'} · ${item.costAndTime.estimatedTime ?? 'time not stated'} (${item.costAndTime.basis})` : 'Not sourced: no retained source or operator figure states cost or time for this path.'}</span>
+                  {!!item.missingInputs?.length && <span class="awv2-brain-muted"><i>Missing inputs:</i> {item.missingInputs.join(' ')}</span>}
+                  <span class="awv2-dev-verify" data-testid={`deal-decision-path-verify-${item.kind}`}><i>Smallest decisive verification:</i> {item.decisiveVerification?.action}{item.decisiveVerification?.askOf ? ` (ask: ${item.decisiveVerification.askOf})` : ''} — {item.decisiveVerification?.why}</span>
+                  {(item.sources ?? []).slice(0, 3).map((source) => <SourceLine source={source} />)}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div class="awv2-brain-columns">
+            <div data-testid="deal-decision-critical-gates">
+              <small>Critical gates — what must be verified before an approval, price or strategy conclusion can be trusted</small>
+              <ol>
+                {(path.criticalGates ?? []).map((gate) => (
+                  <li data-gate={gate.key}>
+                    <b>{gate.gate}</b> {gate.why}
+                    <span class="awv2-brain-muted"> Blocks: {(gate.blocks ?? []).map(words).join(', ')}. Verify: {gate.decisiveVerification}</span>
+                  </li>
+                ))}
+              </ol>
+              {!path.criticalGates?.length && <span class="awv2-brain-muted">No critical gate is open.</span>}
+            </div>
+            <div data-testid="deal-decision-unknowns">
+              <small>Unknowns</small>
+              <ul>{(path.unknowns ?? []).map((line) => <li>{line}</li>)}</ul>
+            </div>
+          </div>
+
+          <details class="awv2-brain-history" data-testid="deal-decision-source-lineage">
+            <summary>Source lineage ({path.sourceLineage?.length ?? 0}) · {path.currentness?.statement}</summary>
+            <ul>
+              {(path.sourceLineage ?? []).map((source) => (
+                <li>
+                  {source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.label}</a> : source.label}
+                  {source.section ? ` · ${source.section}` : ''} · {words(source.tier)}{source.effectiveOrAsOf ? ` · as of ${source.effectiveOrAsOf}` : ''}{source.retrievedAt ? ` · retrieved ${source.retrievedAt.slice(0, 10)}` : ''} — {source.carries}
+                  {source.excerpt && <span class="awv2-brain-muted"> "{source.excerpt}"</span>}
+                </li>
+              ))}
+            </ul>
+            <span class="awv2-brain-muted">Refreshes on: {(path.currentness?.refreshOn ?? []).join(' ')}</span>
+          </details>
+
+          <div class="awv2-brain-refresh" data-testid="deal-decision-development-path-refresh" data-kind={path.refresh?.kind}>
+            <span>
+              {path.refresh?.kind === 'material'
+                ? `Development Path refreshed by ${words(path.refresh?.cause)}: ${path.refresh?.changes?.length ?? 0} material dimension(s) moved.`
+                : path.refresh?.kind === 'contract'
+                  ? `Development Path re-formed under the current contract by ${words(path.refresh?.cause)}.`
+                  : `Initial Development Path, formed by ${words(path.refresh?.cause)}.`}
+              {path.retainedAt ? ` Retained ${when(path.retainedAt)}.` : ''} Confidence: {words(path.confidence)}.
+            </span>
+            {!!path.refresh?.changes?.length && (
+              <ul class="awv2-brain-changes">
+                {path.refresh.changes.map((change) => <li><b>{words(change.dimension)}</b> {change.before ?? 'unknown'} → {change.after}</li>)}
+              </ul>
+            )}
+            {!!history.length && (
+              <details class="awv2-brain-history" data-testid="deal-decision-development-path-history">
+                <summary>Prior Development Paths ({history.length})</summary>
+                <ul>
+                  {history.map((entry) => (
+                    <li><b>{entry.authority ?? 'authority unresolved'} · {entry.district ?? 'district not established'}</b> {Object.entries(entry.paths ?? {}).map(([kind, applicability]) => `${words(kind)}: ${words(applicability)}`).join(' · ')}
+                      <span class="awv2-brain-muted"> — {words(entry.refresh?.kind)} by {words(entry.refresh?.cause)}{entry.retainedAt ? ` · ${when(entry.retainedAt)}` : ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+          {!!path.limitations?.length && (
+            <ul class="awv2-brain-limits" data-testid="deal-decision-development-path-limitations">{path.limitations.map((line) => <li>{line}</li>)}</ul>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Stage 5: strategy comparison ───────────────────────────────────────────
+
+function CostLines({ lines }: { lines: CostLineView[] | undefined }) {
+  if (!lines?.length) return null;
+  return (
+    <ul class="awv2-brain-caveats">
+      {lines.map((line) => (
+        <li data-source={line.source}>
+          <b>{line.label}:</b> {line.amount != null ? usd(line.amount) : 'missing'} <span class="awv2-brain-muted">({line.basis}{line.source ? ` · ${words(line.source)}` : ''})</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function StrategyComparisonSection({ comparison }: { comparison: StrategyComparisonView }) {
+  const sensitivity = comparison.priceSensitivity;
+  const rankOf = (id: string | undefined) => comparison.ranking?.find((entry) => entry.id === id)?.rank;
+  const scenarios = [...(comparison.scenarios ?? [])].sort((a, b) => (rankOf(a.id) ?? 99) - (rankOf(b.id) ?? 99));
+  return (
+    <div class="awv2-brain-comparison" data-testid="deal-decision-strategy-comparison" data-development-path={comparison.developmentPathStatus}>
+      <small>Strategy comparison — every relevant exit, side by side; nothing is auto-selected</small>
+      <p class="awv2-dev-comparison-statement" data-testid="deal-decision-comparison-statement">{comparison.statement}</p>
+      <span class="awv2-brain-muted">Criteria: {(comparison.criteria ?? []).join(' · ')}</span>
+
+      <div class="awv2-dev-sensitivity" data-testid="deal-decision-price-sensitivity" data-mode={sensitivity?.mode}>
+        <b>Seller price as a sensitivity: {words(sensitivity?.mode)}</b>
+        <span>{sensitivity?.statement}</span>
+        {sensitivity?.source && <span class="awv2-brain-muted">Source: {sensitivity.source}</span>}
+        {!!sensitivity?.points?.length && (
+          <table class="awv2-dev-table">
+            <thead><tr><th>Point</th><th>Price</th><th>Still plausible</th><th>Exceeded</th><th>No capacity yet</th></tr></thead>
+            <tbody>
+              {sensitivity.points.map((point) => (
+                <tr data-point={point.label}>
+                  <td>{point.label}</td>
+                  <td>{usd(point.price)}</td>
+                  <td>{(point.plausible ?? []).map(words).join(', ') || '—'}</td>
+                  <td>{(point.exceeded ?? []).map(words).join(', ') || '—'}</td>
+                  <td>{(point.undetermined ?? []).map(words).join(', ') || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {!!sensitivity?.missingInputs?.length && (
+          <span class="awv2-brain-muted" data-testid="deal-decision-sensitivity-missing">Missing value or cost inputs: {sensitivity.missingInputs.join(' ')}</span>
+        )}
+      </div>
+
+      <div class="awv2-brain-strategy-grid awv2-dev-scenarios">
+        {scenarios.map((scenario) => (
+          <div class="awv2-brain-strategy awv2-dev-scenario" data-scenario={scenario.id} data-status={scenario.status} data-tone={STATUS_TONE[scenario.status ?? ''] ?? 'grey'}>
+            <b>#{rankOf(scenario.id)} {scenario.label}</b>
+            <span class="awv2-brain-strategy-status">{words(scenario.status)} · {words(scenario.confidence)} · {scenario.complexity} complexity</span>
+            <span>{scenario.statusWhy}</span>
+            <span><i>Scope:</i> {scenario.subjectScope}</span>
+            <span><i>Gross exit:</i> {scenario.grossExit ? `${usd(scenario.grossExit.amount)} (${scenario.grossExit.basis}${scenario.grossExit.asOf ? `, as of ${scenario.grossExit.asOf}` : ''})` : 'not sourced'}</span>
+            <span><i>Purchase-price capacity:</i> {scenario.purchasePriceCapacity ? `${usd(scenario.purchasePriceCapacity.low)}–${usd(scenario.purchasePriceCapacity.high)} (${scenario.purchasePriceCapacity.basis}${scenario.purchasePriceCapacity.confirmed ? '' : '; draft'})` : 'not computable'}</span>
+            <span><i>Direct costs:</i></span><CostLines lines={scenario.directCosts} />
+            <span><i>Soft costs:</i></span><CostLines lines={scenario.softCosts} />
+            <span><i>Capital at risk:</i> {scenario.capitalAtRisk ? `${usd(scenario.capitalAtRisk.amount)} (${scenario.capitalAtRisk.basis})` : 'not computable'}</span>
+            <span><i>Time to exit:</i> {scenario.timeToExit ? `${scenario.timeToExit.statement} (${scenario.timeToExit.basis})` : 'not sourced'}</span>
+            <span><i>Key approvals:</i> {(scenario.keyApprovals ?? []).join(' → ') || 'none'}</span>
+            <span data-testid={`deal-decision-scenario-return-${scenario.id}`}><i>Expected return:</i> {scenario.returnMetrics
+              ? `net ${usd(scenario.returnMetrics.netProfit)} on ${usd(scenario.returnMetrics.purchasePrice)} (${Math.round((scenario.returnMetrics.returnOnCapital ?? 0) * 100)}% on capital; ${scenario.returnMetrics.meetsMinimumNet ? 'meets' : 'below'} the ${usd(scenario.returnMetrics.minimumNet)} minimum net). ${scenario.returnMetrics.basis}`
+              : `withheld: ${scenario.missingInputs?.length ?? 0} input(s) not visible.`}</span>
+            {!!scenario.missingInputs?.length && <span class="awv2-brain-muted"><i>Missing inputs:</i> {scenario.missingInputs.join(' ')}</span>}
+            <span class="awv2-brain-muted"><i>Buyer demand:</i> {scenario.buyerDemand}</span>
+            {!!scenario.risks?.length && <span class="awv2-brain-muted"><i>Risks / gates:</i> {scenario.risks.join(' · ')}</span>}
+            <span class="awv2-dev-verify"><i>Next decisive action:</i> {scenario.nextDecisiveAction}</span>
+            <span class="awv2-brain-muted"><i>Rank basis:</i> {comparison.ranking?.find((entry) => entry.id === scenario.id)?.why}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

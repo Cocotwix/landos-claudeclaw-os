@@ -180,3 +180,47 @@
 .awv2-brain-discovery-claims li[data-polarity='withdrawn'] .awv2-brain-claim-value { text-decoration: line-through; opacity: 0.75; }
 .awv2-brain-discovery-claims li[data-confidence='low'] { opacity: 0.85; }
 .awv2-brain-discovery-claims li[data-status='historical'] { opacity: 0.7; }
+
+/* Stage 5: Development Path and strategy comparison */
+.awv2-brain-devpath, .awv2-brain-comparison { margin-top: 14px; font-size: 12px; }
+.awv2-brain-devpath > small, .awv2-brain-comparison > small { display: block; }
+.awv2-dev-uses, .awv2-dev-standards, .awv2-dev-paths { margin-top: 12px; }
+.awv2-dev-source { display: block; font-size: 10.5px; }
+.awv2-dev-source a { color: inherit; text-decoration: underline dotted; }
+.awv2-dev-conflict {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid #f87171;
+  background: rgba(248, 113, 113, 0.08);
+}
+.awv2-dev-conflict ul { margin: 0; padding-left: 16px; font-size: 11px; }
+.awv2-brain-block[data-conflict='true'] { border-color: rgba(248, 113, 113, 0.45); }
+.awv2-dev-local { font-size: 11px; opacity: 0.85; }
+.awv2-dev-verify { padding: 4px 6px; border-radius: 6px; background: rgba(96, 165, 250, 0.08); }
+.awv2-dev-comparison-statement { margin: 6px 0; line-height: 1.45; font-weight: 600; }
+.awv2-dev-sensitivity {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+}
+.awv2-dev-sensitivity[data-mode='no_price'] { border-style: dashed; }
+.awv2-dev-table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-top: 4px; }
+.awv2-dev-table th, .awv2-dev-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid rgba(148, 163, 184, 0.2); vertical-align: top; }
+.awv2-dev-scenarios { margin-top: 10px; }
+.awv2-dev-scenario ul, .awv2-dev-path ul { font-size: 11px; }
+.awv2-dev-nonqualifying {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid rgba(148, 163, 184, 0.6);
+  background: rgba(148, 163, 184, 0.08);
+}
+.awv2-dev-nonqualifying ul { margin: 0; padding-left: 16px; font-size: 11px; }

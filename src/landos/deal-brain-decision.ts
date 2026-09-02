@@ -47,6 +47,12 @@ import {
   writeDerivedSnapshot,
   type ParcelCorrelation,
 } from './derived-intelligence-store.js';
+import {
+  developmentPathStatus,
+  readDevelopmentPath,
+  type DevelopmentPathStatusView,
+  type RetainedDevelopmentPath,
+} from './development-path-lifecycle.js';
 import type { MarketResearchAndPulse } from './market-research-and-pulse.js';
 import type { PropertyEvidenceSynthesis } from './property-evidence-synthesis.js';
 import {
@@ -92,6 +98,8 @@ export interface RetainedDealDecision extends DealDecisionSynthesis {
     propertySnapshotId: number | null;
     marketSnapshotId: number | null;
     sellerDiscoverySnapshotId: number | null;
+    /** Stage 5: the exact Development Path row the comparison was formed on. */
+    developmentPathSnapshotId: number | null;
     subjectVersion: string | null;
   };
   /** The one shared status of each Stage 3 input, from the same mapping the
@@ -100,6 +108,7 @@ export interface RetainedDealDecision extends DealDecisionSynthesis {
   inputs: {
     property: Stage3ArtifactStatusView;
     market: Stage3ArtifactStatusView;
+    developmentPath: DevelopmentPathStatusView;
   };
   refresh: DecisionRefresh;
 }
@@ -142,6 +151,12 @@ export interface FreshStories {
   marketSnapshotId: number | null;
 }
 
+/** A Development Path the caller has just formed at the completion boundary. */
+export interface FreshDevelopmentPath {
+  developmentPath: RetainedDevelopmentPath;
+  snapshotId: number | null;
+}
+
 export interface DealBrainDecisionDeps {
   readPropertyFile: (dealCardId: number) => PropertyFileSource | null;
   readSubject?: (dealCardId: number) => CanonicalSubjectState;
@@ -151,7 +166,11 @@ export interface DealBrainDecisionDeps {
   readPropertyStory?: (dealCardId: number) => RetainedReading<PropertyEvidenceSynthesis> | null;
   readMarketStory?: (dealCardId: number) => RetainedReading<MarketResearchAndPulse> | null;
   readCurrentDecision?: (dealCardId: number) => RetainedReading<RetainedDealDecision> | null;
+  readDevelopmentPath?: (dealCardId: number) => RetainedReading<RetainedDevelopmentPath> | null;
   writeSnapshot?: typeof writeDerivedSnapshot;
+  /** The Development Path formed a moment ago on the same trigger, so the
+   *  decision consumes it without re-reading it. */
+  developmentPath?: FreshDevelopmentPath | null;
   /** Readings the caller has just formed, so the completion boundary does not
    *  re-read what it wrote a moment ago. */
   stories?: FreshStories | null;
@@ -294,6 +313,17 @@ export function ensureDealBrainDecision(
     runId: deps.runId ?? null,
   });
 
+  // Stage 5: the Development Path, fresh from the same trigger or the
+  // retained current one — and only when it is about the accepted parcel.
+  let pathReading: RetainedReading<RetainedDevelopmentPath> | null;
+  if (deps.developmentPath) {
+    pathReading = { value: deps.developmentPath.developmentPath, correlation: 'equivalent', retainedAt: null, snapshotId: deps.developmentPath.snapshotId };
+  } else {
+    pathReading = (deps.readDevelopmentPath ?? readDevelopmentPath)(dealCardId);
+  }
+  const developmentPath = pathReading?.correlation === 'equivalent' ? pathReading.value : null;
+  const developmentPathSnapshotId = developmentPath ? pathReading!.snapshotId : null;
+
   const synthesis = buildDealDecisionSynthesis({
     dealCardId,
     dossier,
@@ -302,10 +332,12 @@ export function ensureDealBrainDecision(
     market,
     sellerDiscovery,
     identityEvidence: (deps.readIdentityEvidence ?? readIdentityEvidence)(propertyCardId),
+    developmentPath,
   });
   const inputs: RetainedDealDecision['inputs'] = {
     property: stage3ArtifactStatus('property_story', propertyReading, { dealCardId, consumedSnapshotId: propertySnapshotId, subjectVersion: subject.subjectVersion }),
     market: stage3ArtifactStatus('market_story', marketReading, { dealCardId, consumedSnapshotId: marketSnapshotId, subjectVersion: subject.subjectVersion }),
+    developmentPath: developmentPathStatus(pathReading, { dealCardId, consumedSnapshotId: developmentPathSnapshotId, subjectVersion: subject.subjectVersion }),
   };
 
   // The material gate. A prior decision about THIS parcel with the same
@@ -322,7 +354,7 @@ export function ensureDealBrainDecision(
   if (priorStands && priorContractCurrent && prior!.value.materialFingerprint === synthesis.materialFingerprint) {
     return {
       outcome: 'unchanged',
-      reason: 'No material seller, value, zoning, access, title, strategy, subject or market evidence changed; the current decision stands.',
+      reason: 'No material seller, value, zoning, access, title, strategy, development-path, subject or market evidence changed; the current decision stands.',
       decision: prior!.value,
       sellerDiscovery,
       persistence: {
@@ -339,6 +371,7 @@ export function ensureDealBrainDecision(
       propertySnapshotId,
       marketSnapshotId,
       sellerDiscoverySnapshotId: sellerWrite.snapshotId,
+      developmentPathSnapshotId,
       subjectVersion: subject.subjectVersion,
     },
     inputs,
@@ -362,6 +395,8 @@ export function ensureDealBrainDecision(
       risks: decision.risks.length,
       opportunities: decision.opportunities.length,
       strategies: decision.exitStrategies.length,
+      scenarios: decision.strategyComparison.scenarios.length,
+      developmentPath: decision.strategyComparison.developmentPathStatus,
       valueSupported: decision.value.status === 'supported',
       sellerStatus: decision.seller.status,
       changes: changes.length,

@@ -32,6 +32,8 @@ import type {
 import { DealReadCard, type IntelligenceRunProgressView } from './AcquisitionWorkspaceV2DealRead';
 import {
   DealBrainDecisionPanel,
+  type DevelopmentPathHistoryView,
+  type DevelopmentPathView,
   type DealDecisionView, type DealDecisionHistoryView, type DecisionStabilityView, type SellerReadStatusView,
 } from './AcquisitionWorkspaceV2DealBrain';
 import type { Stage3StatusView } from './AcquisitionWorkspaceV2IntelligenceStack';
@@ -294,6 +296,8 @@ interface OverviewSectionProps {
     stage3?: { property?: Stage3StatusView | null; market?: Stage3StatusView | null } | null;
     sellerReadStatus?: SellerReadStatusView | null;
   } | null;
+  /** Stage 5: the retained Development Path, its live status and history. */
+  developmentPath?: { path: DevelopmentPathView | null; status: Stage3StatusView | null; history: DevelopmentPathHistoryView[] } | null;
   /** Which deal page's sections to render; defaults to the Overview command center. */
   pageFilter?: OverviewPageFilter;
 }
@@ -495,6 +499,7 @@ export function OverviewSection({
   specialistReads,
   dealBrain,
   dealDecision,
+  developmentPath,
   researchReadiness,
   pageFilter = 'overview',
 }: OverviewSectionProps) {
@@ -1195,6 +1200,7 @@ export function OverviewSection({
           stability={dealDecision.stability}
           stage3={dealDecision.stage3 ?? null}
           sellerReadStatus={dealDecision.sellerReadStatus ?? null}
+          developmentPath={developmentPath ?? null}
         />
       )}
 
