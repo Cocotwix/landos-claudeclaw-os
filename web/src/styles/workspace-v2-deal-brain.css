@@ -1,0 +1,182 @@
+/* LandOS Deal Brain decision and seller discovery.
+   The recommendation and the two next actions lead; every supporting item
+   keeps the standing and source that raised it. */
+
+.awv2-brain small,
+.awv2-brain-discovery small {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.awv2-brain ul, .awv2-brain ol,
+.awv2-brain-discovery ul, .awv2-brain-discovery ol { margin: 0; padding-left: 18px; }
+.awv2-brain li, .awv2-brain-discovery li { margin: 4px 0; line-height: 1.45; }
+.awv2-brain-muted { opacity: 0.72; font-size: 11px; }
+
+.awv2-brain-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 8px 0 10px;
+  font-size: 12px;
+}
+.awv2-brain-mode-tag {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  background: rgba(251, 191, 36, 0.12);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.awv2-brain-mode[data-mode='offer_strategy_posture'] .awv2-brain-mode-tag {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(52, 211, 153, 0.12);
+}
+
+.awv2-brain-recommendation {
+  margin: 4px 0 8px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border-left: 4px solid #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 650;
+}
+.awv2-brain-recommendation[data-kind='make_offer'] { border-left-color: #34d399; background: rgba(52, 211, 153, 0.08); }
+.awv2-brain-recommendation[data-kind='renegotiate'] { border-left-color: #60a5fa; background: rgba(96, 165, 250, 0.08); }
+.awv2-brain-recommendation[data-kind='pass'] { border-left-color: #f87171; background: rgba(248, 113, 113, 0.08); }
+.awv2-brain-rationale { font-size: 12px; margin-bottom: 12px; }
+
+.awv2-brain-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+.awv2-brain-action {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  font-size: 12px;
+}
+.awv2-brain-action b { font-size: 13px; line-height: 1.4; }
+.awv2-brain-action-unlock { opacity: 0.72; font-size: 11px; }
+
+.awv2-brain-grid,
+.awv2-brain-stories {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.awv2-brain-block {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 12px;
+}
+.awv2-brain-block b { line-height: 1.4; }
+.awv2-brain-caveats, .awv2-brain-claims { font-size: 11px; }
+
+.awv2-brain-evidence { margin-top: 14px; font-size: 12px; }
+.awv2-brain-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.awv2-brain-evidence-row {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 11.5px;
+}
+.awv2-brain-evidence-row[data-tone='green'] { border-left: 3px solid #34d399; }
+.awv2-brain-evidence-row[data-tone='yellow'] { border-left: 3px solid #fbbf24; }
+.awv2-brain-evidence-row[data-tone='red'] { border-left: 3px solid #f87171; }
+.awv2-brain-evidence-status,
+.awv2-brain-strategy-status {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.awv2-brain-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+  font-size: 12px;
+}
+.awv2-brain-columns li[data-magnitude='high'] b { color: #f87171; }
+.awv2-brain-columns [data-testid='deal-decision-opportunities'] li[data-magnitude='high'] b { color: #34d399; }
+
+.awv2-brain-strategies { margin-top: 14px; font-size: 12px; }
+.awv2-brain-strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 8px;
+}
+.awv2-brain-strategy {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 11.5px;
+}
+.awv2-brain-strategy[data-tone='green'] { border-left: 3px solid #34d399; }
+.awv2-brain-strategy[data-tone='yellow'] { border-left: 3px solid #fbbf24; }
+.awv2-brain-strategy[data-tone='red'] { border-left: 3px solid #f87171; }
+.awv2-brain-strategy[data-tone='grey'] { border-left: 3px solid rgba(148, 163, 184, 0.5); }
+.awv2-brain-strategy i { font-style: normal; opacity: 0.7; }
+
+.awv2-brain-refresh {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  font-size: 12px;
+}
+.awv2-brain-refresh[data-kind='material'] { border-color: rgba(96, 165, 250, 0.55); background: rgba(96, 165, 250, 0.06); }
+.awv2-brain-changes { margin-top: 6px; font-size: 11.5px; }
+.awv2-brain-history { margin-top: 8px; font-size: 11.5px; }
+.awv2-brain-history summary { cursor: pointer; }
+.awv2-brain-limits { margin-top: 12px; font-size: 11.5px; opacity: 0.85; }
+
+/* Seller discovery, on the Seller page */
+.awv2-brain-discovery-status { display: grid; gap: 4px; font-size: 12px; margin-bottom: 10px; }
+.awv2-brain-discovery-status[data-status='communications_read'] b { color: #34d399; }
+.awv2-brain-discovery-claims { margin: 10px 0; font-size: 12px; }
+.awv2-brain-discovery-brief { font-size: 12px; }
+.awv2-brain-discovery-objective { margin: 0 0 8px; font-weight: 600; line-height: 1.45; }
+.awv2-brain-discovery-brief ol li { display: grid; gap: 2px; margin: 8px 0; }
+.awv2-brain-discovery-brief ol li[data-priority='1'] b { color: #fbbf24; }
+.awv2-brain-discovery-guard { margin-top: 10px; }
+.awv2-brain-discovery-limits { margin-top: 10px; font-size: 11px; opacity: 0.8; }
+
+/* Stage 3 status on the score tiles: one lineage line per retained artifact */
+.awv2-intel-tile .awv2-intel-tile-lineage { display: block; font-size: 10px; line-height: 1.35; opacity: 0.75; margin-top: 2px; }
+.awv2-intel-tile .awv2-intel-tile-link { display: block; font-size: 10px; margin-top: 3px; }
+.awv2-seller-read ul { margin-top: 8px; }
+
+/* Seller claim provenance: value, speaker, confidence and currentness */
+.awv2-brain-claim-value { font-style: normal; font-weight: 650; padding: 0 5px; border-radius: 5px; background: rgba(148, 163, 184, 0.16); }
+.awv2-brain-discovery-claims li[data-polarity='negated'] .awv2-brain-claim-value,
+.awv2-brain-discovery-claims li[data-polarity='withdrawn'] .awv2-brain-claim-value { text-decoration: line-through; opacity: 0.75; }
+.awv2-brain-discovery-claims li[data-confidence='low'] { opacity: 0.85; }
+.awv2-brain-discovery-claims li[data-status='historical'] { opacity: 0.7; }

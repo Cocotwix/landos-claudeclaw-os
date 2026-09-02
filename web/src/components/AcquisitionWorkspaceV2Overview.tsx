@@ -31,6 +31,11 @@ import type {
 } from './AcquisitionWorkspaceV2AcquisitionIntelligence';
 import { DealReadCard, type IntelligenceRunProgressView } from './AcquisitionWorkspaceV2DealRead';
 import {
+  DealBrainDecisionPanel,
+  type DealDecisionView, type DealDecisionHistoryView, type DecisionStabilityView, type SellerReadStatusView,
+} from './AcquisitionWorkspaceV2DealBrain';
+import type { Stage3StatusView } from './AcquisitionWorkspaceV2IntelligenceStack';
+import {
   DealBrainAsk,
   IntelligenceScoreStrip,
   type DealBrainThreadEntry,
@@ -280,6 +285,15 @@ interface OverviewSectionProps {
     error: string | null;
     onAsk: (message: string) => void;
   } | null;
+  /** Stage 4: the automatic decision LandOS formed when research settled. */
+  dealDecision?: {
+    decision: DealDecisionView | null;
+    history: DealDecisionHistoryView[];
+    stability: DecisionStabilityView | null;
+    /** The one Stage 3 status per artifact, shared with the score cards. */
+    stage3?: { property?: Stage3StatusView | null; market?: Stage3StatusView | null } | null;
+    sellerReadStatus?: SellerReadStatusView | null;
+  } | null;
   /** Which deal page's sections to render; defaults to the Overview command center. */
   pageFilter?: OverviewPageFilter;
 }
@@ -480,6 +494,7 @@ export function OverviewSection({
   workingAcres,
   specialistReads,
   dealBrain,
+  dealDecision,
   researchReadiness,
   pageFilter = 'overview',
 }: OverviewSectionProps) {
@@ -1081,6 +1096,8 @@ export function OverviewSection({
           cashVerdict={intelligence.cashVerdict}
           phaseLabel={intelligence.phaseLabel}
           whatChanged={intelligence.whatChanged}
+          stage3={dealDecision?.stage3 ?? null}
+          sellerStatusLabel={dealDecision?.sellerReadStatus?.label ?? null}
         />
       )}
 
@@ -1165,6 +1182,19 @@ export function OverviewSection({
           running={researchReadiness.running}
           onBackfill={researchReadiness.onBackfill}
           compact
+        />
+      )}
+
+      {/* ── 2a. The Deal Brain decision: the posture LandOS formed automatically
+             above Property, Market and Seller Intelligence. It is never blank
+             once research settles, and rendering runs nothing. ── */}
+      {show('overview') && dealDecision && (
+        <DealBrainDecisionPanel
+          decision={dealDecision.decision}
+          history={dealDecision.history}
+          stability={dealDecision.stability}
+          stage3={dealDecision.stage3 ?? null}
+          sellerReadStatus={dealDecision.sellerReadStatus ?? null}
         />
       )}
 

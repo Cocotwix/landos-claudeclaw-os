@@ -458,6 +458,125 @@ export function readResearchStability(
 
 // ── Reading them back ───────────────────────────────────────────────────────
 
+// ── One status for a retained Stage 3 artifact ──────────────────────────────
+//
+// The Overview cards and the Deal Brain read the SAME retained row through
+// this one mapping, so a page can never call a story "Unknown" on one card
+// while presenting it as a decision input on the next.
+
+export type Stage3ArtifactStatus = 'current' | 'partial_current' | 'pending' | 'historical';
+
+export const STAGE3_STATUS_LABEL: Record<Stage3ArtifactStatus, string> = {
+  current: 'Current',
+  partial_current: 'Partial — current',
+  pending: 'Pending / No current read',
+  historical: 'Historical',
+};
+
+export interface Stage3ArtifactStatusView {
+  product: 'property_story' | 'market_story';
+  status: Stage3ArtifactStatus;
+  label: string;
+  /** The retained row and contract the status describes. */
+  snapshotId: number | null;
+  contractVersion: string | null;
+  retainedAt: string | null;
+  /** The accepted subject the artifact is correlated to. */
+  subjectVersion: string | null;
+  correlation: ParcelCorrelation | null;
+  /** Concise coverage: topics established, subject band sample. */
+  coverage: string | null;
+  /** The material gap or limitation that keeps it partial, or why it is
+   *  pending or historical. */
+  limitation: string | null;
+  /** Whether the current Deal Brain decision was formed on this exact row. */
+  consumedByDealBrain: boolean;
+  /** The existing surface that renders the full product. */
+  link: string;
+}
+
+/**
+ * PURE. Map a retained reading to one truthful status.
+ *
+ *   current          a complete reading, correlated to the accepted subject
+ *   partial_current  correlated and current, but carrying material gaps
+ *   pending          no current subject-equivalent artifact at all
+ *   historical       a retained artifact about another parcel version,
+ *                    excluded from current Deal Brain inputs
+ */
+export function stage3ArtifactStatus(
+  product: 'property_story' | 'market_story',
+  reading: RetainedReading<PropertyEvidenceSynthesis> | RetainedReading<MarketResearchAndPulse> | null,
+  options: {
+    dealCardId: number;
+    /** The snapshot id the current decision was formed on, when one exists. */
+    consumedSnapshotId?: number | null;
+    /** Why research is not stable, when it is not. */
+    stabilityReason?: string | null;
+    subjectVersion?: string | null;
+  },
+): Stage3ArtifactStatusView {
+  const link = `/dept/acquisitions/v2?deal=${options.dealCardId}&page=${product === 'property_story' ? 'property' : 'market'}`;
+  const pendingWhat = product === 'property_story' ? 'Property Story' : 'Market Story';
+  if (!reading) {
+    return {
+      product, status: 'pending', label: STAGE3_STATUS_LABEL.pending,
+      snapshotId: null, contractVersion: null, retainedAt: null,
+      subjectVersion: options.subjectVersion ?? null, correlation: null,
+      coverage: null,
+      limitation: `The full current ${pendingWhat} is pending: no current subject-equivalent Stage 3 artifact is retained.${options.stabilityReason ? ` ${options.stabilityReason}` : ''}`,
+      consumedByDealBrain: false,
+      link,
+    };
+  }
+  const value = reading.value as PropertyEvidenceSynthesis | MarketResearchAndPulse;
+  const contractVersion = (value as { contractVersion?: string }).contractVersion ?? null;
+  const subjectVersion = product === 'property_story'
+    ? (value as PropertyEvidenceSynthesis).subject?.subjectVersion ?? options.subjectVersion ?? null
+    : options.subjectVersion ?? null;
+  const consumedByDealBrain = options.consumedSnapshotId != null && reading.snapshotId === options.consumedSnapshotId;
+  if (reading.correlation !== 'equivalent') {
+    return {
+      product, status: 'historical', label: STAGE3_STATUS_LABEL.historical,
+      snapshotId: reading.snapshotId, contractVersion, retainedAt: reading.retainedAt,
+      subjectVersion, correlation: reading.correlation,
+      coverage: null,
+      limitation: `Formed about a ${reading.correlation === 'different' ? 'different' : 'uncorrelated'} parcel version; retained as history and excluded from current Deal Brain inputs. The full current ${pendingWhat} is pending.`,
+      consumedByDealBrain: false,
+      link,
+    };
+  }
+  let complete: boolean;
+  let coverage: string | null;
+  let limitation: string | null;
+  if (product === 'property_story') {
+    const story = value as PropertyEvidenceSynthesis;
+    const established = story.diligence.filter((topic) => topic.status === 'established').length;
+    const open = story.diligence.filter((topic) => topic.status !== 'established');
+    complete = open.length === 0 && story.guardrails.length === 0;
+    coverage = `${established}/${story.diligence.length} diligence topics established`;
+    limitation = complete
+      ? null
+      : open.length
+        ? `${open.length} topic(s) not established: ${open.slice(0, 4).map((topic) => topic.label ?? topic.key).join(', ')}${open.length > 4 ? '…' : ''}.`
+        : story.guardrails[0]?.statement ?? story.limitations[0] ?? null;
+  } else {
+    const market = value as MarketResearchAndPulse;
+    complete = market.subjectBand.available && market.limitations.length === 0;
+    coverage = market.subjectBand.available
+      ? `Subject band ${market.subjectBand.bandUsedLabel ?? ''}: ${market.subjectBand.sampleCount ?? '?'} sales, ${market.subjectBand.period ?? 'period not stated'}`.replace(/\s+:/, ':')
+      : 'Subject band unavailable';
+    limitation = complete ? null : market.limitations[0] ?? market.subjectBand.note ?? null;
+  }
+  const status: Stage3ArtifactStatus = complete ? 'current' : 'partial_current';
+  return {
+    product, status, label: STAGE3_STATUS_LABEL[status],
+    snapshotId: reading.snapshotId, contractVersion, retainedAt: reading.retainedAt,
+    subjectVersion, correlation: reading.correlation,
+    coverage, limitation, consumedByDealBrain, link,
+  };
+}
+
 export interface RetainedReading<T> {
   value: T;
   /** Whether the retained reading is still about the accepted parcel. */
@@ -465,19 +584,22 @@ export interface RetainedReading<T> {
   /** When the row was retained. The payload's own `generatedAt` is null by
    *  design; see the write above. */
   retainedAt: string | null;
+  /** The retained row, so a downstream read can say which reading it used. */
+  snapshotId: number | null;
 }
 
 function readRetainedReading<T>(dealCardId: number, snapshotType: string): RetainedReading<T> | null {
   const read = readDerivedSnapshotForParcel<T>(dealCardId, snapshotType);
   if (!read) return null;
   const row = getLandosDb().prepare(`
-    SELECT created_at FROM landos_deal_intelligence_snapshot
+    SELECT id, created_at FROM landos_deal_intelligence_snapshot
     WHERE deal_card_id=? AND snapshot_type=? AND status='current' LIMIT 1
-  `).get(dealCardId, snapshotType) as { created_at: number } | undefined;
+  `).get(dealCardId, snapshotType) as { id: number; created_at: number } | undefined;
   return {
     value: read.value,
     correlation: read.correlation,
     retainedAt: row?.created_at ? new Date(row.created_at * 1000).toISOString() : null,
+    snapshotId: row?.id ?? null,
   };
 }
 

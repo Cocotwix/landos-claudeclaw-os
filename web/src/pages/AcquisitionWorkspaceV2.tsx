@@ -41,6 +41,11 @@ import {
   PropertyStoryPanel, MarketStoryPanel,
   type PropertyStoryView, type MarketStoryView, type ResearchStabilityView,
 } from '../components/AcquisitionWorkspaceV2Stories';
+import {
+  SellerDiscoveryPanel, SellerReadStatusLine,
+  type DealDecisionView, type DealDecisionHistoryView, type SellerDiscoveryView, type SellerReadStatusView,
+} from '../components/AcquisitionWorkspaceV2DealBrain';
+import type { Stage3StatusView } from '../components/AcquisitionWorkspaceV2IntelligenceStack';
 import { ParcelScopePanel, type ParcelScopeView } from '@/components/DealCard';
 import { SubjectUnderstandingPanel, type SubjectUnderstandingView } from '@/components/SubjectUnderstanding';
 import {
@@ -277,6 +282,11 @@ interface IntelResp {
   propertyStory?: PropertyStoryView | null;
   marketStory?: MarketStoryView | null;
   researchStability?: ResearchStabilityView | null;
+  dealDecision?: DealDecisionView | null;
+  dealDecisionHistory?: DealDecisionHistoryView[] | null;
+  sellerDiscovery?: SellerDiscoveryView | null;
+  stage3Status?: { property?: Stage3StatusView | null; market?: Stage3StatusView | null } | null;
+  sellerReadStatus?: SellerReadStatusView | null;
   marketContext?: MarketContextView;
   landPortalFacts?: ParcelFactSheetView | null;
 }
@@ -404,6 +414,14 @@ export function AcquisitionWorkspaceV2() {
   const [propertyStory, setPropertyStory] = useState<PropertyStoryView | null>(null);
   const [marketStory, setMarketStory] = useState<MarketStoryView | null>(null);
   const [researchStability, setResearchStability] = useState<ResearchStabilityView | null>(null);
+  // Stage 4: the decision above the two readings, and the seller discovery.
+  const [dealDecision, setDealDecision] = useState<DealDecisionView | null>(null);
+  const [dealDecisionHistory, setDealDecisionHistory] = useState<DealDecisionHistoryView[]>([]);
+  const [sellerDiscovery, setSellerDiscovery] = useState<SellerDiscoveryView | null>(null);
+  // One Stage 3 status per artifact and one seller read status, from the same
+  // retained rows the Deal Brain consumed; every card on the page reads these.
+  const [stage3Status, setStage3Status] = useState<{ property?: Stage3StatusView | null; market?: Stage3StatusView | null } | null>(null);
+  const [sellerReadStatus, setSellerReadStatus] = useState<SellerReadStatusView | null>(null);
   // The one accepted subject for this Deal Card. Every panel on this page reads
   // its identity and acreage from here so they cannot drift apart on one load.
   const [acceptedSubject, setAcceptedSubject] = useState<SubjectProjectionView | null>(null);
@@ -576,6 +594,11 @@ export function AcquisitionWorkspaceV2() {
         setPropertyStory(i?.propertyStory ?? null);
         setMarketStory(i?.marketStory ?? null);
         setResearchStability(i?.researchStability ?? null);
+        setDealDecision(i?.dealDecision ?? null);
+        setDealDecisionHistory(i?.dealDecisionHistory ?? []);
+        setSellerDiscovery(i?.sellerDiscovery ?? null);
+        setStage3Status(i?.stage3Status ?? null);
+        setSellerReadStatus(i?.sellerReadStatus ?? null);
         // Overview is usable from the canonical Deal, Property and Acquisition
         // reads above. Research Readiness and the specialist stack are
         // secondary persisted projections; let them hydrate immediately after
@@ -1241,6 +1264,7 @@ export function AcquisitionWorkspaceV2() {
               error: dealBrainError,
               onAsk: askDealBrain,
             }}
+            dealDecision={{ decision: dealDecision, history: dealDecisionHistory, stability: researchStability, stage3: stage3Status, sellerReadStatus }}
             compsValuation={compsValuation}
             valuationBasisLabel={valuationBasisLabel}
             landBasisOpeningReference={landBasisOpeningReference}
@@ -1415,13 +1439,15 @@ export function AcquisitionWorkspaceV2() {
                   )}
                 </div>
               ) : (
-                <p class="awv2-seller-intel-precontact">
-                  Current Seller Read: Pending — no meaningful seller communication yet. Seller
-                  Trajectory: not established. Seller Intelligence fills in from real
-                  communication — nothing is inferred from ownership records.
-                </p>
+                <SellerReadStatusLine status={sellerReadStatus} discovery={sellerDiscovery} />
+              )}
+              {sellerIntel?.state === 'established' && (
+                <SellerReadStatusLine status={sellerReadStatus} discovery={sellerDiscovery} />
               )}
             </section>
+            {/* Stage 4: the discovery brief and the seller claims, from
+                retained communications only. Rendering runs nothing. */}
+            <SellerDiscoveryPanel discovery={sellerDiscovery} stability={researchStability} readStatus={sellerReadStatus} />
             <section class="awv2-activity-next" data-domain="action">
               <div class="awv2-dom-eyebrow" data-dom="action">Next action</div>
               <h2>{nextActionLabel || 'Assign the next acquisition action'}</h2>

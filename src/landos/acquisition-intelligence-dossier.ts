@@ -1143,7 +1143,7 @@ function boundedPrimaryBody(body: string, what: string, truncation: string[]): s
 
 /** Deterministic speaker/source label so the model can always tell seller
  *  speech, operator speech, operator notes, and transcripts apart. */
-function commAttribution(type: string, direction: string | null, hasBody: boolean): string {
+export function commAttribution(type: string, direction: string | null, hasBody: boolean): string {
   if (type === 'note') return 'OPERATOR NOTE (operator-authored; not seller speech)';
   if (type === 'transcript' || (type === 'call' && hasBody)) {
     return 'CALL TRANSCRIPT (verbatim; speaker attribution inside the body where present)';

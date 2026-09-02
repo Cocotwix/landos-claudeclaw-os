@@ -582,7 +582,17 @@ import {
   readMarketResearchAndPulse,
   readPropertyEvidenceSynthesis,
   readResearchStability,
+  stage3ArtifactStatus,
 } from './research-stable-intelligence.js';
+import { sellerReadStatusFor } from './seller-discovery.js';
+import {
+  ensureDealBrainDecision,
+  listDealsAwaitingDecision,
+  readDealBrainDecision,
+  readDealBrainDecisionHistory,
+  readSellerDiscovery,
+  type FreshStories,
+} from './deal-brain-decision.js';
 import { candidateRowsFromPolicy, selectWorkingComps, workingSetToSnapshotComps } from './deal-intelligence-comps.js';
 import type { CompRegistryCandidate, SubjectMarket } from './comp-registry.js';
 import { persistPropertyInspection, runPropertyInspection } from './property-inspection.js';
@@ -5884,6 +5894,7 @@ export function registerLandosRoutes(app: Hono): void {
     const value = str(body.value);
     if (!value || !value.trim()) return c.json({ error: 'value is required' }, 400);
     const fact = addSellerStatedFact(cardId, { kind, value, note: str(body.note), recordedBy: str(body.recordedBy) });
+    produceDealBrainDecision(id, 'seller:stated_fact_recorded');
     return c.json({ fact, summary: summarizeSellerFacts(loadSellerStatedFacts(cardId)) }, 201);
   });
 
@@ -6024,6 +6035,10 @@ export function registerLandosRoutes(app: Hono): void {
         summary: 'Seller and CRM details were updated on the Deal Card.',
       });
     }
+    // A seller-record event. Profile fields never become seller claims, but a
+    // follow-up date or contact detail changes whether a conversation is
+    // planned, which the discovery brief tracks. Behind the material gate.
+    produceDealBrainDecision(id, 'seller:profile_updated');
     return c.json(acqView(id), 201);
   });
   app.post('/api/landos/deal-cards/:id/acquisition/comm', async (c) => {
@@ -6036,7 +6051,7 @@ export function registerLandosRoutes(app: Hono): void {
       return c.json({ error: 'invalid communication type' }, 400);
     }
     if (!str(b.summary)) return c.json({ error: 'summary is required' }, 400);
-    addCommLogEntry(id, {
+    const added = addCommLogEntry(id, {
       type: communicationType as 'call' | 'text' | 'email' | 'note' | 'transcript' | undefined,
       at: str(b.at) ?? new Date().toISOString(), channel,
       direction: b.direction === 'inbound' ? 'inbound' : 'outbound',
@@ -6059,6 +6074,12 @@ export function registerLandosRoutes(app: Hono): void {
         summary: `${b.direction === 'inbound' ? 'Inbound' : 'Outbound'} ${String(channel).replace(/_/g, ' ')} recorded: ${str(b.summary)!.slice(0, 180)}`,
       });
     }
+    // ── Stage 4: a retained communication is the ONLY thing that can carry a
+    // seller claim, so this is the seller lane's primary trigger. The Deal
+    // Brain re-reads the whole record and refreshes only on a material move.
+    // The cause names the exact record, so a refreshed decision says which
+    // communication moved it.
+    produceDealBrainDecision(id, `seller:communication_added:${added.commLog[0]?.id ?? 'unknown'}`);
     return c.json(acqView(id), 201);
   });
 
@@ -6096,6 +6117,7 @@ export function registerLandosRoutes(app: Hono): void {
       summary: `Communication updated: ${str(body.summary)?.slice(0, 180) ?? commId}.`,
       ref: `communication:${commId}`,
     });
+    produceDealBrainDecision(id, `seller:communication_updated:${commId}`);
     return c.json(acqView(id));
   });
 
@@ -6113,6 +6135,9 @@ export function registerLandosRoutes(app: Hono): void {
       summary: 'Communication removed from this Deal Card.',
       ref: `communication:${commId}`,
     });
+    // A removed communication removes its claims; the decision must not keep
+    // leaning on evidence the record no longer holds.
+    produceDealBrainDecision(id, `seller:communication_deleted:${commId}`);
     return c.json(acqView(id));
   });
   app.post('/api/landos/deal-cards/:id/acquisition/discovery', async (c) => {
@@ -6122,6 +6147,7 @@ export function registerLandosRoutes(app: Hono): void {
     const notes = str(b.notes) ?? str(b.text);
     if (!notes) return c.json({ error: 'notes are required' }, 400);
     addDiscoveryNote(id, extractDiscoveryNotes(notes));
+    produceDealBrainDecision(id, 'seller:discovery_notes_added');
     return c.json(acqView(id), 201);
   });
   app.post('/api/landos/deal-cards/:id/acquisition/stage', async (c) => {
@@ -6142,6 +6168,7 @@ export function registerLandosRoutes(app: Hono): void {
           : `CRM stage advanced to ${ACQUISITION_STAGE_LABEL[stage as AcquisitionStage]}.`,
       });
     }
+    produceDealBrainDecision(id, 'seller:stage_changed');
     return c.json(acqView(id), 201);
   });
   // Generate a follow-up DRAFT only — NEVER sends anything.
@@ -10893,16 +10920,39 @@ export function registerLandosRoutes(app: Hono): void {
           const property = readPropertyEvidenceSynthesis(id);
           const market = readMarketResearchAndPulse(id);
           const stability = researchStabilityFor(id);
+          // Stage 4: the decision above the two readings, and the seller
+          // discovery it draws on. Same rule: retained current rows, SELECTed
+          // with their parcel correlation, and nothing produced on a read.
+          const decision = readDealBrainDecision(id);
+          const sellerDiscovery = readSellerDiscovery(id);
+          // One status per Stage 3 artifact, from the same retained rows and
+          // the same mapping the current decision recorded as its inputs, so
+          // the Overview cards and the Deal Brain cannot disagree.
+          const consumed = decision?.correlation === 'equivalent' ? decision.value.basedOn : null;
+          const stage3Status = {
+            property: stage3ArtifactStatus('property_story', property, { dealCardId: id, consumedSnapshotId: consumed?.propertySnapshotId ?? null, stabilityReason: stability?.reason ?? null, subjectVersion: consumed?.subjectVersion ?? null }),
+            market: stage3ArtifactStatus('market_story', market, { dealCardId: id, consumedSnapshotId: consumed?.marketSnapshotId ?? null, stabilityReason: stability?.reason ?? null, subjectVersion: consumed?.subjectVersion ?? null }),
+          };
+          const sellerReadStatus = sellerReadStatusFor(sellerDiscovery?.correlation === 'equivalent' ? sellerDiscovery.value : null);
           return {
+            stage3Status,
+            sellerReadStatus,
             propertyStory: property
-              ? { ...property.value, correlation: property.correlation, retainedAt: property.retainedAt }
+              ? { ...property.value, correlation: property.correlation, retainedAt: property.retainedAt, snapshotId: property.snapshotId }
               : null,
             marketStory: market
-              ? { ...market.value, correlation: market.correlation, retainedAt: market.retainedAt }
+              ? { ...market.value, correlation: market.correlation, retainedAt: market.retainedAt, snapshotId: market.snapshotId }
               : null,
             // Why there is, or is not, a story to read. Never a silent absence.
             researchStability: stability,
             sellerIntelligence: stability?.sellerIntelligence ?? null,
+            dealDecision: decision
+              ? { ...decision.value, correlation: decision.correlation, retainedAt: decision.retainedAt, snapshotId: decision.snapshotId }
+              : null,
+            dealDecisionHistory: readDealBrainDecisionHistory(id, 6),
+            sellerDiscovery: sellerDiscovery
+              ? { ...sellerDiscovery.value, correlation: sellerDiscovery.correlation, retainedAt: sellerDiscovery.retainedAt }
+              : null,
           };
         })(),
         subject: canonicalSubjectProjection(id),
@@ -11229,8 +11279,9 @@ export function registerLandosRoutes(app: Hono): void {
     actor: string,
     runId: string | null = null,
   ): ReturnType<typeof ensureResearchStableIntelligence> | null => {
+    let stories: ReturnType<typeof ensureResearchStableIntelligence> | null = null;
     try {
-      return ensureResearchStableIntelligence(dealCardId, {
+      stories = ensureResearchStableIntelligence(dealCardId, {
         readPropertyFile: acquisitionPropertyFile,
         actor,
         runId,
@@ -11242,7 +11293,84 @@ export function registerLandosRoutes(app: Hono): void {
       );
       return null;
     }
+    // ── Stage 4: the decision above the two readings ────────────────────
+    // The moment both stories have settled is the moment a posture can be
+    // formed on them, so the Deal Brain runs behind the same trigger with the
+    // readings just formed — never re-reading what was written a moment ago.
+    // The decision's own material gate decides whether anything is written.
+    if (stories.property && stories.market) {
+      produceDealBrainDecision(dealCardId, actor, runId, {
+        property: stories.property,
+        market: stories.market,
+        propertySnapshotId: stories.persistence.property.snapshotId,
+        marketSnapshotId: stories.persistence.market.snapshotId,
+      });
+    }
+    return stories;
   };
+
+  /**
+   * Form the Deal Brain decision and the seller discovery.
+   *
+   * WRITES, behind a material gate. Two trigger families reach it:
+   *   • the Stage 3 completion boundary above, carrying fresh readings;
+   *   • a seller-record event (a communication, discovery note, seller-stated
+   *     fact, profile or stage change), reading the retained current readings.
+   * A workspace read never calls it.
+   *
+   * Both capabilities are pure over the retained record; the seam dedupes on
+   * the input hash; and a decision is superseded only when a material
+   * dimension moved, with the change recorded on the new version.
+   *
+   * Never throws into a caller.
+   */
+  const produceDealBrainDecision = (
+    dealCardId: number,
+    cause: string,
+    runId: string | null = null,
+    stories: FreshStories | null = null,
+  ): ReturnType<typeof ensureDealBrainDecision> | null => {
+    try {
+      const result = ensureDealBrainDecision(dealCardId, {
+        readPropertyFile: acquisitionPropertyFile,
+        stories,
+        cause,
+        actor: cause,
+        runId,
+      });
+      logger.info({
+        dealCardId,
+        cause,
+        outcome: result.outcome,
+        reason: result.reason,
+        mode: result.decision?.mode ?? null,
+        recommendation: result.decision?.recommendation.kind ?? null,
+        decisionWritten: result.persistence.decision.written,
+        sellerDiscoveryWritten: result.persistence.sellerDiscovery.written,
+        changes: result.changes.map((change) => change.dimension),
+      }, 'deal_brain_decision');
+      return result;
+    } catch (error) {
+      logger.warn({ dealCardId, cause, err: (error as Error).message }, 'deal_brain_decision_failed');
+      return null;
+    }
+  };
+
+  // Settled intelligence is the trigger, whichever event produced it. A Deal
+  // Card whose stories settled before this lifecycle existed, or while the
+  // runtime was down, gets its first decision on start rather than waiting for
+  // an unrelated research event. Bounded to that set; deferred off the start
+  // path; idempotent through the material gate.
+  const reconcileSettledDecisions = setTimeout(() => {
+    try {
+      const awaiting = listDealsAwaitingDecision();
+      for (const dealCardId of awaiting) produceDealBrainDecision(dealCardId, 'startup:settled_intelligence');
+      if (awaiting.length) logger.info({ dealCardIds: awaiting }, 'deal_brain_decision_startup_reconcile');
+    } catch (error) {
+      logger.warn({ err: (error as Error).message }, 'deal_brain_decision_startup_reconcile_failed');
+    }
+  }, 0);
+  reconcileSettledDecisions.unref?.();
 
   /** PURE SELECT. Why a Deal Card has, or has not, a story to show. */
   const researchStabilityFor = (dealCardId: number) => {

@@ -194,6 +194,10 @@ export function appendDerivedEvidence(input: {
 export interface DerivedSnapshotResult {
   snapshotId: number | null;
   reused: boolean;
+  /** The identical reading had been superseded and is current again: the
+   *  record returned to an earlier state (a removed communication, a withdrawn
+   *  upload). The current row changed even though nothing new was inserted. */
+  reinstated?: boolean;
   propertyIdentityVersionId: number | null;
   skippedReason: string | null;
 }
@@ -241,10 +245,39 @@ export function writeDerivedSnapshot(input: {
   }));
 
   const existing = db.prepare(
-    'SELECT id FROM landos_deal_intelligence_snapshot WHERE deal_card_id=? AND input_hash=?',
-  ).get(input.dealCardId, inputHash) as { id: number } | undefined;
+    'SELECT id, status FROM landos_deal_intelligence_snapshot WHERE deal_card_id=? AND input_hash=?',
+  ).get(input.dealCardId, inputHash) as { id: number; status: string } | undefined;
   if (existing) {
-    return { snapshotId: existing.id, reused: true, propertyIdentityVersionId: identity.id, skippedReason: null };
+    if (existing.status === 'current') {
+      return { snapshotId: existing.id, reused: true, propertyIdentityVersionId: identity.id, skippedReason: null };
+    }
+    // The record has returned to a state it was in before (a communication
+    // removed, an upload withdrawn). The identical earlier reading is the true
+    // current reading again; leaving the later one current would keep claims
+    // the record no longer holds. Reinstate it; the later row becomes history.
+    const reinstated = db.transaction(() => {
+      if (!runStillAuthoritative(input.runId, input.dealCardId)) return false;
+      const prior = db.prepare(`
+        SELECT id FROM landos_deal_intelligence_snapshot
+        WHERE deal_card_id=? AND snapshot_type=? AND status='current' LIMIT 1
+      `).get(input.dealCardId, input.snapshotType) as { id: number } | undefined;
+      if (prior && prior.id !== existing.id) db.prepare("UPDATE landos_deal_intelligence_snapshot SET status='superseded' WHERE id=?").run(prior.id);
+      db.prepare("UPDATE landos_deal_intelligence_snapshot SET status='current', change_reason=? WHERE id=?").run(`${input.changeReason} (reinstated: the record returned to this earlier reading)`, existing.id);
+      return true;
+    })();
+    if (!reinstated) {
+      return {
+        snapshotId: null, reused: false, propertyIdentityVersionId: identity.id,
+        skippedReason: 'The originating run lost authority before current-read admission; the late write was rejected.',
+      };
+    }
+    if (input.auditEvent) {
+      landosAudit(input.actor, input.auditEvent, `deal ${input.dealCardId}: ${input.snapshotType} (reinstated)`, {
+        refTable: 'landos_deal_intelligence_snapshot',
+        refId: existing.id,
+      });
+    }
+    return { snapshotId: existing.id, reused: true, reinstated: true, propertyIdentityVersionId: identity.id, skippedReason: null };
   }
 
   const snapshotId = db.transaction(() => {

@@ -90,33 +90,74 @@ export function QuickFlipBadge({ flip, cashVerdict }: { flip: QuickFlipScreenVie
   );
 }
 
-function ScoreTile({ label, score, sub }: { label: string; score: number | null | undefined; sub: string | null | undefined }) {
-  const tone = score == null ? 'pending' : score >= 65 ? 'strong' : score >= 50 ? 'moderate' : 'weak';
+/** The one status of a retained Stage 3 artifact, as the server maps it. The
+ *  same object the Deal Brain records as its input. */
+export interface Stage3StatusView {
+  product?: string;
+  status?: 'current' | 'partial_current' | 'pending' | 'historical' | string;
+  label?: string;
+  snapshotId?: number | null;
+  contractVersion?: string | null;
+  retainedAt?: string | null;
+  subjectVersion?: string | null;
+  correlation?: string | null;
+  coverage?: string | null;
+  limitation?: string | null;
+  consumedByDealBrain?: boolean;
+  link?: string;
+}
+
+const STAGE3_TONE: Record<string, string> = { current: 'strong', partial_current: 'moderate', pending: 'pending', historical: 'weak' };
+
+/** Short lineage line: contract, snapshot, read time, accepted subject. */
+export function stage3Lineage(status: Stage3StatusView | null | undefined): string | null {
+  if (!status || status.snapshotId == null) return null;
+  return [
+    status.contractVersion ? `v${status.contractVersion}` : null,
+    `snapshot #${status.snapshotId}`,
+    status.retainedAt ? `read ${new Date(status.retainedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : null,
+    status.subjectVersion ? `subject ${status.subjectVersion}` : null,
+  ].filter(Boolean).join(' · ');
+}
+
+function ScoreTile({ label, score, sub, stage3 }: { label: string; score: number | null | undefined; sub: string | null | undefined; stage3?: Stage3StatusView | null }) {
+  // A Stage 3 status outranks the score's own quality text: the card and the
+  // Deal Brain read the same retained artifact, so they say the same thing.
+  const tone = stage3?.status ? STAGE3_TONE[stage3.status] ?? 'pending' : score == null ? 'pending' : score >= 65 ? 'strong' : score >= 50 ? 'moderate' : 'weak';
+  const lineage = stage3Lineage(stage3);
   return (
-    <div class={`awv2-intel-tile s-${tone}`} data-testid={`intel-score-${label.toLowerCase()}`}>
+    <div class={`awv2-intel-tile s-${tone}`} data-testid={`intel-score-${label.toLowerCase()}`} data-stage3-status={stage3?.status ?? undefined} data-snapshot-id={stage3?.snapshotId ?? undefined}>
       <small>{label}</small>
       <b>{score ?? '—'}</b>
-      <span>{sub ?? (score == null ? 'Unknown' : '')}</span>
+      <span data-testid={`intel-status-${label.toLowerCase()}`}>{stage3?.label ?? sub ?? (score == null ? 'Unknown' : '')}</span>
+      {lineage && <span class="awv2-intel-tile-lineage">{lineage}</span>}
+      {stage3?.coverage && <span class="awv2-intel-tile-lineage">{stage3.coverage}</span>}
+      {stage3?.limitation && <span class="awv2-intel-tile-lineage">{stage3.limitation}</span>}
+      {stage3?.link && <a class="awv2-intel-tile-link" href={stage3.link}>Open {label} output</a>}
     </div>
   );
 }
 
-export function IntelligenceScoreStrip({ scores, quickFlip, cashVerdict, phaseLabel, whatChanged }: {
+export function IntelligenceScoreStrip({ scores, quickFlip, cashVerdict, phaseLabel, whatChanged, stage3, sellerStatusLabel }: {
   scores: IntelligenceScoresView | null;
   quickFlip: QuickFlipScreenView | null;
   cashVerdict?: string | null;
   phaseLabel?: string | null;
   whatChanged?: string[] | null;
+  /** Stage 3 Property and Market status, from the same retained rows the Deal Brain consumes. */
+  stage3?: { property?: Stage3StatusView | null; market?: Stage3StatusView | null } | null;
+  /** The one seller read status label, so the Seller tile agrees with the Seller page. */
+  sellerStatusLabel?: string | null;
 }) {
   return (
     <section class="awv2-intel-strip" data-domain="action" aria-label="Intelligence scores" data-testid="intelligence-score-strip">
       <div class="awv2-intel-tiles">
-        <ScoreTile label="Property" score={scores?.property?.score} sub={scores?.property?.quality} />
-        <ScoreTile label="Market" score={scores?.market?.score} sub={scores?.market?.quality} />
+        <ScoreTile label="Property" score={scores?.property?.score} sub={scores?.property?.quality} stage3={stage3?.property} />
+        <ScoreTile label="Market" score={scores?.market?.score} sub={scores?.market?.quality} stage3={stage3?.market} />
         <ScoreTile
           label="Seller"
           score={scores?.seller?.score}
-          sub={scores?.seller?.state === 'established' ? 'Workability' : 'Pending · pre-contact'}
+          sub={sellerStatusLabel ?? (scores?.seller?.state === 'established' ? 'Workability' : 'Pending · pre-contact')}
         />
       </div>
       <div class="awv2-intel-side">
