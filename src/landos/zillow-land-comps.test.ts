@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { distanceMiles, zillowLandUrl, zillowSearchRoutes, zillowZipFilteredUrl, normalizeZillowListings, fetchZillowLandComps, type RawZillowListing } from './zillow-land-comps.js';
+import { distanceMiles, zillowLandUrl, zillowSearchRoutes, zillowZipFilteredUrl, normalizeZillowListings, fetchZillowLandComps, type RawZillowListing, resetZillowChallengeMemory, withSharedZillowSession } from './zillow-land-comps.js';
 
 describe('zillowLandUrl', () => {
   it('builds a public Lots/Land locality URL (geographic, not ZIP)', () => {
@@ -107,12 +107,46 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
     expect(r.note).toMatch(/3 row\(s\) screened out \(state\/status\), never on price or acreage/i);
   });
 
-  it('reports blocked (never throws) when anti-bot fires with no listings', async () => {
+  it('reports blocked (never throws) when anti-bot fires with no listings and the hand-off is not cleared', async () => {
+    let handoffs = 0;
     const r = await fetchZillowLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25 }, {
-      force: true, connect: fakeConnect([], true) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      force: true, connect: fakeConnect([], true) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1, indexedSearch: async () => [],
+      onChallenge: async () => { handoffs += 1; return false; },
     });
     expect(r.status).toBe('blocked');
     expect(r.comps).toHaveLength(0);
+    // One hand-off per lane run, never a retry storm.
+    expect(handoffs).toBe(1);
+  });
+
+  it('hands the anti-bot check to a human once and re-reads the same route on the cleared session', async () => {
+    // The fake session starts blocked; the hand-off simulates the operator
+    // clearing the check on that session. The lane itself never touches it.
+    const state = { blocked: true };
+    const connect = async () => ({
+      async newPage() {
+        return {
+          async setViewport() {},
+          async goto() {},
+          async evaluate(fn: unknown) {
+            const src = String(fn);
+            if (src.includes('press and hold') || src.includes('captcha')) return state.blocked as never;
+            if (src.includes('property-card')) return { listings: state.blocked ? [] : rawListings, nextData: null } as never;
+            return undefined as never;
+          },
+        };
+      },
+      async close() {},
+    });
+    const seen: string[] = [];
+    const r = await fetchZillowLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25 }, {
+      force: true, connect: connect as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+      onChallenge: async (ctx) => { seen.push(`${ctx.propertyType}:${ctx.board}:${ctx.routeLabel}`); state.blocked = false; return true; },
+    });
+    expect(seen).toEqual(['land:active:Lehigh Acres, FL']);
+    expect(r.status).toBe('retrieved');
+    expect(r.comps).toHaveLength(1);
+    expect(r.routes.some((route) => /operator cleared it/.test(route.outcome))).toBe(true);
   });
 
   it('never relabels active or ambiguous sold-board rows as closed sales', async () => {
@@ -223,5 +257,95 @@ describe('fetchZillowLandComps (injected, no real browser)', () => {
     expect(decoded).toContain('"doz":{"value":"12m"}');
     expect(decoded).not.toMatch(/lotSize":\{[^}]*max/);
     expect(decoded).not.toMatch(/price/i);
+  });
+});
+
+
+describe('one persistent Zillow session across boards', () => {
+  const rawListings: RawZillowListing[] = [{ address: '1810 Wells AVE, LEHIGH ACRES, FL 33972', price: 29497, acres: 0.5, url: 'z' }];
+  function session(state: { blocked: boolean }) {
+    const log = { pages: 0, closed: 0 };
+    const handle = {
+      async newPage() {
+        log.pages += 1;
+        return {
+          async setViewport() {},
+          async goto() {},
+          async evaluate(fn: unknown) {
+            const src = String(fn);
+            if (src.includes('press and hold') || src.includes('captcha')) return state.blocked as never;
+            if (src.includes('property-card')) return { listings: state.blocked ? [] : rawListings, nextData: null } as never;
+            return undefined as never;
+          },
+        };
+      },
+      async close() { log.closed += 1; },
+    };
+    return { handle, log };
+  }
+  const input = { city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25 };
+  const fast = { force: true, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1 , indexedSearch: async () => [] };
+
+  it('reuses the supplied session for every board and never closes it', async () => {
+    resetZillowChallengeMemory();
+    const { handle, log } = session({ blocked: false });
+    const sold = await fetchZillowLandComps({ ...input, mode: 'sold' }, { ...fast, session: handle as never });
+    const active = await fetchZillowLandComps({ ...input, mode: 'active' }, { ...fast, session: handle as never });
+    // The sold board screens rows without a closed status; what matters here is
+    // that both boards ran on the one session and neither was blocked.
+    expect(['retrieved', 'none']).toContain(sold.status);
+    expect(active.status).toBe('retrieved');
+    expect(log.pages).toBe(2);
+    expect(log.closed).toBe(0);
+  });
+
+  it('carries one operator clearance across the remaining boards on the same session', async () => {
+    resetZillowChallengeMemory();
+    const state = { blocked: true };
+    const { handle } = session(state);
+    let handoffs = 0;
+    const onChallenge = async () => { handoffs += 1; state.blocked = false; return true; };
+    const sold = await fetchZillowLandComps({ ...input, mode: 'sold' }, { ...fast, session: handle as never, onChallenge });
+    const active = await fetchZillowLandComps({ ...input, mode: 'active' }, { ...fast, session: handle as never, onChallenge });
+    expect(['retrieved', 'none']).toContain(sold.status);
+    expect(active.status).toBe('retrieved');
+    expect(handoffs).toBe(1);
+  });
+
+  it('an unattended challenge is recorded once and the remaining boards are skipped on that session without any wait', async () => {
+    resetZillowChallengeMemory();
+    const { handle } = session({ blocked: true });
+    let handoffs = 0;
+    const onChallenge = async () => { handoffs += 1; return false; };
+    const sold = await fetchZillowLandComps({ ...input, mode: 'sold' }, { ...fast, session: handle as never, onChallenge });
+    const active = await fetchZillowLandComps({ ...input, mode: 'active' }, { ...fast, session: handle as never, onChallenge });
+    const manufactured = await fetchZillowLandComps({ ...input, mode: 'sold', propertyType: 'manufactured' }, { ...fast, session: handle as never, onChallenge });
+    expect(sold.status).toBe('blocked');
+    expect(active.status).toBe('blocked');
+    expect(active.note).toMatch(/anti-bot check earlier on this session/);
+    expect(manufactured.note).toMatch(/anti-bot check earlier on this session/);
+    expect(handoffs).toBe(1);
+    resetZillowChallengeMemory();
+  });
+});
+
+
+describe('withSharedZillowSession', () => {
+  it('opens one session for concurrent lanes, serializes their work on it, and closes it once at the end', async () => {
+    let opened = 0; let closed = 0; const order: string[] = [];
+    const open = async () => { opened += 1; return { async newPage() { return {} as never; }, async close() { closed += 1; } }; };
+    const lane = (name: string, ms: number) => withSharedZillowSession(async (session) => {
+      order.push(`${name}:start`);
+      expect(session).not.toBeNull();
+      await new Promise((r) => setTimeout(r, ms));
+      order.push(`${name}:end`);
+      return name;
+    }, { open });
+    const results = await Promise.all([lane('sold', 20), lane('active', 5), lane('manufactured', 5)]);
+    expect(results).toEqual(['sold', 'active', 'manufactured']);
+    expect(opened).toBe(1);
+    expect(closed).toBe(1);
+    // Serialized: the next board starts only after the previous one ends.
+    expect(order).toEqual(['sold:start', 'sold:end', 'active:start', 'active:end', 'manufactured:start', 'manufactured:end']);
   });
 });

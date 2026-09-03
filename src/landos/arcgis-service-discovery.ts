@@ -36,6 +36,8 @@ export type ArcgisFetch = (url: string, init?: ArcgisRequestInit) => Promise<Arc
 
 export interface ArcgisDiscoveryDeps {
   fetch?: ArcgisFetch;
+  /** Refuse to start another request when the owning stage has spent its budget. */
+  canRequest?: () => boolean;
   /** Called before every request so a caller can enforce a request budget. */
   onRequest?: (url: string) => void;
   timeoutMs?: number;
@@ -109,6 +111,9 @@ export async function arcgisJson<T = Record<string, unknown>>(
   const http = deps.fetch ?? defaultArcgisFetch;
   const search = new URLSearchParams({ f: 'json', ...params });
   const getUrl = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${search}`;
+  if (deps.canRequest && !deps.canRequest()) {
+    throw new ArcgisRequestError(endpoint, null, 'ArcGIS request skipped because the owning stage budget is spent.');
+  }
   deps.onRequest?.(endpoint);
 
   const response = getUrl.length <= GET_URL_LIMIT
@@ -610,12 +615,16 @@ const ANNOTATION_FIELDS = new Set(['ANNOTATIONCLASSID', 'TEXTSTRING', 'FONTNAME'
  */
 export const FIELD_ROLE_CANDIDATES = {
   parcelId: [
+    // Printed tax-map identifiers come first: a county that stores the printed
+    // number with its own padding ("023  003.02") publishes it under a
+    // TAX_MAP_NO / PBA_NUM style column beside a compact GISLINK.
+    'TAXMAPNO', 'TAXMAPNUM', 'TAXMAP', 'PBANUM',
     'PARCELID', 'PARCELNO', 'PARCELNUM', 'PARCELNUMB', 'PARCELNMBR', 'APN', 'APNTEXT', 'PIN', 'PIN2', 'PID', 'PIDTEXT',
     'TAXPIN', 'TAXID', 'TMS', 'TMSNUMBER', 'GPIN', 'PROPERTYID', 'ACCOUNT', 'ACCOUNTNO', 'ACCT', 'MAPNO', 'MAPNUM',
     'GISLINK', 'PRINTKEY', 'SBL', 'SWISSBLID', 'SWISPRINTKEYID', 'SWISPIN', 'MUNIPARCELID', 'PARCEL',
   ],
   owner: [
-    'PRIMARYOWNER', 'OWNERNAME', 'OWNNAME1', 'OWNNAME', 'OWNERNME', 'OWNER', 'OWNER2', 'OWNERS', 'DEEDOWNER',
+    'PRIMARYOWNER', 'OWNERNAME', 'OWNERNAME1', 'OWNNAME1', 'OWNNAME', 'OWNERNME', 'OWNER', 'OWNER2', 'OWNERS', 'DEEDOWNER',
     'TAXPAYERNAME', 'TAXPAYER', 'NYSNAME', 'NAME1', 'NAME',
   ],
   situsAddress: [

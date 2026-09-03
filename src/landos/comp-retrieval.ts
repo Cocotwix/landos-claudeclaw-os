@@ -23,7 +23,8 @@ import type { ConfirmedParcel } from './parcel-identity.js';
 // ── Config (named values, not magic numbers) ───────────────────────────────
 
 export const COMP_RECENCY_MONTHS = 12;
-export const LANDWATCH_ACRE_THRESHOLD = 40;
+/** LandWatch is ADDED to the provider set at 20+ acres; it never replaces Redfin, Zillow or LandPortal. */
+export const LANDWATCH_ACRE_THRESHOLD = 20;
 export const LANDPORTAL_DAILY_COMP_CAP = 5;
 /** Provider labels that are never used as comp sources. */
 export const EXCLUDED_COMP_SOURCES = ['Trulia'] as const;

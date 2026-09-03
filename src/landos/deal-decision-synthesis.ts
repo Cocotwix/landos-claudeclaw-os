@@ -128,7 +128,47 @@ export interface ValueGuidance {
   askingPriceSource: string | null;
   askingVsGuidance: string | null;
   noPriceRationale: string | null;
+  /** The complete current valuation package. Combined LandOS FMV governs
+   *  `fmv.central`; the two lane FMVs stay visible as supporting components. */
+  package: {
+    landPortalFmv: number | null;
+    landPortalCompCount: number | null;
+    nonLandPortalFmv: number | null;
+    nonLandPortalCompCount: number | null;
+    nonLandPortalSources: string[];
+    combinedFmv: number | null;
+    combinedMethod: string | null;
+    combinedMethodLabel: string | null;
+    combinedLimitation: string | null;
+    confidence: string | null;
+    offer40: number | null;
+    offer60: number | null;
+    collectiveComparison: string | null;
+    collectivePosture: string | null;
+    activeCompetitionCount: number | null;
+    activeCompetitionSummary: string | null;
+    landWatchApplicable: boolean;
+    landPortalAssociatedCount?: number | null;
+    landPortalAssociatedNote?: string | null;
+    landHome?: {
+      physicalMet: boolean | null;
+      usableAcres: number | null;
+      physicalNote: string | null;
+      marketMet: boolean;
+      qualifyingSaleCount: number | null;
+      topSalePrice: number | null;
+      marketNote: string | null;
+      marketBrief?: string | null;
+      searchComplete?: boolean;
+      soldCompCount: number | null;
+      activeCompCount: number | null;
+      excludedCount: number | null;
+      triggered: boolean;
+    } | null;
+  } | null;
 }
+
+export type LandHomePosture = 'WORTH EXPLORING' | 'MARGINAL' | 'NOT VIABLE';
 
 // ── Stage 5: exit scenarios and the strategy comparison ─────────────────────
 
@@ -142,6 +182,49 @@ export type ScenarioId =
   | 'owner_finance';
 
 export type ScenarioStatus = 'viable' | 'conditional' | 'not_supported' | 'unknown';
+
+/** Preliminary Land Home Package posture, from the package screen plus the
+ *  retained zoning standing. Only a clear prohibition blocks the strategy;
+ *  an unestablished permission never produces NOT VIABLE on its own. Null
+ *  when the manufactured-home search has not returned any sale yet. */
+export function landHomePostureFor(
+  screen: NonNullable<NonNullable<ValueGuidance['package']>['landHome']> | null | undefined,
+  standing: string | null | undefined,
+): { posture: LandHomePosture | null; why: string; nextVerification: string } {
+  const permission = standing === 'by_right' ? 'allowed' : standing === 'conditional' ? 'conditional' : standing === 'prohibited' ? 'prohibited' : 'not established';
+  const nextVerification = permission === 'conditional'
+    ? 'Confirm the conditional-use or special-exception approval for a manufactured home.'
+    : permission === 'not established'
+      ? 'Verify from the adopted code whether the district permits manufactured housing.'
+      : permission === 'prohibited' ? 'None: manufactured housing is prohibited on the retained evidence.' : 'Placement and building permits.';
+  if (!screen) return { posture: null, why: 'No Land Home Package screen is retained.', nextVerification };
+  if (permission === 'prohibited') {
+    return { posture: 'NOT VIABLE', why: 'A clear prohibition on manufactured housing is established; any manufactured-home market evidence stays as context.', nextVerification };
+  }
+  if (screen.physicalMet === false) {
+    return { posture: 'NOT VIABLE', why: screen.physicalNote ?? 'The retained terrain read fails the 0.50-acre-under-10%-slope screen.', nextVerification };
+  }
+  if (!screen.marketMet) {
+    // UNSCREENED (null) only while the approved source search genuinely could
+    // not be completed; a completed search with no qualifying sale is NOT VIABLE.
+    if (!screen.searchComplete) {
+      return { posture: null, why: screen.marketNote ?? 'The manufactured-home market search could not be completed.', nextVerification };
+    }
+    return { posture: 'NOT VIABLE', why: screen.marketNote ?? 'No manufactured-home sale above $200,000 within about five miles.', nextVerification };
+  }
+  if (screen.physicalMet == null) {
+    return { posture: 'MARGINAL', why: `${screen.marketBrief ?? screen.marketNote ?? 'The market signal exists.'} ${screen.physicalNote ?? 'The physical screen is incomplete.'}`, nextVerification };
+  }
+  // WORTH EXPLORING: the brief reason is the market evidence in the operator's
+  // words, and the next verification is the practical one for this posture:
+  // whether a home, well and septic actually fit inside the usable ground.
+  const usable = screen.usableAcres != null ? ` (about ${screen.usableAcres} usable acre${screen.usableAcres === 1 ? '' : 's'})` : '';
+  return {
+    posture: 'WORTH EXPLORING',
+    why: `${screen.marketBrief ?? screen.marketNote ?? 'A credible manufactured-home sale above $200,000 lies within about five miles.'} Physical screen passed${usable}. Permission: ${permission}.`,
+    nextVerification: `Confirm practical placement of a manufactured home, well and septic within the usable portion of the acquisition parcel${usable}.${permission === 'not established' ? ' Then verify from the adopted code whether the district permits manufactured housing.' : permission === 'conditional' ? ' Then confirm the conditional-use or special-exception approval for the home.' : ''}`,
+  };
+}
 
 export interface CostLine {
   key: string;
@@ -160,6 +243,8 @@ export interface ExitScenario {
   /** What the scenario actually sells: the whole parcel, N lots, a home site. */
   subjectScope: string;
   status: ScenarioStatus;
+  /** Preliminary Land Home Package posture; only the land-home scenario carries it. */
+  landHomePosture?: LandHomePosture | null;
   confidence: ClaimWeight;
   statusWhy: string;
   grossExit: { amount: number; basis: string; asOf: string | null } | null;
@@ -588,9 +673,11 @@ function evidenceFor(
   });
   rows.push({
     key: 'value', label: 'Qualified sale and value support',
-    status: value.status === 'supported' ? 'sufficient' : value.acceptedCompCount > 0 ? 'partial' : 'missing',
+    status: value.status === 'supported'
+      ? (value.package?.combinedMethod === 'closest_evidence' ? 'partial' : 'sufficient')
+      : value.acceptedCompCount > 0 ? 'partial' : 'missing',
     statement: value.status === 'supported'
-      ? `${value.acceptedCompCount} accepted closed sale(s) support ${usd(value.fmv!.central)}${value.basis ? ` (${value.basis})` : ''}.`
+      ? `Combined LandOS FMV ${usd(value.fmv!.central)}${value.basis ? ` (${value.basis})` : ''}.`
       : value.noPriceRationale ?? 'No supported fair market value exists.',
     requiredForOffer: true,
     unlock: guardOf(property, 'Fair market value')?.unlockedBy ?? 'An accepted sold-comparable set through Comps & Valuation.',
@@ -667,14 +754,19 @@ function valueFor(
 ): ValueGuidance {
   const fmvGuard = guardOf(property, 'Fair market value');
   const accepted = dossier.valuation.acceptedCompCount ?? 0;
-  const central = dossier.valuation.fairMarketValue;
+  const pkg = dossier.valuation.package ?? null;
+  // Combined LandOS FMV is the governing current value. The single central
+  // figure is only a fallback for a property file written before the package
+  // existed; LandPortal-only, non-LandPortal-only, asking price, assessment and
+  // band references never substitute for it here.
+  const central = pkg?.combinedFmv ?? dossier.valuation.fairMarketValue;
   const askingFromSeller = seller.claims.find((claim) => claim.dimension === 'price');
   const askingPrice = dossier.seller.askingPrice ?? null;
   const askingPriceSource = askingPrice != null
     ? (askingFromSeller ? `Deal Card asking price; the seller also spoke to price (${askingFromSeller.source})` : 'Deal Card asking price on file; no retained communication confirms it')
     : askingFromSeller ? `Seller communication only: ${askingFromSeller.statement}` : null;
 
-  if (fmvGuard || central == null || accepted < 1) {
+  if (central == null || (pkg == null && (fmvGuard || accepted < 1))) {
     const rationale = [
       fmvGuard?.statement ?? 'No fair market value is asserted.',
       ...property?.limitations.filter((limit) => /closed .*sale|valuation|value/i.test(limit)).slice(0, 2) ?? [],
@@ -690,37 +782,49 @@ function valueFor(
       askingPriceSource,
       askingVsGuidance: null,
       noPriceRationale: [...new Set(rationale.map(sentence))].join(' '),
+      package: pkg,
     };
   }
 
+  // The standard 40% / 60% operator benchmarks derive from Combined LandOS FMV
+  // only. Strategy-specific maximums live in the exit scenarios, never here.
   const flip = strategyParams('quick_flip');
-  const low = Math.round(central * (flip.offerPctLowOfEv! / 100));
-  const high = Math.round(central * (flip.offerPctHighOfEv! / 100));
+  const low = pkg?.offer40 ?? Math.round(central * 0.4);
+  const high = pkg?.offer60 ?? Math.round(central * 0.6);
   const askingVsGuidance = askingPrice == null
     ? null
     : askingPrice > high
-      ? `The asking price ${usd(askingPrice)} is above the ${usd(high)} ceiling of the flip band: a renegotiation, not an acceptance.`
+      ? `The asking price ${usd(askingPrice)} is above the ${usd(high)} 60% benchmark of Combined LandOS FMV: a renegotiation, not an acceptance.`
       : askingPrice < low
-        ? `The asking price ${usd(askingPrice)} is below the ${usd(low)} floor of the flip band: confirm the seller's number before offering less.`
-        : `The asking price ${usd(askingPrice)} sits inside the ${usd(low)}–${usd(high)} flip band.`;
+        ? `The asking price ${usd(askingPrice)} is below the ${usd(low)} 40% benchmark of Combined LandOS FMV: confirm the seller's number before offering less.`
+        : `The asking price ${usd(askingPrice)} sits inside the standard ${usd(low)}–${usd(high)} (40–60%) benchmark of Combined LandOS FMV.`;
+  const basisParts = [
+    pkg ? `Combined LandOS FMV: ${pkg.combinedMethodLabel ?? pkg.combinedMethod ?? 'combined'}` : null,
+    pkg?.landPortalFmv != null ? `LandPortal FMV ${usd(pkg.landPortalFmv)}` : pkg ? 'LandPortal FMV unavailable' : null,
+    pkg?.nonLandPortalFmv != null ? `Non-LandPortal FMV ${usd(pkg.nonLandPortalFmv)} from ${pkg.nonLandPortalCompCount ?? 0} closed sale(s)` : pkg ? 'Non-LandPortal FMV unavailable' : null,
+    pkg?.confidence ? `confidence ${pkg.confidence}` : null,
+    pkg?.combinedLimitation ?? null,
+    fmvGuard?.statement ?? null,
+  ].filter((part): part is string => !!part);
   return {
     status: 'supported',
     fmv: { low: null, central, high: null },
-    basis: dossier.valuation.basis,
+    basis: basisParts.length ? basisParts.join('; ') : dossier.valuation.basis,
     acceptedCompCount: accepted,
     offerGuidance: {
       strategy: 'quick_flip',
-      strategyLabel: flip.label,
-      lowPct: flip.offerPctLowOfEv!,
-      highPct: flip.offerPctHighOfEv!,
+      strategyLabel: pkg ? 'Standard acquisition benchmark' : flip.label,
+      lowPct: 40,
+      highPct: 60,
       low,
       high,
-      confirmed: flip.confirmed,
+      confirmed: pkg != null || flip.confirmed,
     },
     askingPrice,
     askingPriceSource,
     askingVsGuidance,
     noPriceRationale: null,
+    package: pkg,
   };
 }
 
@@ -748,6 +852,22 @@ function rankedRisks(
       magnitude: 'high', standing: 'verification_need',
       basis: 'Property Story guardrail: fair market value',
       action: guardOf(property, 'Fair market value')?.unlockedBy ?? 'An accepted sold-comparable set.',
+    });
+  }
+  if (value.status === 'supported' && value.package && (value.package.confidence === 'low' || value.package.combinedMethod === 'closest_evidence')) {
+    items.push({
+      key: 'value_confidence', title: 'Low confidence in the current value',
+      statement: `Combined LandOS FMV ${usd(value.fmv!.central)} is ${value.package.combinedMethodLabel?.toLowerCase() ?? 'thinly supported'}${value.package.combinedLimitation ? `: ${value.package.combinedLimitation}` : '.'}`,
+      magnitude: 'medium', standing: 'verification_need',
+      basis: 'Comps & Valuation package', action: 'Admit more qualified closed vacant-land sales through Comps & Valuation.',
+    });
+  }
+  if ((value.package?.activeCompetitionCount ?? 0) >= 3) {
+    items.push({
+      key: 'resale_competition', title: `${value.package!.activeCompetitionCount} active listings compete for the resale buyer`,
+      statement: value.package!.activeCompetitionSummary ?? 'Active land listings compete for the same buyers.',
+      magnitude: 'medium', standing: 'market_record',
+      basis: 'Comps & Valuation active competition', action: 'Price the resale against the active asks, not against FMV alone.',
     });
   }
   for (const guard of property?.guardrails ?? []) {
@@ -832,6 +952,21 @@ function rankedOpportunities(
   dossier: AcquisitionDossier,
 ): RankedItem[] {
   const items: Omit<RankedItem, 'rank'>[] = [];
+  const pkg = dossier.valuation.package;
+  if (pkg?.combinedFmv != null && pkg.askingPrice != null && pkg.offer60 != null && pkg.askingPrice <= pkg.offer60) {
+    items.push({
+      key: 'asking_inside_benchmark', title: 'Asking price sits at or below the 60% benchmark',
+      statement: `The seller's ${usd(pkg.askingPrice)} is at or below ${usd(pkg.offer60)} (60% of Combined LandOS FMV ${usd(pkg.combinedFmv)}).`,
+      magnitude: 'high', standing: 'record_fact', basis: 'Deal Card asking price against the valuation package', action: 'Confirm the seller number, then offer inside the 40–60% benchmark.',
+    });
+  }
+  if (pkg?.combinedFmv != null && (pkg.activeCompetitionCount ?? 0) === 0) {
+    items.push({
+      key: 'no_active_competition', title: 'No retained active listing competes for the resale',
+      statement: pkg.activeCompetitionSummary ?? 'No active land listing is retained as resale competition.',
+      magnitude: 'low', standing: 'market_record', basis: 'Comps & Valuation active competition', action: null,
+    });
+  }
   for (const opportunity of property?.story.opportunities ?? []) {
     items.push({
       key: `story:${opportunity.slice(0, 24)}`, title: opportunity.split(':')[0] ?? opportunity,
@@ -1252,16 +1387,17 @@ function strategyComparisonFor(
   // ── Land-home / manufactured-home package ──
   {
     const params = strategyParams('land_home_package');
-    const status: ScenarioStatus = manufactured?.standing === 'prohibited' ? 'not_supported' : manufactured?.standing === 'by_right' || manufactured?.standing === 'conditional' ? 'conditional' : 'unknown';
+    // The preliminary screen decides the posture; zoning only blocks on a
+    // clear prohibition. Detailed package underwriting stays behind the
+    // strategy boundary for a later build.
+    const lh = landHomePostureFor(value.package?.landHome ?? null, manufactured?.standing ?? null);
+    const status: ScenarioStatus = lh.posture === 'NOT VIABLE' ? 'not_supported' : lh.posture === 'WORTH EXPLORING' ? 'conditional' : 'unknown';
     scenarios.push({
       id: 'land_home_manufactured', label: SCENARIO_LABEL.land_home_manufactured, strategyId: 'land_home_package', pathKind: 'as_is',
       subjectScope: 'The parcel with a manufactured or modular home placed and sold as a finished package.',
       status, confidence: status === 'not_supported' ? 'confirmed' : status === 'conditional' ? 'likely' : 'unresolved',
-      statusWhy: manufactured
-        ? manufactured.standing === 'not_established'
-          ? `${manufactured.statement} ${params.notes}`
-          : `${manufactured.statement} ${status === 'conditional' ? `Gate: ${params.notes}` : ''}`.trim()
-        : `Whether a manufactured home is permitted is not established. ${params.notes}`,
+      statusWhy: `${lh.posture ? `Preliminary Land Home Package posture: ${lh.posture}. ` : 'Preliminary Land Home Package posture: not yet screened. '}${lh.why} ${manufactured ? manufactured.statement : 'Whether a manufactured home is permitted is not established.'} Next verification: ${lh.nextVerification}`,
+      landHomePosture: lh.posture,
       grossExit: null,
       purchasePriceCapacity: null,
       directCosts: [missingLine('home', 'Home purchase, transport, set-up and skirting', 'Dealer quote.'), missingLine('site', 'Site prep, well/septic or taps, driveway', 'Contractor quote after the septic evaluation.')],
@@ -1270,9 +1406,9 @@ function strategyComparisonFor(
       timeToExit: null,
       keyApprovals: [...(manufactured?.standing === 'conditional' ? ['Conditional-use or special-exception approval for the home placement.'] : []), ...(septic ? [] : ['Health-department septic site evaluation.']), 'Placement and building permits.'],
       returnMetrics: null,
-      missingInputs: ['Verified manufactured-home package sales at $200k–$300k+ in this market.', 'Home and set-up quotes.', ...(manufactured?.standing === 'not_established' ? ['Whether the district permits manufactured housing.'] : [])],
+      missingInputs: [...(value.package?.landHome?.marketMet ? [] : ['Verified manufactured-home package sales above $200,000 within about five miles.']), 'Home and set-up quotes.', ...(manufactured?.standing === 'not_established' ? ['Whether the district permits manufactured housing.'] : [])],
       complexity: 'medium',
-      buyerDemand: 'Package demand rests on verified manufactured-home sales, which are not retained.',
+      buyerDemand: value.package?.landHome?.marketNote ?? 'Package demand rests on verified manufactured-home sales, which are not retained.',
       risks: gateActions(['as_is']),
       nextDecisiveAction: manufactured?.standing === 'not_established' || !manufactured ? 'Read the district\'s manufactured-home provision from the adopted code.' : 'Search for closed manufactured-home package sales in the market.',
     });
@@ -1519,16 +1655,17 @@ function recommendationFor(
     return above
       ? {
         kind: 'renegotiate', label: RECOMMENDATION_LABEL.renegotiate,
-        statement: `Renegotiate: the seller's number sits above the ${usd(value.offerGuidance.low)}–${usd(value.offerGuidance.high)} band that ${value.acceptedCompCount} accepted sale(s) support.`,
-        rationale: [value.askingVsGuidance!, `Expected value ${usd(value.fmv!.central)}${value.basis ? ` (${value.basis})` : ''}.`],
+        statement: `Renegotiate: the seller's number sits above the ${usd(value.offerGuidance.low)}–${usd(value.offerGuidance.high)} (40–60%) benchmark of Combined LandOS FMV ${usd(value.fmv!.central)}.`,
+        rationale: [value.askingVsGuidance!, `Combined LandOS FMV ${usd(value.fmv!.central)}${value.basis ? ` (${value.basis})` : ''}.`, ...packageRationale(value)],
       }
       : {
         kind: 'make_offer', label: RECOMMENDATION_LABEL.make_offer,
-        statement: `Make an offer inside ${usd(value.offerGuidance.low)}–${usd(value.offerGuidance.high)}.`,
+        statement: `Make an offer inside ${usd(value.offerGuidance.low)}–${usd(value.offerGuidance.high)} (40–60% of Combined LandOS FMV ${usd(value.fmv!.central)}).`,
         rationale: [
-          `Expected value ${usd(value.fmv!.central)} from ${value.acceptedCompCount} accepted closed sale(s).`,
-          `${value.offerGuidance.strategyLabel} band ${value.offerGuidance.lowPct}–${value.offerGuidance.highPct}% of expected value${value.offerGuidance.confirmed ? ' (confirmed parameters)' : ' (draft parameters)'}.`,
+          `Combined LandOS FMV ${usd(value.fmv!.central)}${value.basis ? ` (${value.basis})` : ''}.`,
+          `${value.offerGuidance.strategyLabel}: ${value.offerGuidance.lowPct}–${value.offerGuidance.highPct}% of Combined LandOS FMV.`,
           ...(value.askingVsGuidance ? [value.askingVsGuidance] : []),
+          ...packageRationale(value),
         ],
       };
   }
@@ -1536,7 +1673,15 @@ function recommendationFor(
   const missing = evidence.filter((row) => row.requiredForOffer && row.status !== 'sufficient');
   const landosMovable = missing.filter((row) => row.key === 'value' || row.key === 'zoning' || row.key === 'access');
   const personOnly = missing.filter((row) => row.key === 'seller' || row.key === 'subject');
-  const rationale = missing.map((row) => `${row.label}: ${row.statement} Unlock: ${row.unlock}`);
+  const rationale = [
+    ...missing.map((row) => `${row.label}: ${row.statement} Unlock: ${row.unlock}`),
+    // The current valuation package always informs the posture, even while
+    // other evidence keeps the decision preliminary.
+    ...(value.status === 'supported' && value.offerGuidance
+      ? [`Current value guidance: Combined LandOS FMV ${usd(value.fmv!.central)}; standard benchmark ${usd(value.offerGuidance.low)}–${usd(value.offerGuidance.high)} (40–60%).${value.askingVsGuidance ? ` ${value.askingVsGuidance}` : ''}`]
+      : []),
+    ...packageRationale(value),
+  ];
 
   if (!landosMovable.length && personOnly.length) {
     return {
@@ -1550,6 +1695,17 @@ function recommendationFor(
     statement: 'Continue targeted diligence; do not establish an offer range yet.',
     rationale,
   };
+}
+
+/** The comp-evidence lines every recommendation carries once a package exists. */
+function packageRationale(value: ValueGuidance): string[] {
+  const pkg = value.package;
+  if (!pkg || pkg.combinedFmv == null) return [];
+  return [
+    `Components: LandPortal FMV ${pkg.landPortalFmv != null ? usd(pkg.landPortalFmv) : 'unavailable'} (${pkg.landPortalCompCount ?? 0} LandPortal sale(s)); Non-LandPortal FMV ${pkg.nonLandPortalFmv != null ? usd(pkg.nonLandPortalFmv) : 'unavailable'} (${pkg.nonLandPortalCompCount ?? 0} sale(s)${pkg.nonLandPortalSources.length ? ` via ${pkg.nonLandPortalSources.join(', ')}` : ''}); confidence ${pkg.confidence ?? 'unstated'}.`,
+    ...(pkg.collectiveComparison ? [`Subject versus comps: ${pkg.collectiveComparison}`] : []),
+    ...(pkg.activeCompetitionSummary ? [`Resale competition: ${pkg.activeCompetitionSummary}`] : []),
+  ];
 }
 
 // ── Material fingerprint ────────────────────────────────────────────────────
@@ -1569,6 +1725,18 @@ function materialDimensionsFor(
   dims.value = value.status === 'supported'
     ? `supported ${usd(value.fmv!.central)} from ${value.acceptedCompCount} sale(s)`
     : `withheld (${value.acceptedCompCount} accepted sale(s))`;
+  // The whole valuation package is material: a changed lane FMV, comp set,
+  // confidence, comparison or competition set refreshes the decision.
+  const pkg = value.package;
+  dims.valuationPackage = pkg
+    ? `lp=${pkg.landPortalFmv ?? 'n/a'}/${pkg.landPortalCompCount ?? 0} · nonlp=${pkg.nonLandPortalFmv ?? 'n/a'}/${pkg.nonLandPortalCompCount ?? 0} · combined=${pkg.combinedFmv ?? 'n/a'} (${pkg.combinedMethod ?? 'n/a'}, ${pkg.confidence ?? 'n/a'}) · 40=${pkg.offer40 ?? 'n/a'} · 60=${pkg.offer60 ?? 'n/a'}`
+    : 'none';
+  dims.collectiveComparison = pkg?.collectivePosture ?? 'none';
+  dims.activeCompetition = pkg ? `${pkg.activeCompetitionCount ?? 0} active` : 'none';
+  dims.landHome = pkg?.landHome ? `physical=${pkg.landHome.physicalMet ?? 'n/a'} · market=${pkg.landHome.marketMet} (${pkg.landHome.qualifyingSaleCount ?? 0}/${pkg.landHome.soldCompCount ?? 0}) · triggered=${pkg.landHome.triggered}` : 'none';
+  // The posture's stated reason is operator-facing: a different qualifying
+  // sale set reads differently, so the reason is material in its own right.
+  dims.landHomeReason = pkg?.landHome?.marketBrief ?? 'none';
   dims.askingPrice = value.askingPrice != null ? usd(value.askingPrice) : 'none';
   for (const key of ['zoning', 'access', 'utilities', 'well_septic', 'taxes', 'flood', 'wetlands', 'soils', 'development_status'] as const) {
     const topic = topicOf(property, key);

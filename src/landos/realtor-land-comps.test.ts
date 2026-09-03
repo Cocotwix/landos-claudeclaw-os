@@ -68,7 +68,7 @@ describe('Realtor.com land comps', () => {
     };
     const result = await fetchRealtorLandComps(
       { city: 'Williamsburg', state: 'MI', mode: 'sold' },
-      { force: true, connect: async () => browser, settleMs: 0 },
+      { force: true, connect: async () => browser, settleMs: 0, indexedSearch: async () => [] },
     );
     expect(result.status).toBe('blocked');
     expect(result.comps).toEqual([]);

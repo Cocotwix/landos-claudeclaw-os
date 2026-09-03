@@ -116,8 +116,24 @@ import path from 'path';
 import { routeDukeRequest } from './duke-router.js';
 import { LANDPORTAL_VERIFICATION_TIMEOUT_MS } from './duke-report-lanes.js';
 import { runDukeVerification, type DukeVerificationResult } from './duke-verification-bridge.js';
-import { distanceMiles, fetchZillowLandComps } from './zillow-land-comps.js';
+import { distanceMiles, fetchZillowLandComps, withSharedZillowSession } from './zillow-land-comps.js';
 import { fetchRedfinLandComps, fetchRedfinListingDetail } from './redfin-land-comps.js';
+import { enrichManufacturedHomeRows, retainedLocalitiesForSubject, selectManufacturedHomeRows, type ManufacturedHomeRow } from './manufactured-home-enrichment.js';
+import { focusedLaneScope } from './property-intelligence-live.js';
+
+/** Retained localities for a deal's subject (subject street, retained
+ *  subdivision, nearby retained evidence streets), read from the research
+ *  record the lanes already keep. Empty when nothing is retained. */
+function retainedLocalitiesForDeal(dealCardId: number, subject: { address?: string | null; lat?: number | null; lng?: number | null }): string[] {
+  try {
+    const deal = getDealCard(dealCardId);
+    const cardId = deal ? resolveSubjectPropertyCard(deal).cardId ?? null : null;
+    const record = cardId ? new PropertyResearchStore().loadForProperty(cardId) : null;
+    return retainedLocalitiesForSubject(record as never, subject);
+  } catch {
+    return retainedLocalitiesForSubject(null, subject);
+  }
+}
 import { RECENT_SALE_WINDOW_MONTHS, type SoldSearchWindowMonths } from './comp-sale-recency.js';
 import { fetchLandWatchLandComps } from './landwatch-land-comps.js';
 import { fetchRealtorLandComps } from './realtor-land-comps.js';
@@ -558,6 +574,7 @@ import {
   TAX_STATUS_FIELDS, buildTaxStatusRead, taxAuthorityFor, taxStatusAttemptsFromSources,
 } from './tax-status-research.js';
 import { runOfficialParcelGis } from './official-parcel-gis-run.js';
+import { promoteRetainedParcelEnrichment } from './property-card.js';
 import { buildLandUseView, buildRetainedLandUseIntelligenceView } from './land-use-view.js';
 import { landPortalSetLabel } from './landportal-api.js';
 import { runLandUseResearch } from './land-use-run.js';
@@ -8441,16 +8458,24 @@ export function registerLandosRoutes(app: Hono): void {
       // surfaces. Read both explicitly; never relabel an active/unknown row as
       // sold merely because it came from a sold-search URL.
       // Sold window matches the operator's own search: last 12 months.
-      const soldResult = await fetchZillowLandComps({
-        ...market,
-        subjectAcres: input.subjectAcres,
-        mode: 'sold',
-        dateWindowMonths: 12,
-      });
-      const activeResult = await fetchZillowLandComps({
-        ...market,
-        subjectAcres: input.subjectAcres,
-        mode: 'active',
+      // One persistent Zillow session for both boards: the same identity,
+      // cookies and any operator-cleared verification carry from sold to active.
+      const localities = retainedLocalitiesForDeal(dealCardId, { address: input.address, lat: input.lat ?? null, lng: input.lng ?? null });
+      const [soldResult, activeResult] = await withSharedZillowSession(async (session) => {
+        const sold = await fetchZillowLandComps({
+          ...market,
+          subjectAcres: input.subjectAcres,
+          mode: 'sold',
+          dateWindowMonths: 12,
+          localities,
+        }, session ? { session } : {});
+        const active = await fetchZillowLandComps({
+          ...market,
+          subjectAcres: input.subjectAcres,
+          mode: 'active',
+          localities,
+        }, session ? { session } : {});
+        return [sold, active] as const;
       });
       const resultStatus = soldResult.status === 'retrieved' || activeResult.status === 'retrieved'
         ? 'retrieved'
@@ -8486,48 +8511,96 @@ export function registerLandosRoutes(app: Hono): void {
       };
     },
     captureManufacturedHomeComps: async (input) => {
-      const result = await fetchZillowLandComps({
-        ...publicLocalityFallback(dealCardId, {
-          address: input.address ?? undefined,
-          city: input.city ?? undefined,
-          county: input.county ?? undefined,
-          state: input.state ?? undefined,
-          zip: input.zip ?? undefined,
-          apn: input.apn ?? undefined,
-          owner: input.owner ?? undefined,
-          lat: input.lat,
-          lng: input.lng,
-        }),
+      // The preliminary Land Home Package market screen: sold manufactured or
+      // mobile homes within about five miles from EVERY approved residential
+      // sale source, merged once by address. Zillow runs on the shared
+      // persistent session; Redfin and Realtor.com use their own machinery
+      // with the manufactured property type. No source blocks another.
+      const market = publicLocalityFallback(dealCardId, {
+        address: input.address ?? undefined,
+        city: input.city ?? undefined,
+        county: input.county ?? undefined,
+        state: input.state ?? undefined,
+        zip: input.zip ?? undefined,
+        apn: input.apn ?? undefined,
+        owner: input.owner ?? undefined,
         lat: input.lat,
         lng: input.lng,
-        propertyType: 'manufactured',
-        mode: 'sold',
-        radiusMiles: 5,
-        dateWindowMonths: 24,
       });
+      // The subject's own street, the retained subdivision and nearby retained
+      // streets aim the indexed-search fallback the way an operator would type
+      // it ("NW 137th Ln Lake Butler FL 32054 mobile home sold").
+      const localities = retainedLocalitiesForDeal(dealCardId, { address: input.address, lat: input.lat, lng: input.lng });
+      const zillow = await withSharedZillowSession((session) => fetchZillowLandComps({
+        ...market, lat: input.lat, lng: input.lng, propertyType: 'manufactured', mode: 'sold', radiusMiles: 5, dateWindowMonths: 24, localities,
+      }, session ? { session } : {}));
+      const [redfin, realtor] = await Promise.all([
+        fetchRedfinLandComps({ ...market, subjectAcres: input.subjectAcres, mode: 'sold', dateWindowMonths: 24, propertyType: 'manufactured' }).catch((error: unknown) => ({ status: 'error' as const, comps: [], note: `Redfin manufactured-home search failed: ${(error as Error)?.message ?? String(error)}` })),
+        fetchRealtorLandComps({ ...market, subjectAcres: input.subjectAcres, mode: 'sold', propertyType: 'manufactured', localities }).catch((error: unknown) => ({ status: 'error' as const, comps: [], note: `Realtor.com manufactured-home search failed: ${(error as Error)?.message ?? String(error)}` })),
+      ]);
+      const seen = new Set<string>();
+      const sold: ManufacturedHomeRow[] = [];
+      const push = (source: string, rows: Array<{ address: string | null; price: number | null; acres?: number | null; pricePerAcre?: number | null; url?: string | null; status?: string; soldDate?: string | null; saleDate?: string | null; lat?: number | null; lng?: number | null; homeType?: string | null; yearBuilt?: number | null; homeSizeSqft?: number | null }>) => {
+        for (const comp of rows) {
+          const key = (comp.address ?? comp.url ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          sold.push({
+            source,
+            address: comp.address,
+            price: comp.price,
+            acres: comp.acres ?? null,
+            pricePerAcre: comp.pricePerAcre ?? null,
+            url: comp.url ?? null,
+            status: comp.status ?? 'sold',
+            saleDate: comp.soldDate ?? comp.saleDate ?? null,
+            collectedAt: new Date().toISOString(),
+            lat: comp.lat ?? null,
+            lng: comp.lng ?? null,
+            distanceMiles: comp.lat != null && comp.lng != null
+              ? distanceMiles({ lat: input.lat, lng: input.lng }, { lat: comp.lat, lng: comp.lng })
+              : null,
+            homeType: comp.homeType ?? null,
+            yearBuilt: comp.yearBuilt ?? null,
+            homeSizeSqft: comp.homeSizeSqft ?? null,
+            beds: (comp as { beds?: number | null }).beds ?? null,
+            baths: (comp as { baths?: number | null }).baths ?? null,
+            lineage: (comp as { lineage?: string | null }).lineage ?? 'page',
+            description: (comp as { description?: string | null }).description ?? null,
+          });
+        }
+      };
+      push('Zillow', zillow.comps);
+      push('Redfin', redfin.comps as never);
+      push('Realtor.com', realtor.comps as never);
+      // Search cards omit what the screen needs (coordinates for the five-mile
+      // boundary, the closed date, beds/baths). Recover them from the record
+      // itself: the Redfin record page publishes coordinates and the last
+      // closed sale; otherwise the existing bounded geocode cache locates the
+      // address. Bounded, once per record, never a loop.
+      const subjectAim = { street: localities[0] ?? null, zip: market.zip ?? null };
+      const enrichment = await enrichManufacturedHomeRows(sold, { lat: input.lat, lng: input.lng, ...subjectAim }, { radiusMiles: 5, max: 24 });
+      // Retain what the screen can use: located sales inside five miles nearest
+      // first, plus a few records that stay incomplete (stamped with what they
+      // lack). The rest of the board is counted in the note, never padded in.
+      const selection = selectManufacturedHomeRows(sold, { radiusMiles: 5, maxWithinRadius: 10, maxIncomplete: 5, subject: subjectAim });
+      const retainedSold = selection.retained;
+      const statuses = [zillow.status, redfin.status, realtor.status];
+      const status = statuses.includes('retrieved') ? 'retrieved'
+        : statuses.every((value) => value === 'none') ? 'none'
+          : statuses.includes('blocked') && !statuses.includes('none') ? 'blocked'
+            : statuses.includes('none') ? 'none' : 'error';
+      const proof = zillow.searchProof
+        ? { ...zillow.searchProof, sourcesSearched: ['Zillow', 'Redfin', 'Realtor.com'], candidatesReviewed: (zillow.searchProof.candidatesReviewed ?? 0) + redfin.comps.length + realtor.comps.length, qualifyingResults: selection.withinRadius }
+        : undefined;
+      const describe = (label: string, result: { status: string; comps: unknown[]; note?: string }) =>
+        `${label}: ${result.status} (${result.comps.length} sold${result.status === 'blocked' ? `; ${(result.note ?? '').replace(/\s+/g, ' ').slice(0, 160)}` : ''})`;
       return {
-        status: result.status,
-        note: result.note,
-        searchProof: result.searchProof,
+        status,
+        note: `${describe('Zillow', zillow)}. ${describe('Redfin', redfin)}. ${describe('Realtor.com', realtor)}. ${sold.length} unique manufactured-home sale(s) after address dedup: ${selection.withinRadius} located within five miles, ${selection.beyondRadius} beyond, ${selection.incomplete} without a resolved location; ${retainedSold.length} retained (${enrichment.attempted} record page(s) read, ${enrichment.located} located, ${enrichment.dated} dated by enrichment).`,
+        searchProof: proof,
         active: [],
-        sold: result.comps.map((comp) => ({
-          address: comp.address,
-          price: comp.price,
-          acres: comp.acres,
-          pricePerAcre: comp.pricePerAcre,
-          url: comp.url,
-          status: comp.status,
-          saleDate: comp.soldDate ?? null,
-          collectedAt: new Date().toISOString(),
-          lat: comp.lat ?? null,
-          lng: comp.lng ?? null,
-          distanceMiles: comp.lat != null && comp.lng != null
-            ? distanceMiles({ lat: input.lat, lng: input.lng }, { lat: comp.lat, lng: comp.lng })
-            : null,
-          homeType: comp.homeType ?? null,
-          yearBuilt: comp.yearBuilt ?? null,
-          homeSizeSqft: comp.homeSizeSqft ?? null,
-        })),
+        sold: retainedSold as never,
       };
     },
     captureRedfinComps: async (input) => {
@@ -11066,11 +11139,37 @@ export function registerLandosRoutes(app: Hono): void {
         latitude: typeof card.lat === 'number' ? card.lat : undefined,
         longitude: typeof card.lng === 'number' ? card.lng : undefined,
       }, { operatorSeeds });
+      // Coordinates are a recoverable prerequisite. When the official parcel
+      // research produced parcel geometry for a subject that has no point yet,
+      // its centroid becomes the card's coordinate basis through the SAME seam
+      // the LandPortal parcel read uses, with the official source as lineage.
+      // Never over an existing point, never from a non-matching parcel, never
+      // invented.
+      const geometry = run.result.geometry;
+      const usableMatch = run.result.parcelMatchStatus === 'verified' || run.result.parcelMatchStatus === 'provisional';
+      let coordinateBasis: { lat: number; lng: number; source: string; sourceUrl: string; method: string; confidence: 'official' | 'provisional'; retrievedAt: string } | null = null;
+      if (cardId && usableMatch && geometry?.centroid && (card.lat == null || card.lng == null)) {
+        const { lat, lng } = geometry.centroid;
+        promoteRetainedParcelEnrichment(cardId, { 'Centroid Latitude': String(lat), 'Centroid Longitude': String(lng) });
+        coordinateBasis = {
+          lat, lng,
+          source: run.result.sourceJurisdiction ? `${run.result.sourceJurisdiction} official parcel geometry` : 'Official parcel geometry',
+          sourceUrl: run.result.sourceServiceUrl ?? run.result.sourceUrl,
+          method: `centroid of the official parcel ring (${geometry.vertexCount} vertices, ${run.result.searchMethod ?? 'parcel search'})`,
+          confidence: run.result.parcelMatchStatus === 'verified' ? 'official' : 'provisional',
+          retrievedAt: new Date().toISOString(),
+        };
+        landosAudit('landos/official-parcel-gis', 'subject_coordinates_from_official_geometry',
+          `deal ${id}: card ${cardId} coordinates ${lat.toFixed(6)}, ${lng.toFixed(6)} from ${coordinateBasis.source} (${coordinateBasis.confidence}; ${coordinateBasis.method}); ${coordinateBasis.sourceUrl}`,
+          { refTable: 'landos_property_card', refId: cardId });
+        logger.info({ dealCardId: id, cardId, ...coordinateBasis }, 'subject_coordinates_from_official_geometry');
+      }
       return c.json({
         officialParcelGis: buildOfficialParcelGisView(id),
         // Attempt trail is operator-visible at a summary level only; service
         // metadata and request counts stay in the retained evidence record.
-        attempts: run.attempts.map((a) => ({ family: a.family, outcome: a.outcome })),
+        attempts: run.attempts.map((a) => ({ url: a.url, family: a.family, outcome: a.outcome })),
+        coordinateBasis,
       });
     } catch (err) {
       logger.error({ event: 'official_parcel_gis_run_failed', dealCardId: id, msg: (err as Error)?.message }, 'official_parcel_gis_run_failed');
@@ -12639,6 +12738,9 @@ export function registerLandosRoutes(app: Hono): void {
       actor: str(body.actor) ?? 'tyler/manual',
     });
     if (!result.ok) return c.json({ error: result.error ?? 'selection rejected' }, 400);
+    // The accepted comp set changed, so the valuation package may have; the
+    // Deal Brain re-reads it and writes nothing when the material inputs match.
+    produceDealBrainDecision(id, 'valuation:comp_selection');
     return c.json({ compsValuation: buildCompsValuationView(id) });
   });
 
@@ -12654,6 +12756,7 @@ export function registerLandosRoutes(app: Hono): void {
     landosAudit('landos/comps-valuation', 'comp_locations_resolved',
       `deal ${id}: subject ${result.subjectResolved ? 'resolved' : 'unresolved'}; ${result.compsEnriched} comp location(s) enriched; ${result.evidenceResolved} evidence listing(s) resolved; ${result.unresolved} unresolved`,
       { refTable: 'landos_deal_card', refId: id });
+    produceDealBrainDecision(id, 'valuation:locations_resolved');
     return c.json({ resolution: result, compsValuation: buildCompsValuationView(id) });
   });
 
@@ -12905,6 +13008,7 @@ export function registerLandosRoutes(app: Hono): void {
         parameters: { lane: 'retained_valuation' },
         context: { surface: 'deal_card', dealCardId: id },
       });
+      produceDealBrainDecision(id, 'valuation:capability_run');
       return c.json({ capability: COMPS_VALUATION_CAPABILITY_ID, propertyCardId: subject.cardId, result });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
@@ -13020,6 +13124,9 @@ export function registerLandosRoutes(app: Hono): void {
   // are all pre-existing — the readiness manifest, the bounded backfill, and
   // the intelligence stack — and this is the loop between them.
   const researchCoverageCycles = new Map<number, ResearchCoverageCycleResult>();
+  /** The latest FOCUSED comparables rerun per Deal Card (in memory, like the
+   *  coverage cycles): the fire-and-poll record the progress read reports. */
+  const focusedReruns = new Map<number, { runId: string; lanes: string[]; status: string; summary: string | null; candidateCount: number; coverage: { headline: string; refreshedLayers: string[] } | { error: string } | null }>();
 
   const runDealCoverageCycle = async (
     id: number,
@@ -13187,6 +13294,7 @@ export function registerLandosRoutes(app: Hono): void {
     const coverage = planResearchCoverage(manifest);
     return c.json({
       manifest,
+      focusedRerun: focusedReruns.get(id) ?? null,
       canonicalSubject: (() => {
         const subject = resolveCanonicalSubjectState(id);
         return {
@@ -13247,6 +13355,8 @@ export function registerLandosRoutes(app: Hono): void {
       laneOutcomes,
       snapshotStatus: view.snapshotStatus,
       progressive: view.progressive,
+      // The latest focused comparables rerun (fire-and-poll), when one ran.
+      focusedRerun: focusedReruns.get(id) ?? null,
     });
   });
 
@@ -13269,7 +13379,14 @@ export function registerLandosRoutes(app: Hono): void {
         `SELECT status FROM landos_mission WHERE mission_id = ? LIMIT 1`,
       ).get(ownerId) as { status?: string } | undefined;
       const status = String(row?.status ?? '').toLowerCase();
-      if (status === '') return false;
+      if (status === '') {
+        // No mission row: the owner is a FOCUSED rerun, whose liveness is this
+        // process's in-memory record. One that is not running here (finished,
+        // failed, or lost to a restart) holds nothing and must not refuse the
+        // next cycle forever.
+        const focused = focusedReruns.get(id);
+        return !(focused && focused.runId === ownerId && focused.status === 'running');
+      }
       return !['running', 'queued', 'pending', 'in_progress', 'active'].includes(status);
     };
     const fullRunLock = fullRunCapabilityStore.acquireExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, fullRunLockSubject, fullRunId, runIsFinished);
@@ -13286,6 +13403,72 @@ export function registerLandosRoutes(app: Hono): void {
       fullRunLockHeld = false;
       fullRunCapabilityStore.releaseExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, fullRunLockSubject, fullRunId);
     };
+
+    // ── FOCUSED rerun: comparables and manufactured-home market only ───────
+    // `scope` names the comparable lanes to run again for the CURRENT accepted
+    // subject. It is the same collector the mission's comparables child runs,
+    // under the same run lock, persisting through the same provider-result
+    // writer, and it closes through the same coverage cycle that the full run
+    // closes through (stories, Development Path, Deal Brain, each behind its
+    // own material gate). It does not fan out the other lanes, does not touch
+    // identity, and promotes no snapshot: a one-lane package would only carry
+    // gaps for lanes that were deliberately not asked for.
+    const focusedScope = focusedLaneScope(body.scope);
+    if (focusedScope) {
+      const lanes = [focusedScope.vacantLand ? 'vacant_land' : null, focusedScope.manufacturedHomes ? 'manufactured_home' : null].filter((lane): lane is string => !!lane);
+      type FocusedRerunResult = {
+        runId: string; lanes: string[]; status: string; summary: string | null; candidateCount: number;
+        coverage: { headline: string; refreshedLayers: string[] } | { error: string } | null;
+      };
+      // Same fire-and-poll shape as the full run: the request returns at once
+      // with the launch record unless `wait` is set; the work, its audit row
+      // and the closing coverage cycle continue under the same lock.
+      const focusedWork = (async (): Promise<FocusedRerunResult> => {
+        try {
+          await adoptAutomationControlPage();
+          const collectors = propertyIntelligenceCollectors(id, 'deal_card', 'refresh');
+          const outcome = await collectors.comparables({ dealCardId: id, runId: fullRunId, identity: null, comparables: null, laneScope: focusedScope });
+          landosAudit('landos/property-intelligence', 'focused_rerun',
+            `deal ${id}: focused comparables rerun (${lanes.join(', ')}) ${outcome.status}; ${(outcome.summary ?? '').slice(0, 400)}`,
+            { refTable: 'landos_deal_card', refId: id });
+          logger.info({ dealCardId: id, runId: fullRunId, lanes, status: outcome.status }, 'property_intelligence_focused_rerun');
+          // Close the loop exactly as the full run does: reconcile coverage,
+          // then let Property, Market, Seller, Development Path and Deal Brain
+          // recompute behind their material gates.
+          const current = getDealCard(id);
+          const cycle = current ? await runDealCoverageCycle(id, current.entity as CapabilityEntity, 'operator_rerun') : null;
+          const result: FocusedRerunResult = {
+            runId: fullRunId, lanes, status: outcome.status, summary: outcome.summary, candidateCount: outcome.data?.candidates?.length ?? 0,
+            coverage: cycle && !('error' in cycle) ? { headline: cycle.after?.headline ?? cycle.plan.headline, refreshedLayers: cycle.cascade?.refreshed ?? [] } : cycle && 'error' in cycle ? { error: cycle.error } : null,
+          };
+          focusedReruns.set(id, result);
+          logger.info({ dealCardId: id, runId: fullRunId, status: result.status, coverage: result.coverage }, 'property_intelligence_focused_rerun_complete');
+          return result;
+        } catch (error) {
+          logger.warn({ dealCardId: id, runId: fullRunId, err: (error as Error).message }, 'property_intelligence_focused_rerun_failed');
+          const failed: FocusedRerunResult = { runId: fullRunId, lanes, status: 'failed', summary: (error as Error).message, candidateCount: 0, coverage: null };
+          focusedReruns.set(id, failed);
+          return failed;
+        } finally {
+          try {
+            const reaped = await reapOrphanAutomationTabs({ dashboardOrigin: `http://localhost:${process.env.PORT ?? 3141}` });
+            await adoptAutomationControlPage();
+            logger.info({ dealCardId: id, runId: fullRunId, closed: reaped.closed, remaining: reaped.remaining }, 'property_intelligence_focused_rerun_tab_reap');
+          } catch (err) {
+            logger.warn({ err, dealCardId: id, runId: fullRunId }, 'property_intelligence_focused_rerun_tab_reap_skipped');
+          } finally {
+            releaseFullRunLock();
+          }
+        }
+      })();
+      focusedReruns.set(id, { runId: fullRunId, lanes, status: 'running', summary: null, candidateCount: 0, coverage: null });
+      const focusedRerun = wait ? await focusedWork : focusedReruns.get(id) ?? null;
+      return c.json({
+        launch: { runId: fullRunId, missionId: fullRunId, dealCardId: id, sequence: 0, childCount: 1, alreadyRunning: false },
+        focusedRerun,
+        propertyIntelligence: propertyIntelligenceView(id),
+      }, wait ? 200 : 202);
+    }
     try {
 
     // The capability root reconciles WHO the subject is before any dependent

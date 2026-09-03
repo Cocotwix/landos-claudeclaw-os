@@ -238,16 +238,17 @@ describe('LandPortal Comp Search capability', () => {
     ...over,
   });
 
-  describe('LandWatch large-acreage fallback gate', () => {
-    it('CASE A: a 20-acre subject never triggers LandWatch, however thin the evidence', () => {
-      expect(shouldRunLandWatchFallback(20, [])).toBe(false);
-      expect(shouldRunLandWatchFallback(20, [acceptedComp()])).toBe(false);
+  describe('LandWatch large-acreage gate (additive at 20+ acres)', () => {
+    it('CASE A: a sub-20-acre subject never adds LandWatch, however thin the evidence', () => {
+      expect(shouldRunLandWatchFallback(19.9, [])).toBe(false);
+      expect(shouldRunLandWatchFallback(19.9, [acceptedComp()])).toBe(false);
+      expect(shouldRunLandWatchFallback(20, [])).toBe(true);
     });
 
-    it('CASE B: a 50-acre subject with a strong primary sold set skips LandWatch', () => {
+    it('CASE B: a 50-acre subject with a strong primary sold set still adds LandWatch (additive, not a fallback)', () => {
       const strong = [acceptedComp(), acceptedComp(), acceptedComp()];
       expect(usableSoldEvidenceCount(strong)).toBe(3);
-      expect(shouldRunLandWatchFallback(50, strong)).toBe(false);
+      expect(shouldRunLandWatchFallback(50, strong)).toBe(true);
     });
 
     it('CASE C: a 50-acre subject with a thin primary sold set triggers LandWatch', () => {
@@ -309,14 +310,14 @@ describe('LandPortal Comp Search capability', () => {
     const landwatchDiag = diagnostics.find((row) => row.source === 'landwatch');
     expect(landwatchDiag?.searchAttempted).toBe(true);
     expect(landwatchDiag?.candidatesDiscovered).toBe(1);
-    expect(landwatchDiag?.notes.join(' ')).toMatch(/fallback triggered/i);
+    expect(landwatchDiag?.notes.join(' ')).toMatch(/LandWatch added/i);
     expect(landwatchDiag?.notes.join(' ')).toMatch(/market context only/i);
     const valuation = outcome.facts.valuation as { coreCount: number; landValueIndication: number | null };
     expect(valuation.coreCount).toBe(2);
     expect(valuation.landValueIndication).not.toBeNull();
   });
 
-  it('CASE B in the flow: sufficient primary evidence skips LandWatch with the reason recorded', async () => {
+  it('CASE B in the flow: sufficient primary evidence still adds LandWatch beside the other lanes', async () => {
     let landwatchInvoked = 0;
     const strongZillow: SecondarySearchResult = {
       status: 'retrieved',
@@ -336,15 +337,17 @@ describe('LandPortal Comp Search capability', () => {
         zillowSearch: async () => strongZillow,
         landwatchSearch: async (): Promise<SecondarySearchResult> => {
           landwatchInvoked += 1;
-          return { status: 'retrieved', note: 'should not run', comps: [] };
+          return { status: 'retrieved', note: 'LandWatch ran additively', comps: [] };
         },
       },
       ENV,
     );
     expect(outcome.status).toBe('SUCCEEDED');
-    expect(landwatchInvoked).toBe(0);
+    // Additive: LandWatch runs once and the strong Zillow evidence stays in the set.
+    expect(landwatchInvoked).toBe(1);
     const diagnostics = outcome.facts.diagnostics as Array<{ source: string; notes: string[] }>;
-    expect(diagnostics.find((row) => row.source === 'landwatch')?.notes.join(' ')).toMatch(/not needed.*sufficient/i);
+    expect(diagnostics.find((row) => row.source === 'landwatch')?.notes.join(' ')).toMatch(/LandWatch added/i);
+    expect(diagnostics.find((row) => row.source === 'zillow')).toBeTruthy();
   });
 
   it('reports a collection failure as RED, never as market absence', async () => {

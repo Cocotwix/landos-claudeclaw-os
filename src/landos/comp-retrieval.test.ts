@@ -40,9 +40,12 @@ describe('provider selection', () => {
     expect(ids).not.toContain('trulia' as never);
   });
 
-  it('adds LandWatch only at 40+ acres', () => {
-    expect(selectCompProviders({ acres: 39 }, defaultCompRegistry()).map((p) => p.id)).not.toContain('landwatch');
-    expect(selectCompProviders({ acres: 41 }, defaultCompRegistry()).map((p) => p.id)).toContain('landwatch');
+  it('adds LandWatch only at 20+ acres, beside the other providers', () => {
+    expect(selectCompProviders({ acres: 19.9 }, defaultCompRegistry()).map((p) => p.id)).not.toContain('landwatch');
+    const large = selectCompProviders({ acres: 20 }, defaultCompRegistry()).map((p) => p.id);
+    expect(large).toContain('landwatch');
+    expect(large).toContain('redfin');
+    expect(large).toContain('zillow');
   });
 
   it('drops LandPortal once the daily comp cap is hit', () => {

@@ -72,6 +72,7 @@ export interface BrowserQaPuppeteerPage extends AutomationPage {
   on(event: 'console', handler: (message: ConsoleLike) => void): BrowserQaPuppeteerPage;
   on(event: 'pageerror', handler: (error: ErrorLike) => void): BrowserQaPuppeteerPage;
   on(event: 'requestfailed', handler: (request: RequestLike) => void): BrowserQaPuppeteerPage;
+  on(event: 'request', handler: (request: RequestLike & { method?(): string }) => void): BrowserQaPuppeteerPage;
   on(event: 'response', handler: (response: ResponseLike) => void): BrowserQaPuppeteerPage;
   url(): string;
   reload(opts?: unknown): Promise<unknown>;
@@ -136,6 +137,26 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
 
 function safeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'browser-qa';
+}
+
+/**
+ * PURE. Did a hard refresh bring back the same page? `before` is the location
+ * the application settled on after the requested route opened (path plus
+ * query), `after` the location after the reload. A requested route that the
+ * application canonicalises (/deal/115 → /dept/acquisitions/v2?deal=115)
+ * persists when the canonical location comes back; the pre-redirect path is
+ * accepted too when the application kept it.
+ */
+export function routePersistedAfterRefresh(input: { expectedPath: string; before: string; after: string }): { ok: boolean; detail: string } {
+  const strip = (value: string) => value.replace(/[?&](?:qa_token|qaRun)=[^&]*/g, '').replace(/\?$/, '');
+  const before = strip(input.before);
+  const after = strip(input.after);
+  const afterPath = after.split('?')[0];
+  if (after === before) {
+    return { ok: true, detail: before.split('?')[0] === input.expectedPath ? `stayed on ${after}` : `${input.expectedPath} canonicalised to ${before}; the same location came back after the hard refresh` };
+  }
+  if (afterPath === input.expectedPath) return { ok: true, detail: `stayed on ${after}` };
+  return { ok: false, detail: `expected ${before} (requested ${input.expectedPath}); found ${after}` };
 }
 
 function redactUrl(value: string): string {
@@ -372,6 +393,23 @@ export async function runBrowserQa(options: RunBrowserQaOptions): Promise<Browse
       });
     });
 
+    // Every same-origin request that is not a GET, so a page load or hard
+    // refresh can be proven write-free rather than assumed so.
+    const writes: Array<{ method: string; url: string }> = [];
+    page.on('request', (request) => {
+      try {
+        const method = String(request.method?.() ?? 'GET').toUpperCase();
+        const url = request.url();
+        if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && isSameOrigin(url, baseUrl)) writes.push({ method, url: redactUrl(url) });
+      } catch { /* diagnostics only */ }
+    });
+    const currentLocation = () => qaPage.evaluate<string>(() => `${(globalThis as any).location.pathname}${(globalThis as any).location.search}`);
+    // The location the application settled on after the requested route
+    // opened. A route such as /deal/115 canonicalises to
+    // /dept/acquisitions/v2?deal=115, and THAT is what a hard refresh must
+    // bring back: the same Deal Card, not the pre-redirect path.
+    let canonicalLocation: string | null = null;
+
     const qaPage = page;
     const session: BrowserQaSession = {
       page: qaPage,
@@ -380,15 +418,23 @@ export async function runBrowserQa(options: RunBrowserQaOptions): Promise<Browse
         // Polling dashboards may never reach Puppeteer's network-idle
         // heuristic. DOM readiness plus scenario-specific visible assertions
         // is both bounded and tied to the operator outcome being tested.
+        writes.length = 0;
         await qaPage.goto(localUrl(baseUrl, route, options.token ?? '', runId), { waitUntil: 'domcontentloaded', timeout: 45_000 });
         await settleAfterMount(qaPage, sleep, report);
+        canonicalLocation = await currentLocation().catch(() => null);
+        const loadWrites = [...writes];
+        report.steps.push({ name: 'page load writes nothing', outcome: loadWrites.length === 0 ? 'PASS' : 'FAIL', detail: loadWrites.length === 0 ? 'GET only' : loadWrites.map((w) => `${w.method} ${w.url}`).join('; ') });
       },
       async hardRefresh(expectedPath = options.scenario.route) {
+        const before = canonicalLocation ?? await currentLocation().catch(() => expectedPath);
+        writes.length = 0;
         await qaPage.reload({ waitUntil: 'domcontentloaded', timeout: 45_000 });
         await settleAfterMount(qaPage, sleep, report);
-        const pathName = await qaPage.evaluate<string>(() => (globalThis as any).location.pathname);
-        const ok = pathName === expectedPath;
-        report.steps.push({ name: 'hard refresh route persistence', outcome: ok ? 'PASS' : 'FAIL', detail: `expected ${expectedPath}; found ${pathName}` });
+        const after = await currentLocation();
+        const persisted = routePersistedAfterRefresh({ expectedPath, before, after });
+        report.steps.push({ name: 'hard refresh route persistence', outcome: persisted.ok ? 'PASS' : 'FAIL', detail: persisted.detail });
+        const refreshWrites = [...writes];
+        report.steps.push({ name: 'hard refresh writes nothing', outcome: refreshWrites.length === 0 ? 'PASS' : 'FAIL', detail: refreshWrites.length === 0 ? 'GET only' : refreshWrites.map((w) => `${w.method} ${w.url}`).join('; ') });
       },
       async waitFor(selector, timeoutMs = 15_000) { await qaPage.waitForSelector(selector, { timeout: timeoutMs, visible: true }); },
       async click(selector) { await qaPage.click(selector); await sleep(300); },

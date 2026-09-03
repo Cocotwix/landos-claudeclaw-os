@@ -455,9 +455,28 @@ export interface CvImprovementValuation {
 }
 
 
+/** The operator valuation package served with the view (see comps-valuation-package.ts). */
+export interface CvValuationPackage {
+  landPortalFmv: { value: number | null; compCount: number; associatedCount: number; associatedNote: string | null; confidence: string; source: string; retrievedAt: string | null; limitation: string | null; compKeys: string[] };
+  nonLandPortalFmv: { value: number | null; compCount: number; associatedCount: number; associatedNote: string | null; confidence: string; source: string; limitation: string | null; compKeys: string[]; sources: string[]; method: string };
+  landHomePackage?: {
+    physical: { met: boolean | null; usableAcres: number | null; slopeBasis: string | null; note: string };
+    market: { met: boolean; qualifyingSaleCount: number; topSalePrice: number | null; note: string };
+    soldCompKeys: string[]; activeCompKeys: string[]; excludedCount: number; triggered: boolean; rule: string;
+  } | null;
+  combinedFmv: { value: number | null; method: string; methodLabel: string; confidence: string; limitation: string | null; calculation: string };
+  offer40: number | null;
+  offer60: number | null;
+  askingPrice: number | null;
+  collectiveComparison: { posture: string; postureLabel: string; statement: string; reasons: string[]; basis: string; compCount: number };
+  activeCompetition: { compKeys: string[]; count: number; summary: string };
+  landWatch: { applicable: boolean; thresholdAcres: number; additive: boolean; note: string };
+}
+
 export interface CompsValuationViewData {
   dealCardId: number;
   propertyCardId: number | null;
+  valuationPackage?: CvValuationPackage | null;
   subject: CvSubject;
   subjectImprovement?: CvSubjectImprovement | null;
   summary: CvSummary;
@@ -804,6 +823,7 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
   const win = view.valuationWindow;
   const visuals = view.visualCounts;
   const lpEstimate = view.lpEstimate ?? null;
+  const pkg = view.valuationPackage ?? null;
   const marketLeads = view.marketLeads ?? [];
   // Deduplication provenance, from the server's canonical figures.
   const canonicalCompCount = view.canonicalCompCount ?? comps.length;
@@ -1252,6 +1272,31 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
         <div class="awv2-panel-title">
           Valuation methods <span class="awv2-src-tag">{subjectImprovement?.improved ? 'LAND BASIS ONLY · ' : ''}Average · median · weighted · active competition · offer methods</span>
         </div>
+        {/* ── Operator valuation package: the three labeled FMV views and the
+               standard 40% / 60% benchmarks. Combined LandOS FMV is the one
+               number every downstream surface (Overview, Strategy, Deal Brain)
+               governs by; the lane FMVs stay visible as its components. ── */}
+        {pkg && (
+          <div class="awv2-cv-package" data-testid="cv-valuation-package">
+            <div class="awv2-cv-methodgrid">
+              <div class="awv2-cv-m adopted" data-testid="cv-combined-fmv"><span class="k">Combined LandOS FMV</span><b>{pkg.combinedFmv.value != null ? usd(pkg.combinedFmv.value) : 'Not yet established'}</b><i>{pkg.combinedFmv.methodLabel} · confidence {pkg.combinedFmv.confidence}</i></div>
+              <div class="awv2-cv-m" data-testid="cv-landportal-fmv"><span class="k">LandPortal FMV</span><b>{pkg.landPortalFmv.value != null ? usd(pkg.landPortalFmv.value) : 'Unavailable'}</b><i>{pkg.landPortalFmv.value != null ? `${pkg.landPortalFmv.source} · ${pkg.landPortalFmv.associatedCount} associated LandPortal record${pkg.landPortalFmv.associatedCount === 1 ? '' : 's'}${pkg.landPortalFmv.compCount ? ` (${pkg.landPortalFmv.compCount} closed sale${pkg.landPortalFmv.compCount === 1 ? '' : 's'})` : ''}` : pkg.landPortalFmv.limitation ?? 'LandPortal published no estimate'}</i></div>
+              <div class="awv2-cv-m" data-testid="cv-nonlandportal-fmv"><span class="k">Non-LandPortal FMV</span><b>{pkg.nonLandPortalFmv.value != null ? usd(pkg.nonLandPortalFmv.value) : 'Unavailable'}</b><i>{pkg.nonLandPortalFmv.compCount} closed sale{pkg.nonLandPortalFmv.compCount === 1 ? '' : 's'}{pkg.nonLandPortalFmv.sources.length ? ` · ${pkg.nonLandPortalFmv.sources.join(', ')}` : ''} · confidence {pkg.nonLandPortalFmv.confidence}</i></div>
+              <div class="awv2-cv-m" data-testid="cv-offer-40"><span class="k">40% offer value</span><b>{pkg.offer40 != null ? usd(pkg.offer40) : '—'}</b><i>40% of Combined LandOS FMV</i></div>
+              <div class="awv2-cv-m" data-testid="cv-offer-60"><span class="k">60% offer value</span><b>{pkg.offer60 != null ? usd(pkg.offer60) : '—'}</b><i>60% of Combined LandOS FMV</i></div>
+              <div class="awv2-cv-m" data-testid="cv-seller-ask"><span class="k">Seller asking price</span><b>{pkg.askingPrice != null ? usd(pkg.askingPrice) : 'Not yet known'}</b><i>Kept separate from FMV and the benchmarks</i></div>
+            </div>
+            <p class="awv2-pi-note" data-testid="cv-combined-calculation"><b>Calculation:</b> {pkg.combinedFmv.calculation}{pkg.combinedFmv.limitation ? ` Limitation: ${pkg.combinedFmv.limitation}` : ''}</p>
+            {pkg.landPortalFmv.associatedNote && <p class="awv2-pi-note" data-testid="cv-landportal-evidence"><b>LandPortal evidence:</b> {pkg.landPortalFmv.associatedNote}</p>}
+            {pkg.nonLandPortalFmv.associatedNote && <p class="awv2-pi-note" data-testid="cv-nonlandportal-evidence"><b>Non-LandPortal evidence:</b> {pkg.nonLandPortalFmv.associatedNote}</p>}
+            {pkg.landHomePackage && (
+              <p class="awv2-pi-note" data-testid="cv-land-home-screen"><b>Preliminary Land Home Package screen{pkg.landHomePackage.triggered ? ' (triggered)' : ''}:</b> {pkg.landHomePackage.physical.note} {pkg.landHomePackage.market.note}{pkg.landHomePackage.excludedCount ? ` ${pkg.landHomePackage.excludedCount} park or leased-lot listing${pkg.landHomePackage.excludedCount === 1 ? '' : 's'} excluded.` : ''} Manufactured-home evidence never enters the vacant-land FMV.</p>
+            )}
+            <p class="awv2-pi-note" data-testid="cv-collective-comparison"><b>Subject versus selected comps ({pkg.collectiveComparison.postureLabel.toLowerCase()}):</b> {pkg.collectiveComparison.statement}{pkg.collectiveComparison.reasons.length ? ` ${pkg.collectiveComparison.reasons.join(' ')}` : ''}</p>
+            <p class="awv2-pi-note" data-testid="cv-active-summary"><b>Active resale competition ({pkg.activeCompetition.count}):</b> {pkg.activeCompetition.summary}</p>
+            {pkg.landWatch.applicable && <p class="awv2-pi-note" data-testid="cv-landwatch-note">{pkg.landWatch.note}</p>}
+          </div>
+        )}
         {cleaned.adoptedFmv == null ? (
           <p class="awv2-pi-note">{cleaned.reconciliationLines[0]}</p>
         ) : (
@@ -1273,9 +1318,8 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
             {negotiation && (
               <div class="awv2-cv-methodrows">
                 <div class="awv2-cv-method">
-                  <div class="mt">{subjectImprovement?.improved ? 'Land-basis 40 / 50 / 60 references' : 'Simplified 40 / 50 / 60 method'}</div>
+                  <div class="mt">{subjectImprovement?.improved ? 'Land-basis 40 / 60 references' : 'Standard 40 / 60 benchmark'}</div>
                   <div class="mrow"><span>40% {subjectImprovement?.improved ? 'opening reference' : 'opening offer'}</span><b>{usd(negotiation.standardBand.pct40)}</b></div>
-                  <div class="mrow"><span>50% {subjectImprovement?.improved ? 'target reference' : 'target offer'}</span><b>{usd(negotiation.standardBand.pct50)}</b></div>
                   <div class="mrow"><span>60% upper reference</span><b>{usd(negotiation.standardBand.pct60)}</b></div>
                 </div>
                 {quickFlip && (
@@ -1735,7 +1779,7 @@ export function CompsValuationSection({ dealId, initial, onViewChange }: {
           </table>
           <p class="awv2-pi-note">
             Only rows with a weight enter the cleaned average, cleaned median, weighted indication,
-            adopted {subjectImprovement?.improved ? 'land value and land-basis references' : 'FMV, the 40/50/60 levels, the technical maximum, and the final range'}.
+            adopted {subjectImprovement?.improved ? 'land value and land-basis references' : 'FMV, the 40/60 levels, the technical maximum, and the final range'}.
           </p>
         </details>
       </section>

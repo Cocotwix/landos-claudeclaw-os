@@ -108,7 +108,8 @@ describe('the decision strip leads the page', () => {
     expect(CV_SRC).toMatch(/Land-basis target reference/);
     expect(CV_SRC).toMatch(/Land-basis negotiation ceiling/);
     expect(CV_SRC).toMatch(/LAND BASIS ONLY/);
-    expect(CV_SRC).toMatch(/Land-basis 40 \/ 50 \/ 60 references/);
+    expect(CV_SRC).toMatch(/Land-basis 40 \/ 60 references/);
+    expect(CV_SRC).not.toMatch(/50% (target reference|target offer)/);
     expect(CV_SRC).toMatch(/Whole-property value/);
     expect(CV_SRC).toMatch(/<div class="v">PENDING<\/div>/);
   });
@@ -170,7 +171,7 @@ describe('the decision strip leads the page', () => {
     expect(CV_SRC).toMatch(/Cleaned median/);
     expect(CV_SRC).toMatch(/Weighted indication/);
     expect(CV_SRC).toMatch(/Active competition/);
-    expect(CV_SRC).toMatch(/Simplified 40 \/ 50 \/ 60 method/);
+    expect(CV_SRC).toMatch(/Standard 40 \/ 60 benchmark/);
     expect(CV_SRC).toMatch(/Technical quick-flip method/);
     expect(CV_SRC).toMatch(/Technical maximum allowable offer/);
     expect(CV_SRC).toMatch(/As a percentage of cleaned FMV/);

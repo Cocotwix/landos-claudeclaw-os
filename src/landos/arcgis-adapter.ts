@@ -31,6 +31,7 @@ import {
   traverseArcgisItem,
 } from './arcgis-service-discovery.js';
 import { EscalationLadder } from './gis-escalation.js';
+import { logger } from '../logger.js';
 import { reconcileParcelCandidates } from './gis-identity-reconcile.js';
 import {
   type DiscoveredMapLayer,
@@ -223,13 +224,28 @@ export async function searchArcgisParcel(
   if (ownerField) supported.push('owner');
   if (layer.geometryType === 'esriGeometryPolygon') supported.push('coordinate');
 
+  // A clause that answers zero features is a NEGATIVE ANSWER, never the end of
+  // the cascade: only a spent budget stops it, and when that happens every
+  // remaining clause is recorded as skipped so the operator can see the
+  // difference between "the county says no" and "LandOS ran out of clock".
+  let budgetStopped = false;
   const runWhere = async (where: string, method: GisSearchMethod, exact: boolean): Promise<ParcelSearchOutcome | null> => {
-    if (ladder?.stageExhausted()) return null;
+    if (ladder?.stageExhausted()) {
+      budgetStopped = true;
+      logger.info({ event: 'arcgis_parcel_where_skipped', layerUrl: layer.layerUrl, where, method, exact, reason: 'stage_budget' }, 'arcgis_parcel_where_skipped');
+      attempts.push(`${where} → skipped (query budget spent)`);
+      return null;
+    }
     attempts.push(where);
     try {
       const result = await queryArcgisLayer(layer.layerUrl, { where, returnGeometry: true, resultRecordCount: 12 }, deps);
+      // Every clause and its feature count is operator evidence of what the
+      // official service was actually asked, not only what it answered.
+      logger.info({ event: 'arcgis_parcel_where', layerUrl: layer.layerUrl, where, method, exact, features: result.features.length }, 'arcgis_parcel_where');
+      attempts[attempts.length - 1] = `${where} → ${result.features.length} feature(s)`;
       if (result.features.length) return { features: result.features, method, exact, attempts };
     } catch (error) {
+      logger.info({ event: 'arcgis_parcel_where', layerUrl: layer.layerUrl, where, method, exact, error: (error as Error).message }, 'arcgis_parcel_where');
       attempts.push(`(failed: ${(error as Error).message})`);
     }
     return null;
@@ -265,7 +281,21 @@ export async function searchArcgisParcel(
           const hit = await runWhere(strategy.where, 'apn', strategy.exact);
           if (hit) return hit;
         }
-        if (ladder?.stageExhausted()) break;
+        // Zero features on an earlier rank never breaks out of the cascade;
+        // only a spent budget does.
+        if (budgetStopped) break;
+      }
+      // A county that publishes the printed number split across MAP and
+      // PARCEL columns (with GROUP between them) answers a two-field clause the
+      // single-column cascade cannot express. Whitespace-tolerant: the printed
+      // "023 003.02" is map 023, parcel 003.02 however the layer pads it.
+      const mapField = layer.fields.find((f) => /^(MAP|MAPNO|MAPNUM|TAXMAP)$/i.test(f.name.replace(/[^a-z0-9]/gi, '')))?.name;
+      const parcelField = layer.fields.find((f) => /^(PARCEL|PARCELNO|PARCELNUM)$/i.test(f.name.replace(/[^a-z0-9]/gi, '')))?.name;
+      const split = search.apn.trim().replace(/\s+/g, ' ').match(/^(\S+)\s+(?:(\S+)\s+)?(\S+)$/);
+      if (mapField && parcelField && split && !budgetStopped) {
+        const literal = (value: string) => value.replace(/'/g, "''");
+        const hit = await runWhere(`${mapField} = '${literal(split[1])}' AND ${parcelField} = '${literal(split[3])}'`, 'apn', true);
+        if (hit) return hit;
       }
       continue;
     }
@@ -552,6 +582,17 @@ function toAvailableLayers(layers: readonly ArcgisLayerSummary[]): DiscoveredMap
 }
 
 /**
+ * Wall clock held back for the parcel clause cascade while earlier ArcGIS
+ * stages run. Never more than half of what remains, so a tiny budget (tests,
+ * a nearly spent run) is not swallowed by the reserve. PURE.
+ */
+export const DEFAULT_CLAUSE_WALL_CLOCK_RESERVE_MS = 25_000;
+export function clauseWallClockReserveMs(maxWallClockMs: number, elapsedMs: number): number {
+  const remaining = Math.max(0, maxWallClockMs - Math.max(0, elapsedMs));
+  return Math.min(DEFAULT_CLAUSE_WALL_CLOCK_RESERVE_MS, Math.floor(remaining / 2));
+}
+
+/**
  * Run the ArcGIS family adapter end to end. Every outcome — including total
  * failure — comes back as the same normalized contract with named states, so a
  * caller never has to interpret an exception to know what happened.
@@ -577,19 +618,35 @@ export async function runArcgisAdapter(
   });
 
   ladder.beginStage('structured_service_discovery');
-  const discovered = await discoverArcgisLayers(input.seeds, { ...deps, ladder });
+  // Describing services is worthless if it leaves no clock to ask the parcel
+  // question, so service description runs under a reserve held for the clause
+  // cascade. Scaled to what is actually left, so a small test budget is not
+  // consumed by the reserve itself.
+  ladder.reserveWallClockMs(clauseWallClockReserveMs(ladder.wallClockBudgetMs, ladder.elapsedMs));
+  let discovered: Awaited<ReturnType<typeof discoverArcgisLayers>>;
+  try {
+    discovered = await discoverArcgisLayers(input.seeds, { ...deps, ladder });
+  } catch (error) {
+    ladder.releaseWallClockReserve();
+    throw error;
+  }
   ladder.endStage('structured_service_discovery', discovered.layers.length ? 'succeeded' : 'no_result',
     discovered.layers.length
       ? `Described ${discovered.servicesReached.length} service(s) and ${discovered.layers.length} layer(s).`
       : `No queryable layer was reachable. ${discovered.notes.join(' ')}`.trim());
 
   if (!discovered.layers.length) {
+    // This adapter did not reach its query phase. Give the caller back the
+    // clause reserve so a later official source or discovery lane is not
+    // incorrectly treated as exhausted.
+    ladder.releaseWallClockReserve();
     return { ...base, failureStates: ['STRUCTURED_SERVICE_NOT_FOUND'], retrievalConfidence: 'none', unresolvedFields: ['parcelId', 'geometry', 'zoning'] };
   }
 
   const availableLayers = toAvailableLayers(discovered.layers);
   const parcelPick = pickLayerForRole(discovered.layers, 'parcel');
   if (!parcelPick) {
+    ladder.releaseWallClockReserve();
     return {
       ...base,
       availableLayers,
@@ -601,6 +658,9 @@ export async function runArcgisAdapter(
   }
 
   ladder.beginStage('known_adapter');
+  // The clause cascade is the work every earlier stage held wall clock back
+  // for. Releasing the reserve here is what hands it that time.
+  ladder.releaseWallClockReserve();
   const parcelLayer = parcelPick.layer;
   const search = await searchArcgisParcel(parcelLayer, input.search, { ...deps, ladder });
 

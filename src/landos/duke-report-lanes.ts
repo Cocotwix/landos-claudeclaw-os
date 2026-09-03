@@ -23,7 +23,8 @@ import { STRATEGIES, GLOBAL_MIN_NET_PROFIT_USD, SUBDIVISION_MIN_NET_PROFIT_USD }
 /** LandPortal exact-search verification ceiling for the default report. */
 export const LANDPORTAL_VERIFICATION_TIMEOUT_MS = 3 * 60 * 1000;
 /** LandWatch lane only runs for verified parcels strictly over this acreage. */
-export const LANDWATCH_MIN_ACRES = 50;
+/** LandWatch is additive from 20 acres; the other lanes keep running beside it. */
+export const LANDWATCH_MIN_ACRES = 20;
 export const LOCAL_AREA_NOT_VERIFIED_LABEL = 'Local Area Context, Not Parcel Verified';
 
 /** Shown when a market count cannot be pulled from any default source. */
@@ -484,10 +485,10 @@ export function buildDukeReportLanes(input: DukeReportLanesInput): DukeReportLan
       status: 'skipped', blockingReason: 'Verified acreage unknown; LandWatch requires confirmed acreage over 50.',
       nextAction: 'Confirm verified acreage to evaluate the large-acreage market.',
     });
-  } else if (acres <= LANDWATCH_MIN_ACRES) {
+  } else if (acres < LANDWATCH_MIN_ACRES) {
     landWatchLane = lane({
       laneId: 'landwatch', laneName: 'LandWatch (large acreage)', sourceType: 'landwatch',
-      status: 'skipped', blockingReason: `Acreage threshold not met (${acres} ac ≤ ${LANDWATCH_MIN_ACRES} ac).`,
+      status: 'skipped', blockingReason: `Acreage threshold not met (${acres} ac < ${LANDWATCH_MIN_ACRES} ac).`,
     });
   } else {
     landWatchLane = lane({

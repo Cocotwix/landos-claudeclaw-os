@@ -160,7 +160,7 @@ function view(overrides: {
         comps.filter((c) => c.inValuationSet).map((c) => ({ key: c.key, tierId: 'local' as const })),
       ),
     },
-  } as CompsValuationView;
+  } as unknown as CompsValuationView;
 }
 
 const facts = (result: CapabilityResult): CompsValuationFacts => result.facts as CompsValuationFacts;

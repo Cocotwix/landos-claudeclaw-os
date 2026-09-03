@@ -62,6 +62,8 @@ import {
 import { landPortalSaleStatus } from './deal-intelligence-comps.js';
 import { subjectParcelMatch, type SubjectParcelIdentity } from './comp-subject-identity.js';
 import { inferSubjectPropertyType } from './comparable-intelligence.js';
+import { computeValuationPackage, hasNonLandPortalOrigin, type CompsValuationPackage, type SubjectSiteFacts } from './comps-valuation-package.js';
+import { subjectStreetLocalities } from './manufactured-home-enrichment.js';
 import type { CompSaleVerification } from './comp-transaction-price.js';
 import { addressStateCode, normalizeCompAddress } from './comp-registry.js';
 import {
@@ -496,6 +498,13 @@ export interface CompsValuationView {
    * see the two disagree when they do.
    */
   lpEstimate: LandPortalEstimate | null;
+  /**
+   * The operator valuation package: LandPortal FMV (extracted), Non-LandPortal
+   * FMV (cleaned reconciliation over the non-LandPortal closed sales), the
+   * Combined LandOS FMV that governs `summary.fmv.central` and the 40%/60%
+   * benchmarks, plus the collective comparison and active-competition summary.
+   */
+  valuationPackage: CompsValuationPackage;
   /**
    * Area and market statements read out of provider listing descriptions.
    * Leads about the AREA, never facts about the subject — see
@@ -1271,6 +1280,7 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
 }
 interface EvidenceCompValue {
   address?: unknown; apn?: unknown; county?: unknown; state?: unknown; price?: unknown; acres?: unknown; pricePerAcre?: unknown; url?: unknown;
+  lat?: unknown; lng?: unknown; enrichment?: unknown;
   status?: unknown; saleDate?: unknown; listingDate?: unknown; daysOnMarket?: unknown; thumbnailUrl?: unknown; photoUrls?: unknown;
   propertyType?: unknown; description?: unknown; buildingSqft?: unknown; homeSizeSqft?: unknown; yearBuilt?: unknown;
   streetAddress?: unknown; currentPrice?: unknown; originalListPrice?: unknown; listingHistory?: unknown;
@@ -1344,7 +1354,17 @@ function classifyEvidenceComp(
     : (typeof value.pricePerAcre === 'number' && value.pricePerAcre > 0 ? value.pricePerAcre : null);
   const isActive = status === 'active' || status === 'listed' || status === 'pending';
   const isSold = status === 'sold';
-  const source = /redfin/i.test(providerId) ? 'Redfin' : /zillow/i.test(providerId) ? 'Zillow' : /realtor/i.test(providerId) ? 'Realtor.com' : providerId;
+  // A manufactured-home lane row names its own marketplace (`source`) because
+  // the lane merges Zillow, Redfin and Realtor.com results; the lane id alone
+  // would mislabel a Redfin sale as Zillow. The manufactured flag rides on the
+  // source label so the Land Home Package screen recognises the record and
+  // the vacant-land valuation never does.
+  const rowSource = typeof (value as { source?: unknown }).source === 'string' ? String((value as { source?: string }).source) : null;
+  const manufacturedLane = /manufactured/i.test(providerId) || /manufactured|mobile/i.test(String((value as { homeType?: unknown }).homeType ?? ''));
+  const baseSource = rowSource
+    ? rowSource
+    : /redfin/i.test(providerId) ? 'Redfin' : /zillow/i.test(providerId) ? 'Zillow' : /realtor/i.test(providerId) ? 'Realtor.com' : providerId;
+  const source = manufacturedLane ? `${baseSource} manufactured-home ${status === 'sold' ? 'sold' : 'listing'}` : baseSource;
   const evidenceBuildingSqft = typeof value.buildingSqft === 'number' && value.buildingSqft > 0
     ? value.buildingSqft
     : typeof value.homeSizeSqft === 'number' && value.homeSizeSqft > 0 ? value.homeSizeSqft : null;
@@ -1357,7 +1377,7 @@ function classifyEvidenceComp(
     ? (reconcileCompAddress({ capturedAddress: rawAddress, sourceUrl })?.postalAddress ?? rawAddress.replace(/\s+/g, ' ').trim())
     : null;
   const evidenceImproved = detectImprovedProperty({
-    propertyClass: typeof value.propertyType === 'string' ? value.propertyType : null,
+    propertyClass: manufacturedLane ? 'manufactured' : typeof value.propertyType === 'string' ? value.propertyType : null,
     addressDesc: rawAddress,
     descriptionText: typeof value.description === 'string' ? value.description : null,
     buildingSqft: evidenceBuildingSqft,
@@ -1381,9 +1401,21 @@ function classifyEvidenceComp(
   const evidenceApn = typeof value.apn === 'string' && value.apn.trim() ? value.apn.trim() : null;
   const evidenceCounty = typeof value.county === 'string' && value.county.trim() ? value.county.trim() : null;
   const evidenceState = typeof value.state === 'string' && value.state.trim() ? value.state.trim() : addressStateCode(address);
+  // A point the provider's own record published (or the lane recovered from
+  // the record page) travels with the evidence row. It is the record's
+  // location and outranks a later address geocode; without it the screen
+  // read every located manufactured-home sale as "unresolved distance".
+  const evidenceLat = typeof value.lat === 'number' && Number.isFinite(value.lat) && value.lat !== 0 ? value.lat : null;
+  const evidenceLng = typeof value.lng === 'number' && Number.isFinite(value.lng) && value.lng !== 0 ? value.lng : null;
+  const evidenceEnrichment = Array.isArray((value as { enrichment?: unknown }).enrichment) ? ((value as { enrichment?: unknown[] }).enrichment as unknown[]).map(String) : [];
   const location: ResolvedLocation = toResolvedLocation(reconcileRetainedCompLocation({
     capturedAddress: address,
     sourceUrl,
+    lat: evidenceLat,
+    lng: evidenceLng,
+    retainedCoordinateSource: evidenceLat != null && evidenceLng != null
+      ? (evidenceEnrichment.find((line) => /^coordinates:/i.test(line))?.replace(/^coordinates:\s*/i, '') ?? `${source} record`)
+      : null,
     apn: evidenceApn,
     state: evidenceState,
     providerLabel: source,
@@ -2232,7 +2264,32 @@ function readLandPortalEstimate(
     price: num(priceLabel),
     perAcre: num(perAcreLabel),
     source: 'LandPortal parcel panel',
-    note: 'LandPortal’s own automated estimate, shown exactly as LandPortal publishes it. It is provider context and is never an input to the LandOS land value, the cleaned FMV, or any acquisition level.',
+    note: 'LandPortal’s own automated estimate, shown exactly as LandPortal publishes it. LandOS never recalculates it: it enters the valuation package only as the LandPortal FMV component averaged with the Non-LandPortal FMV, and never touches the cleaned LandOS land value.',
+  };
+}
+
+/** Retained subject site facts from the LandPortal parcel panel, as numbers. */
+function readSubjectSiteFacts(
+  inspection: Parameters<typeof inferSubjectPropertyType>[0],
+): SubjectSiteFacts | null {
+  const facts = inspection?.parcelFacts;
+  if (!facts) return null;
+  const sheet = buildParcelFactSheet(facts);
+  const num = (value: string | null | undefined): number | null => {
+    if (!value) return null;
+    const parsed = Number(String(value).replace(/[^0-9.]/g, ''));
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  return {
+    buildableAcres: num(sheet.buildability.acres),
+    buildabilityPct: num(sheet.buildability.pct),
+    slopeAvgPct: num(sheet.terrain.slopeAvgPct),
+    slopeUnder10Pct: num(sheet.terrain.slopeUnder10Pct),
+    wetlandsPct: num(sheet.environment.wetlandsPct),
+    femaCoveragePct: num(sheet.environment.femaCoveragePct),
+    waterPresent: sheet.water.present,
+    roadFrontageFt: sheet.access.roadFrontageFt,
+    landLocked: sheet.access.landLocked == null ? null : /^yes$/i.test(sheet.access.landLocked),
   };
 }
 
@@ -2577,9 +2634,18 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   // canonical dedupe pass below attaches marketplace provenance to the same
   // physical property rather than silently dropping the corroborating source.
   const evidenceComps: WorkspaceComp[] = [];
+  let manufacturedSearch: { status: string | null; note: string | null } | null = null;
   if (propertyCardId != null) {
     const record = new PropertyResearchStore().loadForProperty(propertyCardId);
     for (const item of record?.evidence ?? []) {
+      // The manufactured-home lane's own outcome line: which sources completed,
+      // which were blocked. The Land Home Package screen must not call a
+      // partially blocked search "no sale found".
+      if ((item as { field?: string }).field === 'comparables.manufactured_home.attempt_status') {
+        const attempt = (item.value ?? {}) as { status?: unknown; note?: unknown };
+        manufacturedSearch = { status: typeof attempt.status === 'string' ? attempt.status : null, note: typeof attempt.note === 'string' ? attempt.note : null };
+        continue;
+      }
       if (item.kind !== 'comp') continue;
       const value = (item.value ?? {}) as EvidenceCompValue & { apn?: unknown };
       const url = typeof value.url === 'string' && value.url ? value.url : item.sourceUrl ?? null;
@@ -2837,6 +2903,54 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     zip: subjectCard ? String(subjectCard.zip ?? '') || null : null,
     acres: subjectAcres,
   });
+  // The operator valuation package. Non-LandPortal FMV reuses the SAME cleaned
+  // reconciliation, restricted to closed sales that at least one non-LandPortal
+  // lane supplied. Combined LandOS FMV then governs the central FMV and the
+  // 40%/60% benchmarks on every surface; the technical quick-flip maximum
+  // below stays a separate strategy-specific figure on the cleaned land value.
+  const nonLandPortalCleaned = computeCleanedValuation(comps.filter(hasNonLandPortalOrigin), subjectAcres, nowMs, band, geoSelection);
+  const lpEstimateForPackage = readLandPortalEstimate(inspection);
+  const marketFallbackPpa = marketContext.subjectBand.metrics?.medianPricePerAcre
+    ?? marketContext.county.metrics?.medianPricePerAcre ?? null;
+  const marketFallbackLabel = marketContext.subjectBand.metrics?.medianPricePerAcre != null
+    ? `the retained ${marketContext.subjectBand.acreageBandLabel ?? 'subject-band'} sold-market median`
+    : `the retained ${marketContext.county.label || 'county'} sold-market median`;
+  const valuationPackage = computeValuationPackage({
+    subjectAcres,
+    landPortalEstimate: lpEstimateForPackage ? { price: lpEstimateForPackage.price, perAcre: lpEstimateForPackage.perAcre, source: lpEstimateForPackage.source } : null,
+    comps,
+    nonLandPortalCleaned,
+    allLanesCleaned: cleaned,
+    marketFallback: marketFallbackPpa != null && marketFallbackPpa > 0 ? { pricePerAcre: marketFallbackPpa, label: marketFallbackLabel } : null,
+    askingPrice: typeof deal.asking_price === 'number' && deal.asking_price > 0 ? deal.asking_price : null,
+    subjectImproved: subjectImprovement.improved,
+    subjectFacts: readSubjectSiteFacts(inspection),
+    manufacturedSearch,
+    // The subject's own street and retained subdivision name let the market
+    // screen say, in the operator's words, when a qualifying sale sits on the
+    // subject's street or inside its subdivision. Retained facts only.
+    subjectStreet: subjectStreetLocalities(subjectCard ? String(subjectCard.active_input_address ?? subjectCard.address ?? '') : null)[0] ?? null,
+    subjectSubdivision: typeof inspection?.parcelFacts?.Subdivision === 'string' ? inspection.parcelFacts.Subdivision : null,
+  });
+  if (valuationPackage.combinedFmv.value != null) {
+    const combinedValue = valuationPackage.combinedFmv.value;
+    summary = {
+      ...summary,
+      fmv: { low: summary.fmv?.low ?? null, central: combinedValue, high: summary.fmv?.high ?? null },
+      acquisitionLevels: {
+        pct40: valuationPackage.offer40 as number,
+        pct50: round500(combinedValue * 0.5),
+        pct60: valuationPackage.offer60 as number,
+      },
+      acquisitionLockedReason: null,
+      confidence: valuationPackage.combinedFmv.confidence,
+      confidenceFactors: [
+        ...summary.confidenceFactors,
+        `Combined LandOS FMV ${money(combinedValue)}: ${valuationPackage.combinedFmv.methodLabel.toLowerCase()}${valuationPackage.combinedFmv.limitation ? ` — ${valuationPackage.combinedFmv.limitation}` : ''}`,
+      ],
+    };
+  }
+
   const expectedMarketingDays = marketContext.subjectBand.metrics?.medianDaysOnMarket
     ?? marketContext.county.metrics?.medianDaysOnMarket ?? null;
   const quickFlip = computeQuickFlipUnderwriting(cleaned.adoptedFmv, expectedMarketingDays);
@@ -2910,6 +3024,7 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     mapCounts,
     landPortal: { sidebarCount, showOnMapCount, mergedUniqueCount },
     lpEstimate,
+    valuationPackage,
     marketLeads,
     cleaned,
     improvementValuation,

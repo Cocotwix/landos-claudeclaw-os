@@ -153,6 +153,8 @@ export interface DevelopmentPathHistoryView {
 export interface CostLineView { key?: string; label?: string; amount?: number | null; basis?: string; source?: string }
 
 export interface ExitScenarioView {
+  /** Preliminary Land Home Package posture; present only on the land-home scenario. */
+  landHomePosture?: 'WORTH EXPLORING' | 'MARGINAL' | 'NOT VIABLE' | null;
   id?: string; label?: string; strategyId?: string | null; pathKind?: string | null; subjectScope?: string;
   status?: string; confidence?: string; statusWhy?: string;
   grossExit?: { amount?: number; basis?: string; asOf?: string | null } | null;
@@ -507,7 +509,10 @@ export function DealBrainDecisionPanel({ decision, stability, history, stage3, s
               <small>Value and offer guidance</small>
               {value?.status === 'supported' ? (
                 <>
-                  <b>{usd(value.fmv?.central)} supported by {value.acceptedCompCount} accepted sale(s)</b>
+                  <b>Combined LandOS FMV {usd(value.fmv?.central)}</b>
+                  <span>{(value.acceptedCompCount ?? 0) > 0
+                    ? `${value.acceptedCompCount} qualified closed sale${value.acceptedCompCount === 1 ? '' : 's'} in the valuation set`
+                    : 'No qualified non-LandPortal closed sale yet; the value rests on the LandPortal lane and retained market evidence'}</span>
                   {value.offerGuidance && (
                     <span>
                       {value.offerGuidance.strategyLabel} band {value.offerGuidance.lowPct}–{value.offerGuidance.highPct}%: {usd(value.offerGuidance.low)}–{usd(value.offerGuidance.high)}
@@ -953,7 +958,14 @@ function StrategyComparisonSection({ comparison }: { comparison: StrategyCompari
           <div class="awv2-brain-strategy awv2-dev-scenario" data-scenario={scenario.id} data-status={scenario.status} data-tone={STATUS_TONE[scenario.status ?? ''] ?? 'grey'}>
             <b>#{rankOf(scenario.id)} {scenario.label}</b>
             <span class="awv2-brain-strategy-status">{words(scenario.status)} · {words(scenario.confidence)} · {scenario.complexity} complexity</span>
-            <span>{scenario.statusWhy}</span>
+            {scenario.id === 'land_home_manufactured' && (
+              <span class="awv2-brain-strategy-status" data-testid="deal-decision-land-home-posture" data-posture={scenario.landHomePosture ?? 'UNSCREENED'}>
+                <b>Preliminary Land Home Package: {scenario.landHomePosture ?? 'UNSCREENED'}</b>
+                {' · '}{(scenario.statusWhy ?? '').replace(/^Preliminary Land Home Package posture: [^.]*\. /, '').split(' Next verification: ')[0]}
+                {(scenario.statusWhy ?? '').includes(' Next verification: ') ? ` · Next: ${(scenario.statusWhy ?? '').split(' Next verification: ')[1]}` : ''}
+              </span>
+            )}
+            {scenario.id !== 'land_home_manufactured' && <span>{scenario.statusWhy}</span>}
             <span><i>Scope:</i> {scenario.subjectScope}</span>
             <span><i>Gross exit:</i> {scenario.grossExit ? `${usd(scenario.grossExit.amount)} (${scenario.grossExit.basis}${scenario.grossExit.asOf ? `, as of ${scenario.grossExit.asOf}` : ''})` : 'not sourced'}</span>
             <span><i>Purchase-price capacity:</i> {scenario.purchasePriceCapacity ? `${usd(scenario.purchasePriceCapacity.low)}–${usd(scenario.purchasePriceCapacity.high)} (${scenario.purchasePriceCapacity.basis}${scenario.purchasePriceCapacity.confirmed ? '' : '; draft'})` : 'not computable'}</span>

@@ -104,7 +104,8 @@ describe('the Stage 5 trigger map', () => {
 
   it('keeps the Stage 3 and Stage 4 write sites unchanged apart from the land-use rerun', () => {
     expect([...ROUTES_SRC.matchAll(/produceResearchStableIntelligence\(/g)]).toHaveLength(3);
-    expect([...ROUTES_SRC.matchAll(/produceDealBrainDecision\(/g)]).toHaveLength(10);
+    // Ten prior write sites plus the three valuation-package refresh sites.
+    expect([...ROUTES_SRC.matchAll(/produceDealBrainDecision\(/g)]).toHaveLength(13);
   });
 });
 

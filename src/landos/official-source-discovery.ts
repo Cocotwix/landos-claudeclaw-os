@@ -29,6 +29,7 @@ import {
   type PageLink,
 } from './netr-routing.js';
 import { defaultGovFetchText, extractLinks, htmlToText, type GovFetchText } from './gis-transport.js';
+import { createHermesFreeSearch, type IdentitySearchProvider } from './hermes-free-search.js';
 import { fingerprintPlatform } from './gis-platform-fingerprint.js';
 import { probeArcgisServicesRoot, type ArcgisDiscoveryDeps, arcgisJson } from './arcgis-service-discovery.js';
 import { EscalationLadder } from './gis-escalation.js';
@@ -44,6 +45,10 @@ export const SOURCE_DISCOVERY_METHODS = [
   'arcgis_org_search',
   /** Links found ON a verified official government page. */
   'official_site_links',
+  /** The governed keyless search asked the operator's plain-English questions
+   *  ("<County> County <ST> GIS parcel search", "… assessor property search");
+   *  only hits that verify as official are kept, then their pages are read. */
+  'keyless_search',
   /** Bounded public search, steered toward official results. */
   'restricted_web_search',
   /** Conventional hostname formula. Cheap, last, and verified like the rest. */
@@ -211,6 +216,8 @@ export interface SourceDiscoveryDeps {
   providerDirectory?: (county: string | undefined, state: string | undefined) => Promise<{ url: string; label: string } | null>;
   /** Disable the public-search lane (tests, or an offline run). */
   allowWebSearch?: boolean;
+  /** The governed keyless search (defaults to the Hermes free search). Tests inject a fake. */
+  keylessSearch?: IdentitySearchProvider;
   maxCandidates?: number;
 }
 
@@ -282,6 +289,54 @@ const PROPERTY_SYSTEM_TOKENS = /parcel|property\s*(search|record|lookup|informat
  * saying where its records live. A vendor URL found this way is corroborated
  * in exactly the way `verifyOfficiality` requires.
  */
+/** The plain-English questions an operator types for a county's official parcel sources. */
+export function keylessDiscoveryQueries(subject: DiscoverySubject): string[] {
+  const county = (subject.county ?? '').replace(/\s*county\s*$/i, '').trim();
+  const state = (subject.state ?? '').trim();
+  if (!county || !state) return [];
+  return [
+    `${county} County ${state} GIS parcel search`,
+    `${county} County ${state} assessor of property parcel search`,
+    `${county} County ${state} property search tax map parcel viewer`,
+  ];
+}
+
+/**
+ * Operator-style discovery through the governed keyless search. Every hit is
+ * verified for officiality before it counts; an official hit becomes a
+ * candidate itself (GIS or assessor by its own words) and its page is read for
+ * the parcel services it links to. Aggregators never pass the verdict.
+ */
+export async function discoverViaKeylessSearch(
+  subject: DiscoverySubject,
+  deps: SourceDiscoveryDeps = {},
+): Promise<OfficialSourceCandidate[]> {
+  const search = deps.keylessSearch ?? createHermesFreeSearch();
+  const found: OfficialSourceCandidate[] = [];
+  const seen = new Set<string>();
+  for (const query of keylessDiscoveryQueries(subject)) {
+    let hits: Awaited<ReturnType<IdentitySearchProvider>> = [];
+    try { hits = await search(query, { maxResults: 10, timeoutMs: 25_000 }); } catch { continue; }
+    for (const hit of hits) {
+      const url = hit.url.replace(/[?#].*$/, '');
+      const host = hostOf(url);
+      if (!host || seen.has(host)) continue;
+      const verdict = verifyOfficiality(url, { county: subject.county, state: subject.state, label: hit.title });
+      if (verdict.status !== 'official') continue;
+      seen.add(host);
+      const words = `${hit.title} ${hit.snippet} ${url}`;
+      const sourceType: CountySourceType | 'unknown' = /gis|map/i.test(words) ? 'gis' : /assessor|appraiser|property search|parcel/i.test(words) ? 'assessor' : 'unknown';
+      found.push({ url, label: `${hit.title || host} (keyless search: "${query}")`, method: 'keyless_search', sourceType, officiality: verdict });
+      try {
+        const linked = await discoverViaOfficialSiteLinks(url, subject, deps);
+        for (const candidate of linked) if (!found.some((existing) => existing.url === candidate.url)) found.push({ ...candidate, method: 'keyless_search' });
+      } catch { /* the hit itself stays a candidate */ }
+      if (found.length >= 8) return found;
+    }
+  }
+  return found;
+}
+
 export async function discoverViaOfficialSiteLinks(
   officialPageUrl: string,
   subject: DiscoverySubject,
@@ -560,6 +615,20 @@ export async function discoverOfficialSource(
   }
 
   // 4. Bounded public search, only when the government side gave nothing.
+  // The operator's own move when nothing is configured: search the web in
+  // plain English for the county's GIS and assessor, keep only hits that
+  // verify as official government sources, and read those pages for their
+  // parcel services. Runs before the scripted search-engine lane because the
+  // governed keyless search answers plain-English questions reliably.
+  if (!haveOfficial() && deps.allowWebSearch !== false && !ladder?.stageExhausted() && !outOfTime()) {
+    try {
+      add(await discoverViaKeylessSearch(subject, deps), 'keyless_search');
+    } catch (error) {
+      methodsRun.push('keyless_search');
+      notes.push(`Keyless search unavailable: ${(error as Error).message}`);
+    }
+  }
+
   if (!haveOfficial() && deps.allowWebSearch !== false && !ladder?.stageExhausted() && !outOfTime()) {
     try {
       add(await discoverViaRestrictedWebSearch(subject, SEARCH_TYPES, deps), 'restricted_web_search');

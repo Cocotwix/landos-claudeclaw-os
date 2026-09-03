@@ -93,6 +93,7 @@ function baseDossier(): AcquisitionDossier {
     valuation: {
       status: 'not_established', basis: null, workingAcres: 75.91, acceptedCompCount: 0,
       medianPricePerAcre: null, fairMarketValue: null, lpEstimate: null, blockers: [],
+      package: null,
     },
     comps: { soldCount: 0, activeCompetitionCount: 0, askingReferenceCount: 3, note: null, acceptedSold: [], directional: [], activeCompetition: [], excluded: [] },
     market: {

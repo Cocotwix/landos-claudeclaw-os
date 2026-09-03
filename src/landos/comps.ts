@@ -606,3 +606,13 @@ export async function enrichCompCoordinates(
   }
   return { attempted: rows.length, enriched, cached, unresolved: rows.length - enriched };
 }
+
+/** The cached geocode for one complete address, when a prior bounded geocode
+ *  (see `geocodeAddressesToCache`) resolved it. Never geocodes on its own. */
+export function readCachedGeocode(address: string): { lat: number; lng: number; provider: string | null } | null {
+  const key = address.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!key) return null;
+  const row = getLandosDb().prepare('SELECT lat, lng, provider FROM landos_geocode_cache WHERE address_key = ?').get(key) as
+    { lat: number | null; lng: number | null; provider: string | null } | undefined;
+  return row && typeof row.lat === 'number' && typeof row.lng === 'number' ? { lat: row.lat, lng: row.lng, provider: row.provider ?? null } : null;
+}

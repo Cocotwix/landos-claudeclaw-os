@@ -1,5 +1,5 @@
 import {
-  ExternalLink, ArrowUpRight, ShieldCheck, AlertTriangle, Target,
+  ExternalLink, ArrowUpRight, ShieldCheck, AlertTriangle,
   FileCheck2, UserRound, MapPin, Ruler, Waves, Mountain,
   Droplets, CheckCircle2, CircleDot,
 } from 'lucide-preact';
@@ -279,6 +279,8 @@ interface OverviewSectionProps {
     reconcile?: PropertyReconcileControls | null;
     /** Official acreage / parcel-extent reconciliation controls + record. */
     acreage?: AcreageExtentControls | null;
+    /** A settled Deal Brain read, when the caller supplies one; the thread is history beneath it. */
+    deal?: unknown;
   } | null;
   /** The Deal Brain conversation: operator guidance in, grounded replies out. */
   dealBrain?: {
@@ -346,9 +348,6 @@ const SUPPORTED_STRATEGY_FIT = /^(viable|possible|likely|conditional)$/i;
 const VALUE_ADD_STRATEGY = /partition|subdivi|split|lot|entitle|rezon|develop|parcel out/i;
 /** The aggressive end of that: a full development or entitlement thesis. */
 const MAJOR_UPSIDE_STRATEGY = /major subdivi|entitlement|development|master plan/i;
-/** Above this the Overview must show that transformation was actually screened
- *  before intact resale is presented as the value-maximizing exit. */
-const LARGE_ACREAGE_SCREEN_ACRES = 20;
 
 /**
  * A short canonical strategy IDENTITY from the structured candidate name.
@@ -464,7 +463,6 @@ function ParcelMapHero({ polygon, address }: { polygon: LatLng[]; address: strin
 export function OverviewSection({
   snap,
   address,
-  zip,
   heroSrc,
   heroVisuals,
   subjectPolygon,
@@ -514,6 +512,7 @@ export function OverviewSection({
   const overall = operator?.overall;
   const improvement = compsValuation?.subjectImprovement ?? null;
   const summary = compsValuation?.summary;
+  const valuationPackage = compsValuation?.valuationPackage ?? null;
   const cvSummary = summary ?? null;
   const usd = formatUsd;
   const status = researchStatus as ResearchStatusDetail | null;
@@ -754,7 +753,6 @@ export function OverviewSection({
   const headingAcres = (acreageReconResolved ? acreageRecon?.canonicalAcres : null)
     ?? workingAcres
     ?? identity.acres ?? null;
-  const subjectHeading = `${subjectStructure}${headingAcres != null ? ` • ${headingAcres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : ''}`;
   // The map overlay leads with the property type and acreage only.
   const railHeading = `${railPropertyType(subjectStructure)}${headingAcres != null ? ` · ${headingAcres.toLocaleString('en-US', { maximumFractionDigits: 2 })} AC` : ''}`;
 
@@ -815,10 +813,8 @@ export function OverviewSection({
   const baseCaseCandidate = supportedCandidates.find((item) => !VALUE_ADD_STRATEGY.test(item.strategy)) ?? null;
   const valueAddCandidate = supportedCandidates
     .find((item) => VALUE_ADD_STRATEGY.test(item.strategy) && !MAJOR_UPSIDE_STRATEGY.test(item.strategy)) ?? null;
-  const higherUpsideCandidate = supportedCandidates.find((item) => MAJOR_UPSIDE_STRATEGY.test(item.strategy)) ?? null;
   const baseCaseLabel = shortStrategyLabel(baseCaseCandidate?.strategy) ?? null;
   const valueAddLabel = shortStrategyLabel(valueAddCandidate?.strategy) ?? null;
-  const higherUpsideLabel = shortStrategyLabel(higherUpsideCandidate?.strategy) ?? null;
   // A supported value-add product leads when one exists; otherwise the base
   // case does. The persisted top-strategy field is used only when it is an
   // actual strategy identity — never when it is a Deal Brain instruction.
@@ -834,14 +830,6 @@ export function OverviewSection({
   // Large-acreage screen: a big tract must be shown to have had product
   // transformation actually evaluated before intact resale reads as the
   // value-maximizing exit. It never asserts that a split works.
-  const largeAcreage = (headingAcres ?? 0) >= LARGE_ACREAGE_SCREEN_ACRES;
-  const largeAcreageScreen = !largeAcreage
-    ? null
-    : valueAddLabel
-      ? `Large-acreage screen: a product transformation (${valueAddLabel}) is currently supported and leads the read. It is not proven; confirm it before pricing it.`
-      : strategyCandidates.some((item) => VALUE_ADD_STRATEGY.test(item.strategy))
-        ? 'Large-acreage screen: product transformation was evaluated and no split or partition is currently supported, so the base case leads.'
-        : 'Large-acreage screen: no product-transformation candidate has been assessed for this tract yet.';
 
   // ── Market, by acreage band ───────────────────────────────────────────
   // The deterministic band comparison, read straight from persisted Market
@@ -953,7 +941,9 @@ export function OverviewSection({
              top strategy label — the whole deal in one glance, straight from
              the canonical persisted values. ── */}
       {show('overview') && <section class="awv2-econ-strip" data-domain="valuation" aria-label="Deal economics" data-testid="overview-econ-strip">
-        <div class="cell fmv"><small>{currentImproved ? 'Supported FMV · Land' : 'Supported FMV'}</small><b>{supportedFmv != null ? usd(supportedFmv) : 'Pending'}</b><i>{cvSummary ? `${cvSummary.acceptedCount} accepted sale${cvSummary.acceptedCount === 1 ? '' : 's'}` : 'Awaiting accepted comps'}</i></div>
+        <div class="cell fmv" data-testid="overview-combined-fmv"><small>{currentImproved ? 'Combined LandOS FMV · Land' : 'Combined LandOS FMV'}</small><b>{supportedFmv != null ? usd(supportedFmv) : 'Pending'}</b><i>{valuationPackage
+          ? `LandPortal ${valuationPackage.landPortalFmv.value != null ? usd(valuationPackage.landPortalFmv.value) : 'n/a'} · Non-LandPortal ${valuationPackage.nonLandPortalFmv.value != null ? usd(valuationPackage.nonLandPortalFmv.value) : 'n/a'} · ${valuationPackage.combinedFmv.confidence} confidence`
+          : cvSummary ? `${cvSummary.acceptedCount} accepted sale${cvSummary.acceptedCount === 1 ? '' : 's'}` : 'Awaiting accepted comps'}</i></div>
         <div class="cell"><small>40%</small><b>{econLevels ? usd(econLevels.pct40) : 'Pending'}</b><i>Opening reference</i></div>
         <div class="cell"><small>60%</small><b>{econLevels ? usd(econLevels.pct60) : 'Pending'}</b><i>Ceiling reference</i></div>
         <div class="cell ask"><small>Seller ask</small><b>{askingPrice != null ? usd(askingPrice) : 'Not yet known'}</b><i>{askingPrice != null ? 'Seller-stated' : 'No ask collected'}</i></div>
@@ -1230,7 +1220,7 @@ export function OverviewSection({
           {developmentIntelligence && dealBrain.thread.length > 0 && <div class="awv2-pi-note"><b>Historical / superseded guidance:</b> existing Deal Brain replies predate the recorded-document and development reconciliation shown above. They remain retained as history and must not override current acreage, improvement, access, market, or strategy truth.</div>}
           <DealBrainAsk
             thread={dealBrain.thread}
-            historyOnly={!!specialistReads.deal}
+            historyOnly={!!specialistReads?.deal}
             running={dealBrain.running}
             error={dealBrain.error}
             onAsk={dealBrain.onAsk}
@@ -1247,7 +1237,7 @@ export function OverviewSection({
         {cvSummary ? (
           <>
             <div class="valuation-grid">
-              <div class={`primary status-${cvSummary.status}`} data-accepted-count={summary.acceptedCount} title={currentImproved ? 'Land-only indication' : 'Current property indication'}><small>{singleResidentialValue ? 'PROPERTY VALUE' : currentImproved ? 'LAND VALUE — LAND-ONLY INDICATION' : valuationBasisLabel ?? cvSummary.basisLabel}</small><b>{singleResidentialValue && wholePropertyValue != null ? formatUsd(wholePropertyValue) : cvSummary.fmv ? formatUsd(cvSummary.fmv.central) : 'Not established'}</b><p>{cvSummary.fmv?.low != null && cvSummary.fmv.high != null ? `${formatUsd(cvSummary.fmv.low)}–${formatUsd(cvSummary.fmv.high)} accepted-sale span · ` : ''}{cvSummary.acceptedCount} accepted closed {currentImproved ? 'vacant-land ' : ''}sale{cvSummary.acceptedCount === 1 ? '' : 's'} · {cvSummary.statusLabel}</p></div>
+              <div class={`primary status-${cvSummary.status}`} data-accepted-count={cvSummary.acceptedCount} title={currentImproved ? 'Land-only indication' : 'Current property indication'}><small>{singleResidentialValue ? 'PROPERTY VALUE' : currentImproved ? 'LAND VALUE — LAND-ONLY INDICATION' : valuationBasisLabel ?? cvSummary.basisLabel}</small><b>{singleResidentialValue && wholePropertyValue != null ? formatUsd(wholePropertyValue) : cvSummary.fmv ? formatUsd(cvSummary.fmv.central) : 'Not established'}</b><p>{cvSummary.fmv?.low != null && cvSummary.fmv.high != null ? `${formatUsd(cvSummary.fmv.low)}–${formatUsd(cvSummary.fmv.high)} accepted-sale span · ` : ''}{cvSummary.acceptedCount} accepted closed {currentImproved ? 'vacant-land ' : ''}sale{cvSummary.acceptedCount === 1 ? '' : 's'} · {cvSummary.statusLabel}</p></div>
               {showHouseBreakdown && (
                 <div class="house" aria-label="House value"><small>+ HOUSE VALUE</small><b>{houseValue != null ? formatUsd(houseValue) : 'Pending'}</b><p>{houseValue != null
                   ? `Approx. ${improvement?.buildingSqft != null ? Math.round(improvement.buildingSqft).toLocaleString('en-US') : '—'} sqft residence, valued from improved-sale evidence.`
@@ -1257,7 +1247,7 @@ export function OverviewSection({
                 <div class="whole" aria-label={currentImproved ? 'Whole-property value Pending' : 'Current whole-property value'}><small>= WHOLE-PROPERTY VALUE</small><b>{wholePropertyValue != null ? formatUsd(wholePropertyValue) : currentImproved && improvement?.wholePropertyPending ? 'Pending' : cvSummary.fmv ? formatUsd(cvSummary.fmv.central) : 'Not established'}</b><p>{wholePropertyValue != null ? 'Land value plus house value.' : currentImproved ? 'Requires the house value; the land figure never prices the residence.' : 'No current building is established; the supported vacant-land indication is the current whole-property value.'}</p></div>
               )}
             </div>
-            {cvSummary?.acquisitionLevels && <div class="land-basis-references"><div><span>{currentImproved ? 'Opening reference (40% of land value, rounded)' : 'Opening reference (40% of current property value, rounded)'}</span><b>{landBasisOpeningReference ?? usd(cvSummary.acquisitionLevels.pct40)}</b></div><div><span>{currentImproved ? 'Target reference (50% of land value, rounded)' : 'Target reference (50% of current property value, rounded)'}</span><b>{usd(cvSummary.acquisitionLevels.pct50)}</b></div><div><span>{currentImproved ? 'Ceiling reference (60% of land value, rounded)' : 'Ceiling reference (60% of current property value, rounded)'}</span><b>{usd(cvSummary.acquisitionLevels.pct60)}</b></div><p>{currentImproved ? 'Land-basis references derived from land value only. They are not completed whole-property offer recommendations.' : 'Acquisition references derive from the supported current vacant-property value.'} All references are rounded to the nearest $500.</p></div>}
+            {cvSummary?.acquisitionLevels && <div class="land-basis-references"><div><span>{currentImproved ? 'Opening reference (40% of land value, rounded)' : 'Opening reference (40% of current property value, rounded)'}</span><b>{landBasisOpeningReference ?? usd(cvSummary.acquisitionLevels.pct40)}</b></div><div><span>{currentImproved ? 'Ceiling reference (60% of land value, rounded)' : 'Ceiling reference (60% of current property value, rounded)'}</span><b>{usd(cvSummary.acquisitionLevels.pct60)}</b></div><p>{currentImproved ? 'Land-basis references derived from land value only. They are not completed whole-property offer recommendations.' : 'Acquisition references derive from the supported current vacant-property value.'} All references are rounded to the nearest $500.</p></div>}
           </>
         ) : <p class="empty">Canonical Comps &amp; Valuation state has not been produced yet.</p>}
       </section>}

@@ -90,11 +90,21 @@ export interface EvidenceContribution {
   evidence: SnapshotEvidenceItem[];
 }
 
+/** Which comparable lanes a FOCUSED rerun asked for. Absent means every
+ *  lane, exactly as the full mission runs them. */
+export interface ComparableLaneScope {
+  /** LandPortal, Zillow, Redfin, Realtor.com and exact-address vacant-land research. */
+  vacantLand: boolean;
+  /** The sold manufactured-home market screen (Zillow, Redfin, Realtor.com). */
+  manufacturedHomes: boolean;
+}
+
 export interface MissionContext {
   dealCardId: number;
   runId: string;
   identity: IdentityContribution | null;
   comparables: ComparablesContribution | null;
+  laneScope?: ComparableLaneScope | null;
 }
 
 export interface PropertyIntelligenceCollectors {

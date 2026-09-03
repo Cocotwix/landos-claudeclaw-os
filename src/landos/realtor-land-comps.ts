@@ -11,6 +11,13 @@ import { automationBrowserConfig, openDisposableContextHandle } from './automati
 import { addressStateCode, type CompRegistryCandidate } from './comp-registry.js';
 import { isListingPhotoUrl } from './comp-visual.js';
 import { laneSearchVerified, type CompLaneRouteOutcome } from './comp-lane-accountability.js';
+import {
+  discoverMarketplaceRecords,
+  marketplaceDiscoveryQueries,
+  MANUFACTURED_LABEL,
+  type IndexedMarketplaceRecord,
+} from './marketplace-indexed-discovery.js';
+import type { IdentitySearchProvider } from './hermes-free-search.js';
 
 declare const document: any;
 declare const window: any;
@@ -26,6 +33,10 @@ export interface RealtorLandComp {
   daysOnMarket: number | null;
   url: string | null;
   source: 'Realtor.com';
+  /** `page` when read off an opened Realtor.com page; `indexed_search` when
+   *  the local transport was challenged and the record's published facts came
+   *  from the open-web index that points at this exact Realtor.com record. */
+  lineage?: 'page' | 'indexed_search';
   thumbnailUrl: string | null;
   photoUrls: string[];
   propertyClass: 'vacant_land' | 'improved' | 'unknown';
@@ -64,6 +75,8 @@ export interface RawRealtorListing {
 }
 
 export interface RealtorFetchInput {
+  /** Land (default) or manufactured/mobile homes on their own lots. */
+  propertyType?: 'land' | 'manufactured';
   address?: string;
   city?: string;
   state?: string;
@@ -72,6 +85,9 @@ export interface RealtorFetchInput {
   apn?: string;
   subjectAcres?: number | null;
   mode?: 'sold' | 'active';
+  /** Nearby street or subdivision names already retained for the subject; they
+   *  aim the indexed-search fallback the way an operator would type it. */
+  localities?: string[];
 }
 
 export interface RealtorSearchRoute {
@@ -130,7 +146,8 @@ export function realtorSearchRoutes(input: RealtorFetchInput): RealtorSearchRout
   const state = (input.state ?? '').trim().toUpperCase();
   if (!state) return [];
   const soldSuffix = input.mode === 'sold' ? '/show-recently-sold' : '';
-  const landSuffix = `/type-land${soldSuffix}`;
+  // Realtor.com's public type slug for manufactured / mobile homes is `mobile`.
+  const landSuffix = `/${input.propertyType === 'manufactured' ? 'type-mobile' : 'type-land'}${soldSuffix}`;
   const routes: RealtorSearchRoute[] = [];
   const address = (input.address ?? '').replace(/,.*$/, '').trim();
   const zip = (input.zip ?? '').match(/\b\d{5}\b/)?.[0];
@@ -268,17 +285,42 @@ export interface RealtorFetchDeps {
   force?: boolean;
   timeoutMs?: number;
   settleMs?: number;
+  /** The indexed-search transport used when the local route is challenged.
+   *  Defaults to the governed keyless search; tests inject a fake. */
+  indexedSearch?: IdentitySearchProvider;
+  /** Test seam: skip the indexed fallback entirely. */
+  disableIndexedFallback?: boolean;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** HTTP status of a navigation when the page object exposes it (puppeteer
+ *  responses do); 429 and 403 are rate-limit / bot-check answers. */
+function responseStatus(response: unknown): number | null {
+  const status = (response as { status?: () => number } | null)?.status;
+  try { const value = typeof status === 'function' ? status.call(response) : null; return typeof value === 'number' ? value : null; } catch { return null; }
+}
 
 async function defaultConnect(_browserUrl: string): Promise<RealtorBrowserLike | null> {
   try { return await openDisposableContextHandle('realtor-comps') as unknown as RealtorBrowserLike; }
   catch { return null; }
 }
 
-const IS_BLOCKED = (): boolean => /captcha|verify you are|access denied|unusual traffic|pardon our interruption|robot/i
+/** Anti-bot and rate-limit pages. Realtor.com's HTTP 429 holding page reads
+ *  "This is taking longer than usual … unblockrequest@realtor.com" and renders
+ *  no cards at all; treating it as an empty market was the false zero. */
+export const REALTOR_BLOCKED_TEXT = /captcha|verify you are|access denied|unusual traffic|pardon our interruption|robot|taking longer than usual|unblockrequest@|refresh the page to try again/i;
+const IS_BLOCKED = (): boolean => /captcha|verify you are|access denied|unusual traffic|pardon our interruption|robot|taking longer than usual|unblockrequest@|refresh the page to try again/i
   .test(String((document as any).body?.innerText ?? '').slice(0, 5000));
+
+/** Home-type label as the card words it, so a Mobile / Manufactured / Double
+ *  Wide record is recognised as manufactured housing rather than generic
+ *  "residential" on its bed count alone. */
+export function realtorHomeTypeLabel(text: string | null | undefined, hasBedsOrBaths: boolean): string | null {
+  const label = (text ?? '').match(MANUFACTURED_LABEL)?.[0] ?? null;
+  if (label) return label.replace(/\s+/g, ' ').trim();
+  return hasBedsOrBaths ? 'residential' : null;
+}
 
 // Broad page-card extraction. Each item remains raw until the normalizer proves
 // its transaction status and acreage relationship.
@@ -309,7 +351,8 @@ const EXTRACT_REALTOR = (): RawRealtorListing[] => {
       thumbnailUrl: photoUrls[0] ?? null,
       photoUrls,
       description: text || null,
-      homeType: bedMatch || bathMatch ? 'residential' : null,
+      homeType: (text.match(/\b(?:manufactured(?:\s+(?:home|housing))?|mobile(?:\s+home)?|double[\s-]?wide|single[\s-]?wide)\b/i)?.[0] ?? null)
+        || (bedMatch || bathMatch ? 'residential' : null),
       homeSizeSqft: null,
       beds: bedMatch ? Number(bedMatch[1]) : null,
       baths: bathMatch ? Number(bathMatch[1]) : null,
@@ -321,7 +364,88 @@ const EXTRACT_REALTOR = (): RawRealtorListing[] => {
   return out;
 };
 
-const PAGE_GEOGRAPHY = (): string => `${String((window as any).location?.href ?? '')} ${String((document as any).title ?? '')} ${String((document as any).body?.innerText ?? '').slice(0, 5000)}`;
+// The URL is deliberately NOT part of the geography proof: a search slug that
+// names the subject ZIP is what LandOS asked for, not what Realtor.com served.
+// Reading it as proof made a 429 holding page "verified as this subject's
+// market" with zero cards.
+const PAGE_GEOGRAPHY = (): string => `${String((document as any).title ?? '')} ${String((document as any).body?.innerText ?? '').slice(0, 5000)}`;
+
+/** Indexed-search fallback rows in the lane's own shape. Search-result facts
+ *  are retained as such; status stays what the index states. */
+export function indexedRecordsToRealtorComps(records: IndexedMarketplaceRecord[], input: RealtorFetchInput): RealtorLandComp[] {
+  const state = (input.state ?? '').trim().toUpperCase();
+  const out: RealtorLandComp[] = [];
+  for (const record of records) {
+    if (!record.address || record.price == null) continue;
+    if (state && addressStateCode(record.address) !== state) continue;
+    if (input.mode === 'sold' && record.status !== 'sold') continue;
+    if (input.mode === 'active' && record.status === 'sold') continue;
+    if (input.propertyType === 'manufactured' && record.homeType !== 'manufactured') continue;
+    if (input.propertyType !== 'manufactured' && record.homeType === 'manufactured') continue;
+    const improved = record.homeType === 'manufactured' || record.homeType === 'residential';
+    out.push({
+      address: record.address,
+      price: record.price,
+      acres: record.acres,
+      pricePerAcre: record.acres ? Math.round(record.price / record.acres) : null,
+      status: record.status,
+      soldDate: record.soldDate,
+      listingDate: null,
+      daysOnMarket: null,
+      url: record.url,
+      source: 'Realtor.com',
+      lineage: 'indexed_search',
+      thumbnailUrl: null,
+      photoUrls: [],
+      propertyClass: improved ? 'improved' : record.acres != null ? 'vacant_land' : 'unknown',
+      description: `${record.title} — ${record.snippet}`.slice(0, 600),
+      homeType: record.homeType === 'manufactured' ? (record.snippet.match(MANUFACTURED_LABEL)?.[0] ?? 'Mobile / Manufactured') : record.homeType,
+      yearBuilt: record.yearBuilt,
+      homeSizeSqft: record.homeSizeSqft,
+      beds: record.beds,
+      baths: record.baths,
+      utilities: [],
+      accessClues: [],
+      features: [],
+    });
+  }
+  return out;
+}
+
+/**
+ * The next approved transport once the local browser is challenged: the open
+ * web index of Realtor.com's own records, through the governed keyless search.
+ * Never a retry of the challenge, never a wait; returns [] when the search
+ * transport is unavailable so the caller records that outcome honestly.
+ */
+async function realtorIndexedFallback(
+  input: RealtorFetchInput,
+  outcomes: CompLaneRouteOutcome[],
+  search: IdentitySearchProvider | undefined,
+): Promise<{ comps: RealtorLandComp[]; note: string }> {
+  const queries = marketplaceDiscoveryQueries({
+    marketplace: 'realtor', board: input.mode === 'sold' ? 'sold' : 'active', propertyType: input.propertyType ?? 'land',
+    address: input.address, city: input.city, state: input.state, zip: input.zip, county: input.county, localities: input.localities,
+  });
+  if (!queries.length) return { comps: [], note: 'No plain-English locality was available for an indexed Realtor.com search.' };
+  const discovered = await discoverMarketplaceRecords('realtor', queries, { search });
+  const comps = indexedRecordsToRealtorComps(discovered.records, input);
+  outcomes.push({
+    label: 'indexed search', url: queries[0], reached: discovered.queriesRun > 0, blocked: false,
+    cardsFound: discovered.records.length, marketVerified: comps.length > 0, qualifying: comps.length,
+    outcome: discovered.queriesRun === 0
+      ? 'The governed keyless search transport was unavailable, so no indexed Realtor.com record could be discovered.'
+      : `Indexed search ran ${discovered.queriesRun} plain-English quer${discovered.queriesRun === 1 ? 'y' : 'ies'}, saw ${discovered.hitsSeen} result(s), found ${discovered.records.length} Realtor.com property record(s) and kept ${comps.length} ${input.mode === 'sold' ? 'sold' : 'active'} ${input.propertyType === 'manufactured' ? 'manufactured-home' : 'land'} record(s) with published facts.`,
+  });
+  return {
+    comps,
+    note: comps.length
+      ? `Realtor.com's local route was challenged, so ${comps.length} record(s) were discovered through the indexed-search transport; each links to the actual Realtor.com property record and carries the facts the index publishes.`
+      : discovered.queriesRun === 0
+        ? 'Realtor.com\'s local route was challenged and the indexed-search transport was unavailable.'
+        : `Realtor.com's local route was challenged; indexed search found ${discovered.records.length} Realtor.com record(s) but none stated a ${input.mode === 'sold' ? 'sold' : 'active'} ${input.propertyType === 'manufactured' ? 'manufactured-home' : 'land'} result with a price.`,
+  };
+}
 
 export async function fetchRealtorLandComps(input: RealtorFetchInput, deps: RealtorFetchDeps = {}): Promise<RealtorCompsResult> {
   const routes = realtorSearchRoutes(input);
@@ -346,13 +470,28 @@ export async function fetchRealtorLandComps(input: RealtorFetchInput, deps: Real
     for (const route of routes) {
       last = route.url;
       attempted.push(`${route.label}: ${route.url}`);
-      await page.goto(route.url, { waitUntil: 'domcontentloaded', timeout: deps.timeoutMs ?? 30_000 });
+      const response = await page.goto(route.url, { waitUntil: 'domcontentloaded', timeout: deps.timeoutMs ?? 30_000 });
       await sleep(deps.settleMs ?? 5_000);
-      const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
+      const httpStatus = responseStatus(response);
+      const blocked = (httpStatus != null && (httpStatus === 429 || httpStatus === 403))
+        || await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
       const raw = await page.evaluate<RawRealtorListing[]>(EXTRACT_REALTOR as unknown as () => RawRealtorListing[]);
       if (blocked && !raw.length) {
-        outcomes.push({ label: route.label, url: route.url, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: `Realtor.com served a bot-verification or holding page instead of the ${route.label} results.` });
-        return done({ status: 'blocked', comps: [], note: `Realtor.com blocked the ${route.label} route before property cards could be read.`, routeTried: route.url, routesAttempted: attempted });
+        // One challenged transport is a transport outcome, not a market fact.
+        // Record it and continue immediately through the next approved
+        // transport: no retry loop, no operator wait, no notification.
+        outcomes.push({ label: route.label, url: route.url, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: `Realtor.com served a bot-verification or holding page${httpStatus ? ` (HTTP ${httpStatus})` : ''} instead of the ${route.label} results.` });
+        if (deps.disableIndexedFallback) {
+          return done({ status: 'blocked', comps: [], note: `Realtor.com blocked the ${route.label} route before property cards could be read.`, routeTried: route.url, routesAttempted: attempted });
+        }
+        const fallback = await realtorIndexedFallback(input, outcomes, deps.indexedSearch);
+        attempted.push(`indexed search: ${fallback.comps.length} record(s)`);
+        return done({
+          status: fallback.comps.length ? 'retrieved' : 'blocked',
+          comps: fallback.comps,
+          note: `Realtor.com blocked the ${route.label} route before property cards could be read${httpStatus ? ` (HTTP ${httpStatus})` : ''}. ${fallback.note}`,
+          routeTried: route.url, routesAttempted: attempted,
+        });
       }
       const geography = await page.evaluate<string>(PAGE_GEOGRAPHY as unknown as () => string).catch(() => '');
       const state = (input.state ?? '').trim().toUpperCase();
@@ -376,6 +515,15 @@ export async function fetchRealtorLandComps(input: RealtorFetchInput, deps: Real
       if (comps.length) return done({ status: 'retrieved', comps, note: `Realtor.com returned ${comps.length} verified ${input.mode === 'sold' ? 'sold' : 'active'} land result(s) for ${route.label}.`, routeTried: route.url, routesAttempted: attempted });
     }
     const verified = laneSearchVerified(outcomes);
+    if (!verified && !deps.disableIndexedFallback) {
+      // No route reached a readable page verified as this market: the local
+      // transport failed, so the indexed transport answers before "none".
+      const fallback = await realtorIndexedFallback(input, outcomes, deps.indexedSearch);
+      attempted.push(`indexed search: ${fallback.comps.length} record(s)`);
+      if (fallback.comps.length) {
+        return done({ status: 'retrieved', comps: fallback.comps, note: fallback.note, routeTried: last, routesAttempted: attempted });
+      }
+    }
     return done({
       status: 'none', comps: [],
       note: verified

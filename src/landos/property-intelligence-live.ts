@@ -65,7 +65,11 @@ import type {
   SpecialistOutcome,
   ZoningContribution,
 } from './property-intelligence-collector-types.js';
-import { buildCompRegistry, type CompRegistryCandidate } from './comp-registry.js';
+import { buildCompRegistry, type CompRegistryCandidate, type UniqueComp } from './comp-registry.js';
+import { firstCoordinates } from './manufactured-home-enrichment.js';
+import type { ComparableLaneScope } from './property-intelligence-collector-types.js';
+import { upsertNormalizedComp } from './comps.js';
+import type { CompSourceLabel, LandosEntity } from './db.js';
 import { landosArtifactPath } from './storage-profile.js';
 import {
   executePropertyProvider,
@@ -310,6 +314,14 @@ function usableInspectionAsset(asset: { storedPath?: string | null }): boolean {
 const num = (value: unknown): number | null => {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+/** A coordinate component: finite and non-zero, NEGATIVE allowed. `num`
+ *  refuses values at or below zero, which silently dropped every western
+ *  longitude read off the property card, so a lane that fell back to the card
+ *  (no identity handback) always saw "no coordinates". */
+export const coordinate = (value: unknown): number | null => {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed !== 0 && Math.abs(parsed) <= 180 ? parsed : null;
 };
 
 function subjectCardId(deal: unknown): number | null {
@@ -2171,8 +2183,8 @@ export async function collectComparables(
     zip: str(property.zip),
     apn: ctx.identity?.identity.apn ?? str(property.apn),
     owner: ctx.identity?.identity.owner ?? str(property.owner),
-    lat: ctx.identity?.identity.coordinates?.lat ?? num(property.lat),
-    lng: ctx.identity?.identity.coordinates?.lng ?? num(property.lng),
+    lat: ctx.identity?.identity.coordinates?.lat ?? coordinate(property.lat),
+    lng: ctx.identity?.identity.coordinates?.lng ?? coordinate(property.lng),
     subjectAcres,
   };
 
@@ -2200,7 +2212,14 @@ export async function collectComparables(
     const ind = str(record.saleListIndicator) ?? 'unknown';
     return ind === 'sale' || st === 'sold' || ind === 'list' || st === 'active' || st === 'listed';
   }).length;
-  const landPortalCapturePromise = cardId && usableRows === 0 && deps.captureLandPortalInspection && !deps.captureHermesLandPortal && canonicalInput
+  // A FOCUSED rerun names its lanes; an unscoped mission runs every lane. A
+  // lane outside the scope is simply not started, exactly as if its provider
+  // were not wired, so nothing below needs a second code path.
+  const scope = ctx.laneScope ?? null;
+  const runVacantLand = scope ? scope.vacantLand : true;
+  const runManufacturedHomes = scope ? scope.manufacturedHomes : true;
+  if (scope) notes.push(`Focused rerun: ${[runVacantLand ? 'vacant-land comparables' : null, runManufacturedHomes ? 'manufactured-home market' : null].filter(Boolean).join(' + ') || 'no lanes'} requested.`);
+  const landPortalCapturePromise = cardId && usableRows === 0 && deps.captureLandPortalInspection && !deps.captureHermesLandPortal && canonicalInput && runVacantLand
     ? executePropertyProvider({
       runId: ctx.runId,
       property: canonicalInput,
@@ -2223,7 +2242,7 @@ export async function collectComparables(
       (error: unknown) => ({ result: null, error }),
     )
     : null;
-  const zillowPromise = deps.captureZillowComps && canonicalInput
+  const zillowPromise = deps.captureZillowComps && canonicalInput && runVacantLand
     ? executePropertyProvider({
         runId: ctx.runId,
         property: canonicalInput,
@@ -2233,7 +2252,7 @@ export async function collectComparables(
         (error: unknown) => ({ result: null, error }),
       )
     : null;
-  const redfinPromise = deps.captureRedfinComps && canonicalInput
+  const redfinPromise = deps.captureRedfinComps && canonicalInput && runVacantLand
     ? executePropertyProvider({
         runId: ctx.runId,
         property: canonicalInput,
@@ -2245,7 +2264,7 @@ export async function collectComparables(
     : null;
   // Realtor.com is FALLBACK ONLY: it runs after LandPortal, Zillow, and Redfin
   // settle, and only when their combined sold evidence is materially thin.
-  const runRealtorFallback = deps.captureRealtorComps && canonicalInput
+  const runRealtorFallback = deps.captureRealtorComps && canonicalInput && runVacantLand
     ? () => executePropertyProvider({
         runId: ctx.runId,
         property: canonicalInput,
@@ -2257,17 +2276,33 @@ export async function collectComparables(
     : null;
   // The factory starts this promise with parcel identity. Direct unit callers
   // still get the standing behavior through this fallback.
-  const exactAddressPromise = standingExactAddress ?? runStandingExactAddressDiscovery(ctx, deps);
-  const manufacturedHomesPromise = deps.captureManufacturedHomeComps && canonicalInput
+  const exactAddressPromise = standingExactAddress ?? (runVacantLand ? runStandingExactAddressDiscovery(ctx, deps) : Promise.resolve<ExactAddressOutcome>({ result: null, error: null }));
+  const manufacturedHomesPromise = deps.captureManufacturedHomeComps && canonicalInput && runManufacturedHomes
     ? executePropertyProvider({
         runId: ctx.runId,
         property: canonicalInput,
         adapter: marketplaceProviderAdapter({
           laneId: 'manufactured_home',
           providerId: 'zillow_manufactured_home',
-          execute: () => marketInput.lat != null && marketInput.lng != null
-            ? deps.captureManufacturedHomeComps!({ ...marketInput, lat: marketInput.lat, lng: marketInput.lng })
-            : Promise.resolve({ status: 'not_applicable', sold: [], active: [], note: 'Confirmed subject coordinates are required for the 5-mile manufactured-home boundary.' }),
+          // Coordinates are resolved AT EXECUTION TIME, after the LandPortal
+          // parcel read settles, from the freshest reads available: the lane's
+          // initial market input, the re-read subject Property Card, and the
+          // confirmed identity. The earlier read happened at lane construction,
+          // before the parcel read had located the subject, so a Deal Card that
+          // ended the run WITH coordinates still skipped this lane.
+          execute: async () => {
+            if (landPortalCapturePromise) await landPortalCapturePromise.catch(() => null);
+            const freshDeal = getDealCard(ctx.dealCardId);
+            const freshCard = freshDeal ? resolveSubjectPropertyCard(freshDeal).card ?? {} : {};
+            const coordinates = firstCoordinates([
+              { lat: marketInput.lat, lng: marketInput.lng },
+              { lat: coordinate(freshCard.lat), lng: coordinate(freshCard.lng) },
+              ctx.identity?.identity.coordinates ?? null,
+            ]);
+            return coordinates
+              ? deps.captureManufacturedHomeComps!({ ...marketInput, lat: coordinates.lat, lng: coordinates.lng })
+              : { status: 'not_applicable', sold: [], active: [], note: 'Confirmed subject coordinates are required for the 5-mile manufactured-home boundary.' };
+          },
         }),
       }).then((result) => persistProviderResult(deps, result)).then(
         (providerResult) => ({ result: providerResult.execution.result, error: null as unknown }),
@@ -2411,9 +2446,13 @@ export async function collectComparables(
   ]);
   // Realtor.com fallback decision: the first three sources are "materially
   // thin" when they produced fewer than three sold candidates between them.
-  const primarySoldCount = landPortalAccepted
-    + (zillowOutcome.result?.sold?.length ?? 0)
-    + (redfinOutcome.result?.sold?.length ?? 0);
+  // Realtor.com supplements the NON-LandPortal pool, so LandPortal rows never
+  // make that pool look sufficient, and only sales that can actually price the
+  // subject (dated, sized, geographically relevant) count toward it.
+  const subjectMarketRef = { zip: marketInput.zip ?? null, city: marketInput.city ?? null, state, lat: marketInput.lat ?? null, lng: marketInput.lng ?? null };
+  const primarySoldCount = priceableNonLandPortalSoldCount(zillowOutcome.result?.sold, subjectMarketRef)
+    + priceableNonLandPortalSoldCount(redfinOutcome.result?.sold, subjectMarketRef);
+  void landPortalAccepted;
   const realtorOutcome = runRealtorFallback && primarySoldCount < 3
     ? await runRealtorFallback()
     : { result: null, error: null as unknown };
@@ -2439,9 +2478,10 @@ export async function collectComparables(
       // is the lane's geographic definition; whether these sales clear any
       // price level is an analysis question answered from the retained rows.
       if ((row.distanceMiles ?? Number.POSITIVE_INFINITY) > 5) continue;
+      const mhSource = (row as { source?: string | null }).source ?? 'Zillow';
       candidates.push({
         id: row.providerId ?? null,
-        provider: 'Zillow manufactured-home sold',
+        provider: `${mhSource} manufactured-home sold`,
         lane: 'sold',
         addressDesc: row.address,
         state,
@@ -2548,6 +2588,21 @@ export async function collectComparables(
     zip: marketInput.zip,
     acres: subjectAcres,
   }, candidates);
+  // The seam that was missing: validated sold vacant-land records the registry
+  // admitted were retained only as research evidence, which the valuation view
+  // can show as context but never price. Persist them into the ONE canonical
+  // comp table through the existing upsert (canonical-key dedup, provider URL
+  // merge), keeping status market_reference until a human or a transaction
+  // read verifies the sale. Actives, improved, manufactured and rejected rows
+  // stay where they are. Only this run's own candidates are written.
+  // Sold records whose only missing qualification is the sale date are
+  // retained too: the existing transaction read fills the date from the
+  // provider's own sale history, and until then the valuation view carries
+  // them at zero weight as recency-unverified. Unsourced rows never persist.
+  const admissibleSold = collectorRegistry.uniqueComps.filter((unique) =>
+    unique.primary.kind === 'sold' && !unique.primary.qualification.missing.includes('source'));
+  const persistedSold = persistValidatedSoldComps(deal, cardId ?? undefined, admissibleSold);
+  if (persistedSold.attempted) notes.push(`${persistedSold.written} validated sold vacant-land comp(s) admitted to the canonical comp registry${persistedSold.skipped ? ` (${persistedSold.skipped} skipped: improved, unsourced or unpriced)` : ''}.`);
   return {
     status: candidates.length === 0 ? 'partial' : anySource ? 'completed' : 'partial',
     summary: notes.join(' '),
@@ -2771,4 +2826,111 @@ export function makeLivePropertyIntelligenceCollectors(deps: LiveCollectorDeps):
     market_intelligence: (ctx) => collectMarketIntelligence(ctx, deps),
     evidence_visuals: (ctx) => collectEvidenceVisuals(ctx),
   };
+}
+
+
+/** Admit the registry's validated sold vacant-land records into `landos_comp`
+ *  through the existing canonical upsert. Shared by every deal; never a
+ *  backfill (only the current run's candidates reach here). */
+export function persistValidatedSoldComps(
+  deal: { id: number; entity: string },
+  cardId: number | undefined,
+  validatedSold: UniqueComp[],
+): { attempted: boolean; written: number; skipped: number } {
+  if (!validatedSold.length) return { attempted: false, written: 0, skipped: 0 };
+  const labelFor = (provider: string): CompSourceLabel =>
+    /redfin/i.test(provider) ? 'Redfin' : /zillow/i.test(provider) ? 'Zillow' : /realtor/i.test(provider) ? 'Realtor'
+      : /land\s*watch/i.test(provider) ? 'LandWatch' : /land\s*portal/i.test(provider) ? 'LandPortal' : /county|assessor|recorder/i.test(provider) ? 'County' : 'Other';
+  let written = 0;
+  let skipped = 0;
+  for (const unique of validatedSold) {
+    const tx = unique.primary;
+    const sourceUrl = tx.sourceUrls.find((url) => !!url) ?? null;
+    const improved = /improved|residential|manufactured|commercial/i.test(unique.propertyClass ?? '');
+    if (!sourceUrl || tx.kind !== 'sold' || tx.price == null || tx.price <= 0 || improved) { skipped += 1; continue; }
+    const provider = tx.providers[0] ?? unique.providers[0] ?? 'Other';
+    upsertNormalizedComp({
+      entity: deal.entity as LandosEntity,
+      dealCardId: deal.id,
+      cardId,
+      sourceLabel: labelFor(provider),
+      sourceUrl,
+      addressDesc: unique.address ?? undefined,
+      apn: unique.apn ?? undefined,
+      state: unique.state ?? undefined,
+      price: tx.price,
+      priceKind: 'sale',
+      saleOrListDate: tx.dateIso ?? undefined,
+      acres: unique.acres ?? undefined,
+      pricePerAcre: tx.pricePerAcre ?? undefined,
+      lat: unique.lat,
+      lng: unique.lng,
+      distanceMiles: unique.distanceMiles,
+      listingDate: tx.listingDate ?? undefined,
+      daysOnMarket: tx.daysOnMarket,
+      propertyClass: unique.propertyClass ?? 'land',
+      thumbnailUrl: tx.thumbnailUrl ?? undefined,
+      retrievedAt: new Date().toISOString(),
+      inclusionReason: unique.inclusionReason ?? unique.comparabilityWhy,
+      sourceAttributions: tx.providers.map((p, i) => ({ provider: p, url: tx.sourceUrls[i] ?? sourceUrl })),
+      status: 'market_reference',
+      addedBy: 'property-intelligence/marketplace',
+      notes: tx.dateIso ? undefined : 'Sale date not published by the source; recency is unverified until the transaction read confirms it.',
+    });
+    written += 1;
+  }
+  return { attempted: true, written, skipped };
+}
+
+
+/**
+ * Read a FOCUSED rerun scope off the operator's run request. Absent, empty or
+ * unrecognised input means "no focused scope": the full mission runs. Accepted:
+ * `scope: 'comparables'` (both comparable lanes), `scope: 'manufactured_home'`,
+ * `scope: 'vacant_land'`, or `scope: { lanes: [...] }` with those names.
+ */
+export function focusedLaneScope(input: unknown): ComparableLaneScope | null {
+  const names = typeof input === 'string'
+    ? [input]
+    : input && typeof input === 'object' && Array.isArray((input as { lanes?: unknown }).lanes)
+      ? ((input as { lanes: unknown[] }).lanes.filter((lane): lane is string => typeof lane === 'string'))
+      : [];
+  const wanted = new Set(names.map((name) => name.trim().toLowerCase().replace(/[\s-]+/g, '_')));
+  const comparables = wanted.has('comparables');
+  const vacantLand = comparables || wanted.has('vacant_land') || wanted.has('vacant_land_comparables');
+  const manufacturedHomes = comparables || wanted.has('manufactured_home') || wanted.has('manufactured_homes') || wanted.has('land_home_package');
+  if (!vacantLand && !manufacturedHomes) return null;
+  return { vacantLand, manufacturedHomes };
+}
+
+/** A non-LandPortal sold row that can price the subject: closed, dated, sized,
+ *  and geographically relevant (within the search radius by coordinates, or
+ *  in the subject's ZIP or city by its published address). Context, active,
+ *  improved, undated and unlocatable rows never count toward thinness. */
+export function priceableNonLandPortalSoldCount(
+  rows: Array<{ address?: string | null; status?: string | null; saleDate?: string | null; acres?: number | null; lat?: number | null; lng?: number | null; distanceMiles?: number | null; homeType?: string | null; homeSizeSqft?: number | null }> | null | undefined,
+  subject: { zip: string | null; city: string | null; state: string | null; lat: number | null; lng: number | null },
+  radiusMiles = 20,
+): number {
+  const zip = (subject.zip ?? '').match(/\b\d{5}\b/)?.[0] ?? null;
+  const city = (subject.city ?? '').trim().toLowerCase();
+  let count = 0;
+  for (const row of rows ?? []) {
+    if (row.status && row.status !== 'sold') continue;
+    if (!row.saleDate || typeof row.acres !== 'number' || row.acres <= 0) continue;
+    if ((row.homeSizeSqft ?? 0) > 0 || /manufactured|mobile|single family|residential/i.test(row.homeType ?? '')) continue;
+    let relevant = false;
+    if (typeof row.distanceMiles === 'number') relevant = row.distanceMiles <= radiusMiles;
+    else if (row.lat != null && row.lng != null && subject.lat != null && subject.lng != null) {
+      const toRad = (deg: number) => (deg * Math.PI) / 180;
+      const dLat = toRad(row.lat - subject.lat); const dLng = toRad(row.lng - subject.lng);
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(subject.lat)) * Math.cos(toRad(row.lat)) * Math.sin(dLng / 2) ** 2;
+      relevant = 3958.8 * 2 * Math.asin(Math.sqrt(h)) <= radiusMiles;
+    } else {
+      const address = (row.address ?? '').toLowerCase();
+      relevant = (!!zip && address.includes(zip)) || (!!city && address.includes(city));
+    }
+    if (relevant) count += 1;
+  }
+  return count;
 }

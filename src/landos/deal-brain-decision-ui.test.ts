@@ -146,7 +146,13 @@ describe('the trigger map', () => {
     // sites. The definition reads `= (` and does not match.
     expect(ROUTES_SRC).toContain("produceDealBrainDecision(dealCardId, 'startup:settled_intelligence')");
     expect(ROUTES_SRC).toContain("produceDealBrainDecision(id, 'capability:zoning-subdivision', null, null, developmentPath)");
-    expect([...ROUTES_SRC.matchAll(/produceDealBrainDecision\(/g)]).toHaveLength(10);
+    // Ten prior write sites plus the three valuation-package mutations
+    // (comp selection, location resolution, capability run) that must refresh
+    // the decision when the comp and valuation package changes.
+    expect([...ROUTES_SRC.matchAll(/produceDealBrainDecision\(/g)]).toHaveLength(13);
+    for (const cause of ['valuation:comp_selection', 'valuation:locations_resolved', 'valuation:capability_run']) {
+      expect(ROUTES_SRC).toContain(`produceDealBrainDecision(id, '${cause}')`);
+    }
   });
 
   it('answers the workspace read with SELECTs only', () => {

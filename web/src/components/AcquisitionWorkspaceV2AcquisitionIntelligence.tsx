@@ -52,7 +52,7 @@ export interface AcquisitionIntelligenceView {
     whatToConfirm?: string | null;
   }>;
   visualObservations?: Array<{ visual?: string; observation?: string; basis?: string | null }>;
-  conflicts?: Array<{ subject?: string; statement?: string; resolution?: string }>;
+  conflicts?: Array<{ subject?: string; statement?: string; resolution?: string; reason?: string }>;
   unknowns?: Array<{ question?: string; whyItMatters?: string | null }>;
   nextActions?: Array<{ action?: string; why?: string | null }>;
   bestCurrentStrategy?: { strategy?: string; why?: string | null } | null;
@@ -126,7 +126,7 @@ export function AcquisitionIntelligenceSection({ read, readiness, runtime, stale
         <div class="awv2-ai-actions">
           {read?.dealRead?.confidence && <span class={`awv2-ai-weight w-${(read.dealRead.confidence || '').toLowerCase().replace(/\s+/g, '-')}`}>{read.dealRead.confidence}</span>}
           <button type="button" class="awv2-ai-run" disabled={running || readiness?.ok === false} onClick={onRun}
-            title={readiness?.ok === false ? readiness.reason : 'Read the retained property file'}>
+            title={readiness?.ok === false ? readiness.reason ?? undefined : 'Read the retained property file'}>
             <RefreshCw size={14} class={running ? 'spin' : undefined} />
             {running ? 'Reading the property file…' : read ? 'Re-read the property file' : 'Read the property file'}
           </button>

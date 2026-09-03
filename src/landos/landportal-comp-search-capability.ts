@@ -25,6 +25,7 @@
 // Listing remarks are stored as LISTING-REPORTED evidence, never verified
 // truth. Nothing here may change the canonical subject.
 
+import { LANDWATCH_ADDITIVE_MIN_ACRES } from './comps-valuation-package.js';
 import type {
   CapabilityEvidenceReference,
   CapabilityExecutionEnvironment,
@@ -89,9 +90,11 @@ async function boundedLane(run: () => Promise<SecondarySearchResult>, label: str
  *  (operator guidance: roughly the strongest 5–8; never deep research). */
 export const ENRICHMENT_CANDIDATE_CAP = 8;
 
-/** LandWatch runs only for subjects at or above this acreage AND only when
- *  the primary sold evidence is still materially thin. */
-export const LANDWATCH_FALLBACK_MIN_ACRES = 30;
+/** LandWatch joins the non-LandPortal provider set for every subject at or
+ *  above this acreage. It is ADDITIVE: it never replaces LandPortal, Zillow,
+ *  Redfin, Realtor.com, county or manual sources, and it no longer waits for
+ *  the primary sold evidence to look thin. */
+export const LANDWATCH_FALLBACK_MIN_ACRES = LANDWATCH_ADDITIVE_MIN_ACRES;
 
 /** Sold evidence that actually supports a vacant-land FMV: accepted rows that
  *  are not improved sales. Improved directional rows stay visible evidence but
@@ -101,15 +104,11 @@ export function usableSoldEvidenceCount(classified: ClassifiedLandPortalComp[]):
 }
 
 /** The LandWatch gate, exported so fixtures can prove activation behavior
- *  without a browser: 30+ acre subject AND thin primary sold evidence.
- *  Evidence is thin when the accepted vacant sold set is small OR there are
- *  not enough CORE sales to state a defensible median at all — a set that
- *  cannot state a land value is low-confidence however many directional
- *  rows surround it. */
-export function shouldRunLandWatchFallback(subjectAcres: number | null, classified: ClassifiedLandPortalComp[]): boolean {
-  if (subjectAcres == null || subjectAcres < LANDWATCH_FALLBACK_MIN_ACRES) return false;
-  const coreCount = classified.filter((row) => row.tier === 'core').length;
-  return coreCount < 2 || usableSoldEvidenceCount(classified) < 3;
+ *  without a browser: a 20+ acre subject adds LandWatch regardless of how
+ *  strong the LandPortal evidence already is. The classified set is accepted
+ *  for signature stability only; it never suppresses the lane. */
+export function shouldRunLandWatchFallback(subjectAcres: number | null, _classified: ClassifiedLandPortalComp[]): boolean {
+  return subjectAcres != null && subjectAcres >= LANDWATCH_FALLBACK_MIN_ACRES;
 }
 
 export interface LandPortalMapSearchRun {
@@ -712,18 +711,18 @@ export const LANDPORTAL_COMP_SEARCH_CAPABILITY: LandosCapability<
       return highlights ? { ...row, reason: `${row.reason} ${highlights}` } : row;
     });
 
-    // ── 6a. LARGE-ACREAGE FALLBACK: LandWatch, 30+ acre thin-evidence only ───
+    // ── 6a. LARGE-ACREAGE ADDITION: LandWatch joins the set at 20+ acres ────
+    // Additive only: every primary source above has already run and keeps its
+    // evidence; LandWatch supplements the non-LandPortal pool, never replaces it.
     if (runtime.landwatchSearch && shouldRunLandWatchFallback(subject.acres, classified)) {
-      landwatchDiag.notes.push(`LandWatch fallback triggered: ${subject.acres} ac subject with ${usableSoldEvidenceCount(classified)} usable sold comp(s) after the primary sources.`);
+      landwatchDiag.notes.push(`LandWatch added: ${subject.acres} ac subject (20+ acres) with ${usableSoldEvidenceCount(classified)} usable sold comp(s) already retained from the primary sources, which stay in the set.`);
       const fresh = absorb(await runSecondary(landwatchDiag, 'LandWatch large-acreage fallback', 'landwatch', () => runtime.landwatchSearch!()), landwatchDiag);
       if (fresh.length) classified = [...classified, ...classifyMapSearchCandidates(subjectInput, fresh)];
     } else if (runtime.landwatchSearch || subject.acres != null) {
       landwatchDiag.notes.push(
         subject.acres == null || subject.acres < LANDWATCH_FALLBACK_MIN_ACRES
-          ? `LandWatch fallback not triggered: subject ${subject.acres ?? 'unknown'} ac is below the ${LANDWATCH_FALLBACK_MIN_ACRES}-acre large-parcel threshold.`
-          : !shouldRunLandWatchFallback(subject.acres, classified)
-            ? 'LandWatch fallback not needed: the primary sold evidence is sufficient.'
-            : 'No LandWatch flow was available in this environment.',
+          ? `LandWatch not added: subject ${subject.acres ?? 'unknown'} ac is below the ${LANDWATCH_FALLBACK_MIN_ACRES}-acre large-parcel threshold.`
+          : 'No LandWatch flow was available in this environment.',
       );
     }
 

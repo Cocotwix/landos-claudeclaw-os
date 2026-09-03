@@ -258,7 +258,12 @@ describe('every downstream figure recalculates from the selected set', () => {
     const ids = seedSubject();
     seedRecentFive(ids);
     const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
-    expect(view.summary.confidence).toBe(view.cleaned.confidence);
+    // The Combined LandOS FMV governs the summary; its confidence is the
+    // cleaned confidence when both lanes exist and one notch lower when the
+    // value rests on a single lane. Either way the summary states exactly the
+    // package confidence, never a third rating.
+    expect(view.summary.confidence).toBe(view.valuationPackage.combinedFmv.confidence);
+    expect(view.summary.fmv?.central).toBe(view.valuationPackage.combinedFmv.value);
     // The full-set spread stays visible rather than hidden behind the rating.
     expect(view.summary.confidenceFactors.join(' ')).toContain('sold price per acre spans');
   });

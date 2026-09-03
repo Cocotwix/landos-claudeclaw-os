@@ -69,6 +69,8 @@ export interface RedfinCompsResult {
 }
 
 export interface RedfinFetchInput {
+  /** Land (default) or manufactured/mobile homes on their own lots. */
+  propertyType?: 'land' | 'manufactured';
   address?: string;
   city?: string;
   state?: string;
@@ -133,9 +135,13 @@ export function redfinLotMinFilter(lotMinAcres: number | null | undefined): stri
  *  A lot-size minimum reproduces the operator's "20+ acres" search and widens
  *  the property types to land+house so improved large-acreage sales are
  *  discovered too. There is never a maximum lot size and never a price filter. */
-export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; dateWindowMonths?: SoldSearchWindowMonths; lotMinAcres?: number | null } = {}): string {
-  const lotMin = redfinLotMinFilter(opts.lotMinAcres);
-  const propertyType = lotMin ? 'property-type=land+house' : 'property-type=land';
+export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; dateWindowMonths?: SoldSearchWindowMonths; lotMinAcres?: number | null; propertyType?: 'land' | 'manufactured' } = {}): string {
+  const lotMin = opts.propertyType === 'manufactured' ? null : redfinLotMinFilter(opts.lotMinAcres);
+  // Redfin's public filter key for manufactured / mobile homes is
+  // `manufactured`. `mobile` is not a Redfin key: Redfin silently dropped the
+  // whole filter and served the unfiltered for-sale board, which is how a
+  // sold manufactured-home search read 36 active cards and kept none.
+  const propertyType = opts.propertyType === 'manufactured' ? 'property-type=manufactured' : lotMin ? 'property-type=land+house' : 'property-type=land';
   const parts = [propertyType];
   if (lotMin) parts.push(lotMin);
   // Pass 1 is the trailing year. `sold-2yr` is only ever produced when a caller
@@ -143,6 +149,22 @@ export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; da
   // longer-than-2yr option and no price segment at all.
   if (opts.sold) parts.push(`include=sold-${opts.dateWindowMonths === MAX_SOLD_SEARCH_WINDOW_MONTHS ? '2yr' : '1yr'}`);
   return `https://www.redfin.com${cityPath}/filter/${parts.join(',')}`;
+}
+
+/** Board pages read beyond the first (Redfin renders about 40 cards a page). */
+export const REDFIN_MAX_BOARD_PAGES = 3;
+
+/** "69 homes" as the board states it near its heading; null when unstated. */
+export function redfinStatedHomeCount(pageText: string | null | undefined): number | null {
+  const match = (pageText ?? '').slice(0, 6000).match(/\b(\d{1,4}(?:,\d{3})?)\s+homes?\b/i);
+  if (!match) return null;
+  const value = Number(match[1].replace(/,/g, ''));
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** The nth page of a Redfin board: the filter URL followed by `/page-N`. */
+export function redfinBoardPageUrl(boardUrl: string, pageNo: number): string {
+  return `${boardUrl.replace(/\/page-\d+$/, '').replace(/\/$/, '')}/page-${pageNo}`;
 }
 
 /** Normalize raw listings into deduped candidate rows. Never fabricates.
@@ -154,6 +176,7 @@ export function normalizeRedfinListings(
   raw: RawRedfinListing[],
   _subjectAcres: number | null,
   mode: 'sold' | 'active' = 'active',
+  propertyType: 'land' | 'manufactured' = 'land',
 ): RedfinLandComp[] {
   const seen = new Set<string>();
   const out: RedfinLandComp[] = [];
@@ -192,11 +215,22 @@ export function normalizeRedfinListings(
       source: 'Redfin',
       soldDate: explicitSoldDate,
       thumbnailUrl: r.thumbnailUrl ?? null,
-      homeType: r.residential ? 'Residential (beds/baths listed)' : null,
+      // A card on Redfin's manufactured board is a manufactured / mobile home
+      // by the board's own filter, so it carries that label (the shared
+      // classifier recognises it) rather than a generic "residential" one.
+      homeType: propertyType === 'manufactured'
+        ? 'Manufactured / mobile home (Redfin manufactured board)'
+        : r.residential ? 'Residential (beds/baths listed)' : null,
     });
   }
-  return out.slice(0, 40);
+  // A manufactured board is read in full: the five-mile screen, not board
+  // order, decides which of its rows matter, and a 40-row cut dropped a
+  // same-street sale that sat 41st. Land boards keep their accepted bound.
+  return out.slice(0, propertyType === 'manufactured' ? REDFIN_MANUFACTURED_ROW_CAP : 40);
 }
+
+/** Rows kept from a manufactured board across its pages. */
+export const REDFIN_MANUFACTURED_ROW_CAP = 150;
 
 // ── Disposable-profile browser capture (injectable) ─────────────────────────
 
@@ -275,7 +309,17 @@ const READ_SUGGESTION_HREFS = (): string => {
 const EXTRACT_REDFIN = (): RawRedfinListing[] => {
   const out: RawRedfinListing[] = [];
   const seen = new Set<string>();
-  const cards = Array.from((document as any).querySelectorAll('.HomeCardContainer,[class*="HomeCard" i],.bp-Homecard,[class*="MapHomeCard" i],[data-rf-test-id*="mapHomeCard" i],div[class*="homecard" i]'));
+  // Redfin nests card-like wrappers (the whole results column carries a
+  // "HomecardsContainer" class) around the real cards. Reading a wrapper as a
+  // card took the FIRST address inside it, then marked every real card for
+  // that address as a duplicate: the board's first card was lost on every
+  // read. Only LEAF matches (no matched descendant) are cards.
+  const matched = Array.from((document as any).querySelectorAll('.HomeCardContainer,[class*="HomeCard" i],.bp-Homecard,[class*="MapHomeCard" i],[data-rf-test-id*="mapHomeCard" i],div[class*="homecard" i]')) as any[];
+  const cardLike = matched.filter((el: any) => {
+    const text = String(el.textContent ?? '');
+    return /\$\d/.test(text) && /\d+\s+[\w .]+,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5}/.test(text);
+  });
+  const cards = cardLike.filter((el: any) => !cardLike.some((other: any) => other !== el && el.contains(other)));
   for (const c of cards as any[]) {
     const txt = ((c.textContent as string) || '').replace(/\s+/g, ' ').trim();
     const priceEl: any = c.querySelector('[class*="Price" i]');
@@ -476,7 +520,7 @@ export async function fetchRedfinLandComps(rawInput: RedfinFetchInput, deps: Red
         });
         continue;
       }
-      const landUrl = redfinLandFilterUrl(resolvedPath, { sold, dateWindowMonths: input.dateWindowMonths, lotMinAcres: input.lotMinAcres });
+      const landUrl = redfinLandFilterUrl(resolvedPath, { sold, dateWindowMonths: input.dateWindowMonths, lotMinAcres: input.lotMinAcres, propertyType: input.propertyType });
       routeTried = landUrl;
       await page.goto(landUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
       await sleep(settleMs);
@@ -495,21 +539,45 @@ export async function fetchRedfinLandComps(rawInput: RedfinFetchInput, deps: Red
         routes.push({ label: query.label, url: landUrl, reached: true, blocked, cardsFound, marketVerified: false, qualifying: 0, outcome: `Opened ${landUrl} and read ${cardsFound} card(s), but ${verifiedGeo.reason}, so nothing from it was used.` });
         continue;
       }
-      const extracted = (rawList ?? []).filter((row) => !!row.address && typeof row.price === 'number' && row.price > 0).length;
-      const comps = normalizeRedfinListings(rawList ?? [], input.subjectAcres ?? null, sold ? 'sold' : 'active');
-      counts.visible = Math.max(counts.visible, cardsFound);
+      // Redfin renders one page of cards; a board that states more homes than
+      // it rendered continues on /page-2, /page-3. Read the rest, bounded, so a
+      // qualifying sale on the second page is not silently absent.
+      let allRaw: RawRedfinListing[] = [...(rawList ?? [])];
+      const statedTotal = redfinStatedHomeCount(pageGeo.text);
+      let pagesRead = 1;
+      if (statedTotal != null && statedTotal > allRaw.length) {
+        const seenAddress = new Set(allRaw.map((row) => (row.address ?? '').toLowerCase()));
+        for (let pageNo = 2; pageNo <= REDFIN_MAX_BOARD_PAGES && allRaw.length < statedTotal; pageNo++) {
+          try {
+            await page.goto(redfinBoardPageUrl(landUrl, pageNo), { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+            await sleep(settleMs);
+            for (let i = 0; i < 4; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
+            const more = await page.evaluate<RawRedfinListing[]>(EXTRACT_REDFIN as unknown as () => RawRedfinListing[]);
+            const fresh = (more ?? []).filter((row) => row.address && !seenAddress.has(row.address.toLowerCase()));
+            if (!fresh.length) break;
+            for (const row of fresh) seenAddress.add((row.address ?? '').toLowerCase());
+            allRaw = [...allRaw, ...fresh];
+            pagesRead += 1;
+          } catch { break; }
+        }
+      }
+      const extracted = allRaw.filter((row) => !!row.address && typeof row.price === 'number' && row.price > 0).length;
+      const comps = normalizeRedfinListings(allRaw, input.subjectAcres ?? null, sold ? 'sold' : 'active', input.propertyType ?? 'land');
+      const cardsFoundAllPages = allRaw.length;
+      const pageNote = pagesRead > 1 ? ` across ${pagesRead} board page(s)${statedTotal != null ? ` of ${statedTotal} stated homes` : ''}` : '';
+      counts.visible = Math.max(counts.visible, cardsFoundAllPages);
       counts.extracted = Math.max(counts.extracted, extracted);
       routes.push({
-        label: query.label, url: landUrl, reached: true, blocked, cardsFound, marketVerified: true, qualifying: comps.length,
+        label: query.label, url: landUrl, reached: true, blocked, cardsFound: cardsFoundAllPages, marketVerified: true, qualifying: comps.length,
         outcome: comps.length
-          ? `Opened ${landUrl}, verified it as this subject's market: ${cardsFound} visible card(s) → ${extracted} extracted → ${comps.length} ${sold ? 'sold' : 'active'} candidate(s) retained (no price or acreage filter).`
-          : `Opened ${landUrl} and verified it as this subject's market; it exposed ${cardsFound} card(s) and none survived extraction/status screening as a ${sold ? 'sold' : 'active'} candidate.`,
+          ? `Opened ${landUrl}, verified it as this subject's market: ${cardsFoundAllPages} visible card(s)${pageNote} → ${extracted} extracted → ${comps.length} ${sold ? 'sold' : 'active'} candidate(s) retained (no price or acreage filter).`
+          : `Opened ${landUrl} and verified it as this subject's market; it exposed ${cardsFoundAllPages} card(s)${pageNote} and none survived extraction/status screening as a ${sold ? 'sold' : 'active'} candidate.`,
       });
       if (!comps.length) continue;
       counts.normalized = Math.max(counts.normalized, comps.length);
       return done({
         status: 'retrieved', comps,
-        note: `Redfin verified ${query.label}: ${cardsFound} visible card(s) → ${extracted} extracted → ${comps.length} ${sold ? 'sold' : 'active'} candidate(s)${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}.`,
+        note: `Redfin verified ${query.label}: ${cardsFoundAllPages} visible card(s)${pageNote} → ${extracted} extracted → ${comps.length} ${sold ? 'sold' : 'active'} candidate(s)${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}.`,
         routeTried: landUrl, filtersUsed,
       });
     }
@@ -546,7 +614,51 @@ export interface RedfinListingDetail {
   /** Property-history rows (date + event + price text) — prior sales when the
    *  page exposes them. Readily-visible history only; never a deep mission. */
   priorEvents: Array<{ date: string | null; event: string; price: number | null }>;
+  /** The record's own published facts (Redfin's structured page data), used to
+   *  recover what a search card omitted: coordinates, the last closed sale,
+   *  beds/baths, the county parcel number. Null when the page did not state it. */
+  record?: RedfinRecordFacts;
   note: string;
+}
+
+export interface RedfinRecordFacts {
+  lat: number | null;
+  lng: number | null;
+  lastSoldPrice: number | null;
+  lastSoldDate: string | null;
+  beds: number | null;
+  baths: number | null;
+  apn: string | null;
+  /** Home type as the page words it, e.g. "mobile/manufactured home". */
+  homeTypeLabel: string | null;
+  /** Lot size from the record's own `lotSize` (square feet), in acres. */
+  lotAcres: number | null;
+}
+
+/** PURE. Redfin's page data carries the record's published facts in JSON
+ *  (`"latitude":30.00…`, `\"lastSoldPrice\":290000,\"lastSoldDate\":<epoch ms>`,
+ *  `\"apn\":\"00083A02900\"`, `"numberOfBedrooms":4`); the meta description
+ *  words the home type ("mobile/manufactured home"). */
+export function parseRedfinRecordFacts(html: string): RedfinRecordFacts {
+  const num = (re: RegExp): number | null => {
+    const value = html.match(re)?.[1];
+    if (value == null) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const epoch = num(/\\?"lastSoldDate\\?":\s*(\d{11,14})/);
+  const lotSqft = num(/\\?"lotSize\\?":\s*(\d{3,9})/);
+  return {
+    lotAcres: lotSqft != null && lotSqft > 0 ? Math.round((lotSqft / 43_560) * 100) / 100 : null,
+    lat: num(/"latitude":\s*(-?\d{1,3}\.\d+)/),
+    lng: num(/"longitude":\s*(-?\d{1,3}\.\d+)/),
+    lastSoldPrice: num(/\\?"lastSoldPrice\\?":\s*(\d{4,})/),
+    lastSoldDate: epoch != null ? new Date(epoch).toISOString().slice(0, 10) : null,
+    beds: num(/"numberOfBedrooms":\s*(\d{1,2})/),
+    baths: num(/"numberOfBathroomsTotal":\s*(\d{1,2}(?:\.\d)?)/),
+    apn: html.match(/\\?"apn\\?":\s*\\?"([A-Za-z0-9 .\-\/]{4,30})\\?"/)?.[1] ?? null,
+    homeTypeLabel: html.match(/<meta[^>]+name="description"[^>]+content="[^"]*?\b(mobile\/manufactured home|manufactured home|mobile home|single family (?:residential|home)|vacant land|land)\b/i)?.[1]?.toLowerCase() ?? null,
+  };
 }
 
 // Runs INSIDE the disposable context: pull the remarks block, key facts and
@@ -554,6 +666,7 @@ export interface RedfinListingDetail {
 const EXTRACT_REDFIN_DETAIL = (): {
   remarks: string | null; bodyText: string;
   historyRows: string[];
+  html?: string;
 } => {
   const remarksEl: any = (document as any).querySelector(
     '#marketing-remarks-scroll, [data-rf-test-id="listingRemarks"], .remarks, [class*="marketingRemarks" i], [class*="ListingRemarks" i]');
@@ -563,7 +676,15 @@ const EXTRACT_REDFIN_DETAIL = (): {
     .map((row: any) => String(row.textContent || '').replace(/\s+/g, ' ').trim())
     .filter((text: string) => /\b(19|20)\d{2}\b/.test(text) && /sold|listed|price|pending|contingent|delisted/i.test(text))
     .slice(0, 12);
-  return { remarks, bodyText: String((document as any).body?.innerText || '').slice(0, 20000), historyRows };
+  // The page's own JSON facts live in the HTML, not the visible text. Only the
+  // fragments the record-fact parser reads are kept, bounded.
+  const html = String((document as any).documentElement?.outerHTML || '');
+  const keep: string[] = [];
+  for (const key of ['"latitude":', '"longitude":', 'lastSoldPrice', 'lastSoldDate', '\\"lotSize\\":', '"numberOfBedrooms":', '"numberOfBathroomsTotal":', '\\"apn\\":', 'name="description"']) {
+    const at = html.indexOf(key);
+    if (at >= 0) keep.push(html.slice(Math.max(0, at - 60), at + 400));
+  }
+  return { remarks, bodyText: String((document as any).body?.innerText || '').slice(0, 20000), historyRows, html: keep.join('\n') };
 };
 
 /** Pure projection of the raw page read (unit-tested without a browser).
@@ -629,12 +750,13 @@ export async function fetchRedfinListingDetail(url: string, deps: RedfinFetchDep
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     await sleep(settleMs);
     const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
-    const raw = await page.evaluate<{ remarks: string | null; bodyText: string; historyRows: string[] }>(EXTRACT_REDFIN_DETAIL as unknown as () => { remarks: string | null; bodyText: string; historyRows: string[] });
+    const raw = await page.evaluate<{ remarks: string | null; bodyText: string; historyRows: string[]; html?: string }>(EXTRACT_REDFIN_DETAIL as unknown as () => { remarks: string | null; bodyText: string; historyRows: string[]; html?: string });
     if (blocked && !raw.remarks && !raw.historyRows.length) {
       return { status: 'blocked', url, ...empty, note: 'Redfin served an anti-bot page on the listing detail read.' };
     }
     const parsed = parseRedfinListingDetail(url, raw);
-    return { status: 'retrieved', ...parsed, note: `Redfin listing detail read: ${parsed.remarks ? 'remarks captured' : 'no remarks block'}, ${parsed.priorEvents.length} history row(s).` };
+    const record = parseRedfinRecordFacts(raw.html ?? '');
+    return { status: 'retrieved', ...parsed, record, note: `Redfin listing detail read: ${parsed.remarks ? 'remarks captured' : 'no remarks block'}, ${parsed.priorEvents.length} history row(s)${record.lat != null ? ', coordinates published' : ''}${record.lastSoldDate ? `, last sold ${record.lastSoldDate}` : ''}.` };
   } catch (e) {
     return { status: 'error', url, ...empty, note: `Redfin detail read error: ${(e as Error)?.message ?? 'unknown'}.` };
   } finally {

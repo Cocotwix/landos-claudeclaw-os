@@ -31,7 +31,7 @@ declare const window: any;
  *  lower than the older exploratory thresholds (40 in comp-retrieval.ts, 50 in
  *  duke-report-lanes.ts): those gates were never wired to a live source; this
  *  one is, and 30 acres is where the primary marketplaces reliably thin out. */
-export const LANDWATCH_FALLBACK_MIN_ACRES = 30;
+export const LANDWATCH_FALLBACK_MIN_ACRES = 20;
 
 export interface LandWatchLandComp {
   address: string;

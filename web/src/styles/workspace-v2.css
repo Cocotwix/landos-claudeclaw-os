@@ -1593,6 +1593,7 @@ body:has(.awv2) .awv2 {
 }
 
 /* Compact method grid */
+.awv2-cv-package { display: grid; gap: 8px; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--awv2-line); }
 .awv2-cv-methodgrid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px; margin-bottom: 12px;

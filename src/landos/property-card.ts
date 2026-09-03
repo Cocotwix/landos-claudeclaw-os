@@ -1288,7 +1288,7 @@ export function savePropertyInspection(cardId: number, inspection: PendingProper
  * and the surfaces that depend on a subject point reported everything
  * "location unresolved".
  */
-function promoteRetainedParcelEnrichment(cardId: number, facts: Record<string, string>): void {
+export function promoteRetainedParcelEnrichment(cardId: number, facts: Record<string, string>): void {
   const text = (...labels: string[]): string | null => {
     for (const label of labels) {
       const raw = facts[label];

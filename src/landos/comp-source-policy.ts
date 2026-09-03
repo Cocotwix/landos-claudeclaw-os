@@ -33,7 +33,7 @@ import {
 } from './comp-lane-accountability.js';
 
 /** Source families the policy reasons about. */
-export type CompSourceFamily = 'landportal' | 'zillow' | 'redfin' | 'realtor' | 'realie' | 'homeharvest' | 'county' | 'other';
+export type CompSourceFamily = 'landportal' | 'zillow' | 'redfin' | 'realtor' | 'landwatch' | 'realie' | 'homeharvest' | 'county' | 'other';
 
 /** Why a candidate may or may not touch vacant-land FMV. */
 export type CompPolicyRole =
@@ -134,6 +134,8 @@ const FAMILY_PATTERNS: Array<{ family: CompSourceFamily; re: RegExp }> = [
   // labels combined the two names.
   { family: 'homeharvest', re: /home\s*harvest|homeharvest/i },
   { family: 'realtor', re: /realtor(?:\.com)?/i },
+  // LandWatch is an approved read-only large-acreage source (20+ acres), additive to the others.
+  { family: 'landwatch', re: /land\s*watch|landwatch/i },
   { family: 'county', re: /county|assessor|recorder/i },
 ];
 

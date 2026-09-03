@@ -29,6 +29,7 @@ const PROVIDERS: CompProviderIdentity[] = [
   { adapterId: 'landportal visible', displayName: 'LandPortal (visible sales)', description: 'Free visible "similar sales" rows on the authenticated LandPortal parcel page (never the paid comp report).' },
   { adapterId: 'apify', displayName: 'Redfin (Apify)', description: 'Redfin extraction through the Apify actor.' },
   { adapterId: 'county', displayName: 'County records', description: 'Official county recorded-sale data.' },
+  { adapterId: 'landwatch', displayName: 'LandWatch', description: 'LandWatch public sold and active land listings (read-only); added for subjects of 20 acres or more, never in place of the other lanes.' },
 ];
 
 const BY_ID = new Map(PROVIDERS.map((p) => [p.adapterId, p]));

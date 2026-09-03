@@ -129,8 +129,8 @@ export function CompsValuationCapabilityRun({ dealId }: { dealId?: number }) {
             <CvRow k="Confidence" v={valuation?.confidence ?? null} />
             <CvRow k="Valuation set" v={valuation?.valuationSetCount != null ? `${valuation.valuationSetCount} closed sale(s), ${valuation.directCount ?? 0} direct` : null} />
             <CvRow k="Sale window" v={valuation?.windowLabel ?? null} />
-            <CvRow k="Acquisition 40 / 50 / 60" v={valuation?.acquisitionLevels
-              ? `${usd(valuation.acquisitionLevels.pct40)} / ${usd(valuation.acquisitionLevels.pct50)} / ${usd(valuation.acquisitionLevels.pct60)}`
+            <CvRow k="Acquisition 40 / 60" v={valuation?.acquisitionLevels
+              ? `${usd(valuation.acquisitionLevels.pct40)} / ${usd(valuation.acquisitionLevels.pct60)}`
               : null} />
           </div>
           {/* The accepted acreage rule, in the capability's own words: the three

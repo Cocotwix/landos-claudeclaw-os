@@ -99,9 +99,9 @@ describe('ws1 QA repairs stay repaired', () => {
   });
 
   it('the land-basis references and the negotiation ceiling never share a label', () => {
-    // Overview names the 40/50/60% basis in each label.
+    // Overview names the 40/60% basis in each label; no 50% value is displayed.
     expect(OVERVIEW_SRC).toContain('Opening reference (40% of land value, rounded)');
-    expect(OVERVIEW_SRC).toContain('Target reference (50% of land value, rounded)');
+    expect(OVERVIEW_SRC).not.toContain('Target reference (50% of land value, rounded)');
     expect(OVERVIEW_SRC).toContain('Ceiling reference (60% of land value, rounded)');
     expect(OVERVIEW_SRC).not.toContain('Land-basis ceiling reference');
     // CV names its ceiling as the negotiation figure it actually is.

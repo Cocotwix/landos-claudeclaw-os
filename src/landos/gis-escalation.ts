@@ -117,6 +117,7 @@ export class EscalationLadder {
   private deferredInteractive = false;
 
   private currentStage: GisEscalationStage | null = null;
+  private reservedWallClockMs = 0;
   private currentStageRequests = 0;
   private currentStageStartedAt = 0;
 
@@ -128,10 +129,31 @@ export class EscalationLadder {
 
   get elapsedMs(): number { return this.now() - this.startedAt; }
 
+  /** The run's wall-clock ceiling, so a caller can split it between stages. */
+  get wallClockBudgetMs(): number { return this.budget.maxWallClockMs; }
+
+  /**
+   * Wall-clock time held back for work that MUST still run after the current
+   * optional stage. Discovery is the reason this exists: finding a source is
+   * worthless if it leaves no time to query it, so the search stage runs
+   * against a lowered ceiling and the reserve belongs to the query cascade.
+   */
+  reserveWallClockMs(ms: number): void { this.reservedWallClockMs = Math.max(0, ms); }
+  releaseWallClockReserve(): void { this.reservedWallClockMs = 0; }
+  /** Milliseconds the ladder still allows under the current reserve. */
+  remainingWallClockMs(): number {
+    return Math.max(0, this.budget.maxWallClockMs - this.reservedWallClockMs - this.elapsedMs);
+  }
+
   /** True when the run has hit a hard ceiling and must stop entirely. */
   exhausted(): boolean {
     if (this.totalRequests >= this.budget.maxTotalRequests) { this.stopReason = 'total_request_budget'; return true; }
-    if (this.elapsedMs >= this.budget.maxWallClockMs) { this.stopReason = 'wall_clock_budget'; return true; }
+    if (this.elapsedMs >= this.budget.maxWallClockMs - this.reservedWallClockMs) {
+      // Only a genuinely spent clock is a stop reason. Hitting the reserved
+      // ceiling stops the optional stage, not the run.
+      if (this.reservedWallClockMs === 0) this.stopReason = 'wall_clock_budget';
+      return true;
+    }
     return false;
   }
 

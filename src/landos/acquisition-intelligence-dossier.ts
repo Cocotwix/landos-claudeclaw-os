@@ -247,6 +247,44 @@ export interface AcquisitionDossier {
     fairMarketValue: number | null;
     lpEstimate: string | null;
     blockers: string[];
+    /** The operator valuation package the Deal Brain must consume whole. */
+    package: {
+      landPortalFmv: number | null;
+      landPortalCompCount: number | null;
+      nonLandPortalFmv: number | null;
+      nonLandPortalCompCount: number | null;
+      nonLandPortalSources: string[];
+      combinedFmv: number | null;
+      combinedMethod: string | null;
+      combinedMethodLabel: string | null;
+      combinedLimitation: string | null;
+      confidence: string | null;
+      offer40: number | null;
+      offer60: number | null;
+      askingPrice: number | null;
+      collectiveComparison: string | null;
+      collectivePosture: string | null;
+      activeCompetitionCount: number | null;
+      activeCompetitionSummary: string | null;
+      landWatchApplicable: boolean;
+      landPortalAssociatedCount: number | null;
+      landPortalAssociatedNote: string | null;
+      landHome: {
+        physicalMet: boolean | null;
+        usableAcres: number | null;
+        physicalNote: string | null;
+        marketMet: boolean;
+        qualifyingSaleCount: number | null;
+        topSalePrice: number | null;
+        marketNote: string | null;
+        marketBrief: string | null;
+        searchComplete: boolean;
+        soldCompCount: number | null;
+        activeCompCount: number | null;
+        excludedCount: number | null;
+        triggered: boolean;
+      } | null;
+    } | null;
   };
   comps: {
     soldCount: number | null;
@@ -841,6 +879,43 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     fairMarketValue: num(at(cv, 'summary.fmv.central')) ?? num(at(cv, 'summary.fmv')),
     lpEstimate: text(at(cv, 'lpEstimate.priceLabel'), 80),
     blockers: strings(at(pi, 'canonicalState.valuation.blockers'), MAX_LIST, 'Valuation blockers', truncation),
+    package: at(cv, 'valuationPackage') ? {
+      landPortalFmv: num(at(cv, 'valuationPackage.landPortalFmv.value')),
+      landPortalCompCount: num(at(cv, 'valuationPackage.landPortalFmv.compCount')),
+      nonLandPortalFmv: num(at(cv, 'valuationPackage.nonLandPortalFmv.value')),
+      nonLandPortalCompCount: num(at(cv, 'valuationPackage.nonLandPortalFmv.compCount')),
+      nonLandPortalSources: strings(at(cv, 'valuationPackage.nonLandPortalFmv.sources'), MAX_LIST, 'Non-LandPortal sources', truncation),
+      combinedFmv: num(at(cv, 'valuationPackage.combinedFmv.value')),
+      combinedMethod: text(at(cv, 'valuationPackage.combinedFmv.method'), 40),
+      combinedMethodLabel: text(at(cv, 'valuationPackage.combinedFmv.methodLabel'), 120),
+      combinedLimitation: text(at(cv, 'valuationPackage.combinedFmv.limitation'), 400),
+      confidence: text(at(cv, 'valuationPackage.combinedFmv.confidence'), 20),
+      offer40: num(at(cv, 'valuationPackage.offer40')),
+      offer60: num(at(cv, 'valuationPackage.offer60')),
+      askingPrice: num(at(cv, 'valuationPackage.askingPrice')),
+      collectiveComparison: text(at(cv, 'valuationPackage.collectiveComparison.statement'), 400),
+      collectivePosture: text(at(cv, 'valuationPackage.collectiveComparison.posture'), 40),
+      activeCompetitionCount: num(at(cv, 'valuationPackage.activeCompetition.count')),
+      activeCompetitionSummary: text(at(cv, 'valuationPackage.activeCompetition.summary'), 400),
+      landWatchApplicable: at(cv, 'valuationPackage.landWatch.applicable') === true,
+      landPortalAssociatedCount: num(at(cv, 'valuationPackage.landPortalFmv.associatedCount')),
+      landPortalAssociatedNote: text(at(cv, 'valuationPackage.landPortalFmv.associatedNote'), 400),
+      landHome: at(cv, 'valuationPackage.landHomePackage') ? {
+        physicalMet: typeof at(cv, 'valuationPackage.landHomePackage.physical.met') === 'boolean' ? at(cv, 'valuationPackage.landHomePackage.physical.met') as boolean : null,
+        usableAcres: num(at(cv, 'valuationPackage.landHomePackage.physical.usableAcres')),
+        physicalNote: text(at(cv, 'valuationPackage.landHomePackage.physical.note'), 300),
+        marketMet: at(cv, 'valuationPackage.landHomePackage.market.met') === true,
+        qualifyingSaleCount: num(at(cv, 'valuationPackage.landHomePackage.market.qualifyingSaleCount')),
+        topSalePrice: num(at(cv, 'valuationPackage.landHomePackage.market.topSalePrice')),
+        marketNote: text(at(cv, 'valuationPackage.landHomePackage.market.note'), 400),
+        marketBrief: text(at(cv, 'valuationPackage.landHomePackage.market.brief'), 400),
+        searchComplete: at(cv, 'valuationPackage.landHomePackage.market.searchComplete') === true,
+        soldCompCount: Array.isArray(at(cv, 'valuationPackage.landHomePackage.soldCompKeys')) ? (at(cv, 'valuationPackage.landHomePackage.soldCompKeys') as unknown[]).length : null,
+        activeCompCount: Array.isArray(at(cv, 'valuationPackage.landHomePackage.activeCompKeys')) ? (at(cv, 'valuationPackage.landHomePackage.activeCompKeys') as unknown[]).length : null,
+        excludedCount: num(at(cv, 'valuationPackage.landHomePackage.excludedCount')),
+        triggered: at(cv, 'valuationPackage.landHomePackage.triggered') === true,
+      } : null,
+    } : null,
   };
 
   const comps: AcquisitionDossier['comps'] = {

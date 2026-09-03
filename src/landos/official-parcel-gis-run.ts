@@ -96,6 +96,10 @@ export interface OfficialParcelGisDeps {
   countyRegistry?: CountyCapabilityRegistry;
   /** Disable automatic discovery (tests, or an offline run). */
   allowDiscovery?: boolean;
+  /** Wall-clock held back for the parcel query cascade, so discovery cannot eat it. */
+  queryReserveMs?: number;
+  /** Deterministic ladder clock for focused budget tests. */
+  ladderNow?: () => number;
   /** Disable the public-search discovery lane specifically. */
   allowWebSearch?: boolean;
   /** Injected so a test can read what the run learned about portal access. */
@@ -411,14 +415,118 @@ function buildAccessHandoff(store: PublicRecordAccessStore, host: string): Publi
  * first usable answer wins. A run that finds nothing still returns a complete,
  * named result — silence is never an acceptable outcome for an operator.
  */
+/**
+ * PURE. The official ArcGIS parcel services a discovery result offers that the
+ * ladder has not already tried: the selected source first, then any other
+ * candidate established as official, each once.
+ */
+export function discoveredArcgisSeeds(
+  discovery: OfficialSourceDiscoveryResult | null,
+  tried: ReadonlyArray<{ url: string }>,
+): Array<{ url: string; label: string }> {
+  if (!discovery) return [];
+  const triedUrls = new Set(tried.map((seed) => seed.url.replace(/\/+$/, '').toLowerCase()));
+  const out: Array<{ url: string; label: string }> = [];
+  const ordered = [discovery.selected, ...discovery.candidates].filter((c): c is NonNullable<typeof c> => !!c);
+  for (const candidate of ordered) {
+    if (candidate.officiality.status !== 'official') continue;
+    if (!/\/rest\/services\/.+\/(MapServer|FeatureServer)(\/\d+)?\/?$/i.test(candidate.url)) continue;
+    const key = candidate.url.replace(/\/+$/, '').toLowerCase();
+    if (triedUrls.has(key) || out.some((seed) => seed.url.replace(/\/+$/, '').toLowerCase() === key)) continue;
+    out.push({ url: candidate.url, label: `${candidate.label} (discovered official source)` });
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+/** An ArcGIS map or feature service, optionally down to one layer. */
+const ARCGIS_SERVICE_URL = /\/rest\/services\/.+\/(MapServer|FeatureServer)(\/\d+)?\/?$/i;
+
+/**
+ * Wall-clock the discovery stage may spend: whatever is left after the query
+ * cascade's reserve. PURE.
+ *
+ * Finding a source is worthless if it leaves no time to ask it about the
+ * parcel. Discovery is the optional half of this lane; the query clauses are
+ * the half that answers the operator, so they are paid first.
+ */
+export const DEFAULT_QUERY_WALL_CLOCK_RESERVE_MS = 40_000;
+/** Below this a discovery pass cannot finish anything useful, so it is skipped. */
+export const MIN_DISCOVERY_WALL_CLOCK_MS = 8_000;
+
+export function discoveryWallClockBudgetMs(
+  maxWallClockMs: number,
+  elapsedMs: number,
+  reserveMs: number = DEFAULT_QUERY_WALL_CLOCK_RESERVE_MS,
+): number {
+  return Math.max(0, maxWallClockMs - Math.max(0, reserveMs) - Math.max(0, elapsedMs));
+}
+
+/** Resolve `null` rather than let one slow lane outlive its budget. */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Remember a discovered official parcel service on the shared deployment store
+ * so the NEXT run in this county seeds it directly and never pays for web
+ * discovery again. Platform shape only: no property evidence.
+ */
+function rememberDiscoveredParcelService(
+  discovery: OfficialSourceDiscoveryResult | null,
+  subject: OfficialParcelGisSubject,
+): void {
+  const selected = discovery?.selected;
+  if (!selected || selected.officiality.status !== 'official') return;
+  if (!ARCGIS_SERVICE_URL.test(selected.url)) return;
+  const servesLabel = [subject.county, subject.state].filter(Boolean).join(', ');
+  if (!servesLabel) return;
+  try {
+    rememberDeployment(selected.url, {
+      family: 'arcgis',
+      servesLabel,
+      services: [selected.url],
+      parcelLayerUrl: /\/\d+\/?$/.test(selected.url) ? selected.url : undefined,
+      confidence: 'medium',
+    });
+    logger.info({ event: 'official_source_discovery_remembered', url: selected.url, servesLabel }, 'official_source_discovery_remembered');
+  } catch (error) {
+    logger.warn({ event: 'official_source_discovery_remember_failed', msg: (error as Error).message }, 'official_source_discovery_remember_failed');
+  }
+}
+
 export async function runOfficialParcelGis(
   subject: OfficialParcelGisSubject,
   deps: OfficialParcelGisDeps = {},
 ): Promise<OfficialParcelGisRun> {
   const now = deps.now ?? (() => new Date().toISOString());
-  const ladder = new EscalationLadder({ budget: deps.budget });
+  const ladder = new EscalationLadder({ budget: deps.budget, now: deps.ladderNow });
+  const queryReserveMs = deps.queryReserveMs ?? DEFAULT_QUERY_WALL_CLOCK_RESERVE_MS;
+  // The query reserve belongs to the run, not just discovery. Hold it before
+  // fingerprinting and context probes so every optional pre-query branch sees
+  // the lowered ceiling. Release it exactly once when adapter querying begins.
+  ladder.reserveWallClockMs(queryReserveMs);
+  let queryPhaseStarted = false;
+  const beginQueryPhase = (): void => {
+    if (queryPhaseStarted) return;
+    queryPhaseStarted = true;
+    ladder.releaseWallClockReserve();
+  };
   const attempts: OfficialParcelGisRun['attempts'] = [];
-  const arcgisDeps = { fetch: deps.arcgisFetch as never, onRequest: () => ladder.noteRequest(), ladder };
+  const arcgisDeps = {
+    fetch: deps.arcgisFetch as never,
+    canRequest: () => !ladder.stageExhausted(),
+    onRequest: () => ladder.noteRequest(),
+    ladder,
+  };
 
   // Access observation rides along on the transport. It reads what the portals
   // already answered and changes nothing about how they are retrieved.
@@ -436,24 +544,55 @@ export async function runOfficialParcelGis(
   // Automatic discovery. Only when LandOS has no county-level source: a
   // jurisdiction it already knows, or has already learned, must never pay for
   // discovery again — that reuse is the whole point of the shared store.
+  //
+  // Discovery is budget-split from the query cascade: it runs under the
+  // ladder's reserve and its own deadline, so it can never spend the clock the
+  // parcel clauses need.
   let discovery: OfficialSourceDiscoveryResult | null = null;
+  const runDiscovery = async (): Promise<OfficialSourceDiscoveryResult | null> => {
+    const budgetMs = discoveryWallClockBudgetMs(ladder.wallClockBudgetMs, ladder.elapsedMs, queryReserveMs);
+    if (budgetMs < MIN_DISCOVERY_WALL_CLOCK_MS) {
+      logger.info({ event: 'official_source_discovery_skipped_for_query_budget', budgetMs }, 'official_source_discovery_skipped_for_query_budget');
+      return null;
+    }
+    // The first discovery pass inherits the reserve held from run start. A
+    // fallback discovery after an unsuccessful adapter temporarily reacquires
+    // it for the discovered service's own query cascade.
+    const ownsReserve = queryPhaseStarted;
+    if (ownsReserve) ladder.reserveWallClockMs(queryReserveMs);
+    try {
+      const found = await withDeadline(
+        discoverOfficialSource(
+          { county: subject.county, state: subject.state, city: subject.city },
+          {
+            fetchText: transport,
+            // The search lane needs a real browser even when nothing is blocked.
+            searchFetchText: deps.fetchText ?? createBackgroundBrowserFetchText(),
+            arcgis: arcgisDeps,
+            ladder,
+            hostnameCandidates: deriveCountyGisHostCandidates(subject.county, subject.state),
+            providerDirectory: schneiderDirectoryLookup(transport),
+            allowWebSearch: deps.allowWebSearch,
+            maxWallClockMs: budgetMs,
+          },
+        ),
+        budgetMs,
+      );
+      if (!found) logger.warn({ event: 'official_source_discovery_deadline', budgetMs }, 'official_source_discovery_deadline');
+      rememberDiscoveredParcelService(found, subject);
+      return found;
+    } catch (error) {
+      logger.warn({ event: 'official_source_discovery_failed', msg: (error as Error).message }, 'official_source_discovery_failed');
+      return null;
+    } finally {
+      if (ownsReserve) ladder.releaseWallClockReserve();
+    }
+  };
   const knowsCountySource = seeds.some((seed) => seed.origin !== 'statewide_service');
   if (!knowsCountySource && deps.allowDiscovery !== false && !ladder.exhausted()) {
-    try {
-      discovery = await discoverOfficialSource(
-        { county: subject.county, state: subject.state, city: subject.city },
-        {
-          fetchText: transport,
-          // The search lane needs a real browser even when nothing is blocked.
-          searchFetchText: deps.fetchText ?? createBackgroundBrowserFetchText(),
-          arcgis: arcgisDeps,
-          ladder,
-          hostnameCandidates: deriveCountyGisHostCandidates(subject.county, subject.state),
-          providerDirectory: schneiderDirectoryLookup(transport),
-          allowWebSearch: deps.allowWebSearch,
-        },
-      );
-      if (discovery.selected) {
+    {
+      discovery = await runDiscovery();
+      if (discovery?.selected) {
         // A discovered source outranks the statewide fallback but not an
         // operator-supplied one, and it is verified before it gets here.
         pushSeed(seeds, {
@@ -464,8 +603,6 @@ export async function runOfficialParcelGis(
         });
         seeds = [...seeds].sort((a, b) => a.priority - b.priority);
       }
-    } catch (error) {
-      logger.warn({ event: 'official_source_discovery_failed', msg: (error as Error).message }, 'official_source_discovery_failed');
     }
   }
 
@@ -499,6 +636,10 @@ export async function runOfficialParcelGis(
   const arcgisSeeds: ArcgisSeed[] = fingerprints
     .filter((entry) => entry.fingerprint.recommendedAdapter === 'arcgis')
     .map((entry) => ({ url: entry.seed.url, label: entry.seed.label }));
+
+  // All optional source gathering is complete. From here on, exhausted checks
+  // must use the real run ceiling rather than the reserved pre-query ceiling.
+  beginQueryPhase();
 
   // Held in a box rather than a bare `let` so the closure below can update it
   // without confusing narrowing at the read sites further down.
@@ -566,6 +707,30 @@ export async function runOfficialParcelGis(
       }
     } else {
       attempts.push({ url: seed.url, family: inspection.refinedFingerprint.family, outcome: inspection.blocked ? 'source_blocked' : 'no_structured_service' });
+    }
+  }
+
+  // 4. DISCOVERED county parcel services, after every configured or statewide
+  //    seed answered not_found. Discovery is run here when it has not run yet
+  //    (a known statewide seed suppresses the earlier pass), and any official
+  //    ArcGIS parcel service it selects that the ladder has not tried joins the
+  //    SAME ArcGIS query ladder: same clauses, logging, centroid and lineage.
+  if (!best.value || !isUsable(best.value.result)) {
+    if (!discovery && deps.allowDiscovery !== false && !ladder.exhausted()) {
+      discovery = await runDiscovery();
+    }
+    const discoveredSeeds = discoveredArcgisSeeds(discovery, seeds);
+    if (discoveredSeeds.length && !ladder.exhausted()) {
+      for (const seed of discoveredSeeds) pushSeed(seeds, { ...seed, origin: 'discovered_official_source', priority: 0.5 });
+      const fingerprint = fingerprintPlatform({ url: discoveredSeeds[0].url });
+      logger.info({ event: 'official_parcel_gis_discovered_seeds', urls: discoveredSeeds.map((seed) => seed.url) }, 'official_parcel_gis_discovered_seeds');
+      const result = await runArcgisAdapter(
+        { seeds: discoveredSeeds, search: subject, fingerprint, sourceJurisdiction: subject.county ?? null },
+        { ...arcgisDeps, now },
+      );
+      if (consider(result, fingerprint, discoveredSeeds[0].url)) {
+        return finish(subject, result, fingerprint, ladder, seeds, attempts, now, discovery, access);
+      }
     }
   }
 

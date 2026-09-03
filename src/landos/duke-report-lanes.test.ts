@@ -98,14 +98,14 @@ describe('LandWatch over-50-acre gate', () => {
   it('blocked when parcel unverified', () => {
     expect(laneOf(buildDukeReportLanes(baseInput({ acres: 100 })), 'landwatch').status).toBe('blocked');
   });
-  it('skipped when verified acreage is 50 or less', () => {
-    const r = buildDukeReportLanes(baseInput({ landPortal: { status: 'success', verified: true }, acres: LANDWATCH_MIN_ACRES }));
+  it('skipped when verified acreage is under the 20-acre threshold', () => {
+    const r = buildDukeReportLanes(baseInput({ landPortal: { status: 'success', verified: true }, acres: LANDWATCH_MIN_ACRES - 0.1 }));
     const lw = laneOf(r, 'landwatch');
     expect(lw.status).toBe('skipped');
     expect(lw.blockingReason).toMatch(/threshold not met/i);
   });
-  it('eligible (not skipped/blocked) when verified acreage is over 50', () => {
-    const r = buildDukeReportLanes(baseInput({ landPortal: { status: 'success', verified: true }, acres: 51 }));
+  it('eligible (not skipped/blocked) when verified acreage is 20 or more', () => {
+    const r = buildDukeReportLanes(baseInput({ landPortal: { status: 'success', verified: true }, acres: LANDWATCH_MIN_ACRES }));
     expect(['not_available', 'success']).toContain(laneOf(r, 'landwatch').status);
   });
 });

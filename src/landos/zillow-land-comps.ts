@@ -10,12 +10,21 @@
 // The launcher/connector are injectable (tests pass fakes → no browser launch).
 // The URL builder + normalizer are PURE and unit-tested without a browser.
 
+import { openRemoteBrowserSession, remoteBrowserConfigured } from './remote-browser.js';
+import {
+  discoverMarketplaceRecords,
+  marketplaceDiscoveryQueries,
+  parseIndexedRecordFacts,
+  MANUFACTURED_LABEL,
+  type IndexedMarketplaceRecord,
+} from './marketplace-indexed-discovery.js';
+import type { IdentitySearchProvider } from './hermes-free-search.js';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { spawn as nodeSpawn } from 'child_process';
 import { readSessionConfig } from './browser-session.js';
-import { automationBrowserConfig, openDisposableContextHandle } from './automation-browser.js';
+import { automationBrowserConfig, openDisposableContextHandle, openPersistentContextHandle } from './automation-browser.js';
 import { parseZillowStructured, parseListingStatus, zillowListResults, type CompStatus } from './comp-extraction.js';
 import { addressStateCode } from './comp-registry.js';
 import { reconcileCompAddress } from './comp-location-reconciliation.js';
@@ -44,6 +53,12 @@ export interface ZillowLandComp {
   homeType?: string | null;
   yearBuilt?: number | null;
   homeSizeSqft?: number | null;
+  /** `page` when read off an opened Zillow page (board or property record);
+   *  `indexed_search` when the local transport was challenged and the facts
+   *  came from the open-web index entry that points at this Zillow record. */
+  lineage?: 'page' | 'indexed_search';
+  /** Listing remarks when the property record exposed them. */
+  description?: string | null;
 }
 
 export interface ZillowCompsResult {
@@ -96,6 +111,9 @@ export interface ZillowFetchInput {
    * set, the search also includes improved (house) results so large-acreage
    * improved sales are discovered; classification decides their role later. */
   lotMinAcres?: number | null;
+  /** Nearby street or subdivision names already retained for the subject; they
+   *  aim the indexed-search fallback the way an operator would type it. */
+  localities?: string[];
 }
 
 export interface RawZillowListing {
@@ -320,10 +338,114 @@ export interface ZillowFetchDeps {
   force?: boolean;
   /** Deterministic clock for sale-window screening in tests. */
   nowMs?: number;
+  /**
+   * Anti-bot hand-off. When Zillow serves a "Press & Hold" check, the lane does
+   * NOT complete it. It calls this hook once, which by default brings the
+   * managed LandOS browser window on-screen, notifies the operator, and waits
+   * for a human to clear the check on that same session. Resolves true when
+   * the page is no longer blocked, and the route is then re-read once.
+   */
+  onChallenge?: (ctx: ZillowChallengeContext) => Promise<boolean>;
+  /** How long the default hand-off waits for a human (default 3 minutes). */
+  challengeWaitMs?: number;
+  /**
+   * A shared, already-open Zillow session. When supplied, the fetch reads on
+   * it and never closes it, so the sold, active and manufactured boards run
+   * on one browser identity and one operator verification carries across them.
+   */
+  session?: ZillowBrowserLike;
+  /** The indexed-search transport used when the local route is challenged.
+   *  Defaults to the governed keyless search; tests inject a fake. */
+  indexedSearch?: IdentitySearchProvider;
+  /** Test seam: skip the indexed fallback entirely. */
+  disableIndexedFallback?: boolean;
+  /** How many discovered Zillow property records the fallback opens on the
+   *  session (default 6). Each is opened once; a challenged record keeps its
+   *  indexed facts and is never retried. */
+  maxIndexedRecordsToOpen?: number;
+}
+
+/** Per-session memory of a challenge: once Zillow has challenged this
+ *  session, the remaining boards skip the board request (which would only be
+ *  challenged again) and go straight to the indexed transport. */
+const SESSION_CHALLENGE = new WeakMap<object, { cleared: boolean; failedAtMs: number | null }>();
+/** The persistent profile is one identity across sessions too: remember a
+ *  challenge briefly so a parallel lane does not re-request a challenged board. */
+let lastUnclearedChallengeAtMs: number | null = null;
+const UNCLEARED_CHALLENGE_MEMORY_MS = 10 * 60 * 1000;
+
+/**
+ * Open the ONE persistent Zillow session. When a remote browser provider is
+ * configured (see remote-browser.ts) the session is the provider's persistent
+ * context, reached over CDP; otherwise it is the managed LandOS profile. The
+ * caller runs every Zillow board on it, then closes it.
+ */
+export async function openZillowSession(deps: { env?: NodeJS.ProcessEnv } = {}): Promise<ZillowBrowserLike | null> {
+  try {
+    if (remoteBrowserConfigured(deps.env ?? process.env)) {
+      const handle = await openRemoteBrowserSession('zillow', { env: deps.env });
+      return { newPage: () => handle.newPage() as unknown as Promise<ZillowPageLike>, close: () => handle.close() };
+    }
+    return await openPersistentContextHandle('zillow') as unknown as ZillowBrowserLike;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The shared Zillow session for concurrent lanes: the first caller opens it,
+ * later callers reuse it, the last release closes it. Work on the shared
+ * session is SERIALIZED so the sold, active and manufactured boards run one
+ * after another on one identity even when their lanes start together.
+ */
+const shared: { session: ZillowBrowserLike | null; refs: number; queue: Promise<unknown>; opener: Promise<ZillowBrowserLike | null> | null } = {
+  session: null, refs: 0, queue: Promise.resolve(), opener: null,
+};
+
+export async function withSharedZillowSession<T>(
+  work: (session: ZillowBrowserLike | null) => Promise<T>,
+  deps: { open?: () => Promise<ZillowBrowserLike | null> } = {},
+): Promise<T> {
+  shared.refs += 1;
+  try {
+    if (!shared.session) {
+      shared.opener = shared.opener ?? (deps.open ?? openZillowSession)();
+      shared.session = await shared.opener;
+      shared.opener = null;
+    }
+    const session = shared.session;
+    const run = shared.queue.then(() => work(session));
+    shared.queue = run.catch(() => undefined);
+    return await run;
+  } finally {
+    shared.refs -= 1;
+    if (shared.refs === 0 && shared.session) {
+      const closing = shared.session;
+      shared.session = null;
+      try { await closing.close(); } catch { /* best-effort */ }
+    }
+  }
+}
+
+/** Test seam: forget the profile-level challenge memory. */
+export function resetZillowChallengeMemory(): void {
+  lastUnclearedChallengeAtMs = null;
+}
+
+export interface ZillowChallengeContext {
+  page: ZillowPageLike;
+  routeLabel: string;
+  url: string;
+  board: 'sold' | 'active';
+  propertyType: 'land' | 'manufactured';
+  waitMs: number;
 }
 
 export interface ZillowPageLike {
   setViewport?(v: { width: number; height: number }): Promise<void>;
+  /** Optional window controls used only by the anti-bot hand-off. */
+  bringToFront?(): Promise<void>;
+  createCDPSession?(): Promise<{ send(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> }>;
   goto(url: string, opts?: { waitUntil?: string; timeout?: number }): Promise<unknown>;
   evaluate<T>(fn: (() => T) | string, ...args: unknown[]): Promise<T>;
 }
@@ -331,16 +453,171 @@ export interface ZillowBrowserLike { newPage(): Promise<ZillowPageLike>; close()
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** A disposable incognito context inside the owned automation browser. Returns
- *  null (never a fallback browser) when LandOS cannot prove it owns one. */
-async function defaultConnect(_browserURL: string): Promise<ZillowBrowserLike | null> {
-  try {
-    // The handle is a real puppeteer context+page behind a narrower structural
-    // type; the cast is the type boundary, not a behavioural one.
-    return await openDisposableContextHandle('zillow') as unknown as ZillowBrowserLike;
-  } catch {
-    return null;
+// There is deliberately NO default challenge hand-off any more: no operator
+// notification, no window surfacing, no wait. A challenged local transport is
+// recorded and the lane continues through the indexed transport below. The
+// `onChallenge` hook remains only for an explicitly injected supervised caller.
+
+/** In-page read of ONE Zillow property record (runs inside Chrome). Text
+ *  only: the page's own headline facts, the sale/price-history lines, and the
+ *  record's published coordinates. Nothing is inferred. */
+const READ_ZILLOW_RECORD = (): { blocked: boolean; title: string; text: string; lat: number | null; lng: number | null; remarks: string | null } => {
+  const d = document as any;
+  const title = String(d.title ?? '');
+  const body = String(d.body?.innerText ?? '');
+  const html = String(d.documentElement?.outerHTML ?? '');
+  const blocked = /press and hold|press & hold|are you a human|captcha|verify you are|unusual traffic|pardon our interruption|access to this page has been denied|access denied/i.test(`${title} ${body.slice(0, 4000)}`);
+  const lat = html.match(/"latitude":\s*(-?\d{1,3}\.\d+)/)?.[1];
+  const lng = html.match(/"longitude":\s*(-?\d{1,3}\.\d+)/)?.[1];
+  const remarksEl = d.querySelector('[data-testid="description"], [class*="Description" i] p, [class*="description" i]');
+  return {
+    blocked, title, text: body.slice(0, 20000),
+    lat: lat ? Number(lat) : null, lng: lng ? Number(lng) : null,
+    remarks: remarksEl ? String(remarksEl.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 1200) || null : null,
+  };
+};
+
+/** PURE. Facts a Zillow property-record page states in its own words. */
+export function parseZillowRecordText(input: { title: string; text: string }): {
+  address: string | null; price: number | null; status: CompStatus; soldDate: string | null; acres: number | null;
+  beds: number | null; baths: number | null; homeSizeSqft: number | null; yearBuilt: number | null; homeType: string | null;
+} {
+  const text = input.text.replace(/\r/g, '');
+  const address = input.title.match(/^\s*(.+?,\s*[A-Za-z .'-]+,\s*[A-Z]{2}\s*\d{5})/)?.[1]?.replace(/\s+/g, ' ').trim() ?? null;
+  const num = (value: string | undefined): number | null => {
+    if (!value) return null;
+    const parsed = Number(value.replace(/,/g, ''));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  const price = num(text.match(/\$\s?([\d,]{5,})/)?.[1]);
+  // Sale history rows read "M/D/YYYY … Sold … $price"; the headline "Closed"
+  // or "Sold" badge alone establishes the closed status.
+  const soldRow = text.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s*\n?\s*(?:Sold|Closed)\b/i) ?? text.match(/\b(?:Sold|Closed)(?:\s+on)?\s+(\d{1,2}\/\d{1,2}\/\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})/i);
+  const headline = text.slice(0, 1500);
+  const status: CompStatus = /\b(?:Closed|Sold|Recently sold)\b/i.test(headline) || soldRow ? 'sold'
+    : /\bFor sale\b|\bActive\b|\bPending\b|\bNew construction\b/i.test(headline) ? 'active' : 'unknown';
+  const soldStamp = soldRow ? Date.parse(soldRow[1]) : NaN;
+  const acresMatch = text.match(/([\d.,]+)\s*Acres?\s*Lot\b/i) ?? text.match(/Lot size[:\s]+([\d.,]+)\s*Acres?/i);
+  const lotSqft = !acresMatch ? text.match(/([\d,]{4,})\s*sqft\s*lot\b/i) : null;
+  const beds = num(text.match(/(\d{1,2})\s*\n?\s*beds?\b/i)?.[1]);
+  const baths = num(text.match(/(\d{1,2}(?:\.\d)?)\s*\n?\s*baths?\b/i)?.[1]);
+  const homeSizeSqft = num(text.match(/([\d,]{3,})\s*\n?\s*sqft\b(?!\s*lot)/i)?.[1]);
+  const yearBuilt = num(text.match(/Built in\s+((?:18|19|20)\d{2})/i)?.[1]);
+  const homeType = headline.match(MANUFACTURED_LABEL)?.[0] ?? (/\bLot\s*\/\s*Land\b|\bVacant land\b/i.test(headline) ? 'Lot / Land' : beds || baths ? 'residential' : null);
+  return {
+    address, price, status,
+    soldDate: Number.isFinite(soldStamp) ? new Date(soldStamp).toISOString().slice(0, 10) : null,
+    acres: num(acresMatch?.[1]) ?? (lotSqft ? Math.round(((num(lotSqft[1]) ?? 0) / 43_560) * 100) / 100 || null : null),
+    beds, baths, homeSizeSqft, yearBuilt, homeType,
+  };
+}
+
+/** Indexed record → lane row, using the index's facts. */
+function indexedRecordToZillowComp(record: IndexedMarketplaceRecord): ZillowLandComp | null {
+  if (!record.address || record.price == null) return null;
+  return {
+    address: record.address, price: record.price, acres: record.acres,
+    pricePerAcre: record.acres ? Math.round(record.price / record.acres) : null,
+    status: record.status, url: record.url, source: 'Zillow', soldDate: record.soldDate,
+    homeType: record.homeType === 'manufactured' ? (record.snippet.match(MANUFACTURED_LABEL)?.[0] ?? 'Mobile / Manufactured') : record.homeType === 'land' ? 'Lot / Land' : record.homeType,
+    yearBuilt: record.yearBuilt, homeSizeSqft: record.homeSizeSqft,
+    lineage: 'indexed_search', description: `${record.title} — ${record.snippet}`.slice(0, 600),
+  };
+}
+
+/**
+ * The next approved transport once the local Zillow board is challenged:
+ * discover Zillow's own property records through the governed indexed search,
+ * then open each record ONCE on the same session. A record page that opens
+ * supersedes the index facts (and adds coordinates and remarks); a record page
+ * that is challenged keeps its indexed facts, marked as such. No retry, no wait.
+ */
+async function zillowIndexedFallback(
+  input: ZillowFetchInput,
+  page: ZillowPageLike | null,
+  deps: ZillowFetchDeps,
+  routeOutcomes: CompLaneRouteOutcome[],
+  settleMs: number,
+  timeoutMs: number,
+): Promise<{ comps: ZillowLandComp[]; note: string; searchRan: boolean; recordsFound: number }> {
+  const manufactured = input.propertyType === 'manufactured';
+  const queries = marketplaceDiscoveryQueries({
+    marketplace: 'zillow', board: input.mode === 'sold' ? 'sold' : 'active', propertyType: manufactured ? 'manufactured' : 'land',
+    address: input.address, city: input.city, state: input.state, zip: input.zip, county: input.county, localities: input.localities,
+  });
+  if (!queries.length) return { comps: [], note: 'No plain-English locality was available for an indexed Zillow search.', searchRan: false, recordsFound: 0 };
+  const discovered = await discoverMarketplaceRecords('zillow', queries, { search: deps.indexedSearch });
+  const expectedState = (input.state ?? '').trim().toUpperCase();
+  const wanted = discovered.records.filter((record) => {
+    if (manufactured) return record.homeType === 'manufactured' || record.homeType == null;
+    return record.homeType !== 'manufactured' && record.homeType !== 'residential';
+  });
+  const comps: ZillowLandComp[] = [];
+  let opened = 0;
+  let openedBlocked = 0;
+  const maxOpen = deps.maxIndexedRecordsToOpen ?? 6;
+  for (const record of wanted) {
+    let comp = indexedRecordToZillowComp(record);
+    if (page && opened < maxOpen) {
+      opened += 1;
+      try {
+        await page.goto(record.url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+        await sleep(settleMs);
+        const read = await page.evaluate<ReturnType<typeof READ_ZILLOW_RECORD>>(READ_ZILLOW_RECORD as unknown as () => ReturnType<typeof READ_ZILLOW_RECORD>);
+        if (read.blocked) {
+          openedBlocked += 1;
+        } else {
+          const facts = parseZillowRecordText(read);
+          const address = facts.address ?? record.address;
+          const price = facts.price ?? record.price;
+          if (address && price != null) {
+            comp = {
+              address, price, acres: facts.acres ?? record.acres,
+              pricePerAcre: (facts.acres ?? record.acres) ? Math.round(price / ((facts.acres ?? record.acres) as number)) : null,
+              status: facts.status !== 'unknown' ? facts.status : record.status,
+              url: record.url, source: 'Zillow',
+              soldDate: facts.soldDate ?? record.soldDate,
+              lat: read.lat, lng: read.lng,
+              homeType: facts.homeType ?? (record.homeType === 'manufactured' ? 'Mobile / Manufactured' : record.homeType),
+              yearBuilt: facts.yearBuilt ?? record.yearBuilt, homeSizeSqft: facts.homeSizeSqft ?? record.homeSizeSqft,
+              lineage: 'page', description: read.remarks ?? comp?.description ?? null,
+            };
+          }
+        }
+      } catch { /* the record keeps its indexed facts */ }
+    }
+    if (!comp) continue;
+    if (expectedState && addressStateCode(comp.address) !== expectedState) continue;
+    if (input.mode === 'sold' && comp.status !== 'sold') continue;
+    if (input.mode === 'active' && comp.status === 'sold') continue;
+    if (manufactured && !MANUFACTURED_LABEL.test(comp.homeType ?? '')) continue;
+    if (!manufactured && MANUFACTURED_LABEL.test(comp.homeType ?? '')) continue;
+    comps.push(comp);
   }
+  routeOutcomes.push({
+    label: 'indexed search', url: queries[0], reached: discovered.queriesRun > 0, blocked: false,
+    cardsFound: discovered.records.length, marketVerified: comps.length > 0, qualifying: comps.length,
+    outcome: discovered.queriesRun === 0
+      ? 'The governed keyless search transport was unavailable, so no indexed Zillow record could be discovered.'
+      : `Indexed search ran ${discovered.queriesRun} plain-English quer${discovered.queriesRun === 1 ? 'y' : 'ies'}, saw ${discovered.hitsSeen} result(s), found ${discovered.records.length} Zillow property record(s); ${opened} opened on the session (${openedBlocked} challenged, kept at index facts) and ${comps.length} ${input.mode === 'sold' ? 'sold' : 'active'} ${manufactured ? 'manufactured-home' : 'land'} record(s) kept.`,
+  });
+  const pageRead = comps.filter((comp) => comp.lineage === 'page').length;
+  return {
+    comps, searchRan: discovered.queriesRun > 0, recordsFound: discovered.records.length,
+    note: comps.length
+      ? `Zillow's board was challenged, so ${comps.length} record(s) were discovered through the indexed-search transport (${pageRead} read off the Zillow record page, ${comps.length - pageRead} at index facts); each links to the actual Zillow property record.`
+      : discovered.queriesRun === 0
+        ? 'Zillow\'s board was challenged and the indexed-search transport was unavailable.'
+        : `Zillow's board was challenged; indexed search found ${discovered.records.length} Zillow record(s) but none stated a ${input.mode === 'sold' ? 'sold' : 'active'} ${manufactured ? 'manufactured-home' : 'land'} result with a price.`,
+  };
+}
+
+/** The persistent Zillow session (remote provider when configured, else the
+ *  managed LandOS profile). A per-route incognito context presented a brand-new
+ *  identity to Zillow on every board and was challenged every time. Returns
+ *  null (never a fallback browser) when no session can be opened. */
+async function defaultConnect(_browserURL: string): Promise<ZillowBrowserLike | null> {
+  return openZillowSession();
 }
 
 // In-page (runs INSIDE disposable Chrome). Broad selectors + text parsing because
@@ -540,15 +817,33 @@ export async function fetchZillowLandComps(rawInput: ZillowFetchInput, deps: Zil
   const timeoutMs = deps.timeoutMs ?? 30000;
 
   let browser: ZillowBrowserLike | null = null;
+  const ownsSession = !deps.session;
   try {
-    browser = await connect(automationBrowserConfig().endpoint);
+    browser = deps.session ?? await connect(automationBrowserConfig().endpoint);
     if (!browser) return finish({ status: 'error', comps: [], note: 'The LandOS automation browser is not available for Zillow.', routeTried: url });
-
+    const sessionState = SESSION_CHALLENGE.get(browser as object) ?? { cleared: false, failedAtMs: null };
+    SESSION_CHALLENGE.set(browser as object, sessionState);
+    // Profile-level memory applies to the real managed profile only; injected
+    // test sessions carry their own per-session state.
+    const profileRecentlyUncleared = !deps.force && lastUnclearedChallengeAtMs != null && Date.now() - lastUnclearedChallengeAtMs < UNCLEARED_CHALLENGE_MEMORY_MS;
     const settleMs = deps.settleMs ?? 6000;
     const scrollSettleMs = deps.scrollSettleMs ?? 800;
     const page = await browser.newPage();
     try { await page.setViewport?.({ width: 1400, height: 950 }); } catch { /* best-effort */ }
+    if (sessionState.failedAtMs != null || (profileRecentlyUncleared && !sessionState.cleared)) {
+      // Zillow already challenged this session: re-requesting the board would
+      // only be challenged again (a retry loop), so this board goes straight to
+      // the next approved transport. No verification is requested or awaited.
+      const skippedNote = `Zillow served an anti-bot check earlier on this session, so the ${input.mode === 'sold' ? 'sold' : 'active'} ${manufacturedSearch ? 'manufactured-home' : 'land'} board was not re-requested (no verification was requested or waited for).`;
+      routeOutcomes.push({ label: routes[0]?.label ?? 'board', url, reached: false, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: skippedNote });
+      if (deps.disableIndexedFallback) return finish({ status: 'blocked', comps: [], note: skippedNote, routeTried: url });
+      const fallback = await zillowIndexedFallback(input, page, deps, routeOutcomes, settleMs, timeoutMs);
+      proof.routesAttempted.push(`indexed search: ${fallback.recordsFound} Zillow record(s) discovered`);
+      if (manufacturedSearch) { proof.candidatesReviewed += fallback.recordsFound; proof.qualifyingResults += fallback.comps.length; }
+      return finish({ status: fallback.comps.length ? 'retrieved' : 'blocked', comps: fallback.comps, note: `${skippedNote} ${fallback.note}`, routeTried: url });
+    }
     const failedGeographies: string[] = [];
+    let challengeHandled = false;
     let lastRoute = url;
     for (const route of routes) {
       let activeUrl = route.url;
@@ -571,13 +866,50 @@ export async function fetchZillowLandComps(rawInput: ZillowFetchInput, deps: Zil
       }
       lastRoute = activeUrl;
       proof.routesAttempted.push(`${route.label}: ${activeUrl}`);
-      for (let i = 0; i < 8; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
-      const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
-      const read = await page.evaluate<RawZillowRead>(EXTRACT_ZILLOW as unknown as () => RawZillowRead);
-      const raw = read?.listings ?? [];
+      const readRoute = async () => {
+        for (let i = 0; i < 8; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
+        const isBlocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
+        const pageRead = await page.evaluate<RawZillowRead>(EXTRACT_ZILLOW as unknown as () => RawZillowRead);
+        return { blocked: isBlocked, read: pageRead, raw: pageRead?.listings ?? [] };
+      };
+      let { blocked, read, raw } = await readRoute();
+      if (blocked && raw.length === 0 && !read?.nextData && !challengeHandled) {
+        // One hand-off per SESSION: a human clears the check on this profile,
+        // then the same route is re-read once and the remaining boards reuse
+        // the cleared state. Never scripted, never repeated.
+        challengeHandled = true;
+        const state = SESSION_CHALLENGE.get(browser as object)!;
+        // Normal workflow: no operator interaction, no notification, no wait.
+        // A challenged page is recorded as blocked at once. The hand-off hook
+        // exists only for an explicitly injected caller (tests, a future
+        // supervised mode) and is never the default.
+        const handoff = deps.onChallenge ?? (async () => false);
+        const cleared = await handoff({
+          page, routeLabel: route.label, url: activeUrl,
+          board: input.mode === 'sold' ? 'sold' : 'active',
+          propertyType: manufacturedSearch ? 'manufactured' : 'land',
+          waitMs: deps.challengeWaitMs ?? 3 * 60 * 1000,
+        }).catch(() => false);
+        if (cleared) { state.cleared = true; lastUnclearedChallengeAtMs = null; } else { state.failedAtMs = Date.now(); lastUnclearedChallengeAtMs = Date.now(); }
+        if (cleared) {
+          routeOutcomes.push({ label: route.label, url: activeUrl, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: 'Zillow served an anti-bot check; the operator cleared it on this session and the route was re-read.' });
+          await page.goto(activeUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+          await sleep(settleMs);
+          ({ blocked, read, raw } = await readRoute());
+        }
+      }
       if (blocked && raw.length === 0 && !read?.nextData) {
-        routeOutcomes.push({ label: route.label, url: activeUrl, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: `Zillow served an anti-bot check on the ${route.label} route (no public listings returned).` });
-        return finish({ status: 'blocked', comps: [], note: `Zillow served an anti-bot check on the ${route.label} route (no public listings returned).`, routeTried: activeUrl });
+        // The local board transport was challenged. That is a transport
+        // outcome, never "Zillow has no records": record it and continue at
+        // once through the indexed transport. No retry, no wait, no operator.
+        const blockedNote = `Zillow served an anti-bot check on the ${route.label} route (no public listings returned).`;
+        routeOutcomes.push({ label: route.label, url: activeUrl, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: blockedNote });
+        if (deps.disableIndexedFallback) return finish({ status: 'blocked', comps: [], note: blockedNote, routeTried: activeUrl });
+        const fallback = await zillowIndexedFallback(input, page, deps, routeOutcomes, settleMs, timeoutMs);
+        proof.routesAttempted.push(`indexed search: ${fallback.recordsFound} Zillow record(s) discovered`);
+        if (manufacturedSearch) { proof.candidatesReviewed += fallback.recordsFound; proof.qualifyingResults += fallback.comps.length; }
+        counts.normalized = Math.max(counts.normalized, fallback.comps.length);
+        return finish({ status: fallback.comps.length ? 'retrieved' : 'blocked', comps: fallback.comps, note: `${blockedNote} ${fallback.note}`, routeTried: activeUrl });
       }
       const pageGeo = await page.evaluate<{ url: string; text: string }>(READ_PAGE_GEOGRAPHY as unknown as () => { url: string; text: string }).catch(() => ({ url: activeUrl, text: '' }));
       const verifiedGeo = verifyZillowResolvedGeography(input, route, pageGeo, raw);
@@ -676,6 +1008,6 @@ export async function fetchZillowLandComps(rawInput: ZillowFetchInput, deps: Zil
   } finally {
     // Disposes the incognito context and every page it handed out — on success,
     // error, timeout and early return alike. Never closes the owned browser.
-    try { if (browser) await browser.close(); } catch { /* ignore */ }
+    try { if (browser) if (ownsSession) await browser.close(); } catch { /* ignore */ }
   }
 }

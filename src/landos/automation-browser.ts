@@ -623,6 +623,35 @@ export async function openDisposableContextHandle(
 // Orphan reaping
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * A PERSISTENT handle on the managed LandOS browser's own profile (its default
+ * context, backed by the LandOS user-data directory; never the operator's
+ * personal Chrome). Cookies, storage and any verification the operator cleared
+ * survive between pages, lanes and runs. `close()` closes only the pages this
+ * handle opened and drops the connection; the browser and its profile stay.
+ * Used narrowly by research lanes that a per-route incognito context keeps
+ * tripping (Zillow). Nothing here reads or exports profile data.
+ */
+export async function openPersistentContextHandle(
+  label: string,
+  deps: { browser?: AutomationBrowser; config?: AutomationBrowserConfig } = {},
+): Promise<DisposableContextHandle> {
+  const browser = deps.browser ?? await connectAutomationBrowser({ config: deps.config });
+  const pages: AutomationPage[] = [];
+  logger.info({ label }, 'automation_browser_persistent_context');
+  return {
+    async newPage(): Promise<AutomationPage> {
+      const page = await browser.newPage();
+      pages.push(page);
+      return page;
+    },
+    async close(): Promise<void> {
+      for (const page of pages) await closeQuietly(page);
+      if (!deps.browser) { try { await browser.disconnect?.(); } catch { /* ignore */ } }
+    },
+  };
+}
+
 /** A page target in the automation browser. */
 export interface AutomationTarget { id: string; type: string; url: string; title: string }
 
