@@ -7,6 +7,7 @@ import {
   BrowserQaBlocked,
   acquireBrowserForQa,
   runBrowserQa,
+  scrubSecretsFromText,
   waitForLandosHealth,
   type BrowserQaPuppeteerPage,
   type BrowserQaScenario,
@@ -223,5 +224,21 @@ describe('LandOS canonical browser QA infrastructure', () => {
     expect(report.outcome).toBe('PASS');
     expect(report.issues).toHaveLength(3);
     expect(report.issues.every((issue) => issue.severity === 'warning')).toBe(true);
+  });
+});
+
+describe('QA artifacts never persist a dashboard token', () => {
+  it('redacts token/key/code query values wherever they appear, leaving the rest intact', () => {
+    expect(scrubSecretsFromText('GET http://localhost:3141/api/landos/deal-cards/90?token=abc123secret&deal=90'))
+      .toBe('GET http://localhost:3141/api/landos/deal-cards/90?token=[redacted]&deal=90');
+    // JSON-escaped ampersand form, and the credential parameter aliases.
+    expect(scrubSecretsFromText('"url":"http://x/y?deal=1\u0026key=SECRETVAL\u0026page=overview"'))
+      .toBe('"url":"http://x/y?deal=1\u0026key=[redacted]\u0026page=overview"');
+    expect(scrubSecretsFromText('?apiKey=AAA&access_token=BBB&password=CCC'))
+      .toBe('?apiKey=[redacted]&access_token=[redacted]&password=[redacted]');
+    // A React key prop or a bare "key=?" placeholder is not a credential.
+    expect(scrubSecretsFromText('key={row.id} and SELECT ... WHERE key=?')).toBe('key={row.id} and SELECT ... WHERE key=?');
+    // Nothing to redact leaves the string unchanged.
+    expect(scrubSecretsFromText('deal=90&page=overview')).toBe('deal=90&page=overview');
   });
 });

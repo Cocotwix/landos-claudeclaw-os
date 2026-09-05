@@ -168,6 +168,18 @@ function redactUrl(value: string): string {
   }
 }
 
+/**
+ * Strip every credential-bearing query value from a string, whatever produced
+ * it. Applied to the whole serialized report before it is written, so no QA
+ * report, markdown, or embedded URL can ever persist a dashboard token — the
+ * value is replaced by `[redacted]`, never printed. Covers the dashboard
+ * `token` and the common credential parameter names.
+ */
+const SECRET_QUERY_PARAM = /((?:[?&]|\\u0026|&amp;)(?:token|key|code|api[_-]?key|apikey|password|secret|access[_-]?token)=)[^&\s"'\\]+/gi;
+export function scrubSecretsFromText(value: string): string {
+  return value.replace(SECRET_QUERY_PARAM, '$1[redacted]');
+}
+
 function localUrl(baseUrl: string, route: string, token: string, runId: string): string {
   const base = new URL(baseUrl);
   const url = new URL(route, base);
@@ -197,7 +209,7 @@ function renderReport(report: BrowserQaReport): string {
     '',
     '## Browser diagnostics',
     ...(report.issues.length
-      ? report.issues.map((issue) => `- ${issue.severity.toUpperCase()} ${issue.kind}: ${issue.message}${issue.status ? ` (HTTP ${issue.status})` : ''}${issue.url ? ` — ${issue.url}` : ''}`)
+      ? report.issues.map((issue) => `- ${issue.severity.toUpperCase()} ${issue.kind}: ${issue.message}${issue.status ? ` (HTTP ${issue.status})` : ''}${issue.url ? ` — ${redactUrl(issue.url)}` : ''}`)
       : ['- No console errors, page errors, failed requests, or relevant HTTP failures.']),
     '',
     '## Cleanup',
@@ -212,8 +224,12 @@ function writeReport(report: BrowserQaReport): void {
   fs.mkdirSync(report.artifactDir, { recursive: true });
   report.reportJsonPath = path.join(report.artifactDir, 'report.json');
   report.reportMarkdownPath = path.join(report.artifactDir, 'report.md');
-  fs.writeFileSync(report.reportJsonPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  fs.writeFileSync(report.reportMarkdownPath, renderReport(report), 'utf8');
+  // Every artifact is scrubbed of credential query values before it touches
+  // disk, whatever produced the string (a step detail, a diagnostic URL, a
+  // navigation echo). Screenshots are page-content captures with no address
+  // bar, so they carry no token; the text artifacts are the only vector.
+  fs.writeFileSync(report.reportJsonPath, scrubSecretsFromText(`${JSON.stringify(report, null, 2)}\n`), 'utf8');
+  fs.writeFileSync(report.reportMarkdownPath, scrubSecretsFromText(renderReport(report)), 'utf8');
 }
 
 /**
@@ -395,12 +411,23 @@ export async function runBrowserQa(options: RunBrowserQaOptions): Promise<Browse
 
     // Every same-origin request that is not a GET, so a page load or hard
     // refresh can be proven write-free rather than assumed so.
+    //
+    // The harness's OWN browser-pairing handshake is excluded. It is how this
+    // QA session authenticates itself, it writes no business state, and
+    // counting it made the assertion fail on every run regardless of what the
+    // application did — which is worse than useless: a check that is always red
+    // proves nothing and trains the reader to ignore it. Application writes are
+    // still caught in full.
+    const HARNESS_AUTH = /^\/api\/dashboard\/browser-pairings(\/claim)?$/;
     const writes: Array<{ method: string; url: string }> = [];
     page.on('request', (request) => {
       try {
         const method = String(request.method?.() ?? 'GET').toUpperCase();
         const url = request.url();
-        if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && isSameOrigin(url, baseUrl)) writes.push({ method, url: redactUrl(url) });
+        if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return;
+        if (!isSameOrigin(url, baseUrl)) return;
+        if (HARNESS_AUTH.test(new URL(url).pathname)) return;
+        writes.push({ method, url: redactUrl(url) });
       } catch { /* diagnostics only */ }
     });
     const currentLocation = () => qaPage.evaluate<string>(() => `${(globalThis as any).location.pathname}${(globalThis as any).location.search}`);

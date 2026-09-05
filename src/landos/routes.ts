@@ -4,7 +4,7 @@
 // existing token auth middleware, before the SPA catch-all. Everything here
 // is repo-safe metadata and counts: no secrets, no LP tokens, no paid calls.
 
-import type { Hono } from 'hono';
+import type { Hono, MiddlewareHandler } from 'hono';
 
 import { logger } from '../logger.js';
 import { generateContent, generateVisionContent, parseJsonResponse } from '../gemini.js';
@@ -219,7 +219,7 @@ import {
   finishRunProgress,
   startRunProgress,
 } from './intelligence-run-progress.js';
-import { IntelligenceStackRunStore } from './intelligence-stack-run-store.js';
+import { IntelligenceStackRunStore, processOwnsIntelligenceRuns } from './intelligence-stack-run-store.js';
 import { runMarketPrerequisiteWork } from './market-prerequisite-scheduler.js';
 import { readIntelligenceStackState, runIntelligenceStack } from './intelligence-stack.js';
 import {
@@ -592,6 +592,8 @@ import {
 } from './exact-address-web-discovery.js';
 import { loadSubjectListingDetail, reprojectSubjectListingDetail } from './subject-listing-store.js';
 import { resolveCanonicalIdentity, supersessionLabel } from './canonical-identity.js';
+import { resolveDealCardForSubject } from './canonical-deal-resolution.js';
+import { resolveDealFamily } from './canonical-deal-family.js';
 import { canonicalSubjectProjection, isCurrentForSubject, resolveCanonicalSubjectState, unmetPrerequisites } from './canonical-subject-state.js';
 import { readSubjectUnderstanding, runSubjectUnderstanding } from './subject-understanding-capability.js';
 import {
@@ -1866,6 +1868,31 @@ export function liveCompsReadinessStatus(preflight: LiveDataPreflight): LiveComp
 }
 
 export function registerLandosRoutes(app: Hono): void {
+  // ARCHIVED ALIAS GUARD. A Deal Card canonicalized onto another card keeps its
+  // full history and stays readable, but it must never carry a second active
+  // lifecycle: no new research, no edits, no valuation, no decisions. Allowing
+  // them would recreate the rival opportunity canonicalization just removed.
+  //
+  // Registered here, before every deal-card handler, so one rule covers all of
+  // them instead of ~100 handlers each remembering to check. Reads pass
+  // straight through; the read model tells the UI where the canonical card is.
+  const refuseArchivedAliasWrite: MiddlewareHandler = async (c, next) => {
+    if (c.req.method === 'GET' || c.req.method === 'HEAD' || c.req.method === 'OPTIONS') return next();
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id < 1) return next();
+    let family;
+    try { family = resolveDealFamily(getLandosDb(), id); } catch { return next(); }
+    if (!family.requestedIsAlias) return next();
+    return c.json({
+      error: 'archived_duplicate',
+      message: `Deal Card ${id} is an archived duplicate of Deal Card ${family.canonicalId}. Work on the canonical Deal Card instead.`,
+      canonicalDealCardId: family.canonicalId,
+    }, 409);
+  };
+  // Both shapes: the card itself (PATCH/DELETE) and everything under it.
+  app.use('/api/landos/deal-cards/:id', refuseArchivedAliasWrite);
+  app.use('/api/landos/deal-cards/:id/*', refuseArchivedAliasWrite);
+
   if (!researchMissionRecoveryScheduled) {
     researchMissionRecoveryScheduled = true;
     setTimeout(() => {
@@ -2052,16 +2079,34 @@ export function registerLandosRoutes(app: Hono): void {
       agentId: 'acquisitions-agent',
     }).card;
     const profile = getLandosStorageProfile();
-    const deal = createDealCard({
-      entity,
-      // PROPERTY-FIRST title. A card is named by the property it concerns, not
-      // by whether a seller name could be read out of the paste. The old
-      // `${seller} — ${label}` shape produced "Unidentified seller — …" titles
-      // that downstream surfaces then quoted back as if they were addresses.
-      title: buildLeadCardTitle({ address, apn, city, county, state }),
-      sellerNotes: rawInput,
-      leadType: profile.syntheticOnly ? 'test' : 'manual',
-    });
+    // CANONICAL SUBJECT GATE. A Deal Card is created only when no active card
+    // already represents this acquisition subject; a repeat submission resolves
+    // onto the existing card instead of opening a rival one. This runs BEFORE
+    // creation deliberately: the previous order created the card first and
+    // reconciled identity afterwards fire-and-forget, which is exactly how one
+    // Bradford County parcel ended up with three active cards.
+    //
+    // A subject that cannot be keyed yet still gets its card — refusing the lead
+    // would lose it. It simply carries a blank, unconstrained key until an
+    // identifier arrives and the rematch path claims one.
+    const subjectResolution = resolveDealCardForSubject(
+      getLandosDb(),
+      { state, county, apn, address, zip },
+      () => createDealCard({
+        entity,
+        // PROPERTY-FIRST title. A card is named by the property it concerns, not
+        // by whether a seller name could be read out of the paste. The old
+        // `${seller} — ${label}` shape produced "Unidentified seller — …" titles
+        // that downstream surfaces then quoted back as if they were addresses.
+        title: buildLeadCardTitle({ address, apn, city, county, state }),
+        sellerNotes: rawInput,
+        leadType: profile.syntheticOnly ? 'test' : 'manual',
+      }).id,
+    );
+    const deal = getDealCard(subjectResolution.dealCardId)!;
+    // The duplicate's evidence still lands: intake links, documents, people and
+    // research below all attach to the RESOLVED card, so a second submission
+    // enriches the one deal rather than starting a competing one.
     linkPropertyToDeal({ dealCardId: deal.id, cardId: property.id, role: 'subject' });
     // EVERY link the operator supplied is filed as intake evidence, not only a
     // LandPortal one and not only into `lp_url`. That column is a single mutable
@@ -2158,6 +2203,15 @@ export function registerLandosRoutes(app: Hono): void {
       opportunity,
       dealCardId: deal.id,
       propertyCardId: property.id,
+      // Visible so the operator is told a repeat lead joined the existing deal
+      // rather than silently wondering why no new card appeared.
+      subjectResolution: {
+        createdNewDealCard: subjectResolution.created,
+        resolvedToExistingDealCard: subjectResolution.created ? null : deal.id,
+        resolvedFrom: subjectResolution.resolvedFrom ?? null,
+        subjectKeyBasis: subjectResolution.key.basis,
+        subjectIdentityOfficial: subjectResolution.key.official,
+      },
       researchStatus: opportunity.researchStatus,
       extraction: parsed ? {
         sellerName: parsed.sellerName, phone: parsed.phone, email: parsed.email,
@@ -3371,6 +3425,17 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'not found' }, 404);
+    // An archived alias is READ-ONLY history that resolves to its canonical
+    // card. Reporting the resolution here is what makes the alias route
+    // "visibly resolve" for the operator instead of rendering a second,
+    // stale-looking copy of the same deal.
+    const family = resolveDealFamily(getLandosDb(), id);
+    const canonicalResolution = {
+      canonicalDealCardId: family.canonicalId,
+      aliasDealCardIds: family.aliasIds,
+      isArchivedAlias: family.requestedIsAlias,
+      readOnly: family.requestedIsAlias,
+    };
     // Canonical Business Object Spine projection (authoritative decision-grade
     // header). Guarded so a projection issue can never break the Deal Card read.
     let businessSpine: ReturnType<typeof assembleBusinessObjects> | undefined;
@@ -3400,6 +3465,7 @@ export function registerLandosRoutes(app: Hono): void {
       header: businessSpine?.header,
       opportunity,
       parcelScope,
+      canonicalResolution,
       researchMission: opportunity ? latestResearchMission(opportunity.id) : null,
     });
   });
@@ -7344,7 +7410,17 @@ export function registerLandosRoutes(app: Hono): void {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!getDealCard(id)) return c.json({ error: 'deal card not found' }, 404);
-    return c.json({ governmentRecords: readGovernmentRecordsForDeal(id) });
+    const governmentRecords = readGovernmentRecordsForDeal(id);
+    // A card whose parcel is not yet identified has no official-record read to
+    // return. That is a stated limitation, never a silent null: official
+    // record and deed retrieval wait for the accepted subject, and the
+    // operator is told so instead of being shown an empty section.
+    return c.json({
+      governmentRecords,
+      ...(governmentRecords ? {} : {
+        limitation: 'No accepted subject identity is retained yet. Official parcel-record and deed retrieval start once the parcel is identified (APN plus county, or an official parcel record).',
+      }),
+    });
   });
 
   // Explicit Operator command: adapt already-persisted official outcomes and
@@ -11673,7 +11749,13 @@ export function registerLandosRoutes(app: Hono): void {
   const intelligenceStackRunStore = new IntelligenceStackRunStore();
   const intelligenceStackControllers = new Map<string, AbortController>();
   const INTELLIGENCE_RUN_CEILING_MS = 20 * 60_000;
-  intelligenceStackRunStore.reclaimAbandoned(INTELLIGENCE_RUN_CEILING_MS);
+  // Only the process that owns the runs may revoke them; see
+  // `processOwnsIntelligenceRuns`. Every reclaim below goes through this.
+  const reclaimAbandonedIntelligenceRuns = (): number => {
+    if (!processOwnsIntelligenceRuns()) return 0;
+    return intelligenceStackRunStore.reclaimAbandoned(INTELLIGENCE_RUN_CEILING_MS);
+  };
+  reclaimAbandonedIntelligenceRuns();
   /** Reject and abort transport rather than let a wedged executor retain authority. */
   const withIntelligenceRunCeiling = <T,>(work: Promise<T>, onTimeout: () => void): Promise<T> => {
     let timer: NodeJS.Timeout | null = null;
@@ -11931,7 +12013,7 @@ export function registerLandosRoutes(app: Hono): void {
         staleReasons: dealBrain.staleReplies.map((entry) => entry.staleReason),
       },
       run: (() => {
-        intelligenceStackRunStore.reclaimAbandoned(INTELLIGENCE_RUN_CEILING_MS);
+        reclaimAbandonedIntelligenceRuns();
         const latest = intelligenceStackRunStore.latest(id);
         return !latest || latest.status === 'complete' || latest.status === 'superseded'
           ? null
@@ -11953,7 +12035,7 @@ export function registerLandosRoutes(app: Hono): void {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     const deal = getDealCard(id);
     if (!deal) return c.json({ error: 'deal card not found' }, 404);
-    intelligenceStackRunStore.reclaimAbandoned(INTELLIGENCE_RUN_CEILING_MS);
+    reclaimAbandonedIntelligenceRuns();
     const inFlight = intelligenceStackRunStore.active(id);
     if (inFlight) {
       return c.json({ running: true, startedAt: inFlight.startedAt, progress: inFlight.progress, runtime: intelligenceExecutorRuntimeStatus() }, 202);
@@ -12640,8 +12722,15 @@ export function registerLandosRoutes(app: Hono): void {
   // Comps & Valuation workspace projection alone (post-selection refresh
   // without re-reading the whole property-intelligence record). SELECT-only.
   app.get('/api/landos/deal-cards/:id/comps-valuation', (c) => {
-    const id = Number(c.req.param('id'));
-    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    const requestedId = Number(c.req.param('id'));
+    if (!Number.isInteger(requestedId)) return c.json({ error: 'invalid id' }, 400);
+    // An archived alias has no valuation of its own. One acquisition subject
+    // carries ONE current value, so an alias route answers with the canonical
+    // card's package rather than computing a rival one from whatever evidence
+    // still happens to be keyed to it — which is how the same parcel came to
+    // show two different Combined FMVs and two different 40/60 benchmarks.
+    const family = resolveDealFamily(getLandosDb(), requestedId);
+    const id = family.canonicalId;
     const view = buildCompsValuationView(id);
     if (!view) return c.json({ error: 'deal card not found' }, 404);
     const deal = getDealCard(id)!;
@@ -12655,6 +12744,13 @@ export function registerLandosRoutes(app: Hono): void {
       access: propertyIntelligence.access,
       streetView: propertyIntelligence.streetView,
       marketContext: marketContextFor(deal),
+      // Names the resolution when an alias route was asked, so the surface can
+      // say whose valuation this is instead of appearing to be the alias's own.
+      canonicalResolution: {
+        requestedDealCardId: requestedId,
+        canonicalDealCardId: family.canonicalId,
+        servedFromCanonical: family.requestedIsAlias,
+      },
     });
   });
   // Read-only provider-page revisit followed by identity-gated local enrichment.
@@ -12775,6 +12871,15 @@ export function registerLandosRoutes(app: Hono): void {
     });
   });
 
+  /**
+   * STANDALONE Property Resolution runs in flight in this process, per Deal
+   * Card. They own the subject's resolution lock without a mission row, so the
+   * full-run launch below must be able to ask whether such an owner is still
+   * running; without this record it treated every non-mission owner as
+   * finished and started a second resolver beside a live one.
+   */
+  const standaloneResolutions = new Map<number, { runId: string }>();
+
   app.post('/api/landos/deal-cards/:id/property-resolution/run', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
@@ -12808,6 +12913,7 @@ export function registerLandosRoutes(app: Hono): void {
         result: cardIdBeforeRun ? capabilityStore.latestForProperty(cardIdBeforeRun, id) : null,
       }, 202);
     }
+    standaloneResolutions.set(id, { runId });
     try {
       await adoptAutomationControlPage();
       const outcome = await propertyIntelligenceCollectors(id, 'deal_card', 'refresh').parcel_identity({
@@ -12820,6 +12926,7 @@ export function registerLandosRoutes(app: Hono): void {
       const result = cardId ? capabilityStore.latestForProperty(cardId, id) : null;
       return c.json({ capability: PROPERTY_RESOLUTION_CAPABILITY_ID, outcome: { status: outcome.status, summary: outcome.summary }, result });
     } finally {
+      if (standaloneResolutions.get(id)?.runId === runId) standaloneResolutions.delete(id);
       capabilityStore.releaseExecutionLock(PROPERTY_RESOLUTION_CAPABILITY_ID, lockSubject, runId);
     }
   });
@@ -13380,12 +13487,17 @@ export function registerLandosRoutes(app: Hono): void {
       ).get(ownerId) as { status?: string } | undefined;
       const status = String(row?.status ?? '').toLowerCase();
       if (status === '') {
-        // No mission row: the owner is a FOCUSED rerun, whose liveness is this
-        // process's in-memory record. One that is not running here (finished,
-        // failed, or lost to a restart) holds nothing and must not refuse the
-        // next cycle forever.
+        // No mission row: the owner is a FOCUSED rerun or a STANDALONE Property
+        // Resolution run, whose liveness is this process's in-memory record.
+        // One that is not running here (finished, failed, or lost to a restart)
+        // holds nothing and must not refuse the next cycle forever — but one
+        // that IS running here still owns the subject, and a full run must
+        // wait for it rather than start a second resolver beside it.
         const focused = focusedReruns.get(id);
-        return !(focused && focused.runId === ownerId && focused.status === 'running');
+        if (focused && focused.runId === ownerId) return focused.status !== 'running';
+        const standalone = standaloneResolutions.get(id);
+        if (standalone && standalone.runId === ownerId) return false;
+        return true;
       }
       return !['running', 'queued', 'pending', 'in_progress', 'active'].includes(status);
     };
@@ -13637,9 +13749,17 @@ export function registerLandosRoutes(app: Hono): void {
     const cardId = subjectCardId(deal);
     if (!cardId) return c.json({ error: 'no subject property card' }, 409);
     const runId = `property-resolution-compat-${id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const outcome = await propertyIntelligenceCollectors(id, 'deal_card', 'refresh').parcel_identity({
-      dealCardId: id, runId, identity: null, comparables: null,
-    });
+    // The collector takes the subject's resolution lock under this runId; record
+    // it as a live standalone owner for the same reason as the route above.
+    standaloneResolutions.set(id, { runId });
+    let outcome;
+    try {
+      outcome = await propertyIntelligenceCollectors(id, 'deal_card', 'refresh').parcel_identity({
+        dealCardId: id, runId, identity: null, comparables: null,
+      });
+    } finally {
+      if (standaloneResolutions.get(id)?.runId === runId) standaloneResolutions.delete(id);
+    }
     if (outcome.status === 'blocked' && /already running/i.test(outcome.summary)) {
       return c.json({
         dealCardId: id,
@@ -13748,8 +13868,17 @@ export function registerLandosRoutes(app: Hono): void {
 
     const lp = makeLandPortalBrowser({ driver: makeLiveBrowserDriver('landportal') });
     const county = makeCountyRecordsBrowser({ driver: makeLiveBrowserDriver('county_records') });
+    // Each phase is logged with its wall time so a request that overruns its
+    // workflow budgets can be traced to the exact phase, never inferred.
+    const phaseStartedAt = Date.now();
     const landportal = await lp.runWorkflow({ searchKey, mode }, hooks);      // LandPortal first
+    logger.info({ dealCardId: id, mode, phase: 'landportal', status: landportal.status, ms: Date.now() - phaseStartedAt }, 'browser_intel_phase');
+    const countyStartedAt = Date.now();
     const countyRecords = await county.runWorkflow({ searchKey, mode }, hooks); // then County Records
+    logger.info({
+      dealCardId: id, mode, phase: 'county_records', status: countyRecords.status, ms: Date.now() - countyStartedAt,
+      sources: (countyRecords.sourceAttempts ?? []).map((attempt) => `${attempt.sourceType}:${attempt.result}`),
+    }, 'browser_intel_phase');
     let recordedGovernmentOutcome: Record<string, unknown> | null = null;
     const recorderAttempt = countyRecords.sourceAttempts?.find((attempt) =>
       attempt.sourceType === 'recorder' && attempt.result === 'retrieved');
@@ -13807,6 +13936,7 @@ export function registerLandosRoutes(app: Hono): void {
       }
     }
     if (cardId) {
+      const inspectionStartedAt = Date.now();
       try {
         const inspectionResult = await runPropertyInspection({
           cardId,
@@ -13820,7 +13950,10 @@ export function registerLandosRoutes(app: Hono): void {
           googleVisualConfigured: googleVisualConfiguredResolved(),
         });
         persistPropertyInspection(cardId, inspectionResult.inspection);
-      } catch { /* inspection persistence is best-effort */ }
+        logger.info({ dealCardId: id, mode, phase: 'inspection', ms: Date.now() - inspectionStartedAt }, 'browser_intel_phase');
+      } catch (error) {
+        logger.warn({ dealCardId: id, mode, phase: 'inspection', ms: Date.now() - inspectionStartedAt, err: (error as Error)?.message }, 'browser_intel_phase_failed');
+      }
     }
 
     // Mark any still-requested items the operator stopped (not Failed/Unknown).
