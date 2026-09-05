@@ -116,23 +116,33 @@ describe('geographic discipline over the strict valuation set', () => {
     expect(view!.comps.filter((c) => c.inValuationSet)).toHaveLength(3);
   });
 
-  it('admits broader-market geography only as a last resort, discloses it, and reduces confidence', () => {
+  it('never prices the subject from broader-market geography outside the permitted radius', () => {
+    // This used to admit broader-market sales as a LAST RESORT, at reduced
+    // confidence, so that a thin local market still produced a number. The
+    // permitted radius is now absolute: five miles, or ten for a rural subject
+    // short of three qualified sales. These College Grove sales are well past
+    // both, so they price nothing.
+    //
+    // They are not discarded. They stay retained and visible as broader-market
+    // context with a stated reason, and the honest outcome is that this lane
+    // has no qualified value rather than a value built from evidence the search
+    // was never entitled to reach.
     const dealId = fairviewDeal();
-    // Two College Grove / premium-submarket sales and nothing local at all.
     const a = sale(dealId, { address: '0 Giles Hill Rd, College Grove, TN, 37046', price: 3_250_000, acres: 34, ...COLLEGE_GROVE_CENTROID });
     const b = sale(dealId, { address: '0 Cross Keys Rd, College Grove, TN, 37046', price: 2_100_000, acres: 78, lat: 35.7810000, lng: -86.7200000 });
     markPrecision(a.id, 'approximate');
     markPrecision(b.id, 'approximate');
 
     const view = buildCompsValuationView(dealId);
-    const geography = view!.geography.selection;
 
-    expect(geography.tiersIncluded).toContain('broader');
-    expect(geography.reliesOnBroaderGeography).toBe(true);
-    expect(view!.cleaned.confidence).toBe('low');
-    expect(view!.cleaned.reconciliationLines.join(' ')).toContain('relies materially on geography outside');
-    // The value is still stated — a thin local market is not an empty market.
-    expect(view!.cleaned.adoptedFmv).not.toBeNull();
+    expect(view!.cleaned.adoptedFmv).toBeNull();
+    expect(view!.cleaned.confidence).toBe('unavailable');
+    // Retained, visible, and explicitly not priced.
+    expect(view!.comps).toHaveLength(2);
+    for (const comp of view!.comps) {
+      expect(comp.inValuationSet).toBe(false);
+      expect(comp.zeroWeightReason ?? '').toMatch(/radius/i);
+    }
   });
 
   it('never lets a location-unresolved sale act like a local comp while resolved evidence exists', () => {

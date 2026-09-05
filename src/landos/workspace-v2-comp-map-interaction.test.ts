@@ -30,7 +30,13 @@ const CSS_SRC = read('web/src/styles/workspace-v2-comps.css');
 describe('every single marker is clickable and opens a persistent popup', () => {
   it('renders each marker as a button that selects the record', () => {
     expect(MAP_SRC).toMatch(/const markerDot = \(c: CvComp\) => \{/);
-    expect(MAP_SRC).toMatch(/<button[\s\S]{0,700}onClick=\{\(e\) => \{ e\.stopPropagation\(\); pick\(c\); \}\}/);
+    expect(MAP_SRC).toMatch(/<button[\s\S]{0,1200}onClick=\{\(e\) => \{ e\.stopPropagation\(\); pick\(c\); \}\}/);
+    // Every marker also carries its own identity, so a plotted map can be
+    // verified: which record it is, and what role it plays on the map.
+    expect(MAP_SRC).toMatch(/data-testid="cv-map-marker"/);
+    expect(MAP_SRC).toMatch(/data-comp-key=\{c\.key\}/);
+    expect(MAP_SRC).toMatch(/data-marker-role=\{c\.category\}/);
+    expect(MAP_SRC).toMatch(/data-testid="cv-map-subject"/);
     expect(MAP_SRC).toMatch(/aria-label=\{`\$\{identity\.badge\}: \$\{nameOf\(c\)\}\. Click for full comparable details\.`\}/);
     // Hover is an enhancement, never the only way to read a marker.
     expect(MAP_SRC).toMatch(/onPointerEnter=\{\(\) => enterMarker\(c, pos\)\}/);

@@ -193,27 +193,82 @@ describe('transaction enrichment never knowingly spends a slot on an ancient sal
     expect(sufficient.reason).toContain('already sufficient');
   });
 
-  it('ranks only undated candidates, and only against an insufficient recent set', () => {
+  it('ranks candidates missing a date OR a location, and only against an insufficient recent set', () => {
+    // Located rows, so the only fact any of them could still be missing is the
+    // sale date.
+    const located = { lat: 35.9, lng: -87.1, distance_miles: 6.2 };
     const rows = [
-      compRow({ id: 1, sale_or_list_date: null }),
-      compRow({ id: 2, sale_or_list_date: '2013-01-04', source_url: 'https://www.landwatch.com/tennessee/pid/2' }),
-      compRow({ id: 3, sale_or_list_date: monthsAgo(19), source_url: 'https://www.landwatch.com/tennessee/pid/3' }),
+      compRow({ id: 1, sale_or_list_date: null, ...located }),
+      compRow({ id: 2, sale_or_list_date: '2013-01-04', source_url: 'https://www.landwatch.com/tennessee/pid/2', ...located }),
+      compRow({ id: 3, sale_or_list_date: monthsAgo(19), source_url: 'https://www.landwatch.com/tennessee/pid/3', ...located }),
     ];
     const picked = rankCompsForTransactionEnrichment(rows, 75.91, 8, { nowMs: NOW, recentEvidenceSufficient: false });
     expect(picked.map((c) => c.row.id)).toEqual([1]);
 
     const none = rankCompsForTransactionEnrichment(rows, 75.91, 8, { nowMs: NOW, recentEvidenceSufficient: true });
     expect(none).toHaveLength(0);
+
+    // An ancient sale stays out on age however unlocated it is: it can never be
+    // current-FMV evidence, so a coordinate would not change its role.
+    const ancientUnlocated = [compRow({ id: 2, sale_or_list_date: '2013-01-04', source_url: 'https://www.landwatch.com/tennessee/pid/2' })];
+    expect(rankCompsForTransactionEnrichment(ancientUnlocated, 75.91, 8, { nowMs: NOW, recentEvidenceSufficient: false })).toHaveLength(0);
+
+    // A RECENT sale that is dated but not located is still selectable: the
+    // record page holds the parcel point without which it can never be admitted.
+    const datedUnlocated = [compRow({ id: 4, sale_or_list_date: monthsAgo(3), source_url: 'https://www.landwatch.com/tennessee/pid/4' })];
+    expect(rankCompsForTransactionEnrichment(datedUnlocated, 75.91, 8, { nowMs: NOW, recentEvidenceSufficient: false })
+      .map((c) => c.row.id)).toEqual([4]);
   });
 
   it('measures sufficiency from the rows themselves when the caller does not state it', () => {
-    const recent = (id: number) => compRow({
+    // Sufficiency counts only records that could ACTUALLY be admitted, so a
+    // "recent" row must also be located and measurable. A recent, priced row
+    // with no parcel point is not evidence the deal can use.
+    const admissible = (id: number) => compRow({
       id, sale_or_list_date: monthsAgo(3), source_url: `https://www.landwatch.com/tennessee/pid/${id}`,
+      lat: 35.9, lng: -87.1, distance_miles: 6.2,
     });
-    const withThinRecent = [compRow({ id: 1, sale_or_list_date: null }), recent(2)];
+    const withThinRecent = [compRow({ id: 1, sale_or_list_date: null }), admissible(2)];
     expect(rankCompsForTransactionEnrichment(withThinRecent, 75.91, 8, { nowMs: NOW }).map((c) => c.row.id)).toEqual([1]);
 
-    const withSufficientRecent = [compRow({ id: 1, sale_or_list_date: null }), recent(2), recent(3), recent(4), recent(5), recent(6)];
-    expect(rankCompsForTransactionEnrichment(withSufficientRecent, 75.91, 8, { nowMs: NOW })).toHaveLength(0);
+    // Sufficiency is not a bare count. An UNRESOLVED, in-band, current candidate
+    // could still outrank a selected comp on distance, recency or acreage once
+    // resolved, so a full set of admissible rows does not end the search while
+    // one remains unread.
+    const withUnresolvedContender = [compRow({ id: 1, sale_or_list_date: null }),
+      admissible(2), admissible(3), admissible(4), admissible(5), admissible(6)];
+    expect(rankCompsForTransactionEnrichment(withUnresolvedContender, 75.91, 8, { nowMs: NOW })
+      .map((c) => c.row.id)).toContain(1);
+
+    // With every higher-potential candidate resolved, nothing is left to spend
+    // a slot on and the search stops.
+    const allResolved = [admissible(2), admissible(3), admissible(4), admissible(5), admissible(6)];
+    expect(rankCompsForTransactionEnrichment(allResolved, 75.91, 8, { nowMs: NOW })).toHaveLength(0);
+  });
+
+  it('an ancient or out-of-band unresolved record is never a reason to keep enriching', () => {
+    // The guard must not become "enrich everything": neither of these could
+    // outrank a selected comp, so neither withholds sufficiency.
+    const ancient = compRow({ id: 7, sale_or_list_date: '2013-01-04', source_url: 'https://www.landwatch.com/tennessee/pid/7' });
+    const outOfBand = compRow({ id: 8, sale_or_list_date: null, acres: 5, source_url: 'https://www.landwatch.com/tennessee/pid/8' });
+    const resolved = (id: number) => compRow({
+      id, sale_or_list_date: monthsAgo(3), source_url: `https://www.landwatch.com/tennessee/pid/${id}`,
+      lat: 35.9, lng: -87.1, distance_miles: 6.2,
+    });
+    const rows = [ancient, outOfBand, resolved(2), resolved(3), resolved(4), resolved(5), resolved(6)];
+    expect(rankCompsForTransactionEnrichment(rows, 75.91, 8, { nowMs: NOW })).toHaveLength(0);
+  });
+
+  it('recent rows that could never be admitted do not confer sufficiency', () => {
+    // The Bradford County defect: rows recent, priced and in band, but located
+    // only by a ZIP-area centroid. They cannot be admitted, so they must not
+    // suppress enrichment of the undated candidate beside them.
+    const unusable = (id: number) => compRow({
+      id, sale_or_list_date: monthsAgo(3), source_url: `https://www.landwatch.com/tennessee/pid/${id}`,
+      lat: null, lng: null, distance_miles: null,
+    });
+    const rows = [compRow({ id: 1, sale_or_list_date: null }),
+      unusable(2), unusable(3), unusable(4), unusable(5), unusable(6)];
+    expect(rankCompsForTransactionEnrichment(rows, 75.91, 8, { nowMs: NOW }).map((c) => c.row.id)).toContain(1);
   });
 });

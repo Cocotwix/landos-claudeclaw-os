@@ -235,7 +235,13 @@ describe('every downstream figure recalculates from the selected set', () => {
     // ladder and the ceiling follow it rather than holding a stale value.
     const round500 = (n: number) => Math.round(n / 500) * 500;
     expect(after.summary.fmv!.central).toBe(after.cleaned.adoptedFmv);
-    expect(after.summary.acquisitionLevels!.pct40).toBe(round500(after.cleaned.adoptedFmv! * 0.4));
+    // The 40% and 60% rungs are the Combined LandOS FMV benchmarks and are
+    // EXACT: presentation rounding on an opening offer is real money, and a
+    // rounded number stops being the percentage it claims to be. The 50% rung
+    // is the acquisition ladder's own step, not an offer benchmark, and keeps
+    // its $500 rounding.
+    expect(after.summary.acquisitionLevels!.pct40).toBe(Math.round(after.cleaned.adoptedFmv! * 0.4));
+    expect(after.summary.acquisitionLevels!.pct60).toBe(Math.round(after.cleaned.adoptedFmv! * 0.6));
     expect(after.summary.acquisitionLevels!.pct50).toBe(round500(after.cleaned.adoptedFmv! * 0.5));
     expect(after.quickFlip!.expectedSalePrice).toBe(after.cleaned.adoptedFmv);
     expect(after.quickFlip!.technicalMaxOffer).not.toBe(before.quickFlip!.technicalMaxOffer);

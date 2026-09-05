@@ -29,6 +29,7 @@ import { getLandosDb, landosAudit, type LandosEntity } from './db.js';
 import { getComp, listComps, enrichCompCoordinates, geocodeAddressesToCache, type CompRow } from './comps.js';
 import { getDealCard, resolveSubjectPropertyCard } from './deal-card.js';
 import { resolveSubjectAcreage } from './subject-acreage.js';
+import { readCurrentPropertyIdentity } from './property-summary-slice.js';
 import { loadPropertyInspection, currentComparables, type LandPortalComparableRecord } from './property-card.js';
 import { PropertyResearchStore } from './property-research-store.js';
 import { GLOBAL_MIN_NET_PROFIT_USD, FLIP_STANDARD_BAND } from './offer-engine.js';
@@ -53,6 +54,11 @@ import {
   type CompGeoSelection,
   type CompGeoTierId,
 } from './comp-geography.js';
+import {
+  selectClosedCompSearchRadius,
+  CLOSED_COMP_START_RADIUS_MILES,
+  type ClosedCompRadiusDecision,
+} from './comp-search-radius.js';
 import { isListingPhotoUrl, resolveCompVisual, tallyCompVisuals, type CompVisual, type CompVisualCounts } from './comp-visual.js';
 import { parseListingDetail } from './comp-listing-store.js';
 import type { PersistedCompListingDetail } from './comp-listing-store.js';
@@ -1051,8 +1057,12 @@ function classifyPersistedComp(row: CompRow, ctx: ClassifyContext): WorkspaceCom
   // whose market LandOS can name.
   const areaPoint = typeof row.geo_lat === 'number' && typeof row.geo_lng === 'number'
     ? { lat: row.geo_lat, lng: row.geo_lng } : null;
-  const distance = distanceFromSubject(ctx, location)
-    ?? (areaPoint && ctx.subjectPoint ? compDistanceMiles(ctx.subjectPoint, areaPoint) : null);
+  // Only a PARCEL point may state a distance. Falling back to the ZIP-area
+  // centroid here produced the same precise-looking mileage for every record
+  // sharing a ZIP ("7.4 mi"), which the operator reads as a measured separation
+  // from the subject. The area point is still retained and still drawn on the
+  // map, labelled area-level; it simply cannot answer "how far away is it".
+  const distance = distanceFromSubject(ctx, location);
   const recencyMonths = (() => { const m = monthsSince(dateIso, ctx.nowMs); return m == null ? null : Math.round(m); })();
   // Locality the row's OWN retained evidence states. Providers glue it into one
   // address run ("…, Franklin, TN, 37064"), so a blank column is a column
@@ -2146,13 +2156,17 @@ export function reconcileNegotiation(
   const lines: string[] = [];
   let basis: NegotiationReconciliation['ceilingBasis'];
   let opening = band.pct40;
-  let target = band.pct50;
+  // The negotiation target is derived from the two PUBLISHED references (40%
+  // opening, 60% upper) and the technical ceiling — never from FMV x 0.5.
+  // Deriving it from pct50 made it a 50%-of-FMV benchmark under another name,
+  // which is exactly what the operating rules forbid displaying.
+  let target = Math.min(band.pct60, mao);
   let ceiling = mao;
 
   if (mao >= band.pct40 && mao <= band.pct60) {
     basis = 'technical_inside_band';
     lines.push(`The technical quick-flip maximum (${money(mao)}, ${quickFlip.technicalMaxPctOfFmv}% of cleaned FMV) falls inside the standard ${FLIP_STANDARD_BAND.low}%–${FLIP_STANDARD_BAND.high}% reference range, so the simplified range governs the negotiation and the technical maximum caps it.`);
-    target = Math.min(band.pct50, mao);
+    target = Math.min(band.pct60, mao);
   } else if (mao > band.pct60) {
     basis = 'technical_above_band';
     lines.push(`The technical quick-flip maximum (${money(mao)}, ${quickFlip.technicalMaxPctOfFmv}% of cleaned FMV) sits above the ${FLIP_STANDARD_BAND.high}% reference. Paying above ${FLIP_STANDARD_BAND.high}% appears supportable because the absolute profit at the ceiling still clears the $${GLOBAL_MIN_NET_PROFIT_USD.toLocaleString('en-US')} minimum — but confirm the executable sale price and cost assumptions before relying on it. The offer is not automatically capped at ${FLIP_STANDARD_BAND.high}%.`);
@@ -2160,11 +2174,14 @@ export function reconcileNegotiation(
     basis = 'technical_below_band';
     ceiling = mao;
     opening = Math.min(band.pct40, round500(mao * 0.85));
-    target = Math.min(band.pct50, round500(mao * 0.95));
+    target = Math.min(band.pct60, round500(mao * 0.95));
     lines.push(`The technical quick-flip maximum (${money(mao)}, ${quickFlip.technicalMaxPctOfFmv}% of cleaned FMV) is below the ${FLIP_STANDARD_BAND.low}% reference, so the ceiling is lowered below the standard band — the ${FLIP_STANDARD_BAND.low}% level is not treated as a floor. Cost, risk-reserve, and required-profit loads on this price point drive the reduction.`);
   }
   const scopeLabel = referenceScope === 'land_basis' ? 'LAND-BASIS reference' : 'whole-property reference';
-  lines.push(`Standard ${scopeLabel}: ${money(band.pct40)} opening (40%), ${money(band.pct50)} target (50%), ${money(band.pct60)} upper reference (60%).`);
+  // The displayed standard benchmarks are 40% and 60% only. No 50% value is
+  // printed here in any form: not as a labelled band, and not as a number that
+  // happens to equal half the FMV.
+  lines.push(`Standard ${scopeLabel}: ${money(band.pct40)} opening (40%), ${money(band.pct60)} upper reference (60%).`);
   if (referenceScope === 'land_basis') {
     lines.push('These are LAND-BASIS negotiation references only. They are not completed whole-property offer recommendations; improvement value remains pending.');
   }
@@ -2264,7 +2281,7 @@ function readLandPortalEstimate(
     price: num(priceLabel),
     perAcre: num(perAcreLabel),
     source: 'LandPortal parcel panel',
-    note: 'LandPortal’s own automated estimate, shown exactly as LandPortal publishes it. LandOS never recalculates it: it enters the valuation package only as the LandPortal FMV component averaged with the Non-LandPortal FMV, and never touches the cleaned LandOS land value.',
+    note: 'LandPortal’s own automated estimate, shown exactly as LandPortal publishes it. LandOS never recalculates it: it enters the valuation package only as the LandPortal FMV component averaged with the Non-LandPortal FMV, and is never an input to the LandOS land value itself.',
   };
 }
 
@@ -2753,6 +2770,50 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
   const geoAdmitted = new Set(geoSelection.admittedKeys);
   const geoHeldOut = new Map(geoSelection.heldOut.map((item) => [item.key, item.reason]));
 
+  // THE SHARED SEARCH-RADIUS POLICY.
+  //
+  // The tier ladder above ranks how close a record is; it does not state how
+  // far this search was entitled to reach. That is one rule, stated once in
+  // `comp-search-radius`, and applied here as a gate on top of the tiers: start
+  // at five miles, and expand to ten only for a rural subject that cannot find
+  // three QUALIFIED closed sales inside five. A record beyond the selected
+  // radius is never deleted; it stays retained as broader-market context.
+  //
+  // `isRural` is a property of the subject, not a guess made here. LandOS
+  // underwrites rural vacant land, so the default is true, and the caller can
+  // say otherwise for a subject that is not.
+  //
+  // The count is taken over records ALREADY known to qualify at this point:
+  // in-window, admitted by geography, not held out, vacant land, located.
+  // Counting every closed sale here instead would let records the later loop
+  // is about to disqualify make five miles look sufficient — the precise
+  // failure rule 4 exists to prevent — and the roles that would exclude them
+  // are not assigned until that loop runs.
+  // THE RADIUS IS ABSOLUTE. A sale outside the permitted radius never prices
+  // this subject, however thin the market is and however little else there is.
+  // It is not deleted: it stays a retained, visible comparable carrying zero
+  // valuation weight and its own stated reason. If nothing qualifies inside the
+  // radius the non-LandPortal lane goes unavailable and the Combined LandOS FMV
+  // is carried by LandPortal alone at reduced confidence, which is the honest
+  // answer — a value assembled from evidence the search was never entitled to
+  // reach is worse than a value that says what supports it.
+  const radiusDecision = selectClosedCompSearchRadius(
+    closedSales
+      .filter((c) => {
+        const bucket = valuationWindow.bucketByKey[c.key];
+        return (bucket === 'primary' || bucket === 'supplemental_historical') && geoAdmitted.has(c.key);
+      })
+      .map((c) => ({
+        distanceMiles: c.distanceMiles,
+        category: c.category,
+        priceKind: 'sale',
+        propertyClass: c.propertyClass,
+        operatorExcluded: c.operatorExcluded,
+      })),
+    { isRural: (subject as { isRural?: boolean | null }).isRural !== false },
+  );
+
+
   // Set membership is decided by the acreage band, the recency window, and the
   // geographic tier the evidence actually reached. The role below is the
   // comparability tier WITHIN that decision, so proximity can shade a sale's
@@ -2762,9 +2823,15 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     const bucket = valuationWindow.bucketByKey[c.key];
     const d = c.distanceMiles;
     const windowQualified = bucket === 'primary' || bucket === 'supplemental_historical';
-    c.inValuationSet = windowQualified && geoAdmitted.has(c.key);
+    const withinSearchRadius = d == null || d <= radiusDecision.miles;
+    c.inValuationSet = windowQualified && geoAdmitted.has(c.key) && withinSearchRadius;
 
-    if (windowQualified && !c.inValuationSet) {
+    if (windowQualified && geoAdmitted.has(c.key) && !withinSearchRadius) {
+      // Credible on acreage, recency and geography tier, but outside the reach
+      // this search was entitled to. Retained and visible at zero weight.
+      c.valuationRole = 'geographic_context';
+      c.zeroWeightReason = `${d} miles from the subject, beyond the ${radiusDecision.miles}-mile radius this search was entitled to use. ${radiusDecision.reason}`;
+    } else if (windowQualified && !c.inValuationSet) {
       // Credible on acreage and recency, held out on geography alone. It stays
       // a fully visible retained comparable; it just does not price the subject
       // while closer evidence already can.
@@ -2931,6 +2998,13 @@ export function buildCompsValuationView(dealCardId: number, opts: { nowMs?: numb
     // subject's street or inside its subdivision. Retained facts only.
     subjectStreet: subjectStreetLocalities(subjectCard ? String(subjectCard.active_input_address ?? subjectCard.address ?? '') : null)[0] ?? null,
     subjectSubdivision: typeof inspection?.parcelFacts?.Subdivision === 'string' ? inspection.parcelFacts.Subdivision : null,
+    // Correlates the package to the ACCEPTED subject it was valued for, so a
+    // strategy or Deal Brain decision can prove which subject version it used
+    // rather than assuming the current one.
+    subjectIdentity: (() => {
+      const identity = readCurrentPropertyIdentity(dealCardId);
+      return identity ? { versionId: identity.id, version: identity.version } : null;
+    })(),
   });
   if (valuationPackage.combinedFmv.value != null) {
     const combinedValue = valuationPackage.combinedFmv.value;

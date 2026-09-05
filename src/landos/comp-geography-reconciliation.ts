@@ -241,8 +241,19 @@ export async function reconcileCompGeography(
 
     const lat = parcelLat ?? areaLat;
     const lng = parcelLng ?? areaLng;
-    const distance = subjectPoint && lat != null && lng != null
-      ? compDistanceMiles(subjectPoint, { lat, lng })
+    // A DISTANCE MAY ONLY COME FROM A PARCEL POINT.
+    //
+    // Measuring to a ZIP-area centroid produces a precise-looking number that
+    // is the distance to the middle of a postal area, not to the property: every
+    // record sharing that ZIP came back as the same "7.4 mi", which reads as a
+    // measured separation and is not one. Invariant 3 already forbids a centroid
+    // from establishing a location; publishing a distance derived from one is
+    // the same claim wearing a decimal point. The area centroid is still
+    // retained and still drawn, labelled area-level; it simply cannot state how
+    // far away the property is, so such a record stays geographically
+    // unresolved for distance and is tiered on real containment instead.
+    const distance = subjectPoint && parcelLat != null && parcelLng != null
+      ? compDistanceMiles(subjectPoint, { lat: parcelLat, lng: parcelLng })
       : null;
 
     const assessment = assessCompGeography({

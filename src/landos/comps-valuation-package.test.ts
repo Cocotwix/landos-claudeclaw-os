@@ -159,8 +159,11 @@ describe('valuation package: three FMV views and the 40/60 benchmarks', () => {
     expect(thin.combinedFmv.value).toBe(42000);
     expect(typeof thin.combinedFmv.value).toBe('number');
     expect(thin.combinedFmv.confidence).toBe('low');
-    expect(thin.offer40).toBe(17000);
-    expect(thin.offer60).toBe(25000);
+    // EXACT percentages of the displayed Combined LandOS FMV ($42,000), not
+    // rounded to $500: an opening offer that is not actually 40% of the stated
+    // value misstates both the offer and the percentage.
+    expect(thin.offer40).toBe(16800);
+    expect(thin.offer60).toBe(25200);
   });
 
   it('uses a single non-LandPortal closed sale at low confidence rather than leaving the lane empty', () => {

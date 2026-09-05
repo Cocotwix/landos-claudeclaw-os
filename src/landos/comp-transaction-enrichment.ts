@@ -40,7 +40,7 @@
 import { getLandosDb } from './db.js';
 import { listComps, type CompRow } from './comps.js';
 import { normalizeAddressMatchKey } from './address-normalize.js';
-import { normalizeSaleDateIso, valuationAcreageBand, inAcreageBand } from './comp-recency-window.js';
+import { normalizeSaleDateIso, valuationAcreageBand, inAcreageBand, type AcreageBand } from './comp-recency-window.js';
 import {
   ageLabel, classifySaleRecency, recentSoldEvidenceSufficient,
   MAX_SOLD_SEARCH_WINDOW_MONTHS, RECENT_SALE_WINDOW_MONTHS,
@@ -84,6 +84,8 @@ export interface CompTransactionEvidence {
   events: CompListingEvent[];
   /** Listing identity carried by the page (LandWatch pid, Redfin home id). */
   listingIdentity: string | null;
+  /** The provider's own parcel point for THIS record, when it publishes one. */
+  coordinates: { lat: number; lng: number } | null;
   /** Human-readable statement of where each fact came from. */
   provenance: string;
   /** Set when the page loaded but did not publish usable transaction evidence. */
@@ -120,9 +122,19 @@ export function transactionEnrichmentProvider(row: CompRow): TransactionEnrichme
   return null;
 }
 
-/** A row this lane has nothing to add to: its sale date is already established. */
+/**
+ * A row this lane has nothing left to add to.
+ *
+ * "Dated" alone is not enough. The record page also publishes the provider's own
+ * parcel point, and a dated row with no coordinates still cannot state a
+ * distance, so every distance-based admission rule refuses it. Skipping such a
+ * row left ten dated Bradford County candidates permanently unlocatable — the
+ * date was established and the lane then declined to look again.
+ */
 function alreadyDated(row: CompRow): boolean {
-  return normalizeSaleDateIso(row.sale_or_list_date) != null;
+  const dated = supportedSaleDate(row.sale_or_list_date) != null;
+  const located = typeof row.lat === 'number' && typeof row.lng === 'number';
+  return dated && located;
 }
 
 export interface EnrichmentRecencyVerdict {
@@ -157,6 +169,14 @@ export function transactionEnrichmentRecencyVerdict(
   recentEvidenceSufficient: boolean,
 ): EnrichmentRecencyVerdict {
   const recency = classifySaleRecency(row.sale_or_list_date, nowMs);
+  // A DATE IS NOT THE ONLY FACT THIS LANE CAN ESTABLISH.
+  //
+  // The record page also publishes the provider's own parcel point, and a dated
+  // sale with no coordinates can state no distance — so every distance-based
+  // admission rule refuses it and it can never reach a valuation. Treating
+  // "dated" as "nothing left to establish" left ten dated Bradford County
+  // candidates permanently unlocatable and the non-LandPortal lane empty.
+  const unlocated = typeof row.lat !== 'number' || typeof row.lng !== 'number';
   if (recency.state === 'unestablished') {
     return recentEvidenceSufficient
       ? {
@@ -175,6 +195,12 @@ export function transactionEnrichmentRecencyVerdict(
     };
   }
   if (recency.state === 'expanded_recency') {
+    if (unlocated && !recentEvidenceSufficient) {
+      return {
+        selectable: true,
+        reason: `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}, dated but not located, and the qualified set is insufficient; its own record page can supply the parcel point.`,
+      };
+    }
     return {
       selectable: false,
       reason: recentEvidenceSufficient
@@ -182,9 +208,15 @@ export function transactionEnrichmentRecencyVerdict(
         : `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}; the transaction date is already established, so this lane has nothing to add to it.`,
     };
   }
+  if (unlocated) {
+    return {
+      selectable: true,
+      reason: `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}, dated but not located. The record page publishes this property's own parcel point, without which no distance from the subject exists and the sale can never be admitted.`,
+    };
+  }
   return {
     selectable: false,
-    reason: `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}, already dated inside the ${RECENT_SALE_WINDOW_MONTHS}-month window; this lane has no missing transaction fact to establish.`,
+    reason: `Sold ${recency.dateIso} — ${ageLabel(recency.monthsOld as number)}, already dated inside the ${RECENT_SALE_WINDOW_MONTHS}-month window and located; this lane has no missing fact to establish.`,
   };
 }
 
@@ -231,6 +263,109 @@ function statedImproved(row: CompRow): boolean {
  *
  * Pure: no database, no browser, no clock.
  */
+
+/**
+ * Can this retained record actually be ADMITTED to a valuation, on the evidence
+ * it already carries?
+ *
+ * This is the question the enrichment sufficiency guard must ask. It previously
+ * asked only "is it a recent sale in the acreage band", which one record could
+ * satisfy while being unusable: a Redfin row whose only location was a ZIP-area
+ * centroid counted as sufficient recent evidence, so detail enrichment was
+ * skipped for sixteen other candidates — and the valuation lane then reported an
+ * empty market that was never empty. A record that cannot itself be admitted
+ * must never stand in for the evidence the deal still needs.
+ *
+ * Each clause is an admission requirement, not a preference:
+ *   closed sale · dated · located on a real parcel point · geographically
+ *   relevant · priced · sized · vacant land · not materially improved.
+ * Canonical deduplication is enforced by `canonical_key` at persistence, so a
+ * row reaching here is already one record.
+ */
+/**
+ * A sale date at the strongest precision the evidence supports.
+ *
+ * A day is preferred, but a month is a supported date, not a missing one.
+ * Two credible sources disagreeing only about the day inside one month
+ * establish that month; rejecting the sale outright would discard a real
+ * transaction over a discrepancy that does not change its comparability.
+ */
+export function supportedSaleDate(value: string | null | undefined):
+  { iso: string; precision: 'day' | 'month' } | null {
+  const exact = normalizeSaleDateIso(value);
+  if (exact) return { iso: exact, precision: 'day' };
+  const raw = String(value ?? '').trim();
+  const month = /^(\d{4})-(\d{1,2})$/.exec(raw);
+  if (!month) return null;
+  const y = Number(month[1]); const m = Number(month[2]);
+  if (!Number.isInteger(m) || m < 1 || m > 12) return null;
+  return { iso: `${y}-${String(m).padStart(2, '0')}`, precision: 'month' };
+}
+
+/**
+ * A candidate that could plausibly OUTRANK the currently selected set once it is
+ * resolved.
+ *
+ * Sufficiency is not "we have five rows". Five admissible comps at 8-15 miles do
+ * not make an unresolved 1.2-acre sale four miles away irrelevant: resolving it
+ * could displace one of them on distance, recency or acreage similarity. Stopping
+ * enrichment on a bare count therefore froze a weaker set in place while stronger
+ * evidence sat one detail-page read away.
+ *
+ * Deliberately narrow, so this never becomes "enrich everything":
+ *   - it must be a revisitable closed sale with a price,
+ *   - it must sit INSIDE the valuation acreage band,
+ *   - it must not already be known ancient, and
+ *   - it must actually be unresolved (missing its date or its parcel point).
+ * An ancient or out-of-band record can never outrank a selected comp, so it is
+ * never a reason to keep spending budget.
+ */
+export function isHigherPotentialCandidate(
+  row: CompRow,
+  opts: { nowMs?: number; band?: AcreageBand | null } = {},
+): boolean {
+  const nowMs = opts.nowMs ?? Date.now();
+  if (row.price_kind !== 'sale') return false;
+  if (typeof row.price !== 'number' || row.price <= 0) return false;
+  if ((row.status || '') === 'rejected') return false;
+  if (!transactionEnrichmentProvider(row)) return false;
+  if (opts.band && !inAcreageBand(row.acres, opts.band)) return false;
+  // Known-ancient records are excluded on age; a coordinate cannot revive them.
+  if (classifySaleRecency(row.sale_or_list_date, nowMs).state === 'historical') return false;
+  const dated = supportedSaleDate(row.sale_or_list_date) != null;
+  const located = typeof row.lat === 'number' && typeof row.lng === 'number';
+  return !dated || !located;
+}
+
+export function compEvidenceSupportsAdmission(
+  row: CompRow,
+  opts: { nowMs?: number; band?: { min: number; max: number } | null } = {},
+): { admissible: boolean; missing: string[] } {
+  const missing: string[] = [];
+  const nowMs = opts.nowMs ?? Date.now();
+
+  if (row.price_kind !== 'sale') missing.push('closed sale');
+  if (typeof row.price !== 'number' || row.price <= 0) missing.push('sale price');
+  // Month-level precision is enough. A source disagreement about the exact day
+  // inside one month must not read as "undated".
+  if (supportedSaleDate(row.sale_or_list_date) == null) missing.push('sale date');
+  if (typeof row.acres !== 'number' || row.acres <= 0) missing.push('acreage');
+  // A PARCEL point. An area centroid is not a location, so a row carrying only
+  // `geo_lat`/`geo_lng` is unlocated for admission purposes.
+  if (typeof row.lat !== 'number' || typeof row.lng !== 'number') missing.push('parcel coordinates');
+  // Relevance is DISTANCE, never a shared county or ZIP name.
+  if (typeof row.distance_miles !== 'number') missing.push('distance from the subject');
+  if (/improved|residential|manufactured|mobile/i.test(row.property_class || '')) missing.push('vacant-land classification');
+  if ((row.status || '') === 'rejected') missing.push('non-rejected status');
+  if (opts.band && typeof row.acres === 'number' && (row.acres < opts.band.min || row.acres > opts.band.max)) {
+    missing.push('acreage inside the valuation band');
+  }
+  if (missing.length === 0 && classifySaleRecency(row.sale_or_list_date, nowMs).state !== 'recent') {
+    missing.push('recent sale');
+  }
+  return { admissible: missing.length === 0, missing };
+}
+
 export function rankCompsForTransactionEnrichment(
   rows: CompRow[],
   subjectAcres: number | null,
@@ -243,11 +378,20 @@ export function rankCompsForTransactionEnrichment(
   // Sufficiency of the CURRENT recent evidence, measured on the same rule the
   // valuation window uses. When it is already sufficient nothing here runs: an
   // enrichment slot spent then cannot change the answer.
+  // Sufficiency counts only records that could ACTUALLY be admitted. Counting
+  // "recent sale in the band" alone let a single unusable row — recent, priced,
+  // and located only by a ZIP-area centroid — declare the evidence sufficient
+  // and suppress enrichment for every other candidate.
+  // Sufficiency counts only records that could ACTUALLY be admitted, AND is
+  // withheld while any unresolved candidate could still outrank the selected
+  // set. It is satisfied only by resolving every higher-potential candidate or
+  // by exhausting the bounded budget, which the caller reports as partial.
+  const admissibleCount = rows.filter((row) =>
+    inAcreageBand(row.acres, band)
+    && compEvidenceSupportsAdmission(row, { nowMs }).admissible).length;
+  const higherPotential = rows.filter((row) => isHigherPotentialCandidate(row, { nowMs, band }));
   const recentEvidenceSufficient = opts.recentEvidenceSufficient
-    ?? recentSoldEvidenceSufficient(rows.filter((row) =>
-      row.price_kind === 'sale'
-      && inAcreageBand(row.acres, band)
-      && classifySaleRecency(row.sale_or_list_date, nowMs).state === 'recent').length);
+    ?? (recentSoldEvidenceSufficient(admissibleCount) && higherPotential.length === 0);
 
   const scored = rows
     .map((row) => ({ row, provider: transactionEnrichmentProvider(row) }))
@@ -380,6 +524,8 @@ export function extractLandWatchTransactionEvidence(capture: DetailPageCapture):
     provider: 'LandWatch',
     sourceUrl: capture.url,
     address: addressFromPageTitle(capture.title),
+    // LandWatch publishes its own parcel point in the same embedded shape.
+    coordinates: readOwnParcelPoint(unescaped),
     closedSale: false,
     soldDateIso: null,
     soldPrice: null,
@@ -474,6 +620,46 @@ export function parseUsLongDate(raw: string): string | null {
  * sold homes" comparison strip above it belongs to other properties and is
  * never read here — extraction starts at the sale-history heading.
  */
+/**
+ * The record's OWN "SOLD <date>" banner and price.
+ *
+ * Bounded deliberately: a Redfin record page carries a "Recently sold homes"
+ * comparison strip whose rows are OTHER parcels with their own SOLD dates and
+ * prices. Reading past that boundary would attribute a neighbour's sale to
+ * this property, so the search stops at the first such strip.
+ */
+export function readOwnSoldBanner(pageText: string): { dateIso: string; price: number | null } | null {
+  const boundary = pageText.search(/Recently sold homes|Nearby homes|Around this home/i);
+  const own = boundary >= 0 ? pageText.slice(0, boundary) : pageText;
+  const dated = /SOLD(?:\s+ON)?\s+([A-Z]{3})\s+(\d{1,2}),\s*(\d{4})/i.exec(own);
+  if (!dated) return null;
+  const iso = parseUsLongDate(`${dated[1]} ${dated[2]}, ${dated[3]}`);
+  if (!iso) return null;
+  const after = own.slice(dated.index);
+  const priceRaw = /\$[\d,]{3,}/.exec(after)?.[0] ?? null;
+  return { dateIso: iso, price: priceRaw ? money(priceRaw) : null };
+}
+
+/**
+ * The provider's own parcel point for the record being read.
+ *
+ * Redfin embeds the property's latitude/longitude in the page's own data. That
+ * is a PROVIDER PARCEL POINT — the provider stating where this property is —
+ * not a geocode and not an area centroid, so it is the strongest location
+ * available for the record. Taken only when the page exposes exactly one
+ * coordinate pair, so a map viewport or a neighbour row can never be mistaken
+ * for the subject record's own location.
+ */
+export function readOwnParcelPoint(scriptText: string): { lat: number; lng: number } | null {
+  const pairs = [...String(scriptText ?? '').matchAll(
+    /"lat(?:itude)?"\s*:\s*(-?\d+\.\d+)[\s\S]{0,120}?"l(?:ng|on|ongitude)"\s*:\s*(-?\d+\.\d+)/gi,
+  )].map((m) => ({ lat: Number(m[1]), lng: Number(m[2]) }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng)
+      && Math.abs(p.lat) <= 90 && Math.abs(p.lng) <= 180 && p.lat !== 0 && p.lng !== 0);
+  const unique = [...new Map(pairs.map((p) => [`${p.lat},${p.lng}`, p])).values()];
+  return unique.length === 1 ? unique[0] : null;
+}
+
 export function extractRedfinTransactionEvidence(capture: DetailPageCapture): CompTransactionEvidence {
   const text = capture.text.replace(/ /g, ' ');
   const homeId = redfinListingId(capture.url);
@@ -489,6 +675,7 @@ export function extractRedfinTransactionEvidence(capture: DetailPageCapture): Co
     improvementStatement: null,
     events: [],
     listingIdentity: homeId,
+    coordinates: null,
     provenance: '',
     limitation: null,
   };
@@ -499,6 +686,7 @@ export function extractRedfinTransactionEvidence(capture: DetailPageCapture): Co
     base.improved = /^(vacant land|land)$/i.test(propertyType) ? false : true;
   }
 
+  base.coordinates = readOwnParcelPoint(capture.scriptText ?? '');
   const lot = /\n([\d,]+(?:\.\d+)?)\s*acres?\s*\nLot Size\b/i.exec(text)?.[1] ?? null;
   if (lot) {
     const acres = Number(lot.replace(/,/g, ''));
@@ -507,7 +695,7 @@ export function extractRedfinTransactionEvidence(capture: DetailPageCapture): Co
 
   // Only this property's own sale history. Everything before the heading —
   // including the "Recently sold homes" strip — belongs to other parcels.
-  const historyStart = text.search(/Sale history for\b/i);
+  const historyStart = text.search(/Sale\s+history(\s+for)?\b/i);
   if (historyStart >= 0) {
     const block = text.slice(historyStart, historyStart + 3000);
     const lines = block.split(/\n+/).map((l) => l.trim()).filter(Boolean);
@@ -527,11 +715,25 @@ export function extractRedfinTransactionEvidence(capture: DetailPageCapture): Co
   }
   base.events.sort((a, b) => (a.dateIso < b.dateIso ? 1 : a.dateIso > b.dateIso ? -1 : 0));
 
+  // This property's OWN sold banner, for a record that states the sale in
+  // its header instead of a dated history row.
+  const bannerSold = readOwnSoldBanner(text);
+
   const soldEvent = base.events.find((e) => /^sold\b/i.test(e.event));
   if (soldEvent) {
     base.closedSale = true;
     base.soldDateIso = soldEvent.dateIso;
     base.soldPrice = soldEvent.price;
+  } else if (bannerSold) {
+    // A recently closed Redfin record states the sale in its header
+    // ("SOLD JUN 10, 2026") rather than in a dated history row. That is the
+    // property's own statement about itself, read only from the region ABOVE
+    // the "Recently sold homes" strip: every row inside that strip belongs
+    // to a different parcel.
+    base.closedSale = true;
+    base.soldDateIso = bannerSold.dateIso;
+    base.soldPrice = bannerSold.price;
+    base.events.push({ dateIso: bannerSold.dateIso, event: 'Sold', price: bannerSold.price, acres: null });
   } else {
     const offMarket = /OFF MARKET\s+([A-Z]{3})\s+(\d{4})\s+FOR\s+(\$[\d.,]+[KM]?)/i.exec(text);
     base.limitation = historyStart < 0
@@ -616,6 +818,9 @@ export interface CompTransactionPatch {
   price?: number;
   acres?: number;
   pricePerAcre?: number;
+  /** The provider's own parcel point, written only when the row had none. */
+  lat?: number;
+  lng?: number;
   /**
    * Corrected ONLY when the source decisively states whether the parcel that
    * sold carries a residence. This is a fact the existing improved-property
@@ -654,6 +859,15 @@ export function compTransactionUpdate(row: CompRow, evidence: CompTransactionEvi
 
   if (!evidence.closedSale || !evidence.soldDateIso) {
     return { compId: row.id, patch, changes, refusal: evidence.limitation ?? 'The source published no dated closed sale for this record.' };
+  }
+
+  // The provider's own parcel point, when the record has none. This is what
+  // makes a retained candidate locatable at all: without it the row can never
+  // state a distance, and every distance-based rule refuses it.
+  if (evidence.coordinates && (row.lat == null || row.lng == null)) {
+    patch.lat = evidence.coordinates.lat;
+    patch.lng = evidence.coordinates.lng;
+    changes.push(`Parcel coordinates established from the ${evidence.provider} record page.`);
   }
 
   if (normalizeSaleDateIso(row.sale_or_list_date) !== evidence.soldDateIso) {
@@ -764,6 +978,10 @@ export function applyCompTransactionEvidence(
   if (update.patch.acres != null) { sets.push('acres = ?'); args.push(update.patch.acres); }
   if (update.patch.pricePerAcre != null) { sets.push('price_per_acre = ?'); args.push(update.patch.pricePerAcre); }
   if (update.patch.propertyClass != null) { sets.push('property_class = ?'); args.push(update.patch.propertyClass); }
+  if (update.patch.lat != null && update.patch.lng != null) {
+    sets.push('lat = ?', 'lng = ?');
+    args.push(update.patch.lat, update.patch.lng);
+  }
 
   args.push(row.id);
   db.prepare(`UPDATE landos_comp SET ${sets.join(', ')} WHERE id = ?`).run(...args);
@@ -859,12 +1077,21 @@ export async function enrichCompTransactions(
 ): Promise<CompTransactionEnrichmentResult[]> {
   const capture = opts.capture ?? defaultCapture;
   const nowIso = opts.nowIso ?? (() => new Date().toISOString());
+  const allRows = listComps({ dealCardId });
+  const nowMs = Date.parse(nowIso()) || Date.now();
+  const band = valuationAcreageBand(opts.subjectAcres ?? null);
   const candidates = rankCompsForTransactionEnrichment(
-    listComps({ dealCardId }),
+    allRows,
     opts.subjectAcres ?? null,
     opts.limit ?? 8,
-    { nowMs: Date.parse(nowIso()) || Date.now() },
+    { nowMs },
   );
+  // Higher-potential candidates the bounded budget cannot reach on this run.
+  // Reported so an exhausted budget is an explicit PARTIAL result rather than a
+  // silent decision that the evidence was sufficient.
+  const unreachable = allRows
+    .filter((row) => isHigherPotentialCandidate(row, { nowMs, band }))
+    .filter((row) => !candidates.some((candidate) => candidate.row.id === row.id));
 
   const results: CompTransactionEnrichmentResult[] = [];
   for (const candidate of candidates) {
@@ -918,5 +1145,21 @@ export async function enrichCompTransactions(
     results.push({ ...base, enriched: true, changes: update.changes, reason: identity.reason });
   }
 
+  if (unreachable.length) {
+    // A synthetic, clearly-labelled row: it names what this run could not reach
+    // so the caller never reads an exhausted budget as a completed search.
+    results.push({
+      compId: -1,
+      provider: 'Redfin',
+      address: `${unreachable.length} higher-potential candidate(s) not reached`,
+      sourceUrl: '',
+      tierId: 'unresolved',
+      tierLabel: 'Unresolved',
+      enriched: false,
+      soldDateIso: null, soldPrice: null, acres: null, improved: null,
+      changes: [], priorEvents: [], provenance: '',
+      reason: `PARTIAL: the enrichment budget was exhausted with ${unreachable.length} unresolved, in-band, current candidate(s) still unread (${unreachable.map((row) => row.address_desc || `comp ${row.id}`).slice(0, 6).join('; ')}). Re-run to continue; the evidence is not established as sufficient.`,
+    });
+  }
   return results;
 }

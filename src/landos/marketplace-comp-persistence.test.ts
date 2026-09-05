@@ -89,4 +89,41 @@ describe('Realtor.com thinness counts only priceable, geographically relevant cl
     expect(priceableNonLandPortalSoldCount(rows, subject)).toBe(2);
     expect(priceableNonLandPortalSoldCount(null, subject)).toBe(0);
   });
+
+  // The scheduling rule the count feeds: Realtor.com is asked ONLY when the
+  // non-LandPortal pool is materially thin, i.e. Zillow + Redfin together
+  // produced fewer than three priceable, geographically relevant closed sales.
+  // LandPortal rows never count toward it, so a rich LandPortal set can never
+  // make the supplemental pool look sufficient.
+  const REALTOR_FALLBACK_THRESHOLD = 3;
+  const priceable = (n: number) => Array.from({ length: n }, (_, i) => ({
+    address: `${i + 1} Qualifying Rd, Lake Butler, FL 32054`,
+    status: 'sold', saleDate: '2026-01-0' + ((i % 9) + 1), acres: 1 + i, lat: 30.02, lng: -82.34,
+  }));
+
+  it('schedules the fallback below the threshold and skips it at or above', () => {
+    const zillowSold = priceable(1);
+    const redfinSold = priceable(1);
+    const thin = priceableNonLandPortalSoldCount(zillowSold, subject)
+      + priceableNonLandPortalSoldCount(redfinSold, subject);
+    expect(thin).toBe(2);
+    expect(thin < REALTOR_FALLBACK_THRESHOLD).toBe(true);
+
+    const sufficient = priceableNonLandPortalSoldCount(priceable(2), subject)
+      + priceableNonLandPortalSoldCount(priceable(1), subject);
+    expect(sufficient).toBe(3);
+    expect(sufficient < REALTOR_FALLBACK_THRESHOLD).toBe(false);
+  });
+
+  it('does not let unpriceable or distant rows push the pool over the threshold', () => {
+    const rows = [
+      ...priceable(2),
+      { address: '9 Undated Rd, Lake Butler, FL 32054', status: 'sold', saleDate: null, acres: 3 },
+      { address: '9 Far Rd, Jacksonville, FL 32099', status: 'sold', saleDate: '2026-01-01', acres: 3, lat: 30.33, lng: -81.65 },
+      { address: '9 House Rd, Lake Butler, FL 32054', status: 'sold', saleDate: '2026-01-01', acres: 3, homeSizeSqft: 1600 },
+    ];
+    const count = priceableNonLandPortalSoldCount(rows, subject);
+    expect(count).toBe(2);
+    expect(count < REALTOR_FALLBACK_THRESHOLD).toBe(true);
+  });
 });

@@ -20,7 +20,7 @@ import { readSessionConfig } from './browser-session.js';
 import { automationBrowserConfig, openDisposableContextHandle } from './automation-browser.js';
 import { parseListingStatus, type CompStatus } from './comp-extraction.js';
 import { laneSearchVerified, type CompLaneRouteOutcome } from './comp-lane-accountability.js';
-import { MAX_SOLD_SEARCH_WINDOW_MONTHS, type SoldSearchWindowMonths } from './comp-sale-recency.js';
+import { MAX_SOLD_SEARCH_WINDOW_MONTHS, recentSoldEvidenceSufficient, type SoldSearchWindowMonths } from './comp-sale-recency.js';
 
 // The EXTRACT/IS_BLOCKED functions execute INSIDE the disposable Chrome (not Node),
 // so DOM globals are declared as `any` purely to satisfy the Node typechecker.
@@ -36,6 +36,13 @@ export interface RedfinLandComp {
   url: string | null;
   source: 'Redfin';
   soldDate?: string | null;
+  /** True when the card printed no status and a VERIFIED sold-only board's own
+   *  filter established it as a closed record. The sale date is never inferred. */
+  statusFromBoardFilter?: boolean;
+  /** The verified sold board this status was inherited from. */
+  soldBoardUrl?: string | null;
+  /** The sold filter that made that board sold-only. */
+  soldBoardFilter?: string | null;
   listingDate?: string | null;
   daysOnMarket?: number | null;
   lat?: number | null;
@@ -101,6 +108,10 @@ export interface RawRedfinListing {
   residential: boolean;
   url: string | null;
   status?: string | null;
+  /** The provider's own coordinate for the record, from the card's JSON-LD
+   *  `geo` block. Never a geocode of the address text. */
+  lat?: number | null;
+  lng?: number | null;
   thumbnailUrl?: string | null;
 }
 
@@ -155,8 +166,106 @@ export function redfinLandFilterUrl(cityPath: string, opts: { sold?: boolean; da
 export const REDFIN_MAX_BOARD_PAGES = 3;
 
 /** "69 homes" as the board states it near its heading; null when unstated. */
+/**
+ * The canonical identity of a discovered land candidate.
+ *
+ * NEVER the address alone. Vacant land is routinely listed without a street
+ * number, and adjacent lots in one subdivision share a road name or the literal
+ * placeholder "TBD": two separate arms-length sales of two separate parcels
+ * would collapse into one record and a real transaction would vanish from the
+ * market. Identity is taken from the strongest evidence the card carries:
+ *
+ *   1. the provider's own record id (the numeric id in its URL),
+ *   2. failing that, the full listing URL,
+ *   3. failing that, the parcel point the card published,
+ *   4. and only then a COMPOUND of address + acreage + price + sale date, so
+ *      two lots on one road stay separate unless every one of those agrees.
+ */
+export function redfinCandidateIdentity(row: {
+  address?: string | null; url?: string | null; acres?: number | null;
+  price?: number | null; soldDate?: string | null; listingDate?: string | null;
+  lat?: number | null; lng?: number | null; apn?: string | null;
+}): string {
+  const recordId = redfinListingIdFromUrl(row.url);
+  if (recordId) return `redfin:${recordId}`;
+  const apn = (row.apn ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (apn) return `apn:${apn}`;
+  const url = (row.url ?? '').trim().toLowerCase();
+  if (url) return `url:${url}`;
+  if (typeof row.lat === 'number' && typeof row.lng === 'number') {
+    // ~1 m: two distinct parcels never share a published point this closely.
+    return `pt:${row.lat.toFixed(5)},${row.lng.toFixed(5)}`;
+  }
+  const address = (row.address ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!address) return '';
+  const date = (row.soldDate ?? row.listingDate ?? '').slice(0, 10);
+  return `cmp:${address}|${row.acres ?? '?'}|${row.price ?? '?'}|${date || '?'}`;
+}
+
+/** The numeric record id Redfin puts in every listing URL (`/home/194963699`). */
+export function redfinListingIdFromUrl(url: string | null | undefined): string | null {
+  return /\/home\/(\d+)/i.exec(String(url ?? ''))?.[1] ?? null;
+}
+
+/**
+ * Scroll a Redfin board until it stops producing new cards.
+ *
+ * Redfin renders its results lazily: a board stating 45 sold parcels paints
+ * about fifteen cards and only mounts the rest as the viewport travels. A fixed
+ * four-scroll pass therefore read the first fifteen and treated the board as
+ * exhausted, so verified sales inside the subject's own acreage range were
+ * never extracted at all — they were on the page, below the fold, and the lane
+ * had already stopped looking.
+ *
+ * Bounded: it stops as soon as a pass adds no cards, and never exceeds
+ * `maxPasses`, so a very long board cannot run away with the lane.
+ */
+async function scrollBoardUntilSettled(
+  page: { evaluate: <T>(fn: unknown) => Promise<T> },
+  extract: unknown,
+  sleepMs: number,
+  sleepFn: (ms: number) => Promise<void>,
+  maxPasses = 14,
+): Promise<RawRedfinListing[]> {
+  // ACCUMULATE WHILE SCROLLING, never once at the end.
+  //
+  // Redfin's results list is VIRTUALISED: it mounts roughly fifteen cards
+  // around the viewport and unmounts the rest. Reading the DOM once after
+  // scrolling therefore returns only the cards that happen to be mounted at
+  // that moment, which is why a board stating 45 sold parcels yielded exactly
+  // fifteen however far the page was scrolled — and why verified sales inside
+  // the subject's own acreage range never became candidates.
+  const byIdentity = new Map<string, RawRedfinListing>();
+  const absorb = async (): Promise<void> => {
+    try {
+      const rows = await page.evaluate<RawRedfinListing[]>(extract as never);
+      for (const row of rows ?? []) {
+        const key = redfinCandidateIdentity(row as never);
+        if (key && !byIdentity.has(key)) byIdentity.set(key, row);
+      }
+    } catch { /* a failed read simply contributes nothing to this pass */ }
+  };
+
+  await absorb();
+  let stable = 0;
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const before = byIdentity.size;
+    try { await page.evaluate('window.scrollBy(0,1400)'); } catch { /* ignore */ }
+    await sleepFn(sleepMs);
+    await absorb();
+    // Two consecutive passes adding nothing means the board has finished
+    // mounting whatever it intends to render.
+    stable = byIdentity.size > before ? 0 : stable + 1;
+    if (stable >= 2) break;
+  }
+  return [...byIdentity.values()];
+}
+
 export function redfinStatedHomeCount(pageText: string | null | undefined): number | null {
-  const match = (pageText ?? '').slice(0, 6000).match(/\b(\d{1,4}(?:,\d{3})?)\s+homes?\b/i);
+  // Redfin renders this glued to the heading ("...real estate45 homes"), so a
+  // leading word boundary never matches. The count is a diagnostic for the
+  // route note; pagination no longer depends on it being readable.
+  const match = (pageText ?? '').slice(0, 20000).match(/(\d{1,4}(?:,\d{3})?)\s+homes?\b/i);
   if (!match) return null;
   const value = Number(match[1].replace(/,/g, ''));
   return Number.isFinite(value) && value > 0 ? value : null;
@@ -172,11 +281,23 @@ export function redfinBoardPageUrl(boardUrl: string, pageNo: number): string {
  *  improved (residential) card is RETAINED and tagged rather than dropped —
  *  discovery collects the market evidence; classification decides Core /
  *  Directional / Excluded afterwards. */
+export interface RedfinBoardLineage {
+  /** True ONLY for a board whose geography was verified AND whose URL carries
+   *  Redfin's own `include=sold-<window>` filter. A mixed or unverified board
+   *  never confers sold status on a card that does not state it. */
+  soldBoardVerified?: boolean;
+  /** The exact board URL the inference came from, retained as lineage. */
+  boardUrl?: string | null;
+  /** The exact filter string that made it a sold-only board. */
+  boardFilter?: string | null;
+}
+
 export function normalizeRedfinListings(
   raw: RawRedfinListing[],
   _subjectAcres: number | null,
   mode: 'sold' | 'active' = 'active',
   propertyType: 'land' | 'manufactured' = 'land',
+  board: RedfinBoardLineage = {},
 ): RedfinLandComp[] {
   const seen = new Set<string>();
   const out: RedfinLandComp[] = [];
@@ -189,7 +310,24 @@ export function normalizeRedfinListings(
     if (seen.has(key)) continue;
     seen.add(key);
     const parsed = r.status ? parseListingStatus(r.status) : 'unknown';
-    const status: CompStatus = parsed === 'unknown' && mode === 'active' ? 'active' : parsed;
+    // AN UNLABELLED CARD ON A SOLD-ONLY BOARD IS A SOLD RECORD.
+    //
+    // Redfin renders the "SOLD <date>" banner outside the leaf card element for
+    // part of a board, so those cards reach here with no status text at all.
+    // Requiring the card to state it is sold therefore discarded real closed
+    // sales for a rendering detail: on one 45-home sold board it dropped 8 of
+    // 33 extracted records, including a 2.50-acre sale inside the subject's own
+    // acreage band. The board's own `include=sold-<window>` filter is what makes
+    // these sold records, so an unlabelled card inherits it. A card that labels
+    // itself as something else (for sale, pending, contingent, coming soon) is
+    // still excluded, because that label contradicts the filter.
+    // Inheritance is confined to a VERIFIED SOLD-ONLY board. On a mixed or
+    // unverified board an unlabelled card says nothing about having closed, and
+    // treating it as sold would invent a transaction.
+    const statusFromBoardFilter = parsed === 'unknown' && mode === 'sold' && board.soldBoardVerified === true;
+    const status: CompStatus = parsed !== 'unknown'
+      ? parsed
+      : mode === 'active' ? 'active' : statusFromBoardFilter ? 'sold' : 'unknown';
     const explicitSoldDate = mode === 'sold' && r.status
       ? (() => {
           const match = r.status.match(/\bsold(?:\s+on)?\s+([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\b/i);
@@ -198,11 +336,11 @@ export function normalizeRedfinListings(
           return Number.isFinite(parsedDate) ? new Date(parsedDate).toISOString().slice(0, 10) : null;
         })()
       : null;
-    // A sold-filter URL is a search request, not transaction evidence. Redfin
-    // sometimes returns a current home, active or unlabeled card on that page,
-    // so a sold candidate must at least STATE it is sold; the explicit sold
-    // date is retained when present but its absence no longer erases the
-    // candidate (that requirement manufactured false zero-result conclusions).
+    // A sold-filter URL is a search request, not transaction evidence. It
+    // establishes that the board returned the record, never when or whether it
+    // closed: `soldDate` stays null unless the card printed one, so a
+    // board-filter candidate still has to earn its date from the detail-page
+    // transaction read before anything can admit it.
     if (mode === 'sold' && status !== 'sold') continue;
     if (mode === 'active' && status === 'sold') continue;
     out.push({
@@ -214,6 +352,20 @@ export function normalizeRedfinListings(
       url: r.url ?? null,
       source: 'Redfin',
       soldDate: explicitSoldDate,
+      // Lineage for an inherited status: the board and filter that established
+      // it, so the inference is auditable rather than asserted.
+      ...(statusFromBoardFilter
+        ? { soldBoardUrl: board.boardUrl ?? null, soldBoardFilter: board.boardFilter ?? null }
+        : {}),
+      // (0, 0) is the null island, not a Florida parcel: a missing coordinate
+      // that reads as a valid number is worse than no coordinate at all.
+      ...(() => {
+        const rawLat = typeof r.lat === 'number' && Number.isFinite(r.lat) ? r.lat : null;
+        const rawLng = typeof r.lng === 'number' && Number.isFinite(r.lng) ? r.lng : null;
+        const located = rawLat != null && rawLng != null && (rawLat !== 0 || rawLng !== 0);
+        return { lat: located ? rawLat : null, lng: located ? rawLng : null };
+      })(),
+      statusFromBoardFilter,
       thumbnailUrl: r.thumbnailUrl ?? null,
       // A card on Redfin's manufactured board is a manufactured / mobile home
       // by the board's own filter, so it carries that label (the shared
@@ -306,7 +458,59 @@ const READ_SUGGESTION_HREFS = (): string => {
 };
 
 // In-page (runs INSIDE disposable Chrome). Broad selectors + text parsing.
-const EXTRACT_REDFIN = (): RawRedfinListing[] => {
+/**
+ * A property address as a Redfin card prints it.
+ *
+ * VACANT LAND OFTEN HAS NO STREET NUMBER. This pattern used to require a
+ * leading `\d+`, so cards reading "TBD SW 52nd Ter, Lake Butler, FL 32054" or
+ * "SW 107th Ave, Lake Butler, FL 32054" were not recognised as cards at all —
+ * the extractor discarded exactly the unnumbered land listings this lane
+ * exists to find, and no amount of scrolling or paging could recover them.
+ *
+ * The discriminator is the `, City, ST ZIP` tail, which ordinary card copy does
+ * not produce. The street part may be a number ("0 County Rd 241"), a lot
+ * placeholder ("TBD SW 52nd Ter", "Lot 9 SW 39th Dr") or a bare street name
+ * ("SW 107th Ave").
+ */
+/** Exported for tests. MUST stay identical to the literal inlined inside
+ *  `EXTRACT_REDFIN`, which is serialised into the browser page and cannot
+ *  reference anything from this module scope. */
+export const REDFIN_CARD_ADDRESS_PATTERN = /([A-Za-z0-9][\w .#'-]*?,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5})/;
+
+/**
+ * The same address with NO CITY: "Lot 7 SW 39th Dr, FL 32054", "71st Way, FL
+ * 32054". Redfin prints this shape whenever it has not resolved the locality
+ * (its own URL then reads `/FL/Unknown/...`), and it is common on exactly the
+ * unplatted vacant land this lane exists to find — a $50,000 1.67-acre sale on
+ * the same street as an already-selected comp was lost to it.
+ *
+ * A bare "Lake Butler, FL 32054" also fits `<something>, ST ZIP`, and admitting
+ * that would invent a street address out of a city name, so this shape is only
+ * accepted when the street part carries a house/lot number or a street-type
+ * word. The city-bearing pattern above is always tried first.
+ */
+export const REDFIN_CARD_ADDRESS_NO_CITY_PATTERN = /((?=[\w .#'-]*?(?:\d|\b(?:Ave|St|Dr|Ln|Ter|Way|Rd|Ct|Path|Loop|Blvd|Pl|Trl|Cir|Hwy|Pkwy|Sr|Cr)\b))[A-Za-z0-9][\w .#'-]*?,\s*[A-Z]{2}\s*\d{5})/i;
+
+
+/**
+ * Reject an "address" whose street part is really card measurements.
+ *
+ * A city-only card prints "1,008 sq ftLake Butler, FL 32054", and the digit
+ * guard above accepts "008 sq ft" as a street number. That manufactures a
+ * street address out of a floor area, which every downstream identity,
+ * distance and parcel check would then treat as a place. Measurement words
+ * never appear in a street name, so their presence disqualifies the match.
+ */
+export function redfinAddressIsPlausible(address: string | null | undefined): boolean {
+  const text = String(address ?? '').trim();
+  if (!text) return false;
+  // The WHOLE address is tested, not the part before the first comma: a floor
+  // area carries its own thousands separator ("1,293 sq ftNW 9th Ave, ..."), so
+  // splitting on a comma hides the very words this rejects. A city, state or
+  // ZIP never contains them either, so testing the whole string is safe.
+  return !/\b(?:sq|acres?|beds?|baths?|ba|bd)\b/i.test(text);
+}
+export const EXTRACT_REDFIN = (): RawRedfinListing[] => {
   const out: RawRedfinListing[] = [];
   const seen = new Set<string>();
   // Redfin nests card-like wrappers (the whole results column carries a
@@ -317,7 +521,8 @@ const EXTRACT_REDFIN = (): RawRedfinListing[] => {
   const matched = Array.from((document as any).querySelectorAll('.HomeCardContainer,[class*="HomeCard" i],.bp-Homecard,[class*="MapHomeCard" i],[data-rf-test-id*="mapHomeCard" i],div[class*="homecard" i]')) as any[];
   const cardLike = matched.filter((el: any) => {
     const text = String(el.textContent ?? '');
-    return /\$\d/.test(text) && /\d+\s+[\w .]+,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5}/.test(text);
+    return /\$\d/.test(text) && (/([A-Za-z0-9][\w .#'-]*?,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5})/.test(text)
+      || /((?=[\w .#'-]*?(?:\d|\b(?:Ave|St|Dr|Ln|Ter|Way|Rd|Ct|Path|Loop|Blvd|Pl|Trl|Cir|Hwy|Pkwy|Sr|Cr)\b))[A-Za-z0-9][\w .#'-]*?,\s*[A-Z]{2}\s*\d{5})/i.test(text));
   });
   const cards = cardLike.filter((el: any) => !cardLike.some((other: any) => other !== el && el.contains(other)));
   for (const c of cards as any[]) {
@@ -336,17 +541,48 @@ const EXTRACT_REDFIN = (): RawRedfinListing[] => {
     // Address: prefer a dedicated address element, else a street-address regex.
     const addrEl: any = c.querySelector('[class*="Address" i],address');
     const addrText = (addrEl && (addrEl.textContent || '').replace(/\s+/g, ' ').trim()) || '';
-    const addrM = addrText.match(/(\d+\s+[\w .]+,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5})/) || txt.match(/(\d+\s+[\w .]+?,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5})/);
-    const address = addrM ? addrM[1].replace(/\s+/g, ' ').trim() : null;
+    const addrM = addrText.match(/([A-Za-z0-9][\w .#'-]*?,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5})/) || txt.match(/([A-Za-z0-9][\w .#'-]*?,\s*[A-Za-z .]+,\s*[A-Z]{2}\s*\d{5})/)
+      // Then the city-less shape Redfin prints for unresolved localities.
+      || addrText.match(/((?=[\w .#'-]*?(?:\d|\b(?:Ave|St|Dr|Ln|Ter|Way|Rd|Ct|Path|Loop|Blvd|Pl|Trl|Cir|Hwy|Pkwy|Sr|Cr)\b))[A-Za-z0-9][\w .#'-]*?,\s*[A-Z]{2}\s*\d{5})/i)
+      || txt.match(/((?=[\w .#'-]*?(?:\d|\b(?:Ave|St|Dr|Ln|Ter|Way|Rd|Ct|Path|Loop|Blvd|Pl|Trl|Cir|Hwy|Pkwy|Sr|Cr)\b))[A-Za-z0-9][\w .#'-]*?,\s*[A-Z]{2}\s*\d{5})/i);
+    const rawAddress = addrM ? addrM[1].replace(/\s+/g, ' ').trim() : null;
+    // Inlined copy of `redfinAddressIsPlausible` (this function is serialised
+    // into the page and cannot reach module scope): a street part carrying
+    // measurement words is card copy, not an address.
+    const address = rawAddress && rawAddress.trim() && !/\b(?:sq|acres?|beds?|baths?|ba|bd)\b/i.test(rawAddress)
+      ? rawAddress
+      : null;
     // Residential ONLY when a POSITIVE bed/bath count is present (Redfin land cards
     // still render "— beds / — baths" placeholders, which must NOT flag as a home).
     const residential = /\b[1-9]\d*\s*(?:beds?|bd)\b/i.test(txt) || /\b[1-9]\d*\s*(?:baths?|ba)\b/i.test(txt);
     const link = ((c.querySelector('a[href*="/home/"],a[href]') || {}) as any).href || null;
+    // THE CARD ALREADY CARRIES THE PARCEL POINT.
+    //
+    // Every Redfin card embeds a JSON-LD block with a `geo` object. Dropping it
+    // here forced a second detail-page read per record to recover a location,
+    // and records whose detail read produced no single point stayed unlocated
+    // for good: they could not be distance-ranked and never reached the map.
+    // Reading it costs nothing and it is the provider's own coordinate for the
+    // record, not a geocode of its address text.
+    let lat: number | null = null;
+    let lng: number | null = null;
+    try {
+      const ld = c.querySelector('script[type="application/ld+json"]');
+      const parsed = ld ? JSON.parse(String(ld.textContent ?? '')) : null;
+      for (const entry of (Array.isArray(parsed) ? parsed : [parsed])) {
+        const geo = entry && (entry as any).geo;
+        const rawLat = Number(geo?.latitude);
+        const rawLng = Number(geo?.longitude);
+        if (Number.isFinite(rawLat) && Number.isFinite(rawLng) && (rawLat !== 0 || rawLng !== 0)) {
+          lat = rawLat; lng = rawLng; break;
+        }
+      }
+    } catch { /* a card without usable JSON-LD simply has no point */ }
     const image: any = c.querySelector('img[src],img[data-src]');
     const thumbnailUrl = (image?.currentSrc || image?.src || image?.getAttribute?.('data-src') || '').trim() || null;
     if (price && address && !seen.has(address)) {
       seen.add(address);
-      out.push({ price, acres, sqftLot, address, residential, url: link, status: statusText, thumbnailUrl });
+      out.push({ price, acres, sqftLot, address, residential, url: link, status: statusText, thumbnailUrl, lat, lng });
     }
   }
   return out;
@@ -470,6 +706,32 @@ export async function fetchRedfinLandComps(rawInput: RedfinFetchInput, deps: Red
   const filtersUsed = `${lotMin ? 'property-type=land+house' : 'property-type=land'}${lotMin ? `, ${lotMin}` : ''}${sold ? ', include=sold' : ' (active)'}`;
   const routes: CompLaneRouteOutcome[] = [];
   const counts = { visible: 0, extracted: 0, normalized: 0 };
+  // ACCUMULATE ACROSS ROUTES.
+  //
+  // Returning on the first route that produced ANY candidate meant a narrow
+  // road or locality board could end the search while the county board — the
+  // one that actually lists the market's sold land — was never opened. Real
+  // qualifying sales sat on routes the lane had stopped short of. Candidates
+  // are now gathered across routes and deduplicated by address, and the search
+  // ends early only once the retained evidence is genuinely sufficient.
+  const accumulated: RedfinLandComp[] = [];
+  const seenAccumulated = new Set<string>();
+  const collect = (rows: RedfinLandComp[]): number => {
+    let added = 0;
+    for (const row of rows) {
+      const key = redfinCandidateIdentity(row);
+      if (!key || seenAccumulated.has(key)) continue;
+      seenAccumulated.add(key);
+      accumulated.push(row);
+      added += 1;
+    }
+    return added;
+  };
+  const routesUsed: string[] = [];
+  /** True when a board still had fresh candidates when the page bound was hit. */
+  let boardTruncated = false;
+  /** The last route's page-by-page read, for the exhausted-routes note. */
+  let paginationNote = '';
   const done = (result: Omit<RedfinCompsResult, 'routes' | 'searchVerified' | 'retrievalCounts'>): RedfinCompsResult =>
     ({ ...result, routes: [...routes], searchVerified: laneSearchVerified(routes), retrievalCounts: { ...counts } });
   if (!deps.force && !deps.connect) {
@@ -524,9 +786,9 @@ export async function fetchRedfinLandComps(rawInput: RedfinFetchInput, deps: Red
       routeTried = landUrl;
       await page.goto(landUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
       await sleep(settleMs);
-      for (let i = 0; i < 4; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
+      const scrolled = await scrollBoardUntilSettled(page as never, EXTRACT_REDFIN, scrollSettleMs, sleep);
       const blocked = await page.evaluate<boolean>(IS_BLOCKED as unknown as () => boolean);
-      const rawList = await page.evaluate<RawRedfinListing[]>(EXTRACT_REDFIN as unknown as () => RawRedfinListing[]);
+      const rawList = scrolled;
       const cardsFound = rawList?.length ?? 0;
       if (blocked && cardsFound === 0) {
         routes.push({ label: query.label, url: landUrl, reached: true, blocked: true, cardsFound: 0, marketVerified: false, qualifying: 0, outcome: `Redfin served an anti-bot page instead of the ${filtersUsed} results for ${query.label}.` });
@@ -545,26 +807,52 @@ export async function fetchRedfinLandComps(rawInput: RedfinFetchInput, deps: Red
       let allRaw: RawRedfinListing[] = [...(rawList ?? [])];
       const statedTotal = redfinStatedHomeCount(pageGeo.text);
       let pagesRead = 1;
-      if (statedTotal != null && statedTotal > allRaw.length) {
+      // ALWAYS TRY THE NEXT BOARD PAGE.
+      //
+      // Pagination used to run only when the board's stated home count could be
+      // parsed and exceeded what page 1 rendered. That count is read from a
+      // truncated snapshot of the page, and Redfin renders it glued to the
+      // preceding heading ("...real estate45 homes"), so it frequently could not
+      // be read at all — and a board stating 45 sold parcels contributed only
+      // the ~15 its first page happened to render. Verified sales inside the
+      // subject's own acreage range sat on page 2 and never became candidates.
+      //
+      // The loop already stops the moment a page yields no fresh addresses, and
+      // is bounded by REDFIN_MAX_BOARD_PAGES, so trying the next page is cheap
+      // and cannot run away.
+      {
         const seenAddress = new Set(allRaw.map((row) => (row.address ?? '').toLowerCase()));
-        for (let pageNo = 2; pageNo <= REDFIN_MAX_BOARD_PAGES && allRaw.length < statedTotal; pageNo++) {
+        for (let pageNo = 2; pageNo <= REDFIN_MAX_BOARD_PAGES
+          && (statedTotal == null || allRaw.length < statedTotal); pageNo++) {
           try {
             await page.goto(redfinBoardPageUrl(landUrl, pageNo), { waitUntil: 'domcontentloaded', timeout: timeoutMs });
             await sleep(settleMs);
-            for (let i = 0; i < 4; i++) { try { await page.evaluate('window.scrollBy(0,1200)'); } catch { /* ignore */ } await sleep(scrollSettleMs); }
-            const more = await page.evaluate<RawRedfinListing[]>(EXTRACT_REDFIN as unknown as () => RawRedfinListing[]);
+            const more = await scrollBoardUntilSettled(page as never, EXTRACT_REDFIN, scrollSettleMs, sleep);
             const fresh = (more ?? []).filter((row) => row.address && !seenAddress.has(row.address.toLowerCase()));
             if (!fresh.length) break;
             for (const row of fresh) seenAddress.add((row.address ?? '').toLowerCase());
             allRaw = [...allRaw, ...fresh];
             pagesRead += 1;
+            // Fresh candidates were STILL arriving as the bound was reached, so
+            // the board is deeper than this search read. That is a partial
+            // result and must never be reported as a complete market read.
+            if (pageNo === REDFIN_MAX_BOARD_PAGES) boardTruncated = true;
           } catch { break; }
         }
       }
       const extracted = allRaw.filter((row) => !!row.address && typeof row.price === 'number' && row.price > 0).length;
-      const comps = normalizeRedfinListings(allRaw, input.subjectAcres ?? null, sold ? 'sold' : 'active', input.propertyType ?? 'land');
+      // This board is sold-only only when its geography was verified above AND
+      // its own URL carries Redfin's sold-window filter.
+      const soldBoardVerified = sold && /include=sold-/i.test(landUrl);
+      const comps = normalizeRedfinListings(
+        allRaw, input.subjectAcres ?? null, sold ? 'sold' : 'active', input.propertyType ?? 'land',
+        { soldBoardVerified, boardUrl: landUrl, boardFilter: filtersUsed },
+      );
       const cardsFoundAllPages = allRaw.length;
       const pageNote = pagesRead > 1 ? ` across ${pagesRead} board page(s)${statedTotal != null ? ` of ${statedTotal} stated homes` : ''}` : '';
+      // Kept for the exhausted-routes note below: a board read page by page is
+      // still a paged read when the last route did not settle the answer.
+      if (pageNote) paginationNote = pageNote;
       counts.visible = Math.max(counts.visible, cardsFoundAllPages);
       counts.extracted = Math.max(counts.extracted, extracted);
       routes.push({
@@ -574,11 +862,31 @@ export async function fetchRedfinLandComps(rawInput: RedfinFetchInput, deps: Red
           : `Opened ${landUrl} and verified it as this subject's market; it exposed ${cardsFoundAllPages} card(s)${pageNote} and none survived extraction/status screening as a ${sold ? 'sold' : 'active'} candidate.`,
       });
       if (!comps.length) continue;
-      counts.normalized = Math.max(counts.normalized, comps.length);
+      const added = collect(comps);
+      routesUsed.push(`${query.label} (+${added})`);
+      counts.normalized = Math.max(counts.normalized, accumulated.length);
+      // Stop only when the accumulated set can actually price the subject.
+      // Anything less and the next route may hold the sale that can.
+      const qualifying = accumulated.filter((row) => row.status === 'sold' && row.price != null).length;
+      const boardFiltered = accumulated.filter((row) => row.statusFromBoardFilter).length;
+      // Say plainly how many candidates the board's filter carried rather than
+      // the card's own banner, so the read is auditable.
+      const inheritedNote = boardFiltered ? ` ${boardFiltered} card(s) printed no status banner and are sold by the board's own filter (no sale date inferred).` : '';
+      if (!recentSoldEvidenceSufficient(sold ? qualifying : accumulated.length)) continue;
       return done({
-        status: 'retrieved', comps,
-        note: `Redfin verified ${query.label}: ${cardsFoundAllPages} visible card(s)${pageNote} → ${extracted} extracted → ${comps.length} ${sold ? 'sold' : 'active'} candidate(s)${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''}.`,
+        status: 'retrieved', comps: [...accumulated],
+        note: `Redfin verified ${routesUsed.join('; ')}: ${accumulated.length} ${sold ? 'sold' : 'active'} candidate(s) retained across ${routesUsed.length} route(s)${pageNote}${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''} (no price or acreage filter).${inheritedNote}${boardTruncated ? ` PARTIAL: fresh candidates were still appearing when the ${REDFIN_MAX_BOARD_PAGES}-page bound was reached, so this board was not read to the end and the market read is incomplete.` : ''}`,
         routeTried: landUrl, filtersUsed,
+      });
+    }
+    // Every route was tried. Anything gathered along the way is the answer.
+    if (accumulated.length) {
+      const boardFilteredAll = accumulated.filter((row) => row.statusFromBoardFilter).length;
+      const inheritedNote = boardFilteredAll ? ` ${boardFilteredAll} card(s) printed no status banner and are sold by the board's own filter (no sale date inferred).` : '';
+      return done({
+        status: 'retrieved', comps: [...accumulated],
+        note: `Redfin verified ${routesUsed.join('; ')}: ${accumulated.length} ${sold ? 'sold' : 'active'} candidate(s) retained across ${routesUsed.length} route(s)${paginationNote} after exhausting all ${queries.length} route(s)${failedGeographies.length ? ` after automatically correcting ${failedGeographies.length} wrong-geography route(s)` : ''} (no price or acreage filter).${inheritedNote}${boardTruncated ? ` PARTIAL: fresh candidates were still appearing when the ${REDFIN_MAX_BOARD_PAGES}-page bound was reached, so this board was not read to the end and the market read is incomplete.` : ''}`,
+        routeTried, filtersUsed,
       });
     }
     const verified = laneSearchVerified(routes);

@@ -14,7 +14,59 @@
  *   - 40% and 60% benchmarks derive from Combined LandOS FMV only. No 50%.
  */
 
+import { createHash } from 'node:crypto';
+
 import type { CleanedValuation, WorkspaceComp } from './comps-valuation.js';
+
+/**
+ * Bumped whenever the arithmetic above changes. A stored decision that names an
+ * older method version was produced by different rules and cannot be presented
+ * as the current valuation without recomputation.
+ */
+export const VALUATION_METHOD_VERSION = 'landos-valuation-1.0.0';
+/** Bumped when comp discovery/selection policy (acreage band, window) changes. */
+export const VALUATION_SEARCH_POLICY_VERSION = 'landos-comp-search-1.0.0';
+
+/**
+ * What this valuation was computed FROM.
+ *
+ * The valuation is recomputed on every read rather than stored, so without
+ * these stamps nothing downstream could tell whether a Strategy Comparison or
+ * Deal Brain decision was made against the current subject and the current comp
+ * evidence, or against an older set that merely looked the same. Every field is
+ * derived from inputs only, so an identical rerun produces an identical
+ * `correlationId` and writes nothing.
+ */
+export interface ValuationProvenance {
+  /** The accepted subject identity this was valued for. */
+  subjectIdentityVersionId: number | null;
+  subjectVersion: number | null;
+  subjectAcres: number | null;
+  /** Stable hash of the SELECTED closed-sale set that produced the value. */
+  selectedCompSetVersion: string;
+  selectedCompCount: number;
+  /** Stable hash of every comp admitted, selected or not. */
+  compEvidenceFingerprint: string;
+  methodVersion: string;
+  searchPolicyVersion: string;
+  confidence: ValuationConfidence;
+  /** When this package was produced. */
+  producedAt: string;
+  /**
+   * One id correlating the package to the exact evidence it consumed.
+   * Deterministic: same subject + same evidence + same method = same id.
+   */
+  correlationId: string;
+}
+
+function stableHash(parts: unknown): string {
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16);
+}
+
+/** Identity of one comp for fingerprinting: what it IS, never its row id. */
+function compFingerprintParts(comp: WorkspaceComp): unknown {
+  return [comp.key, comp.price ?? null, comp.acres ?? null, comp.dateIso ?? null, comp.category];
+}
 
 export type ValuationConfidence = 'high' | 'moderate' | 'low' | 'unavailable';
 
@@ -113,6 +165,10 @@ export interface CompsValuationPackage {
   activeCompetition: ActiveCompetitionSummary;
   landHomePackage: LandHomePackageScreen;
   landWatch: { applicable: boolean; thresholdAcres: number; additive: true; note: string };
+  /** What this valuation was computed from. Consumers must refuse to present
+   *  the package as current guidance when it does not correlate to the
+   *  subject and evidence they are reasoning about. */
+  provenance: ValuationProvenance;
 }
 
 export const LAND_HOME_MIN_USABLE_ACRES = 0.5;
@@ -190,6 +246,13 @@ export interface ValuationPackageInput {
    *  or same-subdivision sale. Retained facts only; null when unknown. */
   subjectStreet?: string | null;
   subjectSubdivision?: string | null;
+  /** The accepted subject identity version this valuation is being computed
+   *  for, so the package can be correlated to it. Null when the subject is not
+   *  yet established; the package then carries a null subject stamp rather
+   *  than pretending to be correlated. */
+  subjectIdentity?: { versionId: number; version: number } | null;
+  /** Injectable for deterministic tests; defaults to now. */
+  producedAt?: string;
 }
 
 /** "19517 NW 137th Ln, Lake Butler, FL 32054" → "nw 137th ln" (comparison key). */
@@ -369,8 +432,16 @@ export function computeValuationPackage(input: ValuationPackageInput): CompsValu
     };
   }
 
-  const offer40 = combined.value != null ? round500(combined.value * 0.4) : null;
-  const offer60 = combined.value != null ? round500(combined.value * 0.6) : null;
+  // EXACT percentages of the displayed Combined LandOS FMV.
+  //
+  // These were rounded to the nearest $500, which made them disagree with the
+  // arithmetic they claim to be: at a $56,000 FMV the operator read "40%" beside
+  // $22,500 when 40% is $22,400. A benchmark labelled as a percentage must BE
+  // that percentage. Rounding belongs to a negotiation target, which is stated
+  // separately and labelled as rounded; it never silently edits a stated
+  // percentage of the governing value.
+  const offer40 = combined.value != null ? Math.round(combined.value * 0.4) : null;
+  const offer60 = combined.value != null ? Math.round(combined.value * 0.6) : null;
 
   // ── One concise collective comparison over the selected sold comps ───────
   const selected = (nonLpInSet.length || lpSold.some((c) => c.inValuationSet))
@@ -532,6 +603,36 @@ export function computeValuationPackage(input: ValuationPackageInput): CompsValu
   };
 
   const landWatchApplicable = acres != null && acres >= LANDWATCH_ADDITIVE_MIN_ACRES;
+  // ── Provenance ───────────────────────────────────────────────────────────
+  // Ordered by the comp's own stable key so the fingerprint depends on WHICH
+  // evidence was used, never on the order it happened to be assembled in.
+  const selectedComps = input.comps
+    .filter((comp) => comp.inValuationSet && isClosedSale(comp))
+    .map(compFingerprintParts)
+    .sort();
+  const allComps = input.comps.map(compFingerprintParts).sort();
+  const selectedCompSetVersion = stableHash(selectedComps);
+  const compEvidenceFingerprint = stableHash(allComps);
+  const provenance: ValuationProvenance = {
+    subjectIdentityVersionId: input.subjectIdentity?.versionId ?? null,
+    subjectVersion: input.subjectIdentity?.version ?? null,
+    subjectAcres: acres,
+    selectedCompSetVersion,
+    selectedCompCount: selectedComps.length,
+    compEvidenceFingerprint,
+    methodVersion: VALUATION_METHOD_VERSION,
+    searchPolicyVersion: VALUATION_SEARCH_POLICY_VERSION,
+    confidence: combined.confidence,
+    producedAt: input.producedAt ?? new Date().toISOString(),
+    // Deterministic over inputs only — `producedAt` is deliberately excluded so
+    // an identical rerun correlates identically and writes nothing.
+    correlationId: stableHash([
+      input.subjectIdentity?.versionId ?? null, acres,
+      selectedCompSetVersion, compEvidenceFingerprint,
+      VALUATION_METHOD_VERSION, VALUATION_SEARCH_POLICY_VERSION,
+      combined.value, combined.method,
+    ]),
+  };
   return {
     landPortalFmv,
     nonLandPortalFmv,
@@ -550,5 +651,6 @@ export function computeValuationPackage(input: ValuationPackageInput): CompsValu
         ? `Subject is ${acres} acres: LandWatch is added to the non-LandPortal provider set alongside Zillow, Redfin, Realtor.com, county and manual sources; it never replaces them.`
         : `Subject is under ${LANDWATCH_ADDITIVE_MIN_ACRES} acres: LandWatch is not added; the normal provider set applies.`,
     },
+    provenance,
   };
 }

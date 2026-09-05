@@ -105,13 +105,37 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
     expect(r.routeTried).toBe('https://www.redfin.com/city/23728/FL/Lehigh-Acres/filter/property-type=land');
   });
 
-  it('uses the public sold-land filter but refuses to mark ambiguous rows sold', async () => {
-    const r = await fetchRedfinLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25, mode: 'sold' }, {
+  it('lets a verified sold-only board carry an unlabelled row, and retains the board as lineage', () => {
+    // Redfin renders the "SOLD <date>" banner outside the leaf card element on
+    // part of a board, so real closed sales arrive with no status text. The
+    // board's own `include=sold-<window>` filter is what makes them sold, and
+    // that board and filter are retained on the record so the inference is
+    // auditable. The sale DATE is never inferred.
+    return fetchRedfinLandComps({ city: 'Lehigh Acres', state: 'FL', subjectAcres: 0.25, mode: 'sold' }, {
       force: true, connect: fakeConnect(HREFS, listings) as never, timeoutMs: 10, settleMs: 1, scrollSettleMs: 1,
+    }).then((r) => {
+      expect(r.filtersUsed).toContain('include=sold');
+      expect(r.routeTried).toContain('include=sold');
+      expect(r.comps).toHaveLength(1);
+      expect(r.comps[0].status).toBe('sold');
+      expect(r.comps[0].statusFromBoardFilter).toBe(true);
+      expect(r.comps[0].soldDate ?? null).toBeNull();
+      expect(r.comps[0].soldBoardUrl).toContain('include=sold-');
+      expect(r.comps[0].soldBoardFilter).toContain('include=sold');
+      expect(r.note).toContain('printed no status banner');
     });
-    expect(r.filtersUsed).toContain('include=sold');
-    expect(r.routeTried).toContain('include=sold');
-    expect(r.comps).toHaveLength(0);
+  });
+
+  it('never lets a mixed or unverified board confer sold status', () => {
+    // The same unlabelled row, judged without a verified sold-only board, says
+    // nothing about having closed and must not become a transaction.
+    expect(normalizeRedfinListings(listings, 0.25, 'sold')).toHaveLength(0);
+    expect(normalizeRedfinListings(listings, 0.25, 'sold', 'land', { soldBoardVerified: false })).toHaveLength(0);
+    const onVerified = normalizeRedfinListings(listings, 0.25, 'sold', 'land', {
+      soldBoardVerified: true, boardUrl: 'https://www.redfin.com/zipcode/33971/filter/property-type=land,include=sold-1yr', boardFilter: 'property-type=land, include=sold',
+    });
+    expect(onVerified).toHaveLength(1);
+    expect(onVerified[0].statusFromBoardFilter).toBe(true);
   });
 
   it('accepts a sold-board row only when the row itself states sold', async () => {
@@ -178,7 +202,12 @@ describe('fetchRedfinLandComps (injected, no real browser)', () => {
     const result = await fetchRedfinLandComps(input, { force: true, connect: connect as never, timeoutMs: 10, settleMs: 1, suggestionSettleMs: 1, scrollSettleMs: 1 });
     expect(result.status).toBe('retrieved');
     expect(result.routeTried).toContain('/zipcode/33971/');
-    expect(result.note).toMatch(/automatically correcting 1 wrong-geography route/i);
+    // The lane now reads EVERY route and accumulates, rather than returning on
+    // the first productive one, so it corrects and discloses every route that
+    // resolved to the wrong geography: here the coordinate, ZIP and county
+    // routes all resolved outside FL and only the locality route was this
+    // subject's market. The disclosure is made on both exit paths.
+    expect(result.note).toMatch(/automatically correcting 3 wrong-geography route\(s\)/i);
   });
 });
 

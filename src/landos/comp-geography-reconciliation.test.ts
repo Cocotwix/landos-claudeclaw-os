@@ -69,7 +69,7 @@ describe('reconcileCompGeography', () => {
     expect(result.byTier.local).toBe(1);
   });
 
-  it('falls back to a ZIP-area centroid, labels it approximate, and never calls it local', async () => {
+  it('retains a ZIP-area centroid but states no distance, so the record stays geographically unresolved', async () => {
     const dealId = fairviewDeal();
     addComp({
       entity: 'TY_LAND_BIZ', dealCardId: dealId, sourceLabel: 'LandWatch',
@@ -93,16 +93,26 @@ describe('reconcileCompGeography', () => {
     const fairview = rows.find((r) => r.zip === '37062') as (typeof rows)[number];
 
     expect(collegeGrove.city).toBe('College Grove');
-    expect(collegeGrove.geo_precision).toBe('approximate');
-    expect(collegeGrove.geo_tier).toBe('broader');
-    expect(collegeGrove.distance_miles as number).toBeGreaterThan(20);
+    // A distance may only come from a PARCEL point. Measuring to the middle of
+    // a postal area produced a precise-looking mileage that every record in
+    // that ZIP shared, which the operator reads as a measured separation from
+    // the subject and is not one. With no parcel point the record carries NO
+    // distance and is tiered `unresolved` — retained market context, never
+    // local evidence.
+    expect(collegeGrove.distance_miles).toBeNull();
+    expect(collegeGrove.geo_precision).toBe('unresolved');
+    expect(collegeGrove.geo_tier).toBe('unresolved');
 
-    expect(fairview.geo_precision).toBe('approximate');
+    expect(fairview.distance_miles).toBeNull();
+    expect(fairview.geo_precision).toBe('unresolved');
+    // Landing inside the subject's own ZIP still may not be promoted to local.
     expect(fairview.geo_tier).not.toBe('local');
-    expect(fairview.geo_tier).toBe('expanded');
+    expect(fairview.geo_tier).toBe('unresolved');
 
     // The area point NEVER reaches the parcel columns. Those pin the map and
     // drive canonical identity, and every listing in a ZIP shares one centroid.
+    // It is still RETAINED (geo_lat), because knowing the postal area is real
+    // disclosed evidence — it simply cannot state a distance.
     for (const row of [collegeGrove, fairview]) {
       expect(row.lat).toBeNull();
       expect(row.lng).toBeNull();
@@ -121,8 +131,10 @@ describe('reconcileCompGeography', () => {
     await reconcileCompGeography(dealId, { fetchImpl: stubFetch(), runAddressGeocode: false });
     await reconcileCompGeography(dealId, { fetchImpl: stubFetch(), runAddressGeocode: false });
     const [row] = listComps({ dealCardId: dealId });
-    expect(row.geo_precision).toBe('approximate');
+    // A rerun can never quietly promote an area point into a parcel point.
+    expect(row.geo_precision).toBe('unresolved');
     expect(row.lat).toBeNull();
+    expect(row.geo_lat).not.toBeNull();
   });
 
   it('keeps records that share one ZIP centroid as separate comparables', async () => {
@@ -144,10 +156,13 @@ describe('reconcileCompGeography', () => {
     const view = buildCompsValuationView(dealId);
     expect(view!.comps).toHaveLength(3);
     expect(view!.canonicalCompCount).toBe(3);
-    // Each is measurable against the subject, and none is placed on the map.
+    // They remain three SEPARATE comparables even though they share one ZIP
+    // centroid — the centroid never merges records. None is placed on the map,
+    // and none states a distance: a shared area point cannot measure any of
+    // them against the subject.
     for (const comp of view!.comps) {
-      expect(comp.distanceMiles).not.toBeNull();
-      expect(comp.geography.precision).toBe('approximate');
+      expect(comp.distanceMiles).toBeNull();
+      expect(comp.geography.precision).toBe('unresolved');
       expect(comp.locationResolved).toBe(false);
       expect(comp.lat).toBeNull();
     }

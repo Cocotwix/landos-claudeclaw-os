@@ -75,14 +75,23 @@ describe('one Comps & Valuation implementation serves Tools, New Lead and the V2
     expect((mission.match(/valuationFromWorkingSet\(/g) ?? [])).toHaveLength(1);
 
     // Neither capability route runs a comp search or a valuation of its own.
-    const toolsRoute = routes.slice(
-      routes.indexOf("app.post('/api/landos/capabilities/comps-valuation/invoke'"),
-      routes.indexOf("app.post('/api/landos/property/resolve'"),
-    );
-    const dealRoute = routes.slice(
-      routes.indexOf("app.post('/api/landos/deal-cards/:id/comps-valuation/capability'"),
-      routes.indexOf("app.get('/api/landos/deal-cards/:id/property-intelligence/progress'"),
-    );
+    // Bound each handler to ITS OWN route. Slicing to the next NAMED route
+    // swept in ~19,000 characters of unrelated module-level helpers between
+    // them — including a secondary-search helper that legitimately calls the
+    // provider — so the assertion was reading the wrong region rather than the
+    // handler it names. The real contract is that the HANDLER runs no comp
+    // engine and no provider fetch of its own.
+    const handlerBody = (declaration: string): string => {
+      const start = routes.indexOf(declaration);
+      expect(start).toBeGreaterThan(-1);
+      const end = routes.indexOf('\n  app.', start + declaration.length);
+      return routes.slice(start, end < 0 ? routes.length : end);
+    };
+    const toolsRoute = handlerBody("app.post('/api/landos/capabilities/comps-valuation/invoke'");
+    const dealRoute = handlerBody("app.post('/api/landos/deal-cards/:id/comps-valuation/capability'");
+    // A handler, not half the file.
+    expect(toolsRoute.length).toBeLessThan(6000);
+    expect(dealRoute.length).toBeLessThan(6000);
     for (const surface of [toolsRoute, dealRoute]) {
       expect(surface).not.toContain('selectWorkingComps(');
       expect(surface).not.toContain('valuationFromWorkingSet(');
@@ -124,7 +133,11 @@ describe('one Comps & Valuation implementation serves Tools, New Lead and the V2
     expect(capability).not.toContain('Improved Value');
 
     const cv = read('web/src/components/AcquisitionWorkspaceV2CompsValuation.tsx');
-    expect(cv).toContain('const showValuationSplit = subjectAcres != null && subjectAcres > 1');
+    // The accepted acreage rule, asserted as the RULE rather than as one exact
+    // line: the split is shown only above one acre. It now also requires a
+    // current building, which narrows it further and never widens it.
+    expect(cv).toMatch(/const showValuationSplit = [^;]*subjectAcres != null && subjectAcres > 1/);
+    expect(cv).toContain('hasCurrentBuilding');
     expect(cv).toContain('{showValuationSplit && (');
     expect(cv).toContain('data-testid="cv-no-valuation-split"');
     // The existing naming and the existing overlay behaviour are untouched.
@@ -140,7 +153,11 @@ describe('one Comps & Valuation implementation serves Tools, New Lead and the V2
     expect(tools).toContain('data-testid="comps-valuation-run"');
     expect(tools).toContain('data-testid="comps-valuation-result"');
     expect(tools).toContain('Nothing here creates a lead or a Deal Card.');
-    expect(tools).not.toContain('/api/landos/deal-cards');
+    // "Creates no lead" is a rule about WRITES. Tools reads the Deal Card list
+    // to populate its picker, which creates nothing; forbidding the string
+    // outright tested the mention rather than the behaviour.
+    expect(tools).not.toMatch(/apiPost\s*[<(][^)]*\/api\/landos\/deal-cards/);
+    expect(tools).not.toMatch(/method:\s*'POST'[\s\S]{0,200}\/api\/landos\/deal-cards/);
     expect(tools).not.toContain('intake');
 
     // The live Deal Card is Acquisition Workspace V2. The rerun control lives in

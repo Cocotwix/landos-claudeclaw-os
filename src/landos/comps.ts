@@ -326,7 +326,36 @@ export function addComp(input: AddCompInput): CompRow {
   return getComp(id)!;
 }
 
-const normalizedCompKey = (input: Pick<AddCompInput, 'apn' | 'addressDesc' | 'lat' | 'lng' | 'price' | 'saleOrListDate'>): string => {
+/**
+ * The identity of one retained comparable.
+ *
+ * The PROVIDER'S OWN RECORD ID comes first. A listing's address is how a
+ * provider labels a record, not what the record is: the same Redfin listing
+ * reached from a search card and from its detail page reads "9 SW 39th Dr" and
+ * "Lot 9 SW 39th Dr", and an address-keyed identity therefore stored one sale
+ * twice. Conversely two adjacent lots genuinely share the placeholder "TBD SW
+ * 52nd Ter", and an address-keyed identity would have merged two separate
+ * arms-length transactions into one.
+ *
+ * Order: provider record id, then parcel identifier, then the published parcel
+ * point, then the address, and only then a bare price/date event.
+ */
+export const providerRecordKey = (input: Pick<AddCompInput, 'sourceUrl' | 'sourceLabel'>): string | null => {
+  const url = String(input.sourceUrl ?? '');
+  const redfin = /redfin\.com\/.*?\/home\/(\d+)/i.exec(url)?.[1];
+  if (redfin) return `redfin:${redfin}`;
+  const zillow = /zillow\.com\/.*?\/(\d+)_zpid/i.exec(url)?.[1];
+  if (zillow) return `zillow:${zillow}`;
+  const landwatch = /landwatch\.com\/.*?\/pid\/(\d+)/i.exec(url)?.[1];
+  if (landwatch) return `landwatch:${landwatch}`;
+  const realtor = /realtor\.com\/.*?_M(\d+[-\d]*)/i.exec(url)?.[1];
+  if (realtor) return `realtor:${realtor}`;
+  return null;
+};
+
+export const normalizedCompKey = (input: Pick<AddCompInput, 'apn' | 'addressDesc' | 'lat' | 'lng' | 'price' | 'saleOrListDate' | 'sourceUrl' | 'sourceLabel'>): string => {
+  const record = providerRecordKey(input);
+  if (record) return record;
   const apn = (input.apn ?? '').replace(/\D/g, '');
   if (apn.length >= 5) return `apn:${apn}`;
   const address = (input.addressDesc ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -550,6 +579,48 @@ export async function geocodeAddressesToCache(
  * and written onto the persisted comp. Misses are cached too. This is map
  * enrichment only and never participates in subject parcel identity.
  */
+
+/**
+ * Comparable map points the providers already gave us, keyed by address.
+ *
+ * Read-only over retained evidence: the LandPortal parcel inspection stored on
+ * the subject Property Card carries a `lat`/`lng` for each comparable it
+ * displayed. Those are provider parcel points, not geocodes and not centroids,
+ * so they are the strongest location LandOS holds for those rows.
+ */
+function retainedProviderMapPoints(dealCardId: number): Map<string, { lat: number; lng: number }> {
+  const points = new Map<string, { lat: number; lng: number }>();
+  const key = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
+  try {
+    const db = getLandosDb();
+    const cards = db.prepare(
+      'SELECT card_id FROM landos_deal_card_property WHERE deal_card_id = ?',
+    ).all(dealCardId) as Array<{ card_id: number }>;
+    for (const card of cards) {
+      const rows = db.prepare(
+        `SELECT ref FROM landos_card_activity
+          WHERE card_id = ? AND kind = 'property_inspection'
+          ORDER BY id DESC LIMIT 3`,
+      ).all(card.card_id) as Array<{ ref: string | null }>;
+      for (const row of rows) {
+        if (!row.ref) continue;
+        let parsed: { comparables?: Array<{ address?: unknown; lat?: unknown; lng?: unknown }> };
+        try { parsed = JSON.parse(row.ref); } catch { continue; }
+        for (const comp of parsed.comparables ?? []) {
+          const address = typeof comp.address === 'string' ? comp.address : null;
+          const lat = typeof comp.lat === 'number' ? comp.lat : null;
+          const lng = typeof comp.lng === 'number' ? comp.lng : null;
+          if (!address || lat == null || lng == null) continue;
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+          const k = key(address);
+          if (!points.has(k)) points.set(k, { lat, lng });
+        }
+      }
+    }
+  } catch { /* retained evidence unavailable — the geocode paths still run */ }
+  return points;
+}
+
 export async function enrichCompCoordinates(
   dealCardId: number,
   deps: { fetchImpl?: SuggestFetch; listingFetchImpl?: ListingFetch; max?: number; addresses?: string[] } = {},
@@ -567,7 +638,24 @@ export async function enrichCompCoordinates(
   const compUpdate = db.prepare('UPDATE landos_comp SET lat = ?, lng = ? WHERE id = ?');
   let enriched = 0;
   let cached = 0;
+
+  // RETAINED PROVIDER MAP POINTS COME FIRST.
+  //
+  // LandPortal publishes a map point for each comparable it shows, and LandOS
+  // already retains those points inside the parcel inspection. They were never
+  // promoted onto the comp rows, so comparables LandOS could place exactly were
+  // treated as unlocatable and fell through to a ZIP-area centroid — a real
+  // parcel location discarded in favour of a postal approximation. This reads
+  // only evidence already held: it contacts nothing and geocodes nothing.
+  const retainedPoints = retainedProviderMapPoints(dealCardId);
+
   for (const row of rows) {
+    const retained = retainedPoints.get(keyOf(row.address_desc));
+    if (retained) {
+      compUpdate.run(retained.lat, retained.lng, row.id);
+      enriched += 1;
+      continue;
+    }
     // Reconcile the captured text into the postal address it actually states
     // before deciding this row cannot be located. A capture carrying provider
     // listing chrome is not a geocodable address and never was.

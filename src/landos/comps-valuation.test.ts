@@ -643,7 +643,9 @@ describe('automatic provisional valuation and operator refinement', () => {
     expect(view.summary.fmv?.central).toBe(view.cleaned.adoptedFmv);
     expect(view.summary.fmv?.low).toBe(87500);
     expect(view.summary.fmv?.high).toBe(101500);
-    expect(view.summary.acquisitionLevels).toEqual({ pct40: 37500, pct50: 47000, pct60: 56000 });
+    // 40% and 60% are the EXACT Combined LandOS FMV benchmarks; the 50% rung is
+    // the acquisition ladder's own step and keeps its $500 rounding.
+    expect(view.summary.acquisitionLevels).toEqual({ pct40: 37400, pct50: 47000, pct60: 56100 });
     // Both sales entered automatically; no operator include was recorded.
     for (const comp of view.comps) {
       expect(comp.selectedForValuation).toBe(true);
@@ -751,20 +753,27 @@ describe('proximity-first distance and radius disclosure', () => {
     expect(clinton.locationResolved).toBe(true);
     expect(clinton.locationMethod).toBe('provider_map_point');
     expect(clinton.outsideInitialRadius).toBe(true);
-    expect(view.summary.distanceRange).not.toBeNull();
-    expect(view.summary.distanceRange!.maxMiles).toBeGreaterThan(view.summary.distanceRange!.minMiles - 0.001);
+    // Both points sit about 20 miles out, beyond any permitted search radius,
+    // so neither prices the subject. The distances above are still computed and
+    // shown: the radius decides what is PRICED, never what is measured.
+    expect(clinton.inValuationSet).toBe(false);
+    expect(eastSt.inValuationSet).toBe(false);
   });
 
-  it('discloses the expanded search band when no credible sale lies inside the initial 10 miles', () => {
+  it('never reaches past the permitted radius, however far the only evidence is', () => {
+    // The permitted radius is absolute: five miles, or ten for a rural subject
+    // short of three qualified sales. A ~20-mile sale is beyond both, so the
+    // search does not stretch to reach it and no expansion band is disclosed.
+    // The records stay retained as broader-market context at zero weight.
     const ids = seedSubject({ withCoords: true });
     seedClosedSale(ids, CLINTON_POINT);
     seedEastSt(ids, EAST_ST_POINT);
     const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
-    expect(view.summary.radius.initialMiles).toBe(10);
-    expect(view.summary.radius.expanded).toBe(true);
-    expect(view.summary.radius.usedMiles).toBeGreaterThanOrEqual(20);
-    expect(view.summary.radius.note).toContain('expanded');
-    expect(view.summary.radius.note).toContain('never excluded by a county line');
+    expect(view.summary.radius.expanded).toBe(false);
+    expect(view.comps.every((comp) => !comp.inValuationSet)).toBe(true);
+    for (const comp of view.comps) {
+      expect(comp.zeroWeightReason ?? '').toMatch(/radius/i);
+    }
   });
 
   it('stays inside the initial radius when the supporting sales are within 10 miles', () => {
@@ -783,11 +792,16 @@ describe('proximity-first distance and radius disclosure', () => {
     seedEastSt(ids, { ...EAST_ST_POINT, county: 'Onondaga', addressDesc: 'River Rd, Jordan, NY 13080', apn: '888877776666', sourceUrl: 'https://www.zillow.com/homedetails/River-Rd-Jordan-NY-13080/450366450_zpid/' });
     const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
     const outOfCounty = view.comps.find((c) => c.county === 'Onondaga')!;
+    // The county line still disqualifies nothing: this record is classified as
+    // an accepted closed sale exactly like the in-county one, and its county is
+    // reported as a difference rather than a reason. What holds it out is the
+    // ~20-mile distance, which holds the in-county sale out too.
     expect(outOfCounty.category).toBe('accepted_closed_sale');
-    expect(outOfCounty.selectedForValuation).toBe(true);
-    expect(view.summary.acceptedCount).toBe(2);
-    expect(view.summary.confidenceFactors.join(' ')).toContain('county');
     expect(outOfCounty.keyDifference).toContain('Onondaga');
+    expect(outOfCounty.zeroWeightReason ?? '').toMatch(/radius/i);
+    expect(outOfCounty.zeroWeightReason ?? '').not.toMatch(/county/i);
+    const inCounty = view.comps.find((c) => c.county !== 'Onondaga')!;
+    expect(inCounty.inValuationSet).toBe(false);
   });
 
   it('an unresolved location shows no distance and the record is never placed at a guessed point', () => {
@@ -987,11 +1001,17 @@ describe('radius counts, comparability tiers, and the technical quick-flip ceili
     expect(view.summary.confidenceFactors.join(' ')).toContain('inside the initial 10-mile radius');
   });
 
-  it('counts each ring separately when farther sales corroborate a sufficient initial set', () => {
+  it('does not admit a sale beyond the search radius, and counts the rings it did use', () => {
+    // The shared search-radius rules start the closed-comp search at five miles
+    // and allow one expansion to ten for a rural subject short of three
+    // qualified sales. A ~14-mile sale is beyond every radius the search is
+    // entitled to use, so it can no longer corroborate the set: it stays a
+    // retained broader-market record at zero valuation weight. This previously
+    // asserted the opposite, under the older ten-mile start.
     const ids = seedSubject({ withCoords: true });
     seedClosedSale(ids, { lat: 43.30, lng: -76.64 });   // ~2 mi
     seedEastSt(ids, { lat: 43.26, lng: -76.63 });       // ~5 mi
-    seedClosedSale(ids, {                                // ~14 mi: expansion ring
+    seedClosedSale(ids, {                                // ~14 mi: outside the radius
       addressDesc: 'Ring Rd', apn: '555566667777', sourceUrl: 'https://landportal.com/ring',
       price: 70000, acres: 12, saleOrListDate: '2025-12-01', lat: 43.13, lng: -76.60,
     });
@@ -999,9 +1019,14 @@ describe('radius counts, comparability tiers, and the technical quick-flip ceili
     const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
     const radius = view.summary.radius;
     expect(radius.withinInitial).toBe(2);
-    expect(radius.withinExpansion).toBe(1);
+    expect(radius.withinExpansion).toBe(0);
     expect(radius.expanded).toBe(false);
-    expect(radius.note).toContain('additional corroboration, not because the initial radius came up short');
+
+    // Retained, visible, and explicitly not priced — never deleted.
+    const ring = view.comps.find((comp) => (comp.address ?? '').includes('Ring Rd'));
+    expect(ring).toBeDefined();
+    expect(ring!.inValuationSet).toBe(false);
+    expect(ring!.zeroWeightReason ?? '').toMatch(/radius/i);
   });
 
   it('separates direct, supporting, boundary, and out-of-window sales instead of one flat pile', () => {
@@ -1031,20 +1056,28 @@ describe('radius counts, comparability tiers, and the technical quick-flip ceili
     const view = buildCompsValuationView(ids.dealCardId, { nowMs: NOW })!;
     const comp = (addr: string) => view.comps.find((c) => c.address?.startsWith(addr))!;
     expect(comp('Direct Rd').valuationRole).toBe('direct');
-    expect(comp('Support Rd').valuationRole).toBe('supporting');
-    expect(comp('Boundary Rd').valuationRole).toBe('supporting');
+    // Support Rd and Boundary Rd both sit beyond the permitted radius, so they
+    // are broader-market context rather than supporting comps: the radius is
+    // absolute and a sale outside it never prices the subject, however
+    // comparable it otherwise is. Both stay retained and visible.
+    expect(comp('Support Rd').valuationRole).toBe('geographic_context');
+    expect(comp('Boundary Rd').valuationRole).toBe('geographic_context');
     expect(comp('Old Rd').valuationRole).toBe('historical_context');
     expect(view.cleaned.directCount).toBe(1);
-    expect(view.cleaned.supportingCount).toBe(2);
+    expect(view.cleaned.supportingCount).toBe(0);
     expect(view.cleaned.boundaryCount).toBe(0);
     expect(view.cleaned.historicalContextCount).toBe(1);
 
-    // The three in-window sales price the subject; the 30-plus-month sale does
-    // not, and the beyond-20 supporting sale carries reduced tier weight.
-    expect(view.cleaned.cleanedCount).toBe(3);
+    // Only the in-radius, in-window sale prices the subject.
+    expect(view.cleaned.cleanedCount).toBe(1);
     expect(comp('Old Rd').inValuationSet).toBe(false);
+    expect(comp('Support Rd').inValuationSet).toBe(false);
+    expect(comp('Boundary Rd').inValuationSet).toBe(false);
     expect(comp('Old Rd').valuationWeight).toBeNull();
-    expect(comp('Boundary Rd').valuationWeight!).toBeLessThan(comp('Direct Rd').valuationWeight!);
+    // Outside the permitted radius there is no reduced weight to compare: the
+    // record carries none at all.
+    expect(comp('Boundary Rd').valuationWeight).toBeNull();
+    expect(comp('Direct Rd').valuationWeight).not.toBeNull();
 
     // Every resolved record also discloses which search stage covers it.
     expect(comp('Direct Rd').radiusStage).toBe('initial_10');
@@ -1075,8 +1108,8 @@ describe('radius counts, comparability tiers, and the technical quick-flip ceili
     expect(lines).toContain('Adopted cleaned FMV is');
     // Every displayed acquisition level derives from the adopted value.
     expect(view.summary.fmv!.central).toBe(cleaned.adoptedFmv);
-    expect(view.summary.acquisitionLevels!.pct40).toBe(round500(cleaned.adoptedFmv! * 0.4));
-    expect(view.summary.acquisitionLevels!.pct60).toBe(round500(cleaned.adoptedFmv! * 0.6));
+    expect(view.summary.acquisitionLevels!.pct40).toBe(Math.round(cleaned.adoptedFmv! * 0.4));
+    expect(view.summary.acquisitionLevels!.pct60).toBe(Math.round(cleaned.adoptedFmv! * 0.6));
   });
 
   it('derives the technical quick-flip ceiling and reconciles it against the 40/50/60 band', () => {

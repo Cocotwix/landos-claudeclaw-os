@@ -265,15 +265,29 @@ describe('bounded candidate ranking', () => {
     comp({ id: 3, source_url: 'https://www.landwatch.com/x/pid/3', acres: 74, classification: 'directional' }),
     comp({ id: 4, source_url: 'https://www.landwatch.com/x/pid/4', acres: 300, classification: 'core' }),
     comp({ id: 5, source_url: 'https://landportal.com/?property=abc', acres: 76, classification: 'core' }),
-    comp({ id: 6, source_url: 'https://www.landwatch.com/x/pid/6', acres: 76, classification: 'core', sale_or_list_date: '2026-02-02' }),
+    // Dated AND located: this lane has nothing left to establish for it.
+    comp({ id: 6, source_url: 'https://www.landwatch.com/x/pid/6', acres: 76, classification: 'core',
+      sale_or_list_date: '2026-02-02', lat: 35.9, lng: -87.1, distance_miles: 6.2 }),
     comp({ id: 7, source_url: 'https://www.landwatch.com/x/pid/7', acres: 76, classification: 'core', price_kind: 'list' }),
   ];
 
   it('takes only revisitable, sold, undated rows', () => {
     const ids = rankCompsForTransactionEnrichment(rows, 75.91, 10).map((c) => c.row.id);
     expect(ids).not.toContain(5); // LandPortal: no revisitable detail page in this lane
-    expect(ids).not.toContain(6); // already dated
+    expect(ids).not.toContain(6); // already dated AND located: nothing left to establish
     expect(ids).not.toContain(7); // an asking price, not a sale
+  });
+
+  it('still revisits a dated row that has no parcel point', () => {
+    // A sale with no coordinates can state no distance, so every
+    // distance-based admission rule refuses it however well dated it is. The
+    // record page holds the provider's own parcel point, so there IS something
+    // left for this lane to establish.
+    const datedButUnlocated = [comp({
+      id: 8, source_url: 'https://www.landwatch.com/x/pid/8', acres: 76, classification: 'core',
+      sale_or_list_date: '2026-02-02', lat: null, lng: null, distance_miles: null,
+    })];
+    expect(rankCompsForTransactionEnrichment(datedButUnlocated, 75.91, 10).map((c) => c.row.id)).toEqual([8]);
   });
 
   it('ranks in-band before out-of-band, core before directional, then by acreage closeness', () => {
