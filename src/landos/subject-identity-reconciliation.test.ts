@@ -201,6 +201,51 @@ describe('reconcileSubjectIdentity — the 9490 Elk Lake Rd recovery', () => {
     expect(getPropertyCardRow(73)?.zip).toBe('49690');
   });
 
+  it('keeps the officially confirmed acreage over the provider panel figure on a rerun', async () => {
+    // Fairview: the county confirmed 51.11 acres after 24.8 acres were split
+    // off by recorded deed; the provider panel still publishes the stale
+    // pre-split 75.91. A rerun must not let the panel re-grow the subject.
+    seedDeal83({ 'Owner Name': 'WELLS MICHAEL C', 'Parcel ID': '13-116-015-01', Acres: '75.910', 'Calc Acres': '75.10' });
+    // The card was verified against the official county record, so its acreage
+    // speaks for the assessor roll.
+    getLandosDb().prepare(`UPDATE landos_property_card SET acres = 51.11, county = ?, state = ?, apn = ?,
+      verification_status = 'verified_property', verification_source = 'Official county parcel record' WHERE id = 73`)
+      .run('Grand Traverse', 'MI', '13-116-015-01');
+    createPropertyIdentityVersion({
+      dealCardId: 83, propertyCardId: 73, status: 'confirmed',
+      address: '9490 Elk Lake Rd', city: 'Williamsburg', county: 'Grand Traverse', state: 'MI', zip: '49690',
+      apn: '13-116-015-01', owner: 'WELLS MICHAEL C', acreage: 51.11,
+      basis: 'Confirmed by the official county parcel record.', confidence: 0.95,
+      sourceRefs: ['https://county.example/parcel/13-116-015-01'],
+      changeReason: 'official record', createdBy: 'test',
+    });
+    const result = await reconcileSubjectIdentity(83, { censusGeography: ELK_LAKE_CENSUS });
+    expect(Number(getPropertyCardRow(73)?.acres)).toBe(51.11);
+    const acreageField = result.fields.find((field) => field.field === 'acreage');
+    expect(acreageField?.to).toBe('51.11');
+    expect(acreageField?.reason).toMatch(/75\.91 acres is kept as evidence and does not govern/);
+  });
+
+  it('lets the provider parcel record correct an UNVERIFIED card whose acreage came from a listing', async () => {
+    // Overbey Rd: the identity version carried the listing's 52.18 MLS acres and
+    // a guard keyed to the identity version wrote it onto the unverified card.
+    // No official record verified that card, so its figure ranks as provider
+    // data and the parcel record's own 43.7 governs again.
+    seedDeal83({ 'Owner Name': 'A-1 HOME BUILDERS INC', 'Parcel ID': '13-116-015-01', Acres: '43.700', 'MLS Acres': '52.18', 'Calc Acres': '50.21' });
+    getLandosDb().prepare('UPDATE landos_property_card SET acres = 52.18, county = ?, state = ?, apn = ? WHERE id = 73')
+      .run('Grand Traverse', 'MI', '13-116-015-01');
+    createPropertyIdentityVersion({
+      dealCardId: 83, propertyCardId: 73, status: 'confirmed',
+      address: '9490 Elk Lake Rd', city: 'Williamsburg', county: 'Grand Traverse', state: 'MI', zip: '49690',
+      apn: '13-116-015-01', owner: 'A-1 HOME BUILDERS INC', acreage: 52.18,
+      basis: 'Identity confirmed; acreage carried from retained research evidence.', confidence: 0.9,
+      sourceRefs: [], changeReason: 'recovery', createdBy: 'test',
+    });
+    const result = await reconcileSubjectIdentity(83, { censusGeography: ELK_LAKE_CENSUS });
+    expect(Number(getPropertyCardRow(73)?.acres)).toBe(43.7);
+    expect(result.fields.find((field) => field.field === 'acreage')?.to).toBe('43.7');
+  });
+
   it('never fabricates a Deal Card or a subject that does not exist', async () => {
     const missing = await reconcileSubjectIdentity(999, { censusGeography: ELK_LAKE_CENSUS });
     expect(missing.skippedReason).toContain('does not exist');

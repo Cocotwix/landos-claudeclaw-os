@@ -31,6 +31,7 @@ import {
   type GoverningAcreage,
 } from './acreage-basis.js';
 import { appendDerivedEvidence } from './derived-intelligence-store.js';
+import { dealFamilyFilter, resolveDealFamily } from './canonical-deal-family.js';
 import { loadPropertyInspection } from './property-card.js';
 
 /** The evidence domain acreage measurements are filed under. */
@@ -159,13 +160,26 @@ export function readSubjectAcreageSignals(dealCardId: number, propertyCardId: nu
 
   let rows: AcreageEvidenceRow[] = [];
   try {
-    rows = getLandosDb().prepare(`
+    const db = getLandosDb();
+    // CANONICAL FAMILY READ. Acreage evidence written before this subject's
+    // duplicate cards were canonicalized still carries the alias Deal Card id,
+    // and `landos_property_evidence_item` is immutable, so those rows cannot be
+    // moved onto the canonical card without weakening the protection that makes
+    // them evidence at all. The operator's own accepted governing acreage —
+    // the highest-authority basis in the system — was retained on an alias for
+    // exactly this reason and was therefore invisible to the canonical card.
+    //
+    // The reach is deliberately narrow: the family is the canonical card plus
+    // the aliases that explicitly resolve to it, never a broad union, so no
+    // other property's measurement can enter this subject's acreage.
+    const family = dealFamilyFilter(resolveDealFamily(db, dealCardId));
+    rows = db.prepare(`
       SELECT id, fact_key, normalized_value_json, raw_value_json, source_name, source_tier,
              effective_at, retrieved_at
       FROM landos_property_evidence_item
-      WHERE deal_card_id = ? AND domain = ?
+      WHERE ${family.sql} AND domain = ?
       ORDER BY id DESC
-    `).all(dealCardId, ACREAGE_DOMAIN) as AcreageEvidenceRow[];
+    `).all(...family.params, ACREAGE_DOMAIN) as AcreageEvidenceRow[];
   } catch { /* evidence store unavailable — the other origins still answer */ }
 
   const candidates = rows
@@ -213,14 +227,20 @@ export function readSubjectAcreageSignals(dealCardId: number, propertyCardId: nu
 
     try {
       const row = getLandosDb()
-        .prepare('SELECT acres, verification_source FROM landos_property_card WHERE id = ?')
-        .get(propertyCardId) as { acres?: unknown; verification_source?: unknown } | undefined;
+        .prepare('SELECT acres, verification_source, verification_status FROM landos_property_card WHERE id = ?')
+        .get(propertyCardId) as { acres?: unknown; verification_source?: unknown; verification_status?: unknown } | undefined;
       const acres = numeric(row?.acres);
       if (acres != null) {
+        // The card's figure speaks for the assessor roll only when an official
+        // record verified the card. An unverified lead's acreage is whatever the
+        // intake or a provider supplied, and ranking it as `assessed` let a
+        // listing's MLS acreage, once written onto the card, outrank the
+        // provider's own parcel-record figure and present itself as official.
+        const verified = text(row?.verification_status) === 'verified_property';
         add({
-          basis: 'assessed',
+          basis: verified ? 'assessed' : 'provider',
           acres,
-          source: text(row?.verification_source) ?? 'Accepted property record',
+          source: text(row?.verification_source) ?? (verified ? 'Accepted property record' : 'Unverified property record'),
           origin: 'property_card',
           observedAt: null,
           evidenceId: null,
@@ -259,11 +279,15 @@ function signalFor(
 function retiredEvidenceReasons(dealCardId: number): Map<number, string> {
   const reasons = new Map<number, string>();
   try {
-    const rows = getLandosDb().prepare(`
+    // Same canonical family as the signals above: the acceptance that names
+    // which measurements it retires must be found wherever the signals were.
+    const db = getLandosDb();
+    const family = dealFamilyFilter(resolveDealFamily(db, dealCardId));
+    const rows = db.prepare(`
       SELECT normalized_value_json FROM landos_property_evidence_item
-      WHERE deal_card_id = ? AND domain = ? AND fact_key = ?
+      WHERE ${family.sql} AND domain = ? AND fact_key = ?
       ORDER BY id DESC LIMIT 1
-    `).all(dealCardId, ACREAGE_DOMAIN, OPERATOR_ACCEPTED_ACREAGE_FACT) as Array<{ normalized_value_json: string }>;
+    `).all(...family.params, ACREAGE_DOMAIN, OPERATOR_ACCEPTED_ACREAGE_FACT) as Array<{ normalized_value_json: string }>;
     const payload = parseJson(rows[0]?.normalized_value_json) as { supersedes?: Array<{ evidenceId?: unknown; reason?: unknown }> } | null;
     for (const entry of payload?.supersedes ?? []) {
       const id = Number(entry?.evidenceId);

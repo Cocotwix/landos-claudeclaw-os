@@ -1827,6 +1827,42 @@ const CLOSE_SCOPE_SCRIPT = ((): void => {
  * like a login page, status flips to 'auth_needed' and the read returns no
  * property fields (never fabricated). Never performs a paid/write/billing action.
  */
+/** Grace added to a caller's `timeoutMs` so a navigation that used its whole
+ *  budget can still finish the driver's fixed post-navigation settle and read. */
+export const DRIVER_CALL_DEADLINE_GRACE_MS = 15_000;
+
+/**
+ * The deadline a driver call was given, from its trailing `{ timeoutMs }`
+ * options argument, or null when the caller set none. Pure.
+ */
+export function driverCallDeadlineMs(args: readonly unknown[]): number | null {
+  const last = args.length ? args[args.length - 1] : null;
+  const timeoutMs = last && typeof last === 'object' ? (last as { timeoutMs?: unknown }).timeoutMs : undefined;
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return null;
+  return timeoutMs + DRIVER_CALL_DEADLINE_GRACE_MS;
+}
+
+/**
+ * Settle a driver call within its deadline. The underlying operation is not
+ * cancelled (CDP offers no cancel for an evaluate); the WORKFLOW is released
+ * with a timeout error it already classifies as a bounded terminal outcome, so
+ * one page that never settles cannot hold a request open indefinitely.
+ */
+export function boundedDriverCall<T>(work: Promise<T>, deadlineMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  const expiry = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      logger.warn({ label, deadlineMs }, 'browser_driver_call_deadline');
+      reject(new Error(`${label} timed out after ${deadlineMs} ms (caller deadline)`));
+    }, deadlineMs);
+    timer.unref?.();
+  });
+  return Promise.race([work, expiry]).finally(() => { if (timer) clearTimeout(timer); }) as Promise<T>;
+}
+
+/** Bound for the page-scope bookkeeping calls, which carry no caller deadline. */
+export const PAGE_SCOPE_CALL_DEADLINE_MS = 10_000;
+
 export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): BrowserDriver {
   const cfg = deps.config ?? readSessionConfig();
   const now = deps.now ?? (() => new Date().toISOString());
@@ -1956,7 +1992,20 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
           throw error;
         }
         if (result && typeof (result as Promise<unknown>).then === 'function') {
-          return (result as Promise<unknown>).finally(() => endScopedBrowserWork(owner));
+          // THE CALLER'S DEADLINE IS BINDING. Every workflow hands each call its
+          // remaining budget (`{ timeoutMs }`); navigation honoured it, but the
+          // evaluate-based reads (links, forms, candidates, the post-navigation
+          // page read) awaited the page with no bound at all. On a page that
+          // never settles — a blocked search-engine interstitial that keeps
+          // re-navigating — that await never resolved, so a deed-retrieval
+          // request sat idle for half an hour past the three-minute workflow
+          // budget it had been given. The bound is the caller's own number plus
+          // a small grace for the driver's post-navigation settle.
+          const deadline = driverCallDeadlineMs(args);
+          const bounded = deadline == null
+            ? (result as Promise<unknown>)
+            : boundedDriverCall(result as Promise<unknown>, deadline, `${id}.${key}`);
+          return bounded.finally(() => endScopedBrowserWork(owner));
         }
         endScopedBrowserWork(owner);
         return result;
@@ -1972,7 +2021,15 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       await ensureBrowserSession(deps);
       const token = `lp-scope-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
       const preexisting = new Set<PageLike>();
-      try { for (const p of await state.browser!.pages()) preexisting.add(p); } catch { /* nothing open yet */ }
+      // Target enumeration and page closure carry no caller deadline, and they
+      // are the LAST thing a lane does. A tab wedged on a page that never
+      // settles (a blocked search-engine interstitial) made `pages()` and
+      // `close()` wait on a session that no longer answers, so a request whose
+      // every read had already been bounded still never returned. Bounded
+      // here; a page that will not close is left for the automation reaper.
+      try {
+        for (const p of await boundedDriverCall(state.browser!.pages(), PAGE_SCOPE_CALL_DEADLINE_MS, `${id}.beginOwnedPageScope.pages`)) preexisting.add(p);
+      } catch { /* nothing open yet, or the session did not answer in time */ }
       ownedScopes.set(token, preexisting);
       return token;
     },
@@ -1982,7 +2039,7 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
       const result = { closed: 0, failed: 0, preserved: preexisting?.size ?? 0 };
       if (!preexisting || !state.browser) return result;
       let pages: PageLike[] = [];
-      try { pages = await state.browser.pages(); } catch { return result; }
+      try { pages = await boundedDriverCall(state.browser.pages(), PAGE_SCOPE_CALL_DEADLINE_MS, `${id}.closeOwnedPageScope.pages`); } catch { return result; }
       for (const page of pages) {
         // The driver may close only its OWN registered pages. In particular:
         //   * another lane's page is preserved even if it appeared after this
@@ -1994,7 +2051,8 @@ export function makeLiveBrowserDriver(id: string, deps: LiveDriverDeps = {}): Br
         // Never close the process-keeper, whatever the registry says.
         if (isControlPage(page)) continue;
         try {
-          await (page as unknown as { close?: () => Promise<void> }).close?.();
+          const closing = (page as unknown as { close?: () => Promise<void> }).close?.();
+          if (closing) await boundedDriverCall(closing, PAGE_SCOPE_CALL_DEADLINE_MS, `${id}.closeOwnedPageScope.close`);
           lanePageRegistry.delete(page);
           if (page === lanePage) lanePage = null;
           result.closed += 1;

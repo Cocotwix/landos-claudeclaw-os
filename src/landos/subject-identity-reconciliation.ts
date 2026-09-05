@@ -45,6 +45,7 @@ import {
   restoreMatchingPropertyInspections,
 } from './opportunity-research-mission.js';
 import { getPropertyCardRow, loadPropertyInspection, upsertPropertyCard } from './property-card.js';
+import { resolveSubjectAcreage } from './subject-acreage.js';
 import { resolveCensusGeography, type CensusGeography } from './land-use-authority.js';
 import {
   bareCountyName,
@@ -328,7 +329,22 @@ export async function reconcileSubjectIdentity(
     : apnSource ? [apnSource] : [];
 
   const owner = panelOwner ?? text(card.owner);
-  const acreage = panelAcres ?? num(card.acres);
+  // Acreage ranks by basis, not by recency. The subject's GOVERNING acreage is
+  // decided once, by the shared acreage basis (operator acceptance, survey,
+  // deed, assessor roll, official geometry, then provider), and the provider's
+  // parcel panel is discovery-stage evidence that must not displace a stronger
+  // basis. Letting the panel win silently re-grew a 51.11-acre assessed subject
+  // (24.8 acres split off by recorded deed) back to the provider's stale
+  // pre-split 75.91 acres on every rerun, and moved the subject token with it.
+  // The identity version is NOT an acreage authority: it carries whatever
+  // figure the reconciliation held when it was written (for one subject, a
+  // listing's MLS acreage), so it is never preferred on its own. The panel
+  // figure still lands as retained evidence; it just cannot govern.
+  const governingAcreage = resolveSubjectAcreage(dealCardId, card.id).governing;
+  const officialAcres = governingAcreage.value != null && governingAcreage.kind != null && governingAcreage.kind !== 'provider'
+    ? governingAcreage.value
+    : null;
+  const acreage = officialAcres ?? panelAcres ?? num(card.acres);
   const fips = canonical?.fips ?? text(card.fips);
   const lpPropertyId = canonical?.propertyId ?? text(card.lp_property_id);
   const city = matchedParts.city ?? text(card.city);
@@ -385,8 +401,11 @@ export async function reconcileSubjectIdentity(
   record('owner', text(card.owner), owner, panelOwner ? 'landportal_parcel_panel' : owner ? 'retained_card' : null, [],
     'Recorded owner as published on the authenticated parcel panel. Not a title search.');
   record('acreage', card.acres == null ? null : String(card.acres), acreage == null ? null : String(acreage),
-    panelAcres ? 'landportal_parcel_panel' : acreage == null ? null : 'retained_card', [],
-    'Assessed acreage as published on the authenticated parcel panel.');
+    officialAcres != null ? 'retained_card' : panelAcres ? 'landportal_parcel_panel' : acreage == null ? null : 'retained_card', [],
+    officialAcres != null
+      ? `Governing acreage (${governingAcreage.kind} basis) is retained${panelAcres != null && panelAcres !== officialAcres
+        ? `; the provider panel's ${panelAcres} acres is kept as evidence and does not govern` : ''}.`
+      : 'Assessed acreage as published on the authenticated parcel panel.');
 
   const changes = fields.filter((field) => field.superseded);
 

@@ -1367,6 +1367,66 @@ function createLandosSchema(db: Database.Database): void {
   // e.g. LandPortal STR > 100%). Migration for existing store DBs.
   addColumn('landos_market_snapshot', 'flags_json', `flags_json TEXT NOT NULL DEFAULT '[]'`);
   addColumn('landos_intake_submission', 'idempotency_key', `idempotency_key TEXT NOT NULL DEFAULT ''`);
+  // Canonical subject aliasing. One acquisition subject may only have ONE active
+  // Deal Card; any further card for the same canonical subject becomes an
+  // archived ALIAS that resolves to the canonical card. This is deliberately not
+  // `deleted_at` (Trash, restorable and unrelated) and never a delete: the alias
+  // row, its history and its provenance stay readable forever, and its route
+  // resolves the operator to the canonical card instead of a second editable copy.
+  addColumn('landos_deal_card', 'canonical_deal_card_id', `canonical_deal_card_id INTEGER REFERENCES landos_deal_card(id)`);
+  addColumn('landos_deal_card', 'archived_as_duplicate_at', `archived_as_duplicate_at INTEGER`);
+  addColumn('landos_property_card', 'canonical_property_card_id', `canonical_property_card_id INTEGER REFERENCES landos_property_card(id)`);
+  addColumn('landos_property_card', 'archived_as_duplicate_at', `archived_as_duplicate_at INTEGER`);
+  // A canonical card can never itself be an alias, so the pointer must be NULL on
+  // the canonical row. Partial indexes keep "one active card per subject" cheap.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_landos_deal_card_alias
+      ON landos_deal_card(canonical_deal_card_id) WHERE canonical_deal_card_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_landos_property_card_alias
+      ON landos_property_card(canonical_property_card_id) WHERE canonical_property_card_id IS NOT NULL;
+  `);
+  // The normalized acquisition subject this card represents, from
+  // `canonical-subject-identity`. `subject_key_basis` records how it was
+  // derived: an `apn` key is official and stable, while `provisional_address`
+  // and `provisional_point` are reversible and must be rematched once a parcel
+  // identifier lands. Blank means identity is not yet establishable at all.
+  addColumn('landos_deal_card', 'subject_key', `subject_key TEXT NOT NULL DEFAULT ''`);
+  addColumn('landos_deal_card', 'subject_key_basis', `subject_key_basis TEXT NOT NULL DEFAULT ''`);
+  // The constraint that actually stops a second active Deal Card for one
+  // acquisition subject. Two overlapping New Lead submissions previously both
+  // reached INSERT because nothing but application-level SELECT-then-decide
+  // stood between them; a UNIQUE index makes SQLite refuse the loser, and the
+  // intake path resolves it onto the winner instead of creating a rival card.
+  // Scoped so it constrains only ACTIVE CANONICAL cards: an archived alias
+  // keeps its own historical key, a trashed card frees its key for reuse, and a
+  // card with no establishable subject (blank key) is never constrained.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_landos_deal_card_subject_active
+      ON landos_deal_card(subject_key)
+      WHERE subject_key <> '' AND canonical_deal_card_id IS NULL AND deleted_at IS NULL;
+  `);
+  // Durable audit of every canonicalization: what moved, from where, to where and
+  // why. Written inside the same transaction as the relink so the map can never
+  // disagree with the data it describes.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS landos_canonicalization_audit (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      subject_key       TEXT    NOT NULL,
+      entity            TEXT    NOT NULL,
+      scope             TEXT    NOT NULL,
+      from_kind         TEXT    NOT NULL,
+      from_id           INTEGER NOT NULL,
+      to_kind           TEXT    NOT NULL,
+      to_id             INTEGER NOT NULL,
+      table_name        TEXT,
+      column_name       TEXT,
+      rows_relinked     INTEGER NOT NULL DEFAULT 0,
+      detail            TEXT    NOT NULL DEFAULT '',
+      created_at        INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_landos_canonicalization_audit_subject
+      ON landos_canonicalization_audit(subject_key, created_at DESC);
+  `);
   addColumn('landos_intake_submission', 'resolution_json', `resolution_json TEXT NOT NULL DEFAULT '{}'`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_landos_intake_submission_idempotency
     ON landos_intake_submission(deal_card_id, idempotency_key)
@@ -3204,6 +3264,18 @@ export function isLeadType(v: unknown): v is LeadType {
 export function getLandosDb(): Database.Database {
   if (landosDb) return landosDb;
   const storage = getLandosStorageProfile();
+  // A TEST PROCESS NEVER OPENS THE OPERATING STORE. Route registration runs
+  // side effects (the ownerless-run reclaim) before a test's `beforeEach`
+  // installs its in-memory database, and that first lazy open reached the
+  // developer's real store: every live coverage run in it was failed as
+  // ownerless by a vitest process that had just started, and the Deal Brain
+  // decisions those runs were about to write were rejected. Isolated QA
+  // storage is a deliberate file store and is kept; the operating file is not.
+  if (process.env.NODE_ENV === 'test' && storage.mode !== 'qa') {
+    landosDb = new Database(':memory:');
+    createLandosSchema(landosDb);
+    return landosDb;
+  }
   fs.mkdirSync(storage.root, { recursive: true });
   const dbPath = storage.databasePath;
   landosDb = new Database(dbPath);

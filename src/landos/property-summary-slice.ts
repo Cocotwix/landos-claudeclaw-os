@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { getLandosDb, landosAudit } from './db.js';
+import { rematchDealSubject } from './canonical-deal-resolution.js';
 import type {
   CountyRecordsFinding,
   PublicEvidence,
@@ -379,6 +380,39 @@ export function createPropertyIdentityVersion(input: PropertyIdentityVersionInpu
     refTable: 'landos_property_identity_version',
     refId: id,
   });
+  // REMATCH. The corrected identity may have just revealed that this card and
+  // another describe the same acquisition subject — the step whose absence let
+  // three cards survive for one parcel, because each card's APN WAS eventually
+  // corrected and nothing revisited the duplicate question afterwards.
+  //
+  // It claims the corrected subject key when free. When another active card
+  // already holds it, the collision is recorded for an operator decision rather
+  // than archived here: archiving moves evidence off a card, and that belongs to
+  // the explicit canonicalization path, not to a routine identity write.
+  try {
+    const rematch = rematchDealSubject(db, input.dealCardId, {
+      state: cleanString(input.state),
+      county: cleanString(input.county),
+      apn: cleanString(input.apn),
+      address: cleanString(input.address),
+      zip: cleanString(input.zip),
+    });
+    if (rematch.collidesWithDealCardId != null) {
+      landosAudit(
+        input.createdBy,
+        'deal_card_duplicate_subject_detected',
+        `deal ${input.dealCardId} resolves to the same acquisition subject as deal ${rematch.collidesWithDealCardId}`,
+        { refTable: 'landos_deal_card', refId: input.dealCardId },
+      );
+    }
+  } catch (error) {
+    // A rematch failure must never cost the operator the identity correction
+    // that was just accepted; the duplicate question is revisited on the next
+    // identity write.
+    landosAudit(input.createdBy, 'deal_card_subject_rematch_failed', `deal ${input.dealCardId}: ${
+      error instanceof Error ? error.message : String(error)
+    }`, { refTable: 'landos_deal_card', refId: input.dealCardId });
+  }
   return identityFromRow(
     db.prepare('SELECT * FROM landos_property_identity_version WHERE id=?').get(id) as IdentityRow,
   );

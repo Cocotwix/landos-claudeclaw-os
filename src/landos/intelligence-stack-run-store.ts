@@ -8,6 +8,7 @@
 
 import { getLandosDb } from './db.js';
 import { finishRunProgress, type IntelligenceRunProgress } from './intelligence-run-progress.js';
+import { ANALYST_JUDGMENT_TIMEOUT_MS } from './acquisition-analyst.js';
 
 export type IntelligenceStackRunStatus = 'running' | 'complete' | 'failed' | 'cancelled' | 'superseded';
 
@@ -27,6 +28,32 @@ export interface IntelligenceStackRunRecord {
 
 let ensuredDb: unknown = null;
 const PROCESS_STARTED_AT = new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString();
+
+/** Idle cutoff for reclaiming a run. Derived from the longest single
+ *  specialist call so a slow but healthy run is never mistaken for an
+ *  abandoned one, with slack for the surrounding stage work. */
+export const ABANDONED_RUN_IDLE_MS = ANALYST_JUDGMENT_TIMEOUT_MS + 10 * 60_000;
+
+/**
+ * May THIS process revoke Intelligence runs as ownerless?
+ *
+ * The no-owner rule compares a run's `started_at` with this process's start
+ * time, which is only meaningful in the process that owns the runs: the
+ * managed runtime (launched with `--landos-runtime-id=`). Any other process
+ * that registers the routes against the operating store — a test runner, a
+ * QA gate, a script — would fail every live run the runtime is still working
+ * on, and the runtime's late decision and Development Path writes were then
+ * rejected as "no longer authoritative". An isolated QA store or a test
+ * database holds nothing the runtime owns, so those are free to reclaim.
+ */
+export function processOwnsIntelligenceRuns(
+  argv: readonly string[] = process.argv,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (argv.some((arg) => arg.startsWith('--landos-runtime-id='))) return true;
+  if (env.LANDOS_STORAGE_MODE === 'qa') return true;
+  return env.NODE_ENV === 'test';
+}
 
 function ensureTable(): void {
   const db = getLandosDb();
@@ -175,8 +202,22 @@ export class IntelligenceStackRunStore {
     return Number(result.changes) === 1;
   }
 
-  /** Revoke work no process can still own, or work that stopped moving. */
-  reclaimAbandoned(olderThanMs = 20 * 60_000, nowMs = Date.now(), processStartedAt = PROCESS_STARTED_AT): number {
+  /**
+   * Revoke work no process can still own, or work that stopped moving.
+   *
+   * THE IDLE CUTOFF MUST EXCEED THE LONGEST UNIT OF WORK IT SUPERVISES. A run
+   * only touches `updated_at` when a STAGE changes, and one specialist call is
+   * allowed up to `ANALYST_JUDGMENT_TIMEOUT_MS` (20 minutes). With a 20-minute
+   * cutoff a perfectly healthy run sitting inside a single slow market review
+   * was reclaimed as ownerless and told to re-run — which is what happened to
+   * controlled QA Card 128, whose decision artifact could then never be
+   * produced. The cutoff is now derived from that timeout with slack, so the
+   * two can never silently drift back into a race.
+   *
+   * The genuine no-owner signal is unchanged: a run whose `started_at` precedes
+   * this process cannot be owned by it, whatever its heartbeat says.
+   */
+  reclaimAbandoned(olderThanMs = ABANDONED_RUN_IDLE_MS, nowMs = Date.now(), processStartedAt = PROCESS_STARTED_AT): number {
     ensureTable();
     const now = new Date(nowMs).toISOString();
     const cutoff = new Date(nowMs - olderThanMs).toISOString();
