@@ -19,8 +19,8 @@ const MAGIC = Buffer.from('LANDOS1\0');
 
 function isoSlug() { return new Date().toISOString().replace(/[:.]/g, '-'); }
 function sha256File(file) { const h = crypto.createHash('sha256'); h.update(fs.readFileSync(file)); return h.digest('hex'); }
-function run(command, args) {
-  const r = spawnSync(command, args, { encoding: 'utf8' });
+function run(command, args, opts = {}) {
+  const r = spawnSync(command, args, { encoding: 'utf8', ...opts });
   if (r.status !== 0) throw new Error(`${command} failed: ${(r.stderr || r.stdout || '').trim()}`);
 }
 function dpapi(mode, input, output) { run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', DPAPI, '-Mode', mode, '-InputPath', input, '-OutputPath', output]); }
@@ -110,7 +110,11 @@ async function createPackage() {
     const database = inspectDb(snapshot);
     if (database.quickCheck !== 'ok' || database.foreignKeyViolations !== 0) throw new Error('online database snapshot failed integrity checks');
     const artifacts = walkArtifacts();
-    const tarArgs = ['-cf', tarFile, '-C', work, 'landos.db'];
+    // --force-local: GNU tar parses a `-f` path as host:file, so a Windows
+    // absolute path like C:\...\package.tar is read as host "C". Without this
+    // the backup dies with "Cannot connect to C: resolve failed" and every
+    // migration safeguard that depends on a verified backup is unavailable.
+    const tarArgs = ['--force-local', '-cf', tarFile, '-C', work, 'landos.db'];
     for (const dir of ARTIFACT_DIRS) if (fs.existsSync(path.join(STORE, dir))) tarArgs.push('-C', STORE, dir);
     run('tar.exe', tarArgs);
     await encryptTar(tarFile, encrypted, wrappedKey);
@@ -145,7 +149,13 @@ async function restorePackage(encrypted, targetRoot) {
   try {
     await decryptTar(encrypted, wrappedKey, tarFile);
     fs.mkdirSync(targetRoot, { recursive: true });
-    run('tar.exe', ['-xf', tarFile, '-C', targetRoot]);
+    // Extract into targetRoot as the child's working directory rather than with
+    // `-C`. GNU tar 1.35 on Windows mangles a `-C` argument under
+    // --force-local on EXTRACT (the drive colon is escaped and the path is then
+    // opened as a member: "C\:\\Users\...: Cannot open"), which silently left
+    // every restore drill unverifiable. Create is unaffected and still uses -C,
+    // because it interleaves several -C switches with member names.
+    run('tar.exe', ['--force-local', '-xf', tarFile], { cwd: targetRoot });
     const database = inspectDb(path.join(targetRoot, 'landos.db'));
     if (JSON.stringify(database) !== JSON.stringify(manifest.database)) throw new Error('restored database does not match backup manifest');
     const restoredArtifacts = [];
