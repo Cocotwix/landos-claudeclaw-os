@@ -1562,6 +1562,12 @@ export function reconcilePropertyIntelligenceSnapshot(
     sequence: incoming.sequence,
     startedAt: incoming.startedAt,
     completedAt: incoming.completedAt,
+    // The INCOMING run's subject stamp, carried through the re-join. Rejoining
+    // without it stamped every rerun as "recorded no subject": the first run
+    // on a card kept its stamp (nothing retained to merge with), and every run
+    // after it lost the stamp here, so the accepted subject could never get a
+    // read that the currentness gate would accept as current.
+    subjectVersion: incoming.subjectVersion ?? null,
     identity,
     facts,
     governmentRecords,

@@ -16,6 +16,8 @@ import type {
   GovernmentRecordReadModel,
 } from './government-records-types.js';
 import { listPublicRecordOutcomes } from './lead-card-intake.js';
+import { PropertyResearchStore } from './property-research-store.js';
+import { recordedInstrumentAccessFindings, recordedInstrumentAccessResult } from './recorded-instrument-access.js';
 import { synchronizePropertySummaryForDeal } from './property-summary-legacy-adapter.js';
 import { readCurrentPropertyIdentity } from './property-summary-slice.js';
 import { landosArtifactPath } from './storage-profile.js';
@@ -397,12 +399,34 @@ export function synchronizeGovernmentRecordsForDeal(input: {
       }),
     };
   });
-  return synchronizeGovernmentRecordSlice({
+  const readModel = synchronizeGovernmentRecordSlice({
     identity,
     collectors,
     changeReason: input.changeReason,
     generatedBy: input.actor,
   });
+  // A retrieved instrument that itself grants or reserves ingress/egress is
+  // verified-legal access evidence. It is asserted through the canonical
+  // research store so the access ladder, the Deal Brain and the risk read all
+  // see the same item; the instrument-keyed id makes a rebuild idempotent.
+  if (Number.isInteger(cardId)) {
+    const findings = recordedInstrumentAccessFindings(listPublicRecordOutcomes(input.dealCardId));
+    const result = recordedInstrumentAccessResult({
+      propertyCardId: cardId,
+      dealCardId: input.dealCardId,
+      normalizedAddress: text(property.active_input_address).toLowerCase(),
+      address: text(property.active_input_address),
+      city: text(property.city) || null,
+      county: text(property.county) || null,
+      state: text(property.state) || null,
+      zip: text(property.zip) || null,
+      apn: text(property.apn) || null,
+      fips: text(property.fips) || null,
+      landPortalPropertyId: text(property.lp_property_id) || null,
+    }, findings, new Date().toISOString());
+    if (result) new PropertyResearchStore().persistProviderResult(result);
+  }
+  return readModel;
 }
 
 /** SELECT-only read adapter for the Deal Card route. */

@@ -363,6 +363,21 @@ describe('monotonic snapshot promotion', () => {
     expect(reconciled.snapshot.runId).toBe('pi_test_2');
   });
 
+  it('carries the rerun subject stamp through the merge with the retained snapshot', () => {
+    // A rerun's snapshot is merged with the retained one before it is stored.
+    // The merged snapshot must still say which subject the rerun answered
+    // about, or the currentness gate withholds it as uncorrelated and the
+    // accepted subject can never get a current read from a second run.
+    const retained = joinPropertyIntelligence(joinInput({ subjectVersion: 'iv:152:v1#ac:52.18:assessed' }));
+    const incoming = joinPropertyIntelligence(joinInput({
+      runId: 'pi_test_2', sequence: 2, subjectVersion: 'iv:153:v2#ac:43.7:assessed',
+    }));
+    const reconciled = reconcilePropertyIntelligenceSnapshot(retained, incoming);
+    expect(reconciled.promotable).toBe(true);
+    expect(reconciled.snapshot.subjectVersion).toBe('iv:153:v2#ac:43.7:assessed');
+    expect(gateSnapshotToCurrentSubject(reconciled.snapshot, 'iv:153:v2#ac:43.7:assessed')!.currentness.stale).toBe(false);
+  });
+
   it('refuses to promote a rerun for a conflicting parcel', () => {
     const retained = joinPropertyIntelligence(joinInput());
     const incoming = joinPropertyIntelligence(joinInput({

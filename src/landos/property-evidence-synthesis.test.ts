@@ -442,3 +442,27 @@ describe('stability of the reading', () => {
     expect(build(source).inputFingerprint).not.toBe(build().inputFingerprint);
   });
 });
+
+describe('recorded easements and restrictions the screening actually read', () => {
+  it('carries the instrument finding verbatim as an official record fact', () => {
+    const source = file();
+    const pi = source.propertyIntelligence as Record<string, unknown>;
+    (pi.snapshot as Record<string, unknown>).governmentRecords = [{
+      key: 'easements', label: 'Recorded easements and restrictions', grade: 'likely_indication',
+      value: 'Subject to River Oak Plantation Restrictions and Covenants (OR 535 pp 59-68); conveyed with and subject to an ingress/egress easement over all roadways shown on Misc Map Book 1 Page 18',
+      source: 'County recorded government records', sourceUrl: null, retrievedAt: '2026-09-05T00:00:00.000Z', note: null,
+    }];
+    const dossier = buildAcquisitionDossier(source);
+    expect(dossier.recordedEncumbrances).toHaveLength(1);
+    const synthesis = buildPropertyEvidenceSynthesis({ dealCardId: 501, dossier, understanding: understanding(), now });
+    const fact = synthesis.recordFacts.find((entry) => entry.topic === 'record.encumbrances');
+    expect(fact?.standing).toBe('official_legal_fact');
+    expect(fact?.statement).toContain('ingress/egress easement over all roadways shown on Misc Map Book 1 Page 18');
+    expect(fact?.statement).toContain('River Oak Plantation Restrictions');
+  });
+
+  it('asserts no encumbrance fact when the screening retained none', () => {
+    const synthesis = buildPropertyEvidenceSynthesis({ dealCardId: 501, dossier: buildAcquisitionDossier(file()), understanding: understanding(), now });
+    expect(synthesis.recordFacts.some((entry) => entry.topic === 'record.encumbrances')).toBe(false);
+  });
+});

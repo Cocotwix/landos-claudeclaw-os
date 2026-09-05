@@ -510,12 +510,16 @@ export function publicRecordSearchHierarchy(subject: PublicRecordSubject): {
   const address = clean(subject.address);
   const roadOnlyAccepted = !!address && !/^\d+\s/.test(address);
   const strong = !!subject.apn && !!subject.county && !!subject.state && signals.length >= 4;
+  // "Bradford County" typed at intake must not read back as "Bradford County County".
+  const countyLabel = subject.county
+    ? (/\b(county|parish|borough)$/i.test(subject.county.trim()) ? subject.county.trim() : `${subject.county.trim()} County`)
+    : null;
   const authorities = [
     subject.city ? { level: 'municipality', label: `${subject.city} municipal records` } : null,
     subject.township ? { level: 'township', label: `${subject.township} township records` } : null,
-    subject.county ? { level: 'county', label: `${subject.county} County assessor/GIS` } : null,
-    subject.county ? { level: 'county', label: `${subject.county} County tax office/trustee` } : null,
-    subject.county ? { level: 'county', label: `${subject.county} County clerk/recorder/register of deeds` } : null,
+    countyLabel ? { level: 'county', label: `${countyLabel} assessor/GIS` } : null,
+    countyLabel ? { level: 'county', label: `${countyLabel} tax office/trustee` } : null,
+    countyLabel ? { level: 'county', label: `${countyLabel} clerk/recorder/register of deeds` } : null,
     subject.county ? { level: 'county', label: `${subject.county} County planning/zoning authority` } : null,
     subject.state ? { level: 'state', label: `${subject.state} statewide parcel and tax systems` } : null,
   ].filter((row): row is { level: string; label: string } => !!row);

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { _initTestLandosDb, getLandosDb } from './db.js';
 import { EscalationLadder, describeStopReason } from './gis-escalation.js';
-import { compareAcres, compareAddress, compareParcelIdentifier, reconcileParcelCandidates } from './gis-identity-reconcile.js';
+import { compareAcres, compareAddress, compareCounty, compareParcelIdentifier, reconcileParcelCandidates } from './gis-identity-reconcile.js';
 import {
   assertNoPropertyEvidence,
   getDeploymentKnowledge,
@@ -198,6 +198,24 @@ describe('a returned record is never accepted as the subject without checking', 
       [candidate({ parcelId: '054507007', county: 'Somewhere Else', address: null, acres: null })],
     );
     expect(report.status).toBe('conflict');
+  });
+
+  it('does not read a numeric county code as a different county', () => {
+    // Williamson County TN publishes county "094" (its state county number)
+    // and the padded map/parcel key beside a roll-suffixed parcel_id. A code
+    // names nothing a county NAME can disagree with, so the correctly matched
+    // parcel must not be rejected on it; the roll's acreage gap is noted.
+    const report = reconcileParcelCandidates(
+      { apn: '046-050.00-000', address: '7348 Overby Rd, Fairview, TN 37062', county: 'Williamson', state: 'TN', knownAcres: 43.7 },
+      [candidate({ parcelId: '046    05000 00001046', alternateIds: ['046    05000'], address: '7348 OVERBEY RD', owner: 'KING HERBERT O JR', acres: 34, county: '094', state: null })],
+      { searchWasExact: false },
+    );
+    expect(report.status).toBe('provisional');
+    expect(report.acceptedIndex).toBe(0);
+    expect(report.checks.find((c) => c.dimension === 'county')?.outcome).toBe('not_comparable');
+    // A spelled-out county still agrees with the same county plus the word.
+    expect(compareCounty('Williamson', 'Williamson County').outcome).toBe('match');
+    expect(compareCounty('Fayette', 'Somewhere Else').outcome).toBe('mismatch');
   });
 
   it('refuses a record that published nothing comparable', () => {

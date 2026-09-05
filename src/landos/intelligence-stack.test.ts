@@ -103,6 +103,7 @@ function baseDossier(): AcquisitionDossier {
     },
     utilities: { septicAuthority: null, perLotApproval: null, unresolved: [] },
     officialAssessorRecord: null,
+    recordedEncumbrances: [],
     seller: emptySeller(),
     documents: [],
     visuals: [],

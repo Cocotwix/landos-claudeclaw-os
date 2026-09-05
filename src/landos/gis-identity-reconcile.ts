@@ -104,6 +104,27 @@ function compareText(expected: string | null | undefined, observed: string | nul
   return { outcome: 'mismatch', note: `"${right}" differs from "${left}".` };
 }
 
+/**
+ * County agreement. A county field that carries only a NUMERIC code (a state
+ * county number such as "094", or a FIPS fragment) names nothing LandOS can
+ * compare a county NAME against, so it is not comparable rather than a
+ * disagreement: treating it as a mismatch rejected correctly matched parcels
+ * on layers that publish the code instead of the name. A trailing "County"
+ * on either side is spelling, never a different county.
+ */
+export function compareCounty(expected: string | null | undefined, observed: string | null | undefined): IdentifierComparison {
+  const strip = (value: string | null | undefined) => (value ?? '').trim().replace(/\s+county$/i, '').trim();
+  const left = strip(expected);
+  const right = strip(observed);
+  if (!left || !right) return { outcome: 'not_comparable', note: 'One side is blank.' };
+  const numeric = (value: string) => /^\d+$/.test(value);
+  if (numeric(left) !== numeric(right)) {
+    const code = numeric(right) ? right : left;
+    return { outcome: 'not_comparable', note: `County is published as the code "${code}", not a name, so it was not compared.` };
+  }
+  return compareText(left, right);
+}
+
 /** Address comparison on the shared canonical form, so suffix and directional
  *  spelling differences never read as a different property. */
 export function compareAddress(expected: string | null | undefined, observed: string | null | undefined): IdentifierComparison {
@@ -164,7 +185,7 @@ function checksForCandidate(
   const address = compareAddress(input.address, candidate.address);
   const owner = compareText(input.owner, candidate.owner);
   const acreage = compareAcres(input.knownAcres, candidate.acres);
-  const county = compareText(input.county, candidate.county);
+  const county = compareCounty(input.county, candidate.county);
   const state = compareText(input.state, candidate.state);
 
   const material = materialDimensions(apn.outcome === 'match');

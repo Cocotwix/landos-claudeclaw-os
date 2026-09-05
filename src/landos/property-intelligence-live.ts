@@ -73,6 +73,7 @@ import type { CompSourceLabel, LandosEntity } from './db.js';
 import { landosArtifactPath } from './storage-profile.js';
 import {
   executePropertyProvider,
+  isProviderLaneError,
   type CanonicalPropertyInput,
   type NormalizedPropertyEvidence,
   type PropertyProviderAdapter,
@@ -89,6 +90,7 @@ import type { CompLaneInput, CompLaneRouteOutcome } from './comp-lane-accountabi
 import { saveSubjectListingDetail, type SubjectListingWriteResult } from './subject-listing-store.js';
 import { projectUtilityAvailability, type UtilityAvailabilityProjection } from './utility-availability-record.js';
 import { loadUtilityAvailabilityRecord } from './utility-service-screen-capability.js';
+import { leaseSharedZillowSession } from './zillow-land-comps.js';
 
 // ── Injected dependencies ───────────────────────────────────────────────────
 
@@ -532,7 +534,7 @@ async function collectParcelIdentityUnlocked(
         return Promise.race([subjectReady, started]);
       } }),
     }).then((result) => persistProviderResult(deps, result)).then(
-        (providerResult) => ({ result: providerResult.execution.result?.capture ?? null, error: providerResult.status === 'failed' ? new Error(providerResult.failureReason ?? 'LandPortal subject lane failed.') : null as unknown }),
+        (providerResult) => ({ result: providerResult.execution.result?.capture ?? null, error: isProviderLaneError(providerResult.status) ? new Error(providerResult.failureReason ?? 'LandPortal subject lane failed.') : null as unknown }),
         (error: unknown) => ({ result: null, error }),
       )
     : null;
@@ -546,7 +548,7 @@ async function collectParcelIdentityUnlocked(
       timeoutMs: Math.max(1, deps.publicRefreshWaitMs ?? 330_000),
       adapter: publicPropertyProviderAdapter({ execute: () => deps.runPublicIntelligence(ctx.dealCardId) }),
     }).then((result) => persistProviderResult(deps, result)).then(
-    (providerResult) => ({ result: providerResult.execution.result?.capture ?? null, error: providerResult.status === 'failed' ? new Error(providerResult.failureReason ?? 'Public property lane failed.') : null as unknown }),
+    (providerResult) => ({ result: providerResult.execution.result?.capture ?? null, error: isProviderLaneError(providerResult.status) ? new Error(providerResult.failureReason ?? 'Public property lane failed.') : null as unknown }),
     (error: unknown) => ({ result: null, error }),
   ) : deps.runPublicIntelligence(ctx.dealCardId).then(
     (result) => ({ result, error: null as unknown }),
@@ -1891,7 +1893,11 @@ function hermesLandPortalProviderAdapter(input: {
   };
 }
 
-function marketplaceProviderAdapter(input: {
+/**
+ * Exported for focused tests of the persisted-status mapping: a provider
+ * REFUSAL must persist as `blocked`, never as `unavailable`.
+ */
+export function marketplaceProviderAdapter(input: {
   laneId: 'zillow' | 'redfin' | 'realtor' | 'manufactured_home';
   providerId: string;
   execute: () => Promise<LandMarketplaceResult>;
@@ -1962,8 +1968,16 @@ function marketplaceProviderAdapter(input: {
     },
     status: (_property, execution) => {
       if (/not[_ ]applicable/i.test(execution.status)) return 'not_applicable';
+      if (/timed[_ ]?out|timeout/i.test(execution.status)) return 'timed_out';
+      // A REFUSAL is not an absence. A provider that served an anti-bot check,
+      // a 403 or a 429 told us it would not answer this request; a provider that
+      // is simply unavailable told us nothing. Collapsing both into
+      // `unavailable` is what made Zillow's own `status: "blocked"` payload
+      // persist as `unavailable`, so the operator could not tell a challenged
+      // board from an absent one and no lane ever recorded a refusal.
+      if (/blocked|captcha|challenge|forbidden|\b403\b|\b429\b|rate[_ ]?limit/i.test(execution.status)) return 'blocked';
       if (/error|failed/i.test(execution.status)) return 'failed';
-      if (/blocked|disabled|unavailable/i.test(execution.status)) return 'unavailable';
+      if (/disabled|unavailable/i.test(execution.status)) return 'unavailable';
       // Marketplace comps describe context properties, not subject parcel facts.
       return 'context_only';
     },
@@ -2242,6 +2256,13 @@ export async function collectComparables(
       (error: unknown) => ({ result: null, error }),
     )
     : null;
+  // ONE persistent Zillow identity for every board in this phase. Held for the
+  // whole marketplace phase so the sold, active and manufactured searches run
+  // on the same session with its state retained, rather than each opening its
+  // own because their lanes happened not to overlap in time.
+  const zillowLease = ((deps.captureZillowComps && runVacantLand) || (deps.captureManufacturedHomeComps && runManufacturedHomes)) && canonicalInput
+    ? leaseSharedZillowSession()
+    : null;
   const zillowPromise = deps.captureZillowComps && canonicalInput && runVacantLand
     ? executePropertyProvider({
         runId: ctx.runId,
@@ -2444,6 +2465,8 @@ export async function collectComparables(
     manufacturedHomesPromise ?? Promise.resolve({ result: null, error: null as unknown }),
     exactAddressPromise ?? Promise.resolve({ result: null, error: null as unknown }),
   ]);
+  // Every Zillow board has run; the one session may now close.
+  await zillowLease?.release();
   // Realtor.com fallback decision: the first three sources are "materially
   // thin" when they produced fewer than three sold candidates between them.
   // Realtor.com supplements the NON-LandPortal pool, so LandPortal rows never

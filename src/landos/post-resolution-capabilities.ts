@@ -33,7 +33,8 @@ import {
   resolveControllingLandUseAuthority,
   type ControllingLandUseAuthority,
 } from './controlling-land-use-authority.js';
-import { attachHistoricalZoning, determineCurrentZoning, type CurrentZoningDetermination } from './current-zoning-determination.js';
+import { attachHistoricalZoning, determineCurrentZoning, zoningDeterminationsFromPublicRecords, type CurrentZoningDetermination } from './current-zoning-determination.js';
+import { listPublicRecordOutcomes } from './lead-card-intake.js';
 import { researchZoningStandards } from './zoning-standards-research.js';
 import { retrieveSubdivisionRegulations, type SubdivisionRegulations } from './subdivision-regulations.js';
 import { buildPropertySubdivisionRead, type PropertySubdivisionRead } from './subdivision-property-read.js';
@@ -377,6 +378,9 @@ export async function runLandUseAuthorityAndZoningForDeal(
           fetchText: defaultGovFetchText,
           knownSourceUrls: known,
           retainedSources: retained.map((row) => ({ url: row.sourceUrl, title: row.sourceTitle, text: row.text })),
+          retainedDeterminations: zoningDeterminationsFromPublicRecords(
+            listPublicRecordOutcomes(dealCardId), { apn, address }, new Date().toISOString(),
+          ),
           browser,
           ...ZONING_BUDGET,
         },

@@ -34,7 +34,7 @@ import {
   rankSourceForAuthority,
 } from './land-use-source-authority.js';
 import { resolveControllingLandUseAuthority } from './controlling-land-use-authority.js';
-import { attachHistoricalZoning, classifyZoningDocument, determineCurrentZoning } from './current-zoning-determination.js';
+import { attachHistoricalZoning, classifyZoningDocument, determineCurrentZoning, zoningDeterminationsFromPublicRecords } from './current-zoning-determination.js';
 import { districtCodeVariants, researchZoningStandards, scopeToDistrictBlock } from './zoning-standards-research.js';
 import {
   looksLikeRegulationDocument,
@@ -956,5 +956,57 @@ describe('web search is a first-class method throughout', () => {
     );
     expect(readMinorMajorThresholds(regulations.rules).statedMaxMinorLots).toBe(3);
     expect(regulations.rules.find((rule) => rule.key === 'minimum_lot_size')?.value).toMatch(/one \(1\) acre/);
+  });
+});
+
+describe('retained official public-record determinations reach the current zoning', () => {
+  const now = '2026-09-05T00:00:00.000Z';
+  const atlasOutcome = {
+    category: 'current zoning',
+    title: 'Zoning district read from the Bradford County Official Zoning Atlas (updated April 2026): AGRICULTURAL-2',
+    authority: 'Bradford County Board of County Commissioners, Official Zoning Atlas',
+    retrieval_status: 'retrieved_yes',
+    summary: 'The subject (19554 NW 137th Ln, Lot 34 River Oak Plantation, APN 00083A03400) lies in unincorporated Bradford County; the block carries the AGRICULTURAL-2 fill on the county atlas.',
+    facts: { zoningDistrict: 'AGRICULTURAL-2', mapTitle: 'Bradford County Official Zoning Atlas, Updated April 2026', evidenceWeight: 'well_supported' },
+    source_url: 'https://bradfordcounty.app.box.com/s/fyulxlt5rkcijfq5kfcrko0058lpuhq6',
+    document_url: null,
+    searched_at: '2026-09-05T00:02:00.000Z',
+  };
+
+  it('turns a retrieved district outcome that names the parcel into an official-map candidate', () => {
+    const rows = zoningDeterminationsFromPublicRecords([atlasOutcome], { apn: '00083A03400', address: '19554 NW 137th Ln' }, now);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: 'official_zoning_map', districtCode: 'AGRICULTURAL-2', sourceTier: 'official_government_source', retrievedAt: '2026-09-05T00:02:00.000Z' });
+    expect(rows[0].parcelMatchBasis).toMatch(/APN 00083A03400/);
+    expect(rows[0].quote).toMatch(/well supported/);
+    // A municipal zoning LAYER read is parcel-level GIS evidence.
+    const layer = zoningDeterminationsFromPublicRecords([{
+      ...atlasOutcome, category: 'current zoning', summary: 'Parcel 046 05000 (7348 OVERBEY RD) returns Zoning RS40 on the city layer.',
+      facts: { zoningLayerDesignation: 'RS40', layer: 'https://services6.arcgis.com/x/arcgis/rest/services/Fairview_Zoning_Public/FeatureServer/0', parcelReference: 'MP 046 05000 (APN 046-050.00-000)' },
+    }], { apn: '046-050.00-000', address: '7348 Overby Rd, Fairview, TN 37062' }, now);
+    expect(layer[0]).toMatchObject({ kind: 'parcel_zoning_gis', districtCode: 'RS40' });
+  });
+
+  it('refuses an index-only outcome, a district-less outcome, and one that never names the parcel', () => {
+    expect(zoningDeterminationsFromPublicRecords([{ ...atlasOutcome, retrieval_status: 'retrieved_no' }], { apn: '00083A03400', address: null }, now)).toEqual([]);
+    expect(zoningDeterminationsFromPublicRecords([{ ...atlasOutcome, facts: {} }], { apn: '00083A03400', address: null }, now)).toEqual([]);
+    expect(zoningDeterminationsFromPublicRecords([atlasOutcome], { apn: '99999X99999', address: '1 Other Rd' }, now)).toEqual([]);
+  });
+
+  it('establishes the district from the retained determination with its official lineage', async () => {
+    const [candidate] = zoningDeterminationsFromPublicRecords([atlasOutcome], { apn: '00083A03400', address: '19554 NW 137th Ln' }, now);
+    const search: IdentitySearchProvider = async () => [];
+    const fetchText: GovFetchText = async (url) => ({
+      url, status: 404, body: '', contentType: 'text/html', blocked: true, blockedReason: 'not found',
+    } as unknown as GovTextResponse);
+    const zoning = await determineCurrentZoning(
+      { dealCardId: 90, apn: '00083A03400', address: '19554 NW 137th Ln', municipality: null, county: 'Bradford', state: 'FL' },
+      { name: 'Bradford County', level: 'county' as const, determination: 'confirmed' as const, basis: 'official boundary', sources: [], competingClaims: [] },
+      { search, fetchText, retainedDeterminations: [candidate], now: () => now },
+    );
+    expect(zoning.established).toBe(true);
+    expect(zoning.districtCode).toBe('AGRICULTURAL-2');
+    expect(zoning.race?.winningMethod).toBe('retained_evidence');
+    expect(JSON.stringify(zoning)).toMatch(/Official Zoning Atlas/);
   });
 });

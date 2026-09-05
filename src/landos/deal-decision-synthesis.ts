@@ -897,6 +897,18 @@ function rankedRisks(
       basis: `Sources: ${conflict.sides.flatMap((side) => side.sources).join('; ')}`, action: conflict.reason,
     });
   }
+  // Recorded easements and restrictions read from the instrument itself are a
+  // record fact the buyer inherits, so they rank as a risk even though nothing
+  // is "missing": the restrictions bind the resale and any division.
+  const encumbrance = (property?.recordFacts ?? []).find((entry) => entry.topic === 'record.encumbrances');
+  if (encumbrance) {
+    items.push({
+      key: 'recorded_encumbrances', title: 'Recorded easements and restrictions',
+      statement: encumbrance.statement, magnitude: 'medium', standing: 'record_fact',
+      basis: encumbrance.source?.name ?? 'County recorded government records',
+      action: 'Read the referenced restriction and easement instruments before contract; a title commitment is the only authority on what binds the parcel.',
+    });
+  }
   const wetlands = topicOf(property, 'wetlands');
   const wetShare = wetlands?.claims.map((claim) => Number((claim.value ?? '').replace('%', ''))).find((share) => Number.isFinite(share));
   if (wetShare != null && wetShare >= 40) {
@@ -1391,7 +1403,20 @@ function strategyComparisonFor(
     // clear prohibition. Detailed package underwriting stays behind the
     // strategy boundary for a later build.
     const lh = landHomePostureFor(value.package?.landHome ?? null, manufactured?.standing ?? null);
-    const status: ScenarioStatus = lh.posture === 'NOT VIABLE' ? 'not_supported' : lh.posture === 'WORTH EXPLORING' ? 'conditional' : 'unknown';
+    // A district that permits manufactured housing — by right or by special
+    // exception — makes the land-home package a real, conditional path even
+    // before the manufactured-home market screen has run. The screen refines
+    // the posture (WORTH EXPLORING / MARGINAL / NOT VIABLE); its absence no
+    // longer collapses a permitted path to "unknown". Only a clear prohibition,
+    // or a completed screen with no qualifying sale, is not_supported.
+    const districtPermitsManufactured = manufactured?.standing === 'by_right' || manufactured?.standing === 'conditional';
+    const status: ScenarioStatus = lh.posture === 'NOT VIABLE'
+      ? 'not_supported'
+      : lh.posture === 'WORTH EXPLORING'
+        ? 'conditional'
+        : districtPermitsManufactured
+          ? 'conditional'
+          : 'unknown';
     scenarios.push({
       id: 'land_home_manufactured', label: SCENARIO_LABEL.land_home_manufactured, strategyId: 'land_home_package', pathKind: 'as_is',
       subjectScope: 'The parcel with a manufactured or modular home placed and sold as a finished package.',
@@ -1744,6 +1769,12 @@ function materialDimensionsFor(
   }
   dims.title = guardOf(property, 'Title') ? 'not established' : 'established';
   dims.legalAccess = guardOf(property, 'Legal access') ? 'not established' : 'established';
+  // Recorded easements and restrictions read from the instrument bind the
+  // resale and any division, so a newly read (or changed) finding is material.
+  dims.encumbrances = (property?.recordFacts ?? [])
+    .filter((entry) => entry.topic === 'record.encumbrances')
+    .map((entry) => entry.statement.slice(0, 160))
+    .join(' | ') || 'none';
   dims.conflicts = String(property?.conflicts.filter((conflict) => conflict.resolution === 'unresolved' && conflict.material).length ?? 0);
   dims.market = market?.subjectBand.available
     ? `${market.subjectBand.bandUsedLabel ?? '?'} · ${market.subjectBand.medianPricePerAcre != null ? `${usd(market.subjectBand.medianPricePerAcre)}/ac` : 'no median'} · ${market.subjectBand.sampleCount ?? '?'} sales`

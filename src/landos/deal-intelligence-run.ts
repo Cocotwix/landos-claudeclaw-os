@@ -32,6 +32,8 @@ import {
   runInBrowserWorkflowScope,
   type BrowserWorkflowScope,
 } from './browser-session.js';
+import { adoptFamilyArtifact } from './canonical-deal-family.js';
+import { getLandosDb } from './db.js';
 import { analyseDealIntelligence } from './deal-intelligence-analysis.js';
 import { resolveCompsValuationLocations } from './comps-valuation.js';
 import { assembleDealIntelligencePackage, mapChildStatus } from './deal-intelligence-assembly.js';
@@ -542,7 +544,12 @@ async function finishDealIntelligenceRun(input: {
     }
 
     // ── Analyst: evaluate the property ────────────────────────────────────
-    const previousSnapshot = snapshotStore.primaryRun(dealCardId)?.snapshot ?? null;
+    // The retained read may have been produced under an archived alias of this
+    // card before canonicalization; within the family it is this subject's own
+    // read and the rerun merges with it instead of refusing it as another card's.
+    const previousSnapshot = adoptFamilyArtifact(
+      getLandosDb(), dealCardId, snapshotStore.primaryRun(dealCardId)?.snapshot ?? null,
+    );
     let operatorContext = emptyDealOperatorContext();
     if (options.capabilities.operatorContext) {
       try {

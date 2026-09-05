@@ -39,7 +39,29 @@ export type PropertyProviderStatus =
   | 'context_only'
   | 'not_applicable'
   | 'unavailable'
+  // A lane that exceeded its own budget. Distinct from `failed`: the provider
+  // did not answer wrongly, it did not answer in time, which is an operational
+  // state the operator can act on (retry, widen the budget) rather than a
+  // defect in the evidence. Recording it as `failed` hid every hang.
+  | 'timed_out'
+  // The provider refused or challenged the request (access control, CAPTCHA,
+  // rate limit). LandOS never circumvents these; it records the state and the
+  // rest of the workflow continues without this lane.
+  | 'blocked'
   | 'failed';
+
+/**
+ * Did this lane end without producing a usable handback?
+ *
+ * `timed_out` and `blocked` were previously folded into `failed`, so every
+ * consumer that asked `status === 'failed'` silently stopped seeing them the
+ * moment they became distinct — and a hung LandPortal capture quietly lost the
+ * "continues independently" explanation the operator reads. Splitting the
+ * vocabulary is only safe if the consumers ask this question instead.
+ */
+export function isProviderLaneError(status: PropertyProviderStatus): boolean {
+  return status === 'failed' || status === 'timed_out' || status === 'blocked';
+}
 
 export type PropertySubjectClassification = 'verified_subject' | 'context_only' | 'no_match';
 
@@ -145,14 +167,46 @@ function providerFailureReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Marker so a timeout is recorded as `timed_out`, never as a generic failure. */
+class ProviderTimeoutError extends Error {
+  readonly timedOut = true;
+  constructor(timeoutMs: number) { super(`Provider lane timed out after ${timeoutMs} ms.`); }
+}
+
+/** A provider refusal/challenge (access control, CAPTCHA, rate limit). */
+const BLOCKED_PATTERNS = /\b(?:captcha|403|401 unauthorized|429|rate limit|access denied|forbidden|blocked by|bot detection|challenge)\b/i;
+
+function isTimeout(error: unknown): boolean {
+  return (error as { timedOut?: boolean } | null)?.timedOut === true
+    || (error as { name?: string } | null)?.name === 'TimeoutError';
+}
+
+/**
+ * DEFAULT LANE BUDGET.
+ *
+ * Every provider lane must reach a terminal state. Lanes that passed no
+ * `timeoutMs` previously got `return promise` — an unbounded await — and a
+ * single hung authenticated LandPortal read then stalled the comparables
+ * outcome, the coverage cycle, the execution-lock release and, with `wait:true`,
+ * the HTTP response itself. An explicit budget is now the floor, not an opt-in.
+ *
+ * The value deliberately MATCHES the comparables mission-child budget in
+ * `deal-intelligence-mission.ts`. The same lane run through the mission graph
+ * has always been abandoned at 15 minutes; the focused rerun path bypasses the
+ * graph, so it inherited no bound at all. Matching that number bounds the hang
+ * without shortening any lane that already succeeds under governance — the
+ * focused path simply stops being able to outlive the governed one.
+ */
+export const DEFAULT_PROVIDER_LANE_TIMEOUT_MS = 900_000;
+
 async function settleProviderWithin<T>(promise: Promise<T>, timeoutMs?: number): Promise<T> {
-  if (!timeoutMs || timeoutMs <= 0) return promise;
+  const budget = timeoutMs && timeoutMs > 0 ? timeoutMs : DEFAULT_PROVIDER_LANE_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`Provider lane timed out after ${timeoutMs} ms.`)), timeoutMs);
+        timer = setTimeout(() => reject(new ProviderTimeoutError(budget)), budget);
       }),
     ]);
   } finally {
@@ -231,7 +285,11 @@ export async function executePropertyProvider<TExecution>(input: {
         rejectedEvidenceIds: [],
       },
       evidence: [],
-      status: 'failed',
+      // An honest terminal state. A lane that ran out of budget or was refused
+      // by the provider is neither a verified answer nor a defect in LandOS;
+      // collapsing all three into `failed` is what made every hang look like a
+      // provider bug and hid the unbounded await underneath.
+      status: isTimeout(error) ? 'timed_out' : BLOCKED_PATTERNS.test(reason) ? 'blocked' : 'failed',
       persistence: {
         attempted: false,
         persisted: false,

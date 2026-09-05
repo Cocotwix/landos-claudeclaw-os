@@ -12,6 +12,7 @@
 // changes is the label, not the usability.
 
 import { getLandosDb } from './db.js';
+import { ensurePropertyResearchTables } from './property-research-store.js';
 import {
   CORROBORATION_LABELS,
   LISTING_SCOPE_LABELS,
@@ -211,6 +212,10 @@ const MANUFACTURED_HOME = /mobile\s*manufactured|manufactured|mobile home/i;
  */
 export function retainedListingFacts(dealCardId: number): RetainedListing | null {
   const db = getLandosDb();
+  // The lane-attempt table belongs to the research store and is created by it;
+  // a Deal Card read on a fresh runtime must not depend on a research lane
+  // having run first.
+  ensurePropertyResearchTables();
   const rows = db.prepare(
     `SELECT result_json FROM landos_property_research_lane_attempt
        WHERE deal_card_id=? AND result_json LIKE '%exact_address%listing%'

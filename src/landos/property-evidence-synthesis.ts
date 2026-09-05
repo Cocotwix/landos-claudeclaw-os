@@ -307,6 +307,25 @@ function recordFactSeeds(dossier: AcquisitionDossier): ClaimSeed[] {
   const record = dossier.officialAssessorRecord;
   const parcelGeography = dossier.identity.apn ? `parcel ${dossier.identity.apn}` : 'subject parcel';
 
+  // Recorded easements and restrictions from instruments the government-record
+  // screening actually read. Carried verbatim as record facts; the risk read
+  // and the Deal Brain pick them up from here.
+  for (const encumbrance of dossier.recordedEncumbrances ?? []) {
+    seeds.push({
+      topic: 'record.encumbrances',
+      label: 'Recorded easements and restrictions',
+      statement: encumbrance.statement,
+      value: encumbrance.statement,
+      standing: 'official_legal_fact',
+      weight: encumbrance.grade === 'confirmed_fact' ? 'confirmed' : 'well_supported',
+      sourceName: encumbrance.source,
+      tier: 'official_primary',
+      url: encumbrance.sourceUrl,
+      geography: parcelGeography,
+      retrievedAt: encumbrance.retrievedAt,
+    });
+  }
+
   if (record) {
     const source = clean(record.source) ?? clean(record.jurisdiction) ?? 'County assessor record';
     const base = {

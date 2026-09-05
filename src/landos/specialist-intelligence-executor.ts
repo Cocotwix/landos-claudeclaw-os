@@ -352,6 +352,9 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
         : null;
       let marketExpertReview: string | undefined;
       let propertyExpertReview: string | undefined;
+      /** Reviews that arrived without a SOURCE LEDGER, disclosed rather than
+       *  silently accepted. Each one admits no web citation at all. */
+      const ledgerOmissions: string[] = [];
       let sellerExpertReview: string | undefined;
 
       if (propertyTask) {
@@ -383,10 +386,25 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
           if (!review.trim() || review.trim().length < 200) {
             throw new Error(`${profile} returned no substantive free expert review`);
           }
-          if (!/\nSOURCE LEDGER\s*\n/i.test(review)) {
-            throw new Error(`${profile} returned no SOURCE LEDGER for the free expert review`);
+          // A MISSING LEDGER IS AN EMPTY LEDGER, NOT A DEAD RUN.
+          //
+          // The ledger exists to constrain citations: downstream, any web
+          // citation whose URL is absent from it is rejected. Throwing here
+          // destroyed the whole intelligence run — and with it the Deal Brain
+          // decision artifact that depends on it — over a section the analyst
+          // simply did not print, while the safety the ledger provides was
+          // never actually at risk.
+          //
+          // Nothing is fabricated. The ledger is recorded as explicitly empty,
+          // so every citation is rejected exactly as it would have been, and
+          // the omission is disclosed rather than silently tolerated.
+          const ledgerMissing = !/\nSOURCE LEDGER\s*\n/i.test(review);
+          marketExpertReview = ledgerMissing
+            ? `${review.trim()}\n\nSOURCE LEDGER\n- NONE`
+            : review;
+          if (ledgerMissing) {
+            ledgerOmissions.push(`${profile} returned a free expert market review with no SOURCE LEDGER section; it is treated as an empty ledger, so no web citation from that review can be admitted.`);
           }
-          marketExpertReview = review;
           const raw = await invoke(
             specialistInvocationArgs({
               profile,
@@ -451,7 +469,7 @@ export function createSpecialistIntelligenceExecutor(deps: HermesAnalystDeps = {
       return {
         raw: JSON.stringify(merged),
         observations,
-        warnings,
+        warnings: ledgerOmissions.length ? [...warnings, ...ledgerOmissions] : warnings,
         runtime: { ...primary, durationMs: Math.max(0, now() - startedAt) },
         layerRuntimes,
         ...(marketExpertReview !== undefined ? { marketExpertReview } : {}),

@@ -348,6 +348,10 @@ export interface AcquisitionDossier {
     summary: string | null;
     attemptNote: string | null;
   } | null;
+  /** Recorded easements and restrictions the government-record screening
+   *  retained from instruments it actually read, verbatim, with the record
+   *  source. A screening finding, never a title opinion. */
+  recordedEncumbrances: Array<{ statement: string; source: string; sourceUrl: string | null; retrievedAt: string | null; grade: string | null; note: string | null }>;
   /** The bounded SELLER EVIDENCE record: everything LandOS has actually
    *  persisted about the seller relationship for this deal. Every statement
    *  sourced from the seller stays SELLER-REPORTED — evidence attributed to
@@ -1015,6 +1019,24 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
   // official-record section. Only a result whose facts are actually present is
   // carried; a null ledger read leaves the section null and the coverage list
   // says so honestly.
+  // Recorded easements and restrictions come from the government-record
+  // screening facts on the snapshot (the retrieved instrument's own findings).
+  const recordedEncumbrances: AcquisitionDossier['recordedEncumbrances'] = asArray(at(snapshot, 'governmentRecords'))
+    // Two spellings reach the snapshot: the screening analyst's `easements`
+    // fact, and the read-time projection of a retrieved public-record
+    // outcome's own `easementsAndRestrictions` field.
+    .filter((fact): fact is Record<string, unknown> => isRecord(fact)
+      && (String(fact.key ?? '') === 'easements' || /easementsandrestrictions$/i.test(String(fact.key ?? '')))
+      && !!text(fact.value, 600))
+    .map((fact) => ({
+      statement: text(fact.value, 600)!,
+      source: text(fact.source, 160) ?? 'County recorded government records',
+      sourceUrl: text(fact.sourceUrl, 400),
+      retrievedAt: text(fact.retrievedAt, 40),
+      grade: text(fact.grade, 40),
+      note: text(fact.note, 300),
+    }));
+
   const officialAssessorRecord: AcquisitionDossier['officialAssessorRecord'] = (() => {
     const at_ = source.assessorTax;
     const facts = at(at_, 'facts');
@@ -1161,6 +1183,7 @@ export function buildAcquisitionDossier(source: PropertyFileSource): Acquisition
     market,
     utilities,
     officialAssessorRecord,
+    recordedEncumbrances,
     seller,
     documents,
     visuals,

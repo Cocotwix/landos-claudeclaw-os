@@ -628,6 +628,14 @@ export interface CurrentZoningDeps {
   knownSourceUrls?: readonly string[];
   /** Zoning evidence LandOS already persisted for this parcel. */
   retainedSources?: ReadonlyArray<{ url: string | null; title: string | null; text: string }>;
+  /**
+   * District determinations already retained as accepted official public-record
+   * outcomes for THIS parcel (see `zoningDeterminationsFromPublicRecords`).
+   * They enter the race as ordinary candidates at their evidence kind, so a
+   * parcel-level GIS read still outranks a map read, and nothing here bypasses
+   * the selection rules.
+   */
+  retainedDeterminations?: ReadonlyArray<ZoningEvidenceCandidate>;
   /** Ordinance text already retrieved, for the standards read. */
   ordinanceText?: { text: string; label: string; url: string | null } | null;
   /** Escalation seam for an interactive zoning viewer. */
@@ -693,6 +701,61 @@ export function readZoningFromOfficialPage(input: {
     quote: body.slice(Math.max(0, at - 160), at + 220),
     retrievedAt: input.retrievedAt,
   };
+}
+
+/**
+ * Retained official public-record outcomes that state THIS parcel's district.
+ *
+ * Only an outcome whose record was actually retrieved (`retrieved_yes`), whose
+ * facts name a district, and whose own text names this parcel by APN or address
+ * qualifies. The evidence kind follows what the authority published: a parcel
+ * zoning layer, an official zoning map, or a planning/property record. The
+ * outcome's stated weight is carried in the quote; selection still ranks by kind.
+ */
+export function zoningDeterminationsFromPublicRecords(
+  outcomes: ReadonlyArray<Record<string, unknown>>,
+  subject: { apn: string | null; address: string | null },
+  now: string,
+): ZoningEvidenceCandidate[] {
+  const clean = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value.trim() : null);
+  const compact = (value: string | null): string => (value ?? '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+  const apnKey = compact(subject.apn);
+  const street = clean(subject.address)?.split(',')[0]?.trim().toLowerCase() ?? '';
+  const out: ZoningEvidenceCandidate[] = [];
+  for (const row of outcomes) {
+    if (!/zoning/i.test(String(row.category ?? ''))) continue;
+    if (String(row.retrieval_status ?? '') !== 'retrieved_yes') continue;
+    const facts = (row.facts && typeof row.facts === 'object' ? row.facts : {}) as Record<string, unknown>;
+    const district = clean(facts.zoningDistrict) ?? clean(facts.zoningLayerDesignation) ?? clean(facts.district);
+    if (!district) continue;
+    const haystack = [row.summary, row.title, facts.parcelReference, facts.locationBasis, facts.parcelId, facts.apn]
+      .map((value) => (typeof value === 'string' ? value : '')).join(' ');
+    const matchesApn = apnKey.length >= 5 && compact(haystack).includes(apnKey);
+    const matchesAddress = street.length >= 6 && haystack.toLowerCase().includes(street);
+    if (!matchesApn && !matchesAddress) continue;
+    const authority = clean(row.authority) ?? 'Official public record';
+    const title = clean(row.title);
+    const kind: ZoningEvidenceKind = clean(facts.layer) || clean(facts.zoningLayerDesignation)
+      ? 'parcel_zoning_gis'
+      : clean(facts.mapTitle) || clean(facts.mapSource)
+        ? 'official_zoning_map'
+        : 'planning_or_property_record';
+    const weight = clean(facts.evidenceWeight);
+    out.push({
+      kind,
+      districtCode: district,
+      districtName: null,
+      overlays: [],
+      parcelMatchBasis: `the retained ${authority} record names this parcel by ${matchesApn ? `APN ${subject.apn}` : `address ${subject.address}`}${clean(facts.parcelReference) ? ` (${clean(facts.parcelReference)})` : ''}`,
+      sourceLabel: title ? `${authority} — ${title}` : authority,
+      sourceUrl: clean(row.document_url) ?? clean(row.source_url),
+      sourceTier: 'official_government_source',
+      effectiveOrAsOf: clean(facts.effectiveDate) ?? clean(facts.asOf) ?? null,
+      quote: `${clean(row.summary)?.slice(0, 320) ?? ''}${weight ? ` [retained weight: ${weight.replace(/_/g, ' ')}]` : ''}`.trim(),
+      retrievedAt: clean(row.searched_at) ?? now,
+    });
+  }
+  return out;
 }
 
 export function buildZoningDiscoveryQueries(subject: CurrentZoningSubject, limit = 3): string[] {
@@ -775,6 +838,21 @@ export async function determineCurrentZoning(
       read: readDocument,
       now: () => now,
     }));
+  }
+
+  // Accepted official public-record outcomes that already state this parcel's
+  // district (a county zoning atlas read, a municipal zoning layer read). They
+  // were retained by the operator research lifecycle with their authority,
+  // source URL and parcel tie; without this lane the Development Path kept
+  // reporting "district not established" beside a retained official answer.
+  if (deps.retainedDeterminations?.length) {
+    const determinations = deps.retainedDeterminations.map(toEvidence);
+    lanes.push({
+      id: 'retained_public_record',
+      method: 'retained_evidence',
+      label: 'Retained official public-record determination',
+      run: async () => determinations,
+    });
   }
 
   // ALWAYS declared, even with nothing to query. A jurisdiction with no ArcGIS

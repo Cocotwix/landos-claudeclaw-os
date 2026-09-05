@@ -6,6 +6,7 @@
 
 import type Database from 'better-sqlite3';
 import { getLandosDb } from './db.js';
+import { resolvePropertyFamily } from './canonical-deal-family.js';
 import {
   type CanonicalPropertyInput,
   type NormalizedPropertyEvidence,
@@ -33,6 +34,11 @@ const STRENGTH: Readonly<Record<PropertyEvidenceStrength, number>> = {
 const STATUS_STRENGTH: Readonly<Record<PropertyProviderStatus, number>> = {
   failed: 0,
   unavailable: 0,
+  // A lane that ran out of budget or was refused carries no evidence, so it can
+  // never outrank a lane that actually answered. It is recorded distinctly so
+  // the operator sees WHY the lane is empty, not merely that it is.
+  timed_out: 0,
+  blocked: 0,
   not_applicable: 1,
   context_only: 2,
   verified: 3,
@@ -126,6 +132,47 @@ function sameCanonicalProperty(a: CanonicalPropertyInput, b: CanonicalPropertyIn
   return true;
 }
 
+function sameCard(a: CanonicalPropertyInput, b: CanonicalPropertyInput): boolean {
+  return a.propertyCardId === b.propertyCardId && a.dealCardId === b.dealCardId;
+}
+
+/** What changed between the identity a record was keyed to and the card's current one. */
+function identityChange(from: CanonicalPropertyInput, to: CanonicalPropertyInput): string {
+  const parts: string[] = [];
+  if (from.apn && to.apn && !apnEquivalent(from.apn, to.apn)) parts.push(`APN ${from.apn} → ${to.apn}`);
+  const addressFrom = compactAddress(from.normalizedAddress || from.address);
+  const addressTo = compactAddress(to.normalizedAddress || to.address);
+  if (addressFrom && addressTo && addressFrom !== addressTo) parts.push(`address "${from.address}" → "${to.address}"`);
+  if (from.landPortalPropertyId && to.landPortalPropertyId && from.landPortalPropertyId !== to.landPortalPropertyId) {
+    parts.push(`LandPortal id ${from.landPortalPropertyId} → ${to.landPortalPropertyId}`);
+  }
+  return parts.join('; ') || 'identity fields changed';
+}
+
+/**
+ * Re-key a record onto its card's current identity. Retained evidence, facts
+ * and lane state were gathered for the superseded identity, so they are
+ * retired into the rejected ledger with the reason, keeping the audit trail
+ * while leaving nothing from the earlier parcel presentable as the subject.
+ */
+function rebaseOnSupersededIdentity(retained: CanonicalPropertyResearchRecord, result: PropertyProviderResult): CanonicalPropertyResearchRecord {
+  const at = result.execution.completedAt;
+  const reason = `retired: gathered under the superseded subject identity (${identityChange(retained.identity, result.input)})`;
+  const retired: RejectedPropertyEvidence[] = retained.evidence.map((item) => ({
+    evidenceId: evidenceKey(item), laneId: retained.lanes[item.providerId]?.laneId ?? item.providerId, providerId: item.providerId,
+    runId: retained.lanes[item.providerId]?.retainedRunId ?? 'superseded-identity', rejectedAt: at, reason,
+  }));
+  return {
+    ...retained,
+    identity: { ...result.input },
+    facts: {},
+    evidence: [],
+    lanes: {},
+    rejectedEvidence: [...retained.rejectedEvidence, ...retired],
+    updatedAt: at,
+  };
+}
+
 function evidenceKey(item: NormalizedPropertyEvidence): string {
   return item.id || `${item.providerId}|${item.kind}|${item.field}|${item.sourceUrl ?? ''}|${item.retrievedAt}`;
 }
@@ -159,14 +206,48 @@ function initialRecord(result: PropertyProviderResult): CanonicalPropertyResearc
   };
 }
 
+/**
+ * Read a research record retained on another card of the SAME property family
+ * as the given card's own. Anything outside the family, or already keyed to the
+ * card, is returned untouched. Retained evidence keeps the ids it was written
+ * with: nothing is copied or moved, the record is only re-keyed so the merge
+ * and the write land on the card the result was produced for.
+ */
+export function adoptFamilyResearchRecord(
+  record: CanonicalPropertyResearchRecord | null,
+  input: CanonicalPropertyInput,
+  familyPropertyCardIds: readonly number[],
+): CanonicalPropertyResearchRecord | null {
+  if (!record) return null;
+  if (record.propertyCardId === input.propertyCardId && record.dealCardId === input.dealCardId) return record;
+  if (!familyPropertyCardIds.includes(record.propertyCardId) || !familyPropertyCardIds.includes(input.propertyCardId)) return record;
+  return {
+    ...record,
+    propertyCardId: input.propertyCardId,
+    dealCardId: input.dealCardId,
+    canonicalKey: canonicalKey(input),
+    identity: { ...record.identity, propertyCardId: input.propertyCardId, dealCardId: input.dealCardId },
+  };
+}
+
 export function mergeCanonicalPropertyResearch(
   retained: CanonicalPropertyResearchRecord | null,
   result: PropertyProviderResult,
 ): CanonicalMergeResult {
   const violations = validatePropertyProviderResult(result);
-  const base = retained ?? initialRecord(result);
+  // The Property Card is the identity authority. When the SAME card now
+  // carries a different parcel identity than the record was keyed to (an
+  // accepted identity reconciliation moved its APN or address), the record is
+  // stale, not the result: it is rebased onto the card's identity and every
+  // fact gathered under the superseded identity is retired, never silently
+  // carried over as evidence for the subject (invariant 4). A result from a
+  // DIFFERENT card is still refused below.
+  const superseded = retained && sameCard(retained.identity, result.input) && !sameCanonicalProperty(retained.identity, result.input)
+    ? retained
+    : null;
+  const base = superseded ? rebaseOnSupersededIdentity(superseded, result) : (retained ?? initialRecord(result));
   const reasons = [...violations];
-  if (retained && !sameCanonicalProperty(retained.identity, result.input)) {
+  if (retained && !superseded && !sameCanonicalProperty(retained.identity, result.input)) {
     reasons.push('incoming provider result belongs to a different canonical property');
   }
   if (reasons.length) {
@@ -306,6 +387,17 @@ function parseRecord(value: unknown): CanonicalPropertyResearchRecord | null {
 export function resetPropertyResearchStoreCache(): void {
   ensuredDb = null;
 }
+
+/**
+ * Make the research tables exist before a reader OUTSIDE this module queries
+ * them. The tables were created lazily by the first research write, so on a
+ * fresh runtime or a fresh store a Deal Card read that joined the lane-attempt
+ * table threw "no such table" and the card silently lost its parcel scope
+ * until some research lane happened to run.
+ */
+export function ensurePropertyResearchTables(): void {
+  ensureTables();
+}
 function persistSoldImprovedEvidence(
   db: Database.Database,
   result: PropertyProviderResult,
@@ -365,9 +457,27 @@ function persistSoldImprovedEvidence(
 export class PropertyResearchStore {
   loadForProperty(propertyCardId: number): CanonicalPropertyResearchRecord | null {
     ensureTables();
-    const row = getLandosDb().prepare(
-      'SELECT record_json FROM landos_property_research_record WHERE property_card_id = ?',
-    ).get(propertyCardId) as { record_json?: string } | undefined;
+    const db = getLandosDb();
+    // CANONICAL FAMILY READ. This table is keyed BY property card, so a record
+    // cannot be relinked onto the canonical card without destroying the key that
+    // identifies it. After duplicate cards were canonicalized, the subject's
+    // whole research package (provider lanes, comparables, manufactured-home
+    // search) stayed under the alias card that produced it, while the canonical
+    // card still answered with an older record of its own — so the canonical
+    // Deal Card read a stale package and reported a search that had in fact run.
+    //
+    // Selection is by CHRONOLOGY across the family, not by which card was asked
+    // for: the most recently updated record is the current one. Nothing moves,
+    // nothing is copied, and the reach is only ever the canonical card plus the
+    // aliases that explicitly resolve to it.
+    const family = resolvePropertyFamily(db, propertyCardId);
+    const placeholders = family.familyIds.map(() => '?').join(',');
+    const row = db.prepare(
+      `SELECT record_json FROM landos_property_research_record
+         WHERE property_card_id IN (${placeholders})
+         ORDER BY updated_at DESC, property_card_id = ? DESC
+         LIMIT 1`,
+    ).get(...family.familyIds, family.canonicalId) as { record_json?: string } | undefined;
     return parseRecord(row?.record_json);
   }
 
@@ -382,7 +492,14 @@ export class PropertyResearchStore {
   persistProviderResult(result: PropertyProviderResult): PropertyProviderResult {
     ensureTables();
     const db = getLandosDb();
-    const current = this.loadForProperty(result.input.propertyCardId);
+    const family = resolvePropertyFamily(db, result.input.propertyCardId);
+    // The family read above can answer with an ALIAS card's record (the newest
+    // in the family). Merging against it as a foreign card refused every result
+    // for the canonical subject as a "different canonical property", so the
+    // canonical card never retained anything again after canonicalization.
+    // Within one family the alias record IS the subject's record: adopt it under
+    // the card the result was produced for before merging.
+    const current = adoptFamilyResearchRecord(this.loadForProperty(result.input.propertyCardId), result.input, family.familyIds);
     const merged = mergeCanonicalPropertyResearch(current, result);
     let persistence = {
       attempted: true,
