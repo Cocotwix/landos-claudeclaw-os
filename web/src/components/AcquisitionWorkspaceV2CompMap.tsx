@@ -278,6 +278,14 @@ function MapSurface({
         // second white strip across the map beneath the real preview below.
         aria-label={`${identity.badge}: ${nameOf(c)}. Click for full comparable details.`}
         aria-pressed={isSelected}
+        // Stable identity for the marker: which record it is and what role it
+        // plays. Without these the map could not be verified — nothing on a
+        // plotted marker said whether it was a closed sale or active
+        // competition, so no check (and no screen reader) could name it.
+        data-testid="cv-map-marker"
+        data-comp-key={c.key}
+        data-marker-role={c.category}
+        data-marker-kind={identity.kind}
         onClick={(e) => { e.stopPropagation(); pick(c); }}
         onPointerEnter={() => enterMarker(c, pos)}
         onPointerLeave={leaveMarker}
@@ -508,6 +516,9 @@ function MapSurface({
           <div
             class="absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: subjectPin.left, top: subjectPin.top, zIndex: 40 }}
+            data-testid="cv-map-subject"
+            data-marker-role="subject"
+            aria-label="Subject property location on the combined comparable map"
           >
             <MarkerGlyph identity={COMP_IDENTITIES.subject} size={COMP_IDENTITIES.subject.size} />
           </div>

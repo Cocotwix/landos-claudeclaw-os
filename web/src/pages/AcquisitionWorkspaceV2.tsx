@@ -241,6 +241,8 @@ interface SnapshotView extends OverviewSnapshotView {
 interface DealResp {
   subject?: SubjectProjectionView | null;
   parcelScope?: ParcelScopeView | null;
+  /** Canonical-family resolution: an archived duplicate names the card it resolves to. */
+  canonicalResolution?: { canonicalDealCardId: number; aliasDealCardIds: number[]; isArchivedAlias: boolean; readOnly: boolean } | null;
   dealCard?: {
     id: number; title?: string; asking_price?: number | null;
     people?: { name?: string; phone?: string; email?: string }[];
@@ -349,6 +351,12 @@ export function AcquisitionWorkspaceV2() {
     const n = Number(q);
     if (Number.isInteger(n) && n > 0) return n;
     return lastWorkspaceDealId();
+  })();
+  // Set when an archived duplicate's route was opened and resolved here: the
+  // canonical card is shown, and the notice says which alias arrived.
+  const archivedFrom = (() => {
+    const n = Number(new URLSearchParams(window.location.search).get('archivedFrom'));
+    return Number.isInteger(n) && n > 0 ? n : null;
   })();
   useEffect(() => {
     if (dealId == null) { navigate('/dept/acquisitions', { replace: true }); return; }
@@ -581,6 +589,19 @@ export function AcquisitionWorkspaceV2() {
           apiGet<BrowseruseResp>(`/api/landos/deal-cards/${dealId}/browseruse`).catch(() => null),
         ]);
         if (dead) return;
+        // An archived duplicate resolves to its canonical card, VISIBLY. Rendering
+        // the alias's own retained artifacts here presented a second valuation
+        // and a second decision lifecycle for one acquisition subject, which is
+        // exactly what canonicalization removed. The canonical route is opened
+        // instead, carrying the alias id so the notice can say where it came from.
+        const family = d?.canonicalResolution ?? null;
+        if (family?.isArchivedAlias && Number.isInteger(family.canonicalDealCardId) && family.canonicalDealCardId !== dealId) {
+          const q = new URLSearchParams(window.location.search);
+          q.set('deal', String(family.canonicalDealCardId));
+          q.set('archivedFrom', String(dealId));
+          window.location.replace(`${window.location.pathname}?${q.toString()}`);
+          return;
+        }
         setDeal(d); setSnap(i?.propertyIntelligence?.snapshot ?? null); setMarket(i?.marketContext ?? null); setAcq(a); setActivity(act);
         setAcceptedSubject(i?.subject ?? d?.subject ?? null);
         setSnapshotSubject(i?.snapshotSubject ?? null);
@@ -1178,6 +1199,14 @@ export function AcquisitionWorkspaceV2() {
         {/* Strategy & Underwriting opens with the deterministic Napkin
             Underwriting screen: Acquisition Napkin on the canonical supported
             FMV, then Strategy Napkins. Rendering runs no model or research. */}
+        {archivedFrom != null && archivedFrom !== dealId && (
+          <div class="awv2-stale-subject" role="status" data-testid="archived-alias-notice">
+            <b>Deal {archivedFrom} is an archived duplicate of this Deal Card (Deal {dealId})</b>
+            <span>
+              It resolves here, read-only. Its retained history belongs to this record; it carries no separate research, valuation or decision.
+            </span>
+          </div>
+        )}
         {snapshotSubject?.stale && (
           <div class="awv2-stale-subject" role="status">
             <b>No current read for the accepted subject</b>

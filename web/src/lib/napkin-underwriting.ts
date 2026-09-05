@@ -58,9 +58,12 @@ export interface AcquisitionNapkin {
   fmvStatusLabel: string;
   /** True only when the canonical valuation status is 'supported'. */
   fmvSupported: boolean;
-  /** The deterministic 40 / 50 / 60% screening band derived from that FMV.
+  /** The deterministic screening band derived from that FMV.
    *  Prefers the canonical persisted acquisitionLevels; derives only when
-   *  the summary carries an FMV without persisted levels. */
+   *  the summary carries an FMV without persisted levels.
+   *  Only pct40 and pct60 are ever DISPLAYED as operating benchmarks; pct50 is
+   *  retained solely as an internal fallback basis for the strategy napkins
+   *  when no acquisition ceiling has been established. */
   band: { pct40: number; pct50: number; pct60: number };
   bandSource: 'persisted_acquisition_levels' | 'derived_from_supported_fmv';
   /** Seller ask, when known. null = unknown, never zero. */

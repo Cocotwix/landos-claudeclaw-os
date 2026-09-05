@@ -995,8 +995,9 @@ export function Tools() {
                 ['Confidence', compsValuation.facts.valuation?.confidence ?? 'Not established'] as [string, string],
                 ['Valuation set', `${compsValuation.facts.comps.valuationSetCount} closed sale(s), ${compsValuation.facts.valuation?.directCount ?? 0} direct`] as [string, string],
                 ['Sale window', compsValuation.facts.valuation?.windowLabel ?? 'Not established'] as [string, string],
-                ['Acquisition 40 / 50 / 60', compsValuation.facts.valuation?.acquisitionLevels
-                  ? `${usd(compsValuation.facts.valuation.acquisitionLevels.pct40)} / ${usd(compsValuation.facts.valuation.acquisitionLevels.pct50)} / ${usd(compsValuation.facts.valuation.acquisitionLevels.pct60)}`
+                // 40% and 60% only. A 50% value is never displayed.
+                ['Acquisition 40 / 60', compsValuation.facts.valuation?.acquisitionLevels
+                  ? `${usd(compsValuation.facts.valuation.acquisitionLevels.pct40)} / ${usd(compsValuation.facts.valuation.acquisitionLevels.pct60)}`
                   : 'Not established'] as [string, string],
               ].map(([label, item]) => (
                 <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">

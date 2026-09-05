@@ -1,6 +1,6 @@
 // LandOS Napkin Underwriting surface — the top of Strategy & Underwriting.
 //
-// Renders the deterministic ACQUISITION NAPKIN (supported FMV, the 40/50/60%
+// Renders the deterministic ACQUISITION NAPKIN (supported FMV, the 40/60%
 // screening band, seller ask, current quick-flip MAO) and the STRATEGY
 // NAPKINS comparison beneath it. Rendering runs nothing: no model call, no
 // research call — every number is computed client-side from already-persisted
@@ -84,9 +84,13 @@ export function NapkinUnderwriting({ compsValuation, quickFlipScreen, askingPric
             <span>{napkin.fmvStatusLabel} · {napkin.fmvBasisLabel}</span>
             <button type="button" class="awv2-nk-link" onClick={openCompsValuation}>Valuation evidence →</button>
           </div>
+          {/* The standard operating benchmarks are 40% and 60% of the current
+              Combined LandOS FMV. A 50% band is deliberately NOT shown: it read
+              as a third recommended number beside them and had no operating
+              meaning. Strategy-specific maximum purchase basis and seller ask
+              stay separate, below. */}
           <div class="awv2-nk-band" data-testid="napkin-band">
             <div><i>40% of FMV</i><b data-testid="napkin-band-40">{usd(napkin.band.pct40)}</b></div>
-            <div><i>50% of FMV</i><b data-testid="napkin-band-50">{usd(napkin.band.pct50)}</b></div>
             <div><i>60% of FMV</i><b data-testid="napkin-band-60">{usd(napkin.band.pct60)}</b></div>
           </div>
           <div class="awv2-nk-facts">
