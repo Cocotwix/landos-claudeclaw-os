@@ -88,6 +88,15 @@ export interface RemoteBrowserHandle {
   sessionId: string;
   /** True when an existing RUNNING session was resumed instead of created. */
   reconnected: boolean;
+  /**
+   * A URL the operator can open to WATCH this remote session live in a normal
+   * browser tab (Browserbase's fullscreen debugger view). Null when the
+   * provider did not return one. It carries no LandOS credential; it is the
+   * provider's own signed viewing link. This is how a human sees, and if the
+   * provider surfaces an interactive challenge, clears it — the same single
+   * operator interaction the local flow allowed, now on the remote session.
+   */
+  liveViewUrl: string | null;
   newPage(): Promise<RemotePageLike>;
   /** Close the pages this handle opened, disconnect, and release the remote
    *  session. The persistent context (identity) is kept. */
@@ -205,6 +214,15 @@ export async function openRemoteBrowserSession(label: string, deps: RemoteSessio
   writeRemoteSessionState(label, state, deps);
 
   const browser = await connect(`${config.connectBase}?apiKey=${encodeURIComponent(config.apiKey as string)}&sessionId=${encodeURIComponent(sessionId)}`);
+  // Operator viewing: the provider's own signed fullscreen debugger URL. Best
+  // effort — a session with no debug view is still fully usable headlessly.
+  let liveViewUrl: string | null = null;
+  try {
+    const debug = await browserbaseRequest<{ debuggerFullscreenUrl?: string; debuggerUrl?: string }>(
+      config, doFetch, 'GET', `/sessions/${sessionId}/debug`,
+    );
+    liveViewUrl = debug.debuggerFullscreenUrl ?? debug.debuggerUrl ?? null;
+  } catch { /* no live view available; headless operation is unaffected */ }
   const pages: RemotePageLike[] = [];
   const contextId = state.contextId;
   return {
@@ -212,6 +230,7 @@ export async function openRemoteBrowserSession(label: string, deps: RemoteSessio
     contextId,
     sessionId,
     reconnected,
+    liveViewUrl,
     async newPage() {
       const page = await browser.newPage();
       pages.push(page);

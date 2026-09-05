@@ -27,6 +27,10 @@ function fakeBrowserbase(opts: { runningSession?: string | null } = {}) {
     const json = (value: unknown) => ({ ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) }) as unknown as Response;
     if (method === 'POST' && route === '/contexts') return json({ id: 'ctx_persisted' });
     if (method === 'POST' && route === '/sessions') { sessionCounter += 1; return json({ id: `sess_${sessionCounter}` }); }
+    if (method === 'GET' && /^\/sessions\/[^/]+\/debug$/.test(route)) {
+      const id = route.slice('/sessions/'.length, -'/debug'.length);
+      return json({ debuggerFullscreenUrl: `https://www.browserbase.com/devtools-fullscreen/inspector.html?session=${id}` });
+    }
     if (method === 'GET' && route.startsWith('/sessions/')) {
       const id = route.slice('/sessions/'.length);
       return json({ id, status: opts.runningSession === id ? 'RUNNING' : 'COMPLETED' });
@@ -60,6 +64,9 @@ describe('remote browser transport (Browserbase, injected)', () => {
     expect(handle.contextId).toBe('ctx_persisted');
     expect(handle.sessionId).toBe('sess_1');
     expect(handle.reconnected).toBe(false);
+    // Operator viewing: the provider's own signed fullscreen debugger URL,
+    // carrying no LandOS credential.
+    expect(handle.liveViewUrl).toBe('https://www.browserbase.com/devtools-fullscreen/inspector.html?session=sess_1');
     const sessionCreate = fake.calls.find((call) => call.method === 'POST' && call.route === '/sessions')!;
     const settings = sessionCreate.body!.browserSettings as Record<string, unknown>;
     expect(settings.solveCaptchas).toBe(false);

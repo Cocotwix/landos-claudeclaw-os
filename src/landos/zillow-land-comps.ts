@@ -402,29 +402,70 @@ const shared: { session: ZillowBrowserLike | null; refs: number; queue: Promise<
   session: null, refs: 0, queue: Promise.resolve(), opener: null,
 };
 
+/** Take a reference to the shared session, opening it if this is the first. */
+async function acquireSharedZillowSession(
+  deps: { open?: () => Promise<ZillowBrowserLike | null> } = {},
+): Promise<ZillowBrowserLike | null> {
+  shared.refs += 1;
+  if (!shared.session) {
+    shared.opener = shared.opener ?? (deps.open ?? openZillowSession)();
+    shared.session = await shared.opener;
+    shared.opener = null;
+  }
+  return shared.session;
+}
+
+/** Drop a reference; the last one closes the session. */
+async function releaseSharedZillowSession(): Promise<void> {
+  shared.refs -= 1;
+  if (shared.refs === 0 && shared.session) {
+    const closing = shared.session;
+    shared.session = null;
+    try { await closing.close(); } catch { /* best-effort */ }
+  }
+}
+
 export async function withSharedZillowSession<T>(
   work: (session: ZillowBrowserLike | null) => Promise<T>,
   deps: { open?: () => Promise<ZillowBrowserLike | null> } = {},
 ): Promise<T> {
-  shared.refs += 1;
+  const session = await acquireSharedZillowSession(deps);
   try {
-    if (!shared.session) {
-      shared.opener = shared.opener ?? (deps.open ?? openZillowSession)();
-      shared.session = await shared.opener;
-      shared.opener = null;
-    }
-    const session = shared.session;
     const run = shared.queue.then(() => work(session));
     shared.queue = run.catch(() => undefined);
     return await run;
   } finally {
-    shared.refs -= 1;
-    if (shared.refs === 0 && shared.session) {
-      const closing = shared.session;
-      shared.session = null;
-      try { await closing.close(); } catch { /* best-effort */ }
-    }
+    await releaseSharedZillowSession();
   }
+}
+
+/**
+ * Hold the ONE persistent Zillow session open across several lanes.
+ *
+ * `withSharedZillowSession` reference-counts and closes on the last release, so
+ * two lanes that merely happen not to overlap in time each get their OWN
+ * session: the sold and active boards ran on one identity and the manufactured
+ * board on a second, which is not the single continuous session acceptance
+ * requires. A lease is an explicit reference held for the whole marketplace
+ * phase, so every board inside it runs on one identity with its cookies and any
+ * cleared verification retained between them.
+ */
+export function leaseSharedZillowSession(
+  deps: { open?: () => Promise<ZillowBrowserLike | null> } = {},
+): { release: () => Promise<void> } {
+  // A lease takes a REFERENCE, never a turn in the work queue. Holding the
+  // queue instead would have kept the session open by blocking every board
+  // that was waiting to run on it.
+  const held = acquireSharedZillowSession(deps).catch(() => null);
+  let released = false;
+  return {
+    release: async () => {
+      if (released) return;
+      released = true;
+      await held;
+      await releaseSharedZillowSession();
+    },
+  };
 }
 
 /** Test seam: forget the profile-level challenge memory. */

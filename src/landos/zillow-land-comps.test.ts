@@ -312,6 +312,104 @@ describe('one persistent Zillow session across boards', () => {
     expect(handoffs).toBe(1);
   });
 
+  it('runs sold land, active land and manufactured-home research on ONE session and never closes it', async () => {
+    resetZillowChallengeMemory();
+    // Each board answers with its own board-appropriate rows, plus one address
+    // that appears on BOTH land boards so cross-board deduplication is visible.
+    const shared = { address: '1810 Wells AVE, LEHIGH ACRES, FL 33972', price: 29497, acres: 0.5, url: 'z-shared' };
+    const boards: Record<string, RawZillowListing[]> = {
+      sold: [
+        { ...shared, status: 'Sold', soldDate: '2026-04-02' },
+        { ...shared, status: 'Sold', soldDate: '2026-04-02' },
+        { address: '2200 Palm RD, LEHIGH ACRES, FL 33972', price: 41000, acres: 1.1, url: 'z-sold-2', status: 'Sold', soldDate: '2026-02-11' },
+      ],
+      active: [
+        { ...shared, status: 'For sale' },
+        { address: '99 Cypress LN, LEHIGH ACRES, FL 33972', price: 52000, acres: 2, url: 'z-act-2', status: 'For sale' },
+      ],
+      manufactured: [
+        // The manufactured lane proves geography, closed status, coordinates and
+        // time period, so a qualifying row must carry all of them.
+        { address: '77 Mobile WAY, LEHIGH ACRES, FL 33972', price: 189000, acres: 1, url: 'z-mh-1', status: 'Sold', soldDate: '2026-03-05', homeType: 'MANUFACTURED', lat: 26.6182, lng: -81.6248 },
+        { address: '81 Faraway RD, LEHIGH ACRES, FL 33972', price: 150000, acres: 1, url: 'z-mh-2', status: 'Sold', soldDate: '2026-03-06', homeType: 'MANUFACTURED', lat: 27.9, lng: -82.6 },
+      ],
+    };
+    let current: keyof typeof boards = 'sold';
+    const log = { pages: 0, closed: 0 };
+    const handle = {
+      async newPage() {
+        log.pages += 1;
+        return {
+          async setViewport() {},
+          async goto() {},
+          async evaluate(fn: unknown) {
+            const src = String(fn);
+            if (src.includes('press and hold') || src.includes('captcha')) return false as never;
+            if (src.includes('property-card')) return { listings: boards[current], nextData: null } as never;
+            return undefined as never;
+          },
+        };
+      },
+      async close() { log.closed += 1; },
+    };
+
+    current = 'sold';
+    const sold = await fetchZillowLandComps({ ...input, mode: 'sold' }, { ...fast, session: handle as never });
+    current = 'active';
+    const active = await fetchZillowLandComps({ ...input, mode: 'active' }, { ...fast, session: handle as never });
+    current = 'manufactured';
+    const manufactured = await fetchZillowLandComps(
+      { ...input, mode: 'sold', propertyType: 'manufactured', lat: 26.6182, lng: -81.6248, radiusMiles: 5 },
+      { ...fast, session: handle as never },
+    );
+
+    // ONE session served all three research types.
+    expect(log.pages).toBe(3);
+    expect(log.closed).toBe(0);
+    expect(sold.status).toBe('retrieved');
+    expect(active.status).toBe('retrieved');
+    expect(manufactured.status).toBe('retrieved');
+
+    // Deduplication WITHIN a board: the sold board offered the shared address
+    // twice and it is retained once.
+    expect(sold.comps.filter((c) => /1810 Wells/i.test(c.address ?? '')).length).toBe(1);
+    expect(sold.comps.length).toBe(2);
+
+    // Board separation: a sold row never enters the active board and vice
+    // versa, so the shared address is carried by each board under its own
+    // status rather than duplicated as one record with two meanings.
+    expect(sold.comps.every((c) => c.status === 'sold')).toBe(true);
+    expect(active.comps.every((c) => c.status !== 'sold')).toBe(true);
+    // The manufactured lane offered two closed sales and kept only the one
+    // inside the 5-mile radius, recording WHY the other was dropped.
+    expect(manufactured.comps.length).toBe(1);
+    expect(manufactured.comps[0]?.address).toMatch(/77 Mobile WAY/i);
+    expect(manufactured.searchProof?.exclusionReasons ?? []).toContainEqual(
+      expect.objectContaining({ reason: expect.stringMatching(/5-mile radius/) }),
+    );
+  });
+
+  it('one operator clearance resumes sold, active AND manufactured research on the same session', async () => {
+    resetZillowChallengeMemory();
+    const state = { blocked: true };
+    const { handle } = session(state);
+    let handoffs = 0;
+    const onChallenge = async () => { handoffs += 1; state.blocked = false; return true; };
+    const sold = await fetchZillowLandComps({ ...input, mode: 'sold' }, { ...fast, session: handle as never, onChallenge });
+    const active = await fetchZillowLandComps({ ...input, mode: 'active' }, { ...fast, session: handle as never, onChallenge });
+    const manufactured = await fetchZillowLandComps(
+      { ...input, mode: 'sold', propertyType: 'manufactured' },
+      { ...fast, session: handle as never, onChallenge },
+    );
+    // The human cleared the check ONCE; the cleared session carried the
+    // clearance into the active and manufactured research without asking again.
+    expect(handoffs).toBe(1);
+    expect(['retrieved', 'none']).toContain(sold.status);
+    expect(active.status).toBe('retrieved');
+    expect(['retrieved', 'none']).toContain(manufactured.status);
+    resetZillowChallengeMemory();
+  });
+
   it('an unattended challenge is recorded once and the remaining boards are skipped on that session without any wait', async () => {
     resetZillowChallengeMemory();
     const { handle } = session({ blocked: true });
